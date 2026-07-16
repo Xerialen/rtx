@@ -167,6 +167,57 @@ def validate_analysis(analysis: dict[str, object]) -> None:
         raise ValueError(f"analysis damage done/taken is null for: {missing_damage}")
 
 
+def validate_metrics(metrics: dict[str, object]) -> None:
+    if metrics.get("schema") != "mlx.metrics.v1":
+        raise ValueError("metrics schema is not mlx.metrics.v1")
+    for field in (
+        "durationMs",
+        "openingCensored",
+        "openingFirstFragMs",
+        "deathsAirborneMethod",
+        "fightToImportantItemDefinition",
+        "teams",
+    ):
+        if field not in metrics:
+            raise ValueError(f"metrics missing {field}")
+    teams = metrics["teams"]
+    if not isinstance(teams, dict) or len(teams) != 2:
+        raise ValueError("metrics does not contain exactly two teams")
+    required_team_fields = (
+        "score",
+        "fragMargin",
+        "frags",
+        "deaths",
+        "damageGiven",
+        "damageTaken",
+        "efficiency",
+        "armorShare",
+        "healthShare",
+        "powerupShare",
+        "itemTimings",
+        "openingDamageGiven",
+        "openingDamageTaken",
+        "openingWin",
+        "deathsAirborne",
+        "deathsAirborneEvaluated",
+        "fightToImportantItemSamples",
+        "fightToImportantItemMedianMs",
+        "fightToImportantItemCensored",
+    )
+    for team_name, team in teams.items():
+        if not isinstance(team, dict):
+            raise ValueError(f"metrics team {team_name} is not an object")
+        for field in required_team_fields:
+            if field not in team:
+                raise ValueError(f"metrics team {team_name} missing {field}")
+        if not metrics["openingCensored"] and any(
+            team[field] is None for field in ("openingDamageGiven", "openingDamageTaken", "openingWin")
+        ):
+            raise ValueError(f"metrics team {team_name} has uncensored null opening fields")
+        if not team["fightToImportantItemCensored"] and team["fightToImportantItemMedianMs"] is None:
+            raise ValueError(f"metrics team {team_name} has uncensored null fight-to-item median")
+
+
 class JobRunner:
     def __init__(self, spec_path: Path, mode: str) -> None:
         self.spec_path = spec_path.resolve()
@@ -210,6 +261,10 @@ class JobRunner:
             raise ValueError("job match ports exceed 28600-28700")
         if not isinstance(self.spec.get("analysisCommand"), list) or not self.spec["analysisCommand"]:
             raise ValueError("analysisCommand is required")
+        if not isinstance(self.spec.get("metricsCommand"), list) or not self.spec["metricsCommand"]:
+            raise ValueError("metricsCommand is required")
+        if not isinstance(self.spec.get("summaryCommand"), list) or not self.spec["summaryCommand"]:
+            raise ValueError("summaryCommand is required")
 
         config_path = self.job_dir / "config.json"
         if not config_path.exists():
@@ -251,7 +306,14 @@ class JobRunner:
 
     def analyze(self, demo: Path, analysis_path: Path, log_path: Path) -> dict[str, object]:
         argv = [str(value).replace("{demo}", str(demo)) for value in self.spec["analysisCommand"]]
-        process = subprocess.run(argv, capture_output=True, timeout=int(self.spec.get("analysisTimeoutSeconds", 300)))
+        environment = os.environ.copy()
+        environment.update({str(key): str(value) for key, value in self.spec.get("analysisEnv", {}).items()})
+        process = subprocess.run(
+            argv,
+            capture_output=True,
+            env=environment,
+            timeout=int(self.spec.get("analysisTimeoutSeconds", 300)),
+        )
         log_path.write_bytes(process.stderr)
         if process.returncode != 0:
             raise RuntimeError(f"analyzer exited {process.returncode}; see {log_path}")
@@ -259,6 +321,47 @@ class JobRunner:
         analysis = json.loads(process.stdout)
         validate_analysis(analysis)
         return analysis
+
+    def derive_metrics(self, analysis_path: Path, metrics_path: Path, log_path: Path) -> dict[str, object]:
+        argv = [
+            str(value).replace("{analysis}", str(analysis_path))
+            for value in self.spec["metricsCommand"]
+        ]
+        process = subprocess.run(
+            argv,
+            capture_output=True,
+            timeout=int(self.spec.get("metricsTimeoutSeconds", 60)),
+        )
+        log_path.write_bytes(process.stderr)
+        if process.returncode != 0:
+            raise RuntimeError(f"metrics command exited {process.returncode}; see {log_path}")
+        metrics_path.write_bytes(process.stdout)
+        metrics = json.loads(process.stdout)
+        validate_metrics(metrics)
+        return metrics
+
+    def summarize(self) -> Path:
+        output_dir = Path(self.spec["resultsDir"]).resolve()
+        replacements = {"{jobDir}": str(self.job_dir), "{outputDir}": str(output_dir)}
+        argv = []
+        for value in self.spec["summaryCommand"]:
+            argument = str(value)
+            for placeholder, replacement in replacements.items():
+                argument = argument.replace(placeholder, replacement)
+            argv.append(argument)
+        process = subprocess.run(
+            argv,
+            capture_output=True,
+            timeout=int(self.spec.get("summaryTimeoutSeconds", 300)),
+        )
+        (self.job_dir / "summary.log").write_bytes(process.stdout + process.stderr)
+        if process.returncode != 0:
+            raise RuntimeError(f"summary command exited {process.returncode}; see {self.job_dir / 'summary.log'}")
+        for name in ("summary.csv", "summary.parquet"):
+            path = output_dir / name
+            if not path.is_file() or path.stat().st_size == 0:
+                raise FileNotFoundError(f"summary command did not create {path}")
+        return output_dir
 
     def publish(
         self,
@@ -280,6 +383,7 @@ class JobRunner:
         demo_target = temporary / filename
         shutil.copy2(attempt_dir / "demo.mvd", demo_target)
         shutil.copy2(attempt_dir / "analysis.json", temporary / "analysis.json")
+        shutil.copy2(attempt_dir / "metrics.json", temporary / "metrics.json")
         match_result = json.loads((attempt_dir / "match-result.json").read_text(encoding="utf-8"))
         sidecar = {
             "schema": "mlx.demo-sidecar.v1",
@@ -295,6 +399,7 @@ class JobRunner:
             "map": "dm3",
             "matchResult": {"margin": margin, "teams": team_scores},
             "analysis": "analysis.json",
+            "metrics": "metrics.json",
             "benchmarkCell": self.spec["cell"],
             "recordingType": "MVD",
             "transferStatus": "outbox",
@@ -386,6 +491,11 @@ class JobRunner:
             if not demo.is_file() or demo.stat().st_size == 0:
                 raise FileNotFoundError("match has no non-empty demo.mvd")
             analysis = self.analyze(demo, attempt_dir / "analysis.json", attempt_dir / "analyzer.log")
+            self.derive_metrics(
+                attempt_dir / "analysis.json",
+                attempt_dir / "metrics.json",
+                attempt_dir / "metrics.log",
+            )
             publication, sidecar = self.publish(key, index, attempt_dir, analysis)
             (match_dir / ".ready").write_text(utc_now() + "\n", encoding="utf-8")
             append_manifest(
@@ -430,7 +540,21 @@ class JobRunner:
             for match in self.status["matches"].values():
                 counts[match["state"]] += 1
             self.status["counts"] = counts
-            self.status["state"] = "completed" if counts["failed"] == 0 and counts["running"] == 0 else "failed"
+            summary_error = None
+            if counts["completed"]:
+                try:
+                    summary_dir = self.summarize()
+                    self.status["summaryCsv"] = str(summary_dir / "summary.csv")
+                    self.status["summaryParquet"] = str(summary_dir / "summary.parquet")
+                except Exception as exc:
+                    summary_error = f"{type(exc).__name__}: {exc}"
+                    self.log(f"summary failed: {summary_error}")
+            self.status["summaryError"] = summary_error
+            self.status["state"] = (
+                "completed"
+                if counts["failed"] == 0 and counts["running"] == 0 and summary_error is None
+                else "failed"
+            )
             self.status["endedAt"] = utc_now()
             self.write_status()
             exit_code = 0 if self.status["state"] == "completed" else 1

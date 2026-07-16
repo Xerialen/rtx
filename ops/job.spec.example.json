@@ -3,6 +3,7 @@
   "jobId": "20260716-example",
   "startDate": "2026-07-16",
   "jobDir": "/home/benjamin-adm/mlx/jobs/20260716-example",
+  "resultsDir": "/home/benjamin-adm/mlx/results/20260716-example",
   "outboxDir": "/home/benjamin-adm/mlx/demos/outbox",
   "matches": 1,
   "parallel": 1,
@@ -11,6 +12,8 @@
   "timelimit": 1,
   "matchTimeoutSeconds": 180,
   "analysisTimeoutSeconds": 300,
+  "metricsTimeoutSeconds": 60,
+  "summaryTimeoutSeconds": 300,
   "cell": "baseline-a",
   "bhop": false,
   "botSkill": 7,
@@ -19,8 +22,29 @@
   "qwMinClient": "/home/benjamin-adm/mlx/tools/qw_min_client.py",
   "analysisCommand": [
     "/home/benjamin-adm/mlx/bin/qw-analyze",
+    "-include",
+    "positions,height,velocity",
     "{demo}"
   ],
+  "analysisEnv": {
+    "MVDA_BSP_DIR": "/home/benjamin-adm/mlx/qwserver/serverdir/id1/maps"
+  },
+  "metricsCommand": [
+    "/home/benjamin-adm/mlx/bin/mlx-metrics",
+    "{analysis}"
+  ],
+  "summaryCommand": [
+    "/home/benjamin-adm/mlx/tools/pyenv/bin/python",
+    "/home/benjamin-adm/mlx/repo/rex/ops/mlx_summarize.py",
+    "--job-dir",
+    "{jobDir}",
+    "--output-dir",
+    "{outputDir}"
+  ],
+  "metricValidation": {
+    "airbornePrecision": 0.95,
+    "fightToItemPrecision": 1.0
+  },
   "rexCommit": "REPLACE_WITH_FULL_SHA",
   "analyzerCommit": "REPLACE_WITH_FULL_SHA",
   "mlxVersion": "phase1-rev3",

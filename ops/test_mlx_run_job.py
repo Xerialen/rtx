@@ -53,6 +53,44 @@ class MlxRunJobContractTests(unittest.TestCase):
 
         mlx_run_job.validate_analysis(analysis)
 
+    def test_metrics_validation_requires_every_phase_one_field(self) -> None:
+        team = {
+            "score": 1,
+            "fragMargin": 1,
+            "frags": 1,
+            "deaths": 0,
+            "damageGiven": 100,
+            "damageTaken": 0,
+            "efficiency": 1.0,
+            "armorShare": 0.5,
+            "healthShare": 0.5,
+            "powerupShare": 0.5,
+            "itemTimings": {},
+            "openingDamageGiven": 100,
+            "openingDamageTaken": 0,
+            "openingWin": True,
+            "deathsAirborne": 0,
+            "deathsAirborneEvaluated": 0,
+            "fightToImportantItemSamples": 1,
+            "fightToImportantItemMedianMs": 1000,
+            "fightToImportantItemCensored": False,
+        }
+        metrics = {
+            "schema": "mlx.metrics.v1",
+            "durationMs": 60_000,
+            "openingCensored": False,
+            "openingFirstFragMs": 1000,
+            "deathsAirborneMethod": "heuristic",
+            "fightToImportantItemDefinition": "definition",
+            "teams": {"mlx": team, "frogs": dict(team)},
+        }
+
+        mlx_run_job.validate_metrics(metrics)
+
+        del metrics["teams"]["mlx"]["armorShare"]
+        with self.assertRaisesRegex(ValueError, "armorShare"):
+            mlx_run_job.validate_metrics(metrics)
+
 
 if __name__ == "__main__":
     unittest.main()
