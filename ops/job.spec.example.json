@@ -1,0 +1,34 @@
+{
+  "schema": "mlx.job.spec.v1",
+  "jobId": "20260716-example",
+  "startDate": "2026-07-16",
+  "jobDir": "/home/benjamin-adm/mlx/jobs/20260716-example",
+  "outboxDir": "/home/benjamin-adm/mlx/demos/outbox",
+  "matches": 1,
+  "parallel": 1,
+  "basePort": 28600,
+  "baseControlPort": 29600,
+  "timelimit": 1,
+  "matchTimeoutSeconds": 180,
+  "analysisTimeoutSeconds": 300,
+  "cell": "baseline-a",
+  "bhop": false,
+  "botSkill": 7,
+  "serverDir": "/home/benjamin-adm/mlx/qwserver/serverdir",
+  "rtxClient": "/home/benjamin-adm/mlx/repo/rex/target/release/rtx-client",
+  "qwMinClient": "/home/benjamin-adm/mlx/tools/qw_min_client.py",
+  "analysisCommand": [
+    "/home/benjamin-adm/mlx/bin/qw-analyze",
+    "{demo}"
+  ],
+  "rexCommit": "REPLACE_WITH_FULL_SHA",
+  "analyzerCommit": "REPLACE_WITH_FULL_SHA",
+  "mlxVersion": "phase1-rev3",
+  "serverConfig": {
+    "map": "dm3",
+    "mode": "4on4",
+    "frogbotSkill": 20,
+    "rtx_bot_bhop": 0
+  },
+  "hubDestination": "non-games/lab/MLX/dm3/"
+}

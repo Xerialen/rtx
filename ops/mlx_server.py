@@ -382,7 +382,12 @@ def process_receipt(process: subprocess.Popen[bytes], label: str) -> dict[str, o
     }
 
 
-def terminate_owned(process: subprocess.Popen[bytes] | None, receipt: dict[str, object] | None) -> None:
+def terminate_owned(
+    process: subprocess.Popen[bytes] | None,
+    receipt: dict[str, object] | None,
+    *,
+    kill_group: bool = True,
+) -> None:
     if process is None or receipt is None or process.poll() is not None:
         return
     stat_path = Path(f"/proc/{process.pid}/stat")
@@ -392,11 +397,17 @@ def terminate_owned(process: subprocess.Popen[bytes] | None, receipt: dict[str, 
         return
     if process.pid != receipt["pid"] or current_ticks != receipt["startTimeTicks"]:
         raise RuntimeError(f"refusing to terminate reused or unowned PID {process.pid}")
-    os.killpg(int(receipt["pgid"]), signal.SIGTERM)
+    if kill_group:
+        os.killpg(int(receipt["pgid"]), signal.SIGTERM)
+    else:
+        process.terminate()
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        os.killpg(int(receipt["pgid"]), signal.SIGKILL)
+        if kill_group:
+            os.killpg(int(receipt["pgid"]), signal.SIGKILL)
+        else:
+            process.kill()
         process.wait(timeout=3)
 
 
@@ -455,6 +466,7 @@ def run_match(args: argparse.Namespace) -> int:
         "startedAt": utc_now(),
         "ok": False,
     }
+    inner_groups = not args.inherit_process_group
     try:
         server_log_path = session_dir / "server.log"
         client_log_path = session_dir / "rtx-client.log"
@@ -465,7 +477,7 @@ def run_match(args: argparse.Namespace) -> int:
             stdin=subprocess.PIPE,
             stdout=server_log_handle,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            start_new_session=inner_groups,
         )
         server_receipt = process_receipt(server, "mvdsv")
         write_json(session_dir / "process-receipts.json", {"server": server_receipt})
@@ -495,7 +507,7 @@ def run_match(args: argparse.Namespace) -> int:
             stdin=subprocess.DEVNULL,
             stdout=client_log_handle,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            start_new_session=inner_groups,
         )
         client_receipt = process_receipt(client, "rtx-client")
         write_json(
@@ -514,7 +526,7 @@ def run_match(args: argparse.Namespace) -> int:
             verify_client_barrier(args.control_port, time.monotonic() + 15),
         )
 
-        terminate_owned(client, client_receipt)
+        terminate_owned(client, client_receipt, kill_group=inner_groups)
         client = None
         client_receipt = None
         try:
@@ -549,7 +561,7 @@ def run_match(args: argparse.Namespace) -> int:
             stdin=subprocess.DEVNULL,
             stdout=client_log_handle,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            start_new_session=inner_groups,
         )
         client_receipt = process_receipt(client, "rtx-client-auto-ready")
         write_json(
@@ -599,8 +611,8 @@ def run_match(args: argparse.Namespace) -> int:
                 send_console(server, "quit", 0.1)
                 server.wait(timeout=5)
             except Exception:
-                terminate_owned(server, server_receipt)
-        terminate_owned(client, client_receipt)
+                terminate_owned(server, server_receipt, kill_group=inner_groups)
+        terminate_owned(client, client_receipt, kill_group=inner_groups)
         if server_log_handle is not None:
             server_log_handle.close()
         if client_log_handle is not None:
@@ -633,6 +645,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--control-port", type=int, required=True)
     parser.add_argument("--timelimit", type=int, default=1)
     parser.add_argument("--bhop", type=int, choices=(0, 1), default=0)
+    parser.add_argument("--inherit-process-group", action="store_true")
     return parser.parse_args(argv)
 
 
