@@ -10,7 +10,7 @@
   "basePort": 28600,
   "baseControlPort": 29600,
   "timelimit": 1,
-  "matchTimeoutSeconds": 180,
+  "matchTimeoutSeconds": 90,
   "analysisTimeoutSeconds": 300,
   "metricsTimeoutSeconds": 60,
   "summaryTimeoutSeconds": 300,

@@ -41,6 +41,7 @@ class MlxServerContractTests(unittest.TestCase):
             28600,
             29600,
             team="mlx",
+            skill=7,
             bhop=False,
         )
 
@@ -78,11 +79,13 @@ class MlxServerContractTests(unittest.TestCase):
             28600,
             29600,
             team="mlx",
+            skill=5,
             bhop=False,
             auto_ready=False,
         )
 
         self.assertIn("--no-auto-ready", argv)
+        self.assertEqual(argv[argv.index("--skill") + 1], "5")
         self.assertEqual(argv[-3:], ["+set", "rtx_bot_bhop", "0"])
 
 if __name__ == "__main__":

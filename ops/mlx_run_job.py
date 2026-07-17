@@ -56,22 +56,52 @@ def select_matches(matches: dict[str, dict[str, object]], mode: str) -> list[str
 
 
 def proc_start_ticks(pid: int) -> str:
-    return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21]
+    return proc_identity(Path(f"/proc/{pid}/stat"))[2]
+
+
+def proc_identity(stat_path: Path) -> tuple[int, int, str]:
+    """Return PID, process group, and start-time nonce from Linux procfs."""
+    raw = stat_path.read_text(encoding="utf-8")
+    command_end = raw.rfind(")")
+    if command_end < 0:
+        raise ValueError(f"invalid proc stat: {stat_path}")
+    pid = int(raw[: raw.index(" ")])
+    fields_after_command = raw[command_end + 2 :].split()
+    return pid, int(fields_after_command[2]), fields_after_command[19]
+
+
+def lease_process_matches(lease: dict[str, object]) -> bool:
+    """Require the lease PID, PGID, and process-start nonce to still agree."""
+    try:
+        pid = int(lease["pid"])
+        expected_pgid = int(lease["pgid"])
+        expected_ticks = str(lease["startTimeTicks"])
+        actual_pid, actual_pgid, actual_ticks = proc_identity(Path(f"/proc/{pid}/stat"))
+    except (
+        FileNotFoundError,
+        IndexError,
+        KeyError,
+        PermissionError,
+        ProcessLookupError,
+        TypeError,
+        ValueError,
+    ):
+        return False
+    return (actual_pid, actual_pgid, actual_ticks) == (pid, expected_pgid, expected_ticks)
 
 
 def process_group_members(pgid: int) -> list[tuple[int, str]]:
     members: list[tuple[int, str]] = []
     for stat_path in Path("/proc").glob("[0-9]*/stat"):
         try:
-            fields = stat_path.read_text(encoding="utf-8").split()
-            if int(fields[4]) != pgid:
+            pid, process_pgid, _start_ticks = proc_identity(stat_path)
+            if process_pgid != pgid:
                 continue
-            pid = int(fields[0])
             command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(
                 "utf-8", errors="replace"
             )
             members.append((pid, command))
-        except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError):
+        except (FileNotFoundError, IndexError, ProcessLookupError, PermissionError, ValueError):
             continue
     return members
 
@@ -88,6 +118,10 @@ def orphan_sweep(job_dir: Path, new_runner_run_id: str, log) -> int:
         pgid = int(lease["pgid"])
         members = process_group_members(pgid)
         if members:
+            if not lease_process_matches(lease):
+                raise RuntimeError(
+                    f"refusing orphan sweep for {lease_path}: PID/PGID start-time nonce mismatch"
+                )
             commands = [command for _pid, command in members]
             if any(token in command for token in PROTECTED_COMMAND_TOKENS for command in commands):
                 raise RuntimeError(f"refusing orphan sweep of protected process group {pgid}: {commands}")
@@ -218,6 +252,20 @@ def validate_metrics(metrics: dict[str, object]) -> None:
             raise ValueError(f"metrics team {team_name} has uncensored null fight-to-item median")
 
 
+def match_timeout_seconds(spec: dict[str, object]) -> int:
+    """Return the locked 1.5x match-length watchdog, rejecting drift."""
+    timelimit = int(spec["timelimit"])
+    if timelimit < 1:
+        raise ValueError("timelimit must be at least one minute")
+    expected = timelimit * 60 * 3 // 2
+    configured = int(spec.get("matchTimeoutSeconds", expected))
+    if configured != expected:
+        raise ValueError(
+            f"matchTimeoutSeconds must equal 1.5 match lengths ({expected}s), got {configured}s"
+        )
+    return expected
+
+
 class JobRunner:
     def __init__(self, spec_path: Path, mode: str) -> None:
         self.spec_path = spec_path.resolve()
@@ -265,6 +313,7 @@ class JobRunner:
             raise ValueError("metricsCommand is required")
         if not isinstance(self.spec.get("summaryCommand"), list) or not self.spec["summaryCommand"]:
             raise ValueError("summaryCommand is required")
+        match_timeout_seconds(self.spec)
 
         config_path = self.job_dir / "config.json"
         if not config_path.exists():
@@ -377,14 +426,56 @@ class JobRunner:
         outbox.mkdir(parents=True, exist_ok=True)
         temporary = outbox / f".{publication_name}.{self.runner_run_id}.tmp"
         target = outbox / publication_name
-        if target.exists():
+        match_result = json.loads((attempt_dir / "match-result.json").read_text(encoding="utf-8"))
+        expected_sha = str(match_result["demoSha256"])
+
+        for existing in sorted(outbox.iterdir()):
+            if not existing.is_dir() or not (existing / ".ready").is_file():
+                continue
+            sidecars = list(existing.glob("*.mvd.json"))
+            if len(sidecars) != 1:
+                continue
+            document = json.loads(sidecars[0].read_text(encoding="utf-8"))
+            if document.get("experimentId") != self.spec["jobId"] or document.get("match") != key:
+                continue
+            if document.get("demoFile") != filename or document.get("sha256") != expected_sha:
+                raise RuntimeError(f"ready publication conflicts with rerun of {key}: {existing}")
+            return existing, sidecars[0]
+
+        recovery_root = self.job_dir / "incomplete-publications"
+        for existing in sorted(outbox.iterdir()):
+            if not existing.is_dir() or (existing / ".ready").exists():
+                continue
+            matches_expected_name = existing.name == publication_name or existing.name.startswith(
+                f".{publication_name}."
+            )
+            matches_sidecar = False
+            for sidecar in existing.glob("*.mvd.json"):
+                try:
+                    document = json.loads(sidecar.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                matches_sidecar = (
+                    document.get("experimentId") == self.spec["jobId"]
+                    and document.get("match") == key
+                )
+                if matches_sidecar:
+                    break
+            if not matches_expected_name and not matches_sidecar:
+                continue
+            recovery_root.mkdir(parents=True, exist_ok=True)
+            recovered = recovery_root / f"{existing.name.lstrip('.')}.{self.runner_run_id}"
+            if recovered.exists():
+                raise FileExistsError(f"refusing to overwrite recovered publication: {recovered}")
+            existing.replace(recovered)
+
+        if target.exists() or temporary.exists():
             raise FileExistsError(f"refusing to overwrite outbox publication: {target}")
         temporary.mkdir(parents=False)
         demo_target = temporary / filename
         shutil.copy2(attempt_dir / "demo.mvd", demo_target)
         shutil.copy2(attempt_dir / "analysis.json", temporary / "analysis.json")
         shutil.copy2(attempt_dir / "metrics.json", temporary / "metrics.json")
-        match_result = json.loads((attempt_dir / "match-result.json").read_text(encoding="utf-8"))
         sidecar = {
             "schema": "mlx.demo-sidecar.v1",
             "demoFile": filename,
@@ -444,6 +535,7 @@ class JobRunner:
             "--port", str(port),
             "--control-port", str(control_port),
             "--timelimit", str(self.spec["timelimit"]),
+            "--skill", str(int(self.spec.get("botSkill", 7))),
             "--bhop", "1" if self.spec.get("bhop") else "0",
             "--inherit-process-group",
         ]
@@ -471,7 +563,7 @@ class JobRunner:
             }
             atomic_json(lease_path, lease)
             os.chmod(lease_path, 0o600)
-            timeout = int(self.spec["matchTimeoutSeconds"])
+            timeout = match_timeout_seconds(self.spec)
             try:
                 return_code = process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:

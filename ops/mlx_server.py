@@ -141,6 +141,7 @@ def client_argv(
     control_port: int,
     *,
     team: str,
+    skill: int,
     bhop: bool,
     auto_ready: bool = True,
 ) -> list[str]:
@@ -161,7 +162,7 @@ def client_argv(
         "4",
         "4",
         "--skill",
-        "7",
+        str(skill),
         "--no-download",
     ]
     if not auto_ready:
@@ -500,6 +501,7 @@ def run_match(args: argparse.Namespace) -> int:
                 args.port,
                 args.control_port,
                 team="mlx",
+                skill=args.skill,
                 bhop=args.bhop,
                 auto_ready=False,
             ),
@@ -554,6 +556,7 @@ def run_match(args: argparse.Namespace) -> int:
                 args.port,
                 args.control_port,
                 team="mlx",
+                skill=args.skill,
                 bhop=args.bhop,
                 auto_ready=True,
             ),
@@ -644,6 +647,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--control-port", type=int, required=True)
     parser.add_argument("--timelimit", type=int, default=1)
+    parser.add_argument("--skill", type=int, default=7)
     parser.add_argument("--bhop", type=int, choices=(0, 1), default=0)
     parser.add_argument("--inherit-process-group", action="store_true")
     return parser.parse_args(argv)
