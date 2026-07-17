@@ -1,4 +1,5 @@
 import json
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,136 @@ import mlx_run_job
 
 
 class MlxRunJobContractTests(unittest.TestCase):
+    def test_skipped_analysis_uses_ktxstats_without_analyzer(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_directory:
+            attempt = Path(raw_directory)
+            demo = b"ten-minute-mvd"
+            (attempt / "demo.mvd").write_bytes(demo)
+            (attempt / "match-result.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "mlx.match-result.v1",
+                        "ok": True,
+                        "portsReleased": True,
+                        "demoBytes": len(demo),
+                        "demoSha256": hashlib.sha256(demo).hexdigest(),
+                        "matchStartedAt": "2026-07-17T10:00:00Z",
+                        "matchEndedAt": "2026-07-17T10:10:01Z",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            players = [
+                {"name": f"mlx{index}", "team": "mlx", "stats": {"frags": index}}
+                for index in range(1, 5)
+            ] + [
+                {
+                    "name": f"frog{index}",
+                    "team": "frogs",
+                    "stats": {"frags": index + 2},
+                    "bot": {"skill": 20},
+                }
+                for index in range(1, 5)
+            ]
+            (attempt / "demo.txt").write_text(
+                json.dumps(
+                    {
+                        "version": 3,
+                        "map": "dm3",
+                        "tl": 10,
+                        "duration": 600,
+                        "teams": ["mlx", "frogs"],
+                        "players": players,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            analysis = mlx_run_job.build_skipped_analysis(
+                attempt,
+                {"timelimit": 10, "matchTag": "dm3mlx-4aa9433-vs-fbot-skill20"},
+            )
+
+            self.assertEqual(analysis["schema"], "mlx.analysis-skipped.v1")
+            self.assertEqual(analysis["status"], "skipped-by-owner-directive")
+            self.assertEqual(analysis["consistency"]["teamScores"], {"mlx": 10, "frogs": 18})
+            self.assertEqual(analysis["consistency"]["margin"], 8)
+            self.assertEqual(analysis["consistency"]["durationSeconds"], 600)
+            self.assertEqual(analysis["consistency"]["mvdBytes"], len(demo))
+            self.assertEqual(analysis["consistency"]["roster"], {"mlx": 4, "frogs": 4})
+            self.assertEqual(
+                analysis["matchTag"], "dm3mlx-4aa9433-vs-fbot-skill20"
+            )
+
+    def test_skipped_analysis_rejects_bad_roster_and_frogbot_skill(self) -> None:
+        def write_attempt(attempt: Path, players: list[dict[str, object]]) -> None:
+            demo = b"mvd"
+            (attempt / "demo.mvd").write_bytes(demo)
+            (attempt / "match-result.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "mlx.match-result.v1",
+                        "ok": True,
+                        "portsReleased": True,
+                        "demoBytes": len(demo),
+                        "demoSha256": hashlib.sha256(demo).hexdigest(),
+                        "matchStartedAt": "2026-07-17T10:00:00Z",
+                        "matchEndedAt": "2026-07-17T10:10:00Z",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (attempt / "demo.txt").write_text(
+                json.dumps(
+                    {
+                        "version": 3,
+                        "map": "dm3",
+                        "tl": 10,
+                        "duration": 600,
+                        "teams": ["mlx", "frogs"],
+                        "players": players,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        spec = {"timelimit": 10, "matchTag": "dm3mlx-4aa9433-vs-fbot-skill20"}
+        with tempfile.TemporaryDirectory() as raw_directory:
+            attempt = Path(raw_directory)
+            players = [
+                {"name": f"mlx{index}", "team": "mlx", "stats": {"frags": 0}}
+                for index in range(5)
+            ] + [
+                {
+                    "name": f"frog{index}",
+                    "team": "frogs",
+                    "stats": {"frags": 0},
+                    "bot": {"skill": 20},
+                }
+                for index in range(3)
+            ]
+            write_attempt(attempt, players)
+            with self.assertRaisesRegex(ValueError, "four players per team"):
+                mlx_run_job.build_skipped_analysis(attempt, spec)
+
+        with tempfile.TemporaryDirectory() as raw_directory:
+            attempt = Path(raw_directory)
+            players = [
+                {"name": f"mlx{index}", "team": "mlx", "stats": {"frags": 0}}
+                for index in range(4)
+            ] + [
+                {
+                    "name": f"frog{index}",
+                    "team": "frogs",
+                    "stats": {"frags": 0},
+                    "bot": {"skill": 19 if index == 0 else 20},
+                }
+                for index in range(4)
+            ]
+            write_attempt(attempt, players)
+            with self.assertRaisesRegex(ValueError, "skill 20"):
+                mlx_run_job.build_skipped_analysis(attempt, spec)
+
     def test_demo_name_carries_cell_index_and_terminal_state(self) -> None:
         self.assertEqual(
             mlx_run_job.demo_name("20260716", "baseline-a", 7, "-12"),
@@ -48,6 +179,25 @@ class MlxRunJobContractTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "1.5"):
             mlx_run_job.match_timeout_seconds({"timelimit": 1, "matchTimeoutSeconds": 180})
+
+    def test_skipped_mode_does_not_require_full_analysis_commands(self) -> None:
+        skipped = {
+            "matches": 32,
+            "parallel": 32,
+            "basePort": 28600,
+            "timelimit": 10,
+            "matchTimeoutSeconds": 900,
+            "analysisMode": "skipped-by-owner-directive",
+            "matchTag": "dm3mlx-4aa9433-vs-fbot-skill20",
+        }
+        mlx_run_job.validate_job_spec(skipped)
+
+        full = dict(skipped, analysisMode="full")
+        with self.assertRaisesRegex(ValueError, "analysisCommand"):
+            mlx_run_job.validate_job_spec(full)
+
+        with self.assertRaisesRegex(ValueError, "matchTag"):
+            mlx_run_job.validate_job_spec(dict(skipped, matchTag=""))
 
     def test_orphan_sweep_refuses_a_recycled_lease_pid(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
@@ -143,6 +293,57 @@ class MlxRunJobContractTests(unittest.TestCase):
             self.assertEqual(len(recovered), 1)
             self.assertEqual((recovered[0] / f"{name}.mvd").read_bytes(), b"preserve me")
 
+    def test_publish_marks_skipped_analysis_and_omits_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_directory:
+            root = Path(raw_directory)
+            attempt = root / "attempt"
+            attempt.mkdir()
+            (attempt / "demo.mvd").write_bytes(b"demo")
+            (attempt / "demo.txt").write_text('{"duration": 600}\n', encoding="utf-8")
+            skipped = {
+                "schema": "mlx.analysis-skipped.v1",
+                "status": "skipped-by-owner-directive",
+                "consistency": {
+                    "teamScores": {"mlx": 12, "frogs": 20},
+                    "margin": 8,
+                },
+            }
+            (attempt / "analysis.json").write_text(json.dumps(skipped), encoding="utf-8")
+            (attempt / "match-result.json").write_text(
+                json.dumps({"demoSha256": "a" * 64}), encoding="utf-8"
+            )
+
+            runner = mlx_run_job.JobRunner.__new__(mlx_run_job.JobRunner)
+            runner.runner_run_id = "run"
+            runner.job_dir = root / "job"
+            runner.job_dir.mkdir()
+            runner.spec = {
+                "startDate": "2026-07-17",
+                "cell": "baseline10",
+                "outboxDir": str(root / "outbox"),
+                "jobId": "20260717-baseline10-dm3-32",
+                "rexCommit": "4aa9433",
+                "analyzerCommit": "73bafd8",
+                "mlxVersion": "baseline10-rev3",
+                "serverConfig": {},
+                "botSkill": 7,
+                "hubDestination": "non-games/lab/MLX/dm3/",
+                "analysisMode": "skipped-by-owner-directive",
+                "matchTag": "dm3mlx-4aa9433-vs-fbot-skill20",
+            }
+
+            publication, sidecar_path = runner.publish(
+                "match-0001", 1, attempt, skipped
+            )
+
+            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            self.assertEqual(sidecar["analysis"], "skipped-by-owner-directive")
+            self.assertEqual(sidecar["matchTag"], "dm3mlx-4aa9433-vs-fbot-skill20")
+            self.assertEqual(sidecar["matchResult"]["teams"], {"mlx": 12, "frogs": 20})
+            self.assertTrue((publication / "ktxstats.json").is_file())
+            self.assertFalse((publication / "metrics.json").exists())
+            self.assertTrue((publication / ".ready").is_file())
+
     def test_analysis_validation_reads_schema57_damage_by_player(self) -> None:
         players = [{"name": f"p{index}"} for index in range(8)]
         analysis = {
@@ -157,6 +358,35 @@ class MlxRunJobContractTests(unittest.TestCase):
         }
 
         mlx_run_job.validate_analysis(analysis)
+
+    def test_prepare_skipped_analysis_does_not_invoke_full_analyzer(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_directory:
+            attempt = Path(raw_directory)
+            skipped = {
+                "schema": "mlx.analysis-skipped.v1",
+                "status": "skipped-by-owner-directive",
+                "consistency": {"teamScores": {"mlx": 1, "frogs": 2}, "margin": 1},
+            }
+            runner = mlx_run_job.JobRunner.__new__(mlx_run_job.JobRunner)
+            runner.spec = {"analysisMode": "skipped-by-owner-directive"}
+            with (
+                mock.patch.object(
+                    mlx_run_job, "build_skipped_analysis", return_value=skipped
+                ) as build,
+                mock.patch.object(runner, "analyze") as analyze,
+                mock.patch.object(runner, "derive_metrics") as derive_metrics,
+            ):
+                result = runner.prepare_analysis(attempt)
+
+            self.assertEqual(result, skipped)
+            build.assert_called_once_with(attempt, runner.spec)
+            analyze.assert_not_called()
+            derive_metrics.assert_not_called()
+            self.assertEqual(
+                json.loads((attempt / "analysis.json").read_text(encoding="utf-8")),
+                skipped,
+            )
+            self.assertFalse((attempt / "metrics.json").exists())
 
     def test_metrics_validation_requires_every_phase_one_field(self) -> None:
         team = {

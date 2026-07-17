@@ -14,6 +14,8 @@
   "analysisTimeoutSeconds": 300,
   "metricsTimeoutSeconds": 60,
   "summaryTimeoutSeconds": 300,
+  "analysisMode": "full",
+  "matchTag": "dm3mlx-REPLACE_WITH_SHORT_SHA-vs-fbot-skill20",
   "cell": "baseline-a",
   "bhop": false,
   "botSkill": 7,

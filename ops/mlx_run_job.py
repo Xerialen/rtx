@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -170,6 +171,11 @@ def append_manifest(path: Path, document: dict[str, object]) -> None:
 
 
 def analysis_margin(analysis: dict[str, object]) -> tuple[str, dict[str, int]]:
+    if analysis.get("schema") == "mlx.analysis-skipped.v1":
+        consistency = analysis.get("consistency") or {}
+        raw_scores = consistency.get("teamScores") or {}
+        scores = {str(team): int(score) for team, score in raw_scores.items()}
+        return str(int(consistency["margin"])), scores
     match = analysis.get("match") or {}
     teams = match.get("teams") or []
     scores = {str(team.get("name")): int(team.get("frags", 0)) for team in teams}
@@ -177,6 +183,80 @@ def analysis_margin(analysis: dict[str, object]) -> tuple[str, dict[str, int]]:
         return "status", scores
     ordered = sorted(scores.values(), reverse=True)
     return str(ordered[0] - ordered[1]), scores
+
+
+def build_skipped_analysis(
+    attempt_dir: Path, spec: dict[str, object]
+) -> dict[str, object]:
+    """Validate the owner's cheap consistency contract without parsing the MVD."""
+    demo = attempt_dir / "demo.mvd"
+    result = json.loads((attempt_dir / "match-result.json").read_text(encoding="utf-8"))
+    ktxstats = json.loads((attempt_dir / "demo.txt").read_text(encoding="utf-8"))
+
+    if result.get("schema") != "mlx.match-result.v1" or not result.get("ok"):
+        raise ValueError("match-result is not a successful MLX result")
+    if not result.get("portsReleased"):
+        raise ValueError("match-result does not prove released ports")
+    if ktxstats.get("version") != 3 or ktxstats.get("map") != "dm3":
+        raise ValueError("KTX stats are not the expected DM3 v3 format")
+
+    actual_bytes = demo.stat().st_size
+    actual_sha = hashlib.sha256(demo.read_bytes()).hexdigest()
+    if actual_bytes != int(result["demoBytes"]):
+        raise ValueError("MVD size disagrees with match-result")
+    if actual_sha != result["demoSha256"]:
+        raise ValueError("MVD checksum disagrees with match-result")
+
+    teams = ktxstats.get("teams")
+    players = ktxstats.get("players")
+    if not isinstance(teams, list) or len(teams) != 2:
+        raise ValueError("KTX stats do not contain exactly two teams")
+    if not isinstance(players, list) or len(players) != 8:
+        raise ValueError("KTX stats do not contain exactly eight players")
+    team_scores = {
+        str(team): sum(
+            int((player.get("stats") or {}).get("frags", 0))
+            for player in players
+            if player.get("team") == team
+        )
+        for team in teams
+    }
+    roster = {
+        str(team): sum(1 for player in players if player.get("team") == team)
+        for team in teams
+    }
+    if set(roster) != {"mlx", "frogs"} or any(count != 4 for count in roster.values()):
+        raise ValueError("KTX stats do not contain four players per team")
+    frogs = [player for player in players if player.get("team") == "frogs"]
+    if any((player.get("bot") or {}).get("skill") != 20 for player in frogs):
+        raise ValueError("KTX stats do not prove frogbot skill 20")
+    ordered_scores = sorted(team_scores.values(), reverse=True)
+    duration_seconds = int(ktxstats["duration"])
+    expected_seconds = int(spec["timelimit"]) * 60
+    if int(ktxstats.get("tl", 0)) != int(spec["timelimit"]):
+        raise ValueError("KTX timelimit disagrees with the job spec")
+    if abs(duration_seconds - expected_seconds) / expected_seconds >= 0.05:
+        raise ValueError("KTX duration drift is not below five percent")
+
+    started = datetime.fromisoformat(str(result["matchStartedAt"]).replace("Z", "+00:00"))
+    ended = datetime.fromisoformat(str(result["matchEndedAt"]).replace("Z", "+00:00"))
+    wall_duration_seconds = (ended - started).total_seconds()
+    if abs(wall_duration_seconds - duration_seconds) / duration_seconds >= 0.05:
+        raise ValueError("wall/game duration drift is not below five percent")
+    return {
+        "schema": "mlx.analysis-skipped.v1",
+        "status": "skipped-by-owner-directive",
+        "matchTag": spec["matchTag"],
+        "consistency": {
+            "teamScores": team_scores,
+            "margin": ordered_scores[0] - ordered_scores[1],
+            "durationSeconds": duration_seconds,
+            "wallDurationSeconds": wall_duration_seconds,
+            "mvdBytes": actual_bytes,
+            "mvdSha256": actual_sha,
+            "roster": roster,
+        },
+    }
 
 
 def validate_analysis(analysis: dict[str, object]) -> None:
@@ -266,6 +346,28 @@ def match_timeout_seconds(spec: dict[str, object]) -> int:
     return expected
 
 
+def validate_job_spec(spec: dict[str, object]) -> None:
+    count = int(spec["matches"])
+    parallel = int(spec["parallel"])
+    base_port = int(spec["basePort"])
+    if count < 1 or parallel < 1 or parallel > count:
+        raise ValueError("job matches/parallel are invalid")
+    if base_port < 28600 or base_port + count - 1 > 28700:
+        raise ValueError("job match ports exceed 28600-28700")
+
+    mode = spec.get("analysisMode", "full")
+    if mode not in {"full", "skipped-by-owner-directive"}:
+        raise ValueError(f"unsupported analysisMode: {mode}")
+    if mode == "skipped-by-owner-directive":
+        if not isinstance(spec.get("matchTag"), str) or not spec["matchTag"]:
+            raise ValueError("matchTag is required for skipped analysis")
+    else:
+        for field in ("analysisCommand", "metricsCommand", "summaryCommand"):
+            if not isinstance(spec.get(field), list) or not spec[field]:
+                raise ValueError(f"{field} is required")
+    match_timeout_seconds(spec)
+
+
 class JobRunner:
     def __init__(self, spec_path: Path, mode: str) -> None:
         self.spec_path = spec_path.resolve()
@@ -300,20 +402,8 @@ class JobRunner:
         atomic_json(self.status_path, self.status)
 
     def initialize(self) -> list[str]:
+        validate_job_spec(self.spec)
         count = int(self.spec["matches"])
-        parallel = int(self.spec["parallel"])
-        base_port = int(self.spec["basePort"])
-        if count < 1 or parallel < 1 or parallel > count:
-            raise ValueError("job matches/parallel are invalid")
-        if base_port < 28600 or base_port + count - 1 > 28700:
-            raise ValueError("job match ports exceed 28600-28700")
-        if not isinstance(self.spec.get("analysisCommand"), list) or not self.spec["analysisCommand"]:
-            raise ValueError("analysisCommand is required")
-        if not isinstance(self.spec.get("metricsCommand"), list) or not self.spec["metricsCommand"]:
-            raise ValueError("metricsCommand is required")
-        if not isinstance(self.spec.get("summaryCommand"), list) or not self.spec["summaryCommand"]:
-            raise ValueError("summaryCommand is required")
-        match_timeout_seconds(self.spec)
 
         config_path = self.job_dir / "config.json"
         if not config_path.exists():
@@ -388,6 +478,23 @@ class JobRunner:
         metrics = json.loads(process.stdout)
         validate_metrics(metrics)
         return metrics
+
+    def prepare_analysis(self, attempt_dir: Path) -> dict[str, object]:
+        if self.spec.get("analysisMode", "full") == "skipped-by-owner-directive":
+            analysis = build_skipped_analysis(attempt_dir, self.spec)
+            atomic_json(attempt_dir / "analysis.json", analysis)
+            return analysis
+        analysis = self.analyze(
+            attempt_dir / "demo.mvd",
+            attempt_dir / "analysis.json",
+            attempt_dir / "analyzer.log",
+        )
+        self.derive_metrics(
+            attempt_dir / "analysis.json",
+            attempt_dir / "metrics.json",
+            attempt_dir / "metrics.log",
+        )
+        return analysis
 
     def summarize(self) -> Path:
         output_dir = Path(self.spec["resultsDir"]).resolve()
@@ -475,7 +582,17 @@ class JobRunner:
         demo_target = temporary / filename
         shutil.copy2(attempt_dir / "demo.mvd", demo_target)
         shutil.copy2(attempt_dir / "analysis.json", temporary / "analysis.json")
-        shutil.copy2(attempt_dir / "metrics.json", temporary / "metrics.json")
+        metrics_path = attempt_dir / "metrics.json"
+        if metrics_path.is_file():
+            shutil.copy2(metrics_path, temporary / "metrics.json")
+        ktxstats_path = attempt_dir / "demo.txt"
+        if ktxstats_path.is_file():
+            shutil.copy2(ktxstats_path, temporary / "ktxstats.json")
+        analysis_reference = (
+            "skipped-by-owner-directive"
+            if self.spec.get("analysisMode") == "skipped-by-owner-directive"
+            else "analysis.json"
+        )
         sidecar = {
             "schema": "mlx.demo-sidecar.v1",
             "demoFile": filename,
@@ -489,8 +606,7 @@ class JobRunner:
             "botSkill": int(self.spec.get("botSkill", 7)),
             "map": "dm3",
             "matchResult": {"margin": margin, "teams": team_scores},
-            "analysis": "analysis.json",
-            "metrics": "metrics.json",
+            "analysis": analysis_reference,
             "benchmarkCell": self.spec["cell"],
             "recordingType": "MVD",
             "transferStatus": "outbox",
@@ -499,6 +615,12 @@ class JobRunner:
             "match": key,
             "createdAt": utc_now(),
         }
+        if metrics_path.is_file():
+            sidecar["metrics"] = "metrics.json"
+        if ktxstats_path.is_file():
+            sidecar["ktxStats"] = "ktxstats.json"
+        if self.spec.get("matchTag"):
+            sidecar["matchTag"] = self.spec["matchTag"]
         sidecar_path = temporary / f"{filename}.json"
         atomic_json(sidecar_path, sidecar)
         temporary.replace(target)
@@ -582,12 +704,7 @@ class JobRunner:
             demo = attempt_dir / "demo.mvd"
             if not demo.is_file() or demo.stat().st_size == 0:
                 raise FileNotFoundError("match has no non-empty demo.mvd")
-            analysis = self.analyze(demo, attempt_dir / "analysis.json", attempt_dir / "analyzer.log")
-            self.derive_metrics(
-                attempt_dir / "analysis.json",
-                attempt_dir / "metrics.json",
-                attempt_dir / "metrics.log",
-            )
+            analysis = self.prepare_analysis(attempt_dir)
             publication, sidecar = self.publish(key, index, attempt_dir, analysis)
             (match_dir / ".ready").write_text(utc_now() + "\n", encoding="utf-8")
             append_manifest(
@@ -633,7 +750,7 @@ class JobRunner:
                 counts[match["state"]] += 1
             self.status["counts"] = counts
             summary_error = None
-            if counts["completed"]:
+            if counts["completed"] and self.spec.get("summaryCommand"):
                 try:
                     summary_dir = self.summarize()
                     self.status["summaryCsv"] = str(summary_dir / "summary.csv")

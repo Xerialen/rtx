@@ -94,6 +94,17 @@ If WSL is wedged, leave publications in `~/mlx/demos/outbox/` and retry later.
 Do not run `wsl --terminate` or `wsl --shutdown` from MLX recovery because other
 work may own the distribution.
 
+## Owner-directed cheap analysis mode
+
+Jobs default to `analysisMode: full` and require the analyzer, metrics, and
+summary commands. A job may use `analysisMode: skipped-by-owner-directive` only
+when its execution contract explicitly asks for cheap consistency checks. That
+mode requires `matchTag`, validates the KTX v3 stats, 4-on-4 roster, Frogbot
+skill 20, duration/drift, MVD size, and checksum, and publishes
+`ktxstats.json`. Its sidecar says `analysis: skipped-by-owner-directive` and no
+`metrics.json` is produced. Such a publication is not §17 evidence until it is
+deliberately upgraded with real analyzer and metrics output.
+
 ## Stale-state rule
 
 A job is operationally stale when its heartbeat is older than five minutes or
