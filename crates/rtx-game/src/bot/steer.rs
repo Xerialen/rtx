@@ -26,6 +26,52 @@ use crate::navmesh::{CellId, LinkCosts, LinkKind, NavGraph};
 /// touch/stat update before trying another terminal or abandoning the item.
 pub(super) const TERMINAL_TAKE_GRACE: f32 = 0.35;
 
+/// A teleport displacement landing this close to the link target is an ordinary exit, not a
+/// launch across a gap. Such exits often leave the player a few units airborne; their carried
+/// velocity is useful and must not be cancelled by steering back toward the cell just crossed.
+const TELEPORT_EXIT_COAST_RADIUS: f32 = 96.0;
+
+fn coast_teleport_exit(origin: Vec3, target: Vec3) -> bool {
+    (target.xy() - origin.xy()).length() <= TELEPORT_EXIT_COAST_RADIUS
+}
+
+/// Pick the safe first slalom side from a short corridor scan. `left`/`right` are the minimum hull
+/// clearances seen beside several points *ahead* of the bot, not merely beside its current origin:
+/// that catches a wall which begins halfway through the coming hop. Positive sigma turns the first
+/// lobe left; negative turns it right. Ambiguous/two-sided corridors keep the controller default.
+fn first_lobe_side(left: f32, right: f32) -> f32 {
+    const CRAMPED: f32 = 48.0;
+    const DECISIVE: f32 = 12.0;
+    if right < CRAMPED && left - right >= DECISIVE {
+        1.0
+    } else if left < CRAMPED && right - left >= DECISIVE {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
+fn corridor_entry_sigma(bsp: &Bsp, origin: Vec3, velocity: Vec2) -> f32 {
+    let speed = velocity.length();
+    if speed <= 1.0 {
+        return 0.0;
+    }
+    let dir = velocity / speed;
+    let side = Vec2::new(-dir.y, dir.x);
+    let lateral_probe = 64.0;
+    // The first broad lobe develops over roughly half a hop. Four stations are enough to catch a
+    // wall beginning beyond the takeoff without turning this into a per-frame physics simulation.
+    let forward_probe = (speed * bhop::T_HOP * 0.6).clamp(96.0, 224.0);
+    let mut left: f32 = lateral_probe;
+    let mut right: f32 = lateral_probe;
+    for station in 1..=4 {
+        let at = origin + (dir * (forward_probe * station as f32 / 4.0)).extend(0.0);
+        left = left.min(bsp.hull1_trace(at, at + (side * lateral_probe).extend(0.0)).fraction * lateral_probe);
+        right = right.min(bsp.hull1_trace(at, at - (side * lateral_probe).extend(0.0)).fraction * lateral_probe);
+    }
+    first_lobe_side(left, right)
+}
+
 /// The all-`Copy` frame snapshot `steer` reads: the [`Sense`] and [`Objective`] this frame, the
 /// per-bot A* costs, and the live gate/plat state gathered before the borrow (see `run_bot`).
 pub(super) struct SteerCtx<'a> {
@@ -186,7 +232,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             .filter(|&&l| graph.link_kind(l) == LinkKind::Teleport && !on_ground)
             .map(|&l| (l, graph.link_target(l)));
         if let Some((leg, target)) = launch {
-            bot.air = Some(AirCommit { leg, target, since: now, airborne: true });
+            let coast = coast_teleport_exit(origin, graph.cell_origin(target));
+            bot.air = Some(AirCommit { leg, target, since: now, airborne: true, coast });
         } else {
             bot.route.clear();
             bot.repath_time = now;
@@ -631,6 +678,9 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         matches!(kind, Some(LinkKind::SpeedJump)) && host.cvar_bool(c"rtx_bot_bhop") && !hook_active && !rj_active;
     if sj_active {
         if bot.sj.map(|c| c.leg) != cur_leg {
+            // A certified traversal must not inherit the arbitrary lobe chosen for an ordinary
+            // corridor. Keep the hop phase, but let this leg seed from its own takeoff bearing.
+            bot.bhop.clear_strafe_side();
             bot.sj = cur_leg.map(|leg| Commit { leg, since: now });
         }
         // Watchdog: the route is frozen mid-leg, so if the run-up stalls (blocked, shoved, never
@@ -655,6 +705,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             target: graph.link_target(leg),
             since: now,
             airborne: !on_ground,
+            coast: false,
         });
     }
     if let Some(committed) = bot.air {
@@ -753,7 +804,24 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // (race mode, when a line exists) or a *speed-scaled* corridor look-ahead — ~0.6 s of travel
         // ahead (clamped 96–448u) so a fast bot's bearing anticipates the corridor far enough to
         // start curving, rather than chasing the fixed ~2-legs `look_point` it has already overrun.
-        let bhop_look = corridor_point(graph, &bot.route, bot.route_pos, origin, (speed * 0.6).clamp(96.0, 448.0));
+        // Nine tenths of a second exposes the far side of an ordinary right-angle corridor before a
+        // full-height hop commits; the live cvar permits route-lab tuning without changing the
+        // controller, while the 448u cap still prevents cutting across large map-scale bends.
+        let look_secs = {
+            let v = host.cvar(c"rtx_bot_bhop_lookahead");
+            if v > 0.0 { v } else { 0.9 }
+        };
+        let look_cap = {
+            let v = host.cvar(c"rtx_bot_bhop_lookahead_cap");
+            if v > 0.0 { v } else { 448.0 }
+        };
+        let bhop_look = corridor_point(
+            graph,
+            &bot.route,
+            bot.route_pos,
+            origin,
+            (speed * look_secs).clamp(96.0, look_cap.max(96.0)),
+        );
         let ahead = match race_line_ahead {
             Some(lp) if !sj_active => lp.xy() - origin.xy(),
             // On a speed jump the run-up aims at the *takeoff* (follow the corridor to the lip), and
@@ -777,6 +845,16 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         let to_wp = waypoint.xy() - origin.xy();
         let dir = if ahead.length() > 8.0 { ahead } else { to_wp };
         let bearing = yaw_of(dir);
+        // Scan *ahead* along the velocity before an ordinary engagement. If only one side becomes
+        // cramped during the first broad lobe, seed the lobe away from that wall. SpeedJumps are
+        // excluded: their certified takeoff owns the strafe state and is reset when latched above.
+        let entry_sigma = match bsp {
+            Some(bsp) if !sj_active && bot.bhop.phase == bhop::Phase::Off => {
+                corridor_entry_sigma(bsp, origin, v_xy)
+            }
+            _ => 0.0,
+        };
+        bot.bhop.prefer_entry_sigma(entry_sigma);
         let bhop_runway = match (sj_takeoff, sj_progress) {
             // Curl: signed along-corridor distance to the takeoff (past-lip goes negative → leap).
             (_, Some(p)) => p,
@@ -1141,6 +1219,12 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // `curl_hold` fraction of the gap, hold the takeoff heading (steer along our own velocity — an
     // inert coast) so the near wall is cleared, then curl onto the target at `curl_gain`.
     if on_air && !on_ground {
+        // A normal teleport exit has already reached its graph target. With no input QW preserves
+        // the exit velocity; aiming at that now-behind target instead spends the 30-ups air-accel
+        // cap braking every tick. Keep a neutral wish until the physical landing releases the latch.
+        if bot.air.is_some_and(|c| c.coast) {
+            move_world = Vec3::ZERO;
+        }
         let held = curl_hold > 0.0
             && cur_leg.is_some_and(|leg| {
                 let src = graph.cell_origin(graph.link_source(leg)).xy();
@@ -1153,8 +1237,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         } else {
             air_wish(waypoint, curl_gain)
         };
-        if let Some(w) = wish {
-            move_world = w;
+        if !bot.air.is_some_and(|c| c.coast) {
+            if let Some(w) = wish {
+                move_world = w;
+            }
         }
     }
 
@@ -1238,6 +1324,21 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_near_teleport_landings_coast() {
+        let exit = Vec3::new(224.0, -320.0, 60.0);
+        assert!(coast_teleport_exit(Vec3::new(226.0, -317.0, 75.0), exit));
+        assert!(!coast_teleport_exit(Vec3::new(226.0, -317.0, 75.0), Vec3::new(480.0, -64.0, 80.0)));
+    }
+
+    #[test]
+    fn first_lobe_turns_away_from_only_cramped_side() {
+        assert_eq!(first_lobe_side(64.0, 20.0), 1.0);
+        assert_eq!(first_lobe_side(18.0, 64.0), -1.0);
+        assert_eq!(first_lobe_side(30.0, 34.0), 0.0);
+        assert_eq!(first_lobe_side(64.0, 64.0), 0.0);
+    }
 
     #[test]
     fn terminal_retry_blocks_periodic_repick_until_the_alternate_leg_starts() {

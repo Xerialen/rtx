@@ -620,9 +620,17 @@ fn status_json(game: &GameState) -> String {
         if !bots.is_empty() {
             bots.push(',');
         }
+        let quad = ent.combat.super_damage_finished > game.time();
+        let quad_pickup_t = if quad {
+            jnum(ent.combat.super_damage_finished - crate::items::POWERUP_TIME)
+        } else {
+            "null".to_string()
+        };
+        let name = game.netname_of(EntId(i));
         bots.push_str(&format!(
-            "{{\"ent\":{i},\"client\":{},\"origin\":{},\"health\":{},\"on_ground\":{},\"alive\":{},\"order\":{},\"rj_phase\":{},\"speed\":{},\"bhop\":{},\"bhop_peak\":{}}}",
+            "{{\"ent\":{i},\"client\":{},\"name\":{},\"origin\":{},\"health\":{},\"quad\":{quad},\"quad_pickup_t\":{quad_pickup_t},\"on_ground\":{},\"alive\":{},\"order\":{},\"rj_phase\":{},\"speed\":{},\"bhop\":{},\"bhop_peak\":{}}}",
             ent.bot.client,
+            jstr(&name),
             jvec3(ent.v.origin),
             jnum(ent.v.health),
             ent.v.flags.has(Flags::ONGROUND),

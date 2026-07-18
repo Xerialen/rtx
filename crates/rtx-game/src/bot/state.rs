@@ -275,6 +275,11 @@ pub struct AirCommit {
     pub target: CellId,
     pub since: f32,
     pub airborne: bool,
+    /// A teleport put us down at its graph target but left us briefly airborne with useful exit
+    /// velocity. Keep the usercmd neutral until landing instead of steering back at the exit cell
+    /// we have already crossed. Real launch teleporters have a distant landing target and leave
+    /// this false, so their normal in-flight correction remains active.
+    pub coast: bool,
 }
 
 /// Plat standoff (see [`crate::bot::steer`]): the navmesh plat index the bot is holding off from

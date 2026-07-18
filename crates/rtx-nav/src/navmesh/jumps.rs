@@ -218,6 +218,154 @@ impl NavGraph {
         }
     }
 
+    /// Add self-contained curls whose run-up is fed by the preserved velocity of a teleport exit.
+    /// The ordinary curl pass runs before teleport links are spliced and only samples compass-led
+    /// runways behind a ledge; this second pass can therefore see the useful off-axis approach that
+    /// begins one walk cell beyond a teleporter destination. It remains map-agnostic and fail-closed:
+    /// the exit→start edge must already be walkable, every sampled run-up point must resolve to ground,
+    /// the takeoff must face a real gap, and `certify_curl` proves the full speed/heading envelope.
+    pub fn add_teleport_curls(&mut self, bsp: &Bsp, params: SpeedJumpParams) {
+        if !params.curl {
+            return;
+        }
+        let mut exits: Vec<CellId> = self
+            .links
+            .iter()
+            .filter(|l| l.kind == LinkKind::Teleport)
+            .map(|l| l.to)
+            .collect();
+        exits.sort_unstable();
+        exits.dedup();
+
+        let p = PmParams {
+            gravity: params.gravity,
+            accel: params.accel,
+            friction: params.friction,
+            stopspeed: params.stopspeed,
+            maxspeed: params.maxspeed,
+        };
+        let approach_scan = (TELE_CURL_APPROACH_MAX / GRID).ceil() as i32;
+        let target_scan = (TELE_CURL_TARGET_MAX / GRID).ceil() as i32;
+        let mut pending = Vec::new();
+
+        for exit in exits {
+            let e = self.cells[exit as usize];
+            let mut cands: Vec<(f32, Link, SpeedJumpTraversal)> = Vec::new();
+            for takeoff_id in self.neighbors_within(e.gx, e.gy, approach_scan) {
+                let takeoff = self.cells[takeoff_id as usize];
+                let exit_to_lip = takeoff.origin.xy() - e.origin.xy();
+                let approach = exit_to_lip.length();
+                if !(CURL_MIN_RUNWAY + GRID..=TELE_CURL_APPROACH_MAX).contains(&approach)
+                    || (takeoff.origin.z - e.origin.z).abs() > STEP_HEIGHT * 2.0
+                {
+                    continue;
+                }
+                let approach_dir = exit_to_lip.normalize_or_zero();
+                let start_probe = e.origin + approach_dir.extend(0.0) * (GRID * 1.4);
+                let Some(start) = self.nearest_within(start_probe, GRID * 0.8, STEP_HEIGHT * 2.0) else {
+                    continue;
+                };
+                if start == exit || start == takeoff_id || !self.has_direct_link(exit, start) {
+                    continue;
+                }
+                let from = self.cells[start as usize].origin;
+                let run = takeoff.origin.xy() - from.xy();
+                let runway = run.length();
+                if runway < CURL_MIN_RUNWAY || !self.ground_line_present(from, takeoff.origin) {
+                    continue;
+                }
+                let psi = yaw_of(run);
+                let v_deliver = prestrafe_delivered(
+                    runway.min(CURL_RUNUP_CAP),
+                    params.accel,
+                    params.maxspeed,
+                    params.friction,
+                    params.stopspeed,
+                );
+
+                for to in self.neighbors_within(takeoff.gx, takeoff.gy, target_scan) {
+                    if to == takeoff_id || to == start || self.has_direct_link(start, to) {
+                        continue;
+                    }
+                    let b = self.cells[to as usize];
+                    let delta = b.origin.xy() - takeoff.origin.xy();
+                    let horiz = delta.length();
+                    let dz = b.origin.z - takeoff.origin.z;
+                    if !(JUMP_REACH..=TELE_CURL_TARGET_MAX).contains(&horiz)
+                        || !(-64.0..=JUMP_APEX).contains(&dz)
+                    {
+                        continue;
+                    }
+                    let step_x = (b.gx - takeoff.gx).signum();
+                    let step_y = (b.gy - takeoff.gy).signum();
+                    if self.has_ground_near(takeoff.gx + step_x, takeoff.gy + step_y, takeoff.origin.z) {
+                        continue; // not a ledge in the landing direction
+                    }
+                    let off = wrap180(yaw_of(delta) - psi).abs();
+                    if !(CURL_ANGLE_LO..=CURL_ANGLE_HI).contains(&off) {
+                        continue;
+                    }
+                    let airtime = jump_airtime(dz, params.gravity);
+                    if airtime <= 0.0 || horiz > v_deliver * airtime * 1.05 {
+                        continue;
+                    }
+                    let steps = ((horiz / 24.0).ceil() as i32).max(8);
+                    if !arc_clear_peak(bsp, takeoff.origin, b.origin, JUMP_APEX, steps) {
+                        continue;
+                    }
+                    let Some((v_req, gain)) = certify_curl(bsp, takeoff.origin, b.origin, psi, v_deliver, &p) else {
+                        continue;
+                    };
+                    let cost = runway / ((MAX_SPEED + v_req) * 0.5) + airtime + CURL_COMMIT;
+                    cands.push((cost, Link { from: start, to, kind: LinkKind::SpeedJump, cost }, SpeedJumpTraversal {
+                        takeoff: takeoff.origin,
+                        v_req,
+                        airtime,
+                        chained: false,
+                        curl_gain: gain,
+                    }));
+                }
+            }
+            cands.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.to.cmp(&b.1.to)));
+            // Preserve directional choices. Keeping the globally cheapest handful can spend the whole
+            // exit budget on near-identical landings on one platform and hide an equally certified
+            // route in another compass direction.
+            let mut directions = [false; 9];
+            let mut kept = 0usize;
+            for (_, link, tr) in cands {
+                let tgt = self.cells[link.to as usize].origin;
+                let bucket = dir_bucket(
+                    floor_grid(tgt.x) - floor_grid(tr.takeoff.x),
+                    floor_grid(tgt.y) - floor_grid(tr.takeoff.y),
+                );
+                if directions[bucket] {
+                    continue;
+                }
+                directions[bucket] = true;
+                pending.push((link, tr));
+                kept += 1;
+                if kept == TELE_CURL_MAX_PER_EXIT {
+                    break;
+                }
+            }
+        }
+        for (link, tr) in pending {
+            self.push_speed_jump(link, tr);
+        }
+    }
+
+    /// Every half-grid sample of an arbitrary off-axis run-up resolves to a standable cell near the
+    /// interpolated height. This is deliberately stricter than a hull trace: a teleport-fed curl may
+    /// only commit a line the ground navmesh itself represents continuously.
+    fn ground_line_present(&self, from: Vec3, to: Vec3) -> bool {
+        let delta = to - from;
+        let steps = ((delta.xy().length() / (GRID * 0.5)).ceil() as i32).max(1);
+        (0..=steps).all(|i| {
+            let p = from + delta * (i as f32 / steps as f32);
+            self.nearest_within(p, GRID * 0.8, STEP_HEIGHT * 2.0).is_some()
+        })
+    }
+
     /// The curl-jump links leaving ledge cell `ledge`: targets offset off the run-up heading that a
     /// straight speed jump can't own (too fast for the air-strafe credit, or its arc is blocked), each
     /// certified by a `pm_step` rollout of the game's takeoff regime (ground prestrafe to the lip, leap
