@@ -1491,8 +1491,13 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     };
     let ascent_ahead =
         cur_leg.is_some_and(&leg_ascends) || bot.route.get(bot.route_pos + 1).is_some_and(|&l| leg_ascends(l));
+    // Final-approach brake: landing within ~0.45 s of travel from the goal, take no further hops —
+    // the remaining distance is what the ground turn-in needs to absorb the speed. Without this a
+    // planned carry hops right past a tight goal. Braking distance is physics, not plan intent.
+    let approach_brake = goal_dist < (speed * 0.45).max(150.0);
     let carry = (planned_band >= 1 || planned_next_band >= 1)
         && !ascent_ahead
+        && !approach_brake
         && side_open
         // A speed band licenses keeping momentum, not blindly taking another broad air lobe into
         // the non-ground leg/bend at the end of a short corridor. The same physical flight budget
@@ -1501,6 +1506,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     let bhop_entry = !final_leg
         && matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
         && (goal_dist > 300.0 || planned_band >= 1)
+        && !approach_brake
         && runway_dist >= bhop::RUNWAY_ENGAGE
         && side_open
         // Run up first: don't start the hop cycle from a standstill — accelerate on the ground until
@@ -1510,6 +1516,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // route advances, and a run in progress shouldn't be dumped by the stricter entry conditions.
     let bhop_sustain = bhop_sustain_policy(
         matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
+        && !approach_brake
         && (goal_dist > 150.0 || planned_band >= 1)
         && side_open,
         ascent_ahead,

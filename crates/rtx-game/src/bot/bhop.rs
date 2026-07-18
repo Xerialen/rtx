@@ -444,11 +444,14 @@ impl Bhop {
             return Some(Cmd { view_yaw: s.view_yaw, forward: s.forward, side: s.side, jump: false });
         }
         // Landing (or first) ground frame — the only place a run ends by policy. A planned carry
-        // keeps the chain alive across leg-kind churn even where the per-landing runway arithmetic
-        // would give up (the planner already proved speed belongs here).
-        let keep_hopping = i.committed || i.carry || (i.sustain && i.runway >= speed * T_HOP + HOP_MARGIN);
+        // keeps the chain alive across leg-kind churn (the stricter `sustain` entry judgment), but
+        // it may NOT override the runway arithmetic: the next hop's flight must still fit the
+        // remaining straight corridor. A carry that leaps into a bend arrives mid-air at a wall it
+        // cannot carve around (~90° needs seconds at 450+ ups; the panic window is ~0.3 s).
+        let runway_fits = i.runway >= speed * T_HOP + HOP_MARGIN;
+        let keep_hopping = i.committed || ((i.sustain || i.carry) && runway_fits);
         if !keep_hopping {
-            self.disengage(if i.sustain { "runway" } else { "leg" });
+            self.disengage(if (i.sustain || i.carry) && !runway_fits { "runway" } else { "leg" });
             return None;
         }
         // Run up before the leap: keep circle-strafing on the ground rather than take off slow.
@@ -1385,6 +1388,54 @@ mod sim {
         }
         let rj = rejump.expect("never re-jumped");
         assert!(rj >= 0.95 * ENV.maxspeed - 1.0, "re-jumped at {rj} ups (below the floor)");
+    }
+
+    #[test]
+    fn carry_landing_respects_runway() {
+        // A planned carry lands where the corridor bends (short runway): the chain must end —
+        // carry survives leg-kind churn, but it may not launch a hop whose flight cannot fit the
+        // remaining straight corridor (observed live on DM3's 184-band: 490→31 ups wall strike).
+        let mut w = World::grounded(460.0);
+        let mut b = Bhop::default();
+        for f in 0..30 {
+            let now = f as f32 * DT;
+            let cmd = b.step(&input(&w, 0.0, 4096.0, now), &ENV).unwrap_or(run_cmd(0.0));
+            pm_frame(&mut w, &cmd, false);
+        }
+        assert!(b.hops >= 1, "never got hopping");
+        w.v = Vec2::new(460.0, 0.0);
+        w.z = 0.0;
+        w.vz = 0.0;
+        w.on_ground = true;
+        w.jump_held = false;
+        let mut inp = input(&w, 0.0, 60.0, 30.0 * DT); // runway 60u << 460·T_HOP + margin
+        inp.sustain = false;
+        inp.carry = true;
+        assert!(b.step(&inp, &ENV).is_none(), "carry hopped into a bend (runway 60u at 460 ups)");
+        assert_eq!(b.off_reason, "runway");
+    }
+
+    #[test]
+    fn carry_landing_with_runway_keeps_the_chain() {
+        // The other half of the carry contract: with the runway fitting the next hop, a carry
+        // landing on a churned leg kind (sustain false) must keep the chain alive.
+        let mut w = World::grounded(460.0);
+        let mut b = Bhop::default();
+        for f in 0..30 {
+            let now = f as f32 * DT;
+            let cmd = b.step(&input(&w, 0.0, 4096.0, now), &ENV).unwrap_or(run_cmd(0.0));
+            pm_frame(&mut w, &cmd, false);
+        }
+        assert!(b.hops >= 1, "never got hopping");
+        w.v = Vec2::new(460.0, 0.0);
+        w.z = 0.0;
+        w.vz = 0.0;
+        w.on_ground = true;
+        w.jump_held = false;
+        let mut inp = input(&w, 0.0, 4096.0, 30.0 * DT);
+        inp.sustain = false;
+        inp.carry = true;
+        assert!(b.step(&inp, &ENV).is_some(), "carry with open runway must keep the chain");
     }
 
     #[test]
