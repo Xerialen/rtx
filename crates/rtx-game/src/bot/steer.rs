@@ -22,6 +22,37 @@ use crate::game::cstring;
 use crate::nav_build::PlatStatus;
 use crate::navmesh::{CellId, LinkCosts, LinkKind, NavGraph};
 
+const STEP_DEFER_MIN_RISE: f32 = 2.0;
+const STEP_DEFER_MAX_RISE: f32 = 18.0;
+const STEP_DEFER_LOW_ARC_FRACTION: f32 = 0.75;
+const STEP_DEFER_TRACE_UP: f32 = 32.0;
+const STEP_DEFER_TRACE_DOWN: f32 = 64.0;
+
+/// A landing predicted onto a low stair is dangerous only while the stair front is still in the
+/// last quarter of the hop footprint. Once the 75% sample is on the same top, the next arc has enough
+/// horizontal room to rise over the front; if the landing has passed the top entirely, its rise also
+/// clears the gate. `ground_z` returns the true surface/foot height at a world-XY sample.
+fn should_defer_step_jump(origin: Vec3, v_xy: Vec2, mut ground_z: impl FnMut(Vec2) -> Option<f32>) -> bool {
+    let current_feet_z = origin.z - ORIGIN_TO_FEET;
+    let landing_xy = origin.xy() + v_xy * bhop::T_HOP;
+    let low_arc_xy = origin.xy() + (landing_xy - origin.xy()) * STEP_DEFER_LOW_ARC_FRACTION;
+    let Some(landing_rise) = ground_z(landing_xy).map(|z| z - current_feet_z) else { return false };
+    if landing_rise <= STEP_DEFER_MIN_RISE || landing_rise > STEP_DEFER_MAX_RISE {
+        return false;
+    }
+    ground_z(low_arc_xy).is_some_and(|z| z - current_feet_z <= STEP_DEFER_MIN_RISE)
+}
+
+/// Sample standable BSP ground at `xy`, expressed as foot/surface Z. The trace starts above the
+/// largest accepted stair and extends below the current floor; a missing or non-floor hit is unknown.
+fn bsp_ground_z(bsp: &Bsp, origin: Vec3, xy: Vec2) -> Option<f32> {
+    let start = Vec3::new(xy.x, xy.y, origin.z + STEP_DEFER_TRACE_UP);
+    let end = Vec3::new(xy.x, xy.y, origin.z - STEP_DEFER_TRACE_DOWN);
+    let trace = bsp.hull1_trace(start, end);
+    (!trace.start_solid && trace.fraction < 1.0 && trace.plane_normal.z > 0.7)
+        .then_some(trace.endpos.z - ORIGIN_TO_FEET)
+}
+
 /// The all-`Copy` frame snapshot `steer` reads: the [`Sense`] and [`Objective`] this frame, the
 /// per-bot A* costs, and the live gate/plat state gathered before the borrow (see `run_bot`).
 pub(super) struct SteerCtx<'a> {
@@ -733,6 +764,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             }
             _ => f32::INFINITY,
         };
+        // Only an ordinary Hop landing inside the committed SpeedJump leg may phase-adjust. The
+        // takeoff regime (`sj_curl`) owns its grounded line-crossing leap and 0.98 hold gate; ordinary
+        // bhop, the pre-leg approach, and every airborne/curl frame never enter this BSP probe.
+        let defer_jump = sj_active
+            && !sj_curl
+            && !sj_hold
+            && on_ground
+            && bot.bhop.phase == bhop::Phase::Hop
+            && bsp.is_some_and(|bsp| should_defer_step_jump(origin, v_xy, |xy| bsp_ground_z(bsp, origin, xy)));
         let phase_was = bot.bhop.phase;
         let cmd = bot.bhop.step(
             &bhop::Input {
@@ -749,6 +789,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 committed: sj_active || sj_approach,
                 carry,
                 hold_jump: sj_hold,
+                defer_jump,
                 // The takeoff regime (hold ground prestrafe to the lip, leap once) runs for curls and
                 // for straight jumps within the prestrafe ceiling (`sj_curl`, see its definition). A
                 // hotter straight jump keeps the pre-existing hop-chain takeoff — its air-strafe runway
@@ -1185,4 +1226,33 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         || matches!(kind, Some(LinkKind::JumpGap | LinkKind::DoubleJump | LinkKind::SpeedJump));
     let overlays_ok = !hook_engaged && !rj_engaged && !bhop_active && !traversal_lock;
     SteerOut { cmd, bhop_cmd, hook, rj, traversal_lock, overlays_ok }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn step_edge_defer_requires_a_late_rising_front() {
+        let origin = Vec3::new(0.0, 0.0, ORIGIN_TO_FEET);
+        let velocity = Vec2::new(300.0 / bhop::T_HOP, 0.0);
+        let sixteen_unit_step = |p: Vec2| Some(if p.x >= 280.0 { 16.0 } else { 0.0 });
+
+        assert!(should_defer_step_jump(origin, velocity, sixteen_unit_step));
+
+        let safely_on_top = |p: Vec2| Some(if p.x >= 200.0 { 16.0 } else { 0.0 });
+        assert!(!should_defer_step_jump(origin, velocity, safely_on_top));
+    }
+
+    #[test]
+    fn step_edge_defer_honors_rise_thresholds() {
+        let origin = Vec3::new(0.0, 0.0, ORIGIN_TO_FEET);
+        let velocity = Vec2::new(300.0 / bhop::T_HOP, 0.0);
+        let step = |height| move |p: Vec2| Some(if p.x >= 280.0 { height } else { 0.0 });
+
+        assert!(!should_defer_step_jump(origin, velocity, step(2.0)));
+        assert!(should_defer_step_jump(origin, velocity, step(2.01)));
+        assert!(should_defer_step_jump(origin, velocity, step(18.0)));
+        assert!(!should_defer_step_jump(origin, velocity, step(18.01)));
+    }
 }

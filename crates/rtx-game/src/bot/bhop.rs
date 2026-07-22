@@ -258,6 +258,9 @@ pub struct Input {
     pub carry: bool,
     /// At the takeoff edge too slow to clear the gap (`sj_hold`): keep building, don't leap.
     pub hold_jump: bool,
+    /// A committed speed-jump runway landing is phased just before a stair front: delay this grounded
+    /// re-jump while the caller re-samples the predicted hop. Ignored outside the ordinary hop regime.
+    pub defer_jump: bool,
     /// Required takeoff speed for a committed speed jump (0 = none / a plain leg). A high-`v_req` jump
     /// (a curl/speed jump the bot can't reach at ordinary run speed) drives the *takeoff regime*: keep
     /// **ground prestrafe** (circle-strafe, which outgains the air cap far below maxspeed) all the way
@@ -293,6 +296,8 @@ pub struct Bhop {
     /// Last frame's cmd pressed jump — the pulse guard: if a press didn't take (still grounded),
     /// release for one frame so `PM_CheckJump` sees a fresh edge, then press again.
     jump_prev: bool,
+    /// Consecutive stair-edge delay frames. Hard-capped so a bad height sample cannot ground the run.
+    step_defer_frames: u8,
     /// Telemetry: hops taken, weave sign flips, and peak speed this engagement.
     pub hops: u32,
     pub flips: u32,
@@ -384,6 +389,7 @@ impl Bhop {
     /// docs on `PM_CheckJump` running before `PM_Friction`).
     fn hop_cmd(&mut self, i: &Input, speed: f32, a_max: f32, a_g: f32, maxspeed: f32, dt: f32) -> Option<Cmd> {
         if !i.on_ground {
+            self.step_defer_frames = 0;
             self.jump_prev = false; // airborne releases the button, re-arming PM_CheckJump
             // A committed speed jump is a single leap onto a fixed landing: curl the velocity smoothly
             // onto the bearing with `air_correct` (pursuit guidance), not the hop slalom (whose lobe
@@ -412,13 +418,21 @@ impl Bhop {
         // the air cap below maxspeed, so holding on the ground only ever helps the speed.
         let sj_takeoff = i.committed && i.takeoff_speed > 0.0;
         if sj_takeoff {
+            self.step_defer_frames = 0;
             if i.runway >= LIP_REACH {
                 // Hold the solved takeoff speed to the lip (coast above the band, build below).
                 return Some(self.takeoff_cmd(i, a_g, maxspeed));
             }
         } else if i.hold_jump || speed < LAUNCH_MIN_FRAC * maxspeed || i.clear < speed * T_HOP * WALL_HOLD_FRAC {
+            self.step_defer_frames = 0;
             return Some(self.ground_cmd(i, a_g, maxspeed, f32::INFINITY));
         }
+        const MAX_STEP_DEFER_FRAMES: u8 = 4;
+        if i.defer_jump && i.committed && self.step_defer_frames < MAX_STEP_DEFER_FRAMES {
+            self.step_defer_frames += 1;
+            return Some(self.ground_cmd(i, a_g, maxspeed, f32::INFINITY));
+        }
+        self.step_defer_frames = 0;
         let jump = !self.jump_prev;
         self.jump_prev = jump;
         if jump {
@@ -523,6 +537,7 @@ impl Bhop {
         self.phase_start = i.now;
         self.sigma = 0.0;
         self.jump_prev = false;
+        self.step_defer_frames = 0;
         self.hops = 0;
         self.flips = 0;
         self.peak = 0.0;
@@ -535,6 +550,7 @@ impl Bhop {
         self.phase_start = i.now;
         self.sigma = 0.0;
         self.jump_prev = false;
+        self.step_defer_frames = 0;
         self.hops = 0;
         self.flips = 0;
         self.peak = 0.0;
@@ -544,6 +560,7 @@ impl Bhop {
         self.phase = Phase::Off;
         self.sigma = 0.0;
         self.jump_prev = false;
+        self.step_defer_frames = 0;
         self.eligible_since = 0.0;
         self.off_reason = reason;
     }
@@ -798,6 +815,7 @@ mod sim {
             committed: false,
             carry: false,
             hold_jump: false,
+            defer_jump: false,
             takeoff_speed: 0.0,
             curl_gain: 0.0,
             clear: f32::INFINITY,
@@ -826,6 +844,7 @@ mod sim {
             committed: false,
             carry: false,
             hold_jump: false,
+            defer_jump: false,
             takeoff_speed: 0.0,
             curl_gain: 0.0,
             clear: f32::INFINITY,
@@ -865,6 +884,23 @@ mod sim {
         // The smooth slalom carves ~one lobe per hop — a decisive drop from the old ~3-flip weave.
         let flips_per_hop = b.flips as f32 / b.hops as f32;
         assert!((0.5..=2.0).contains(&flips_per_hop), "{} flips over {} hops (want smooth ~1/hop)", b.flips, b.hops);
+    }
+
+    #[test]
+    fn stair_edge_defer_is_hard_capped_at_four_ground_frames() {
+        let w = World::grounded(450.0);
+        let mut b = Bhop { phase: Phase::Hop, ..Bhop::default() };
+        let mut i = input(&w, 0.0, 4096.0, 0.0);
+        i.committed = true;
+        i.defer_jump = true;
+
+        for frame in 0..4 {
+            i.now = frame as f32 * DT;
+            let cmd = b.step(&i, &ENV).expect("committed hop owns the ground frame");
+            assert!(!cmd.jump, "defer frame {frame} jumped early");
+        }
+        i.now = 4.0 * DT;
+        assert!(b.step(&i, &ENV).unwrap().jump, "a persistent sample must not ground a fifth frame");
     }
 
     #[test]
@@ -917,6 +953,7 @@ mod sim {
                 committed: true,
                 carry: false,
                 hold_jump: false,
+                defer_jump: false,
                 takeoff_speed: V_REQ,
                 curl_gain: 0.0,
                 clear: f32::INFINITY,
@@ -961,6 +998,7 @@ mod sim {
                     committed: true,
                     carry: false,
                     hold_jump: false,
+                    defer_jump: false,
                     takeoff_speed: V_STAR,
                     curl_gain: 12.0,
                     clear: f32::INFINITY,
@@ -1002,6 +1040,7 @@ mod sim {
                 committed: true,
                 carry: false,
                 hold_jump: false,
+                defer_jump: false,
                 takeoff_speed: 415.0,
                 curl_gain: 12.0,
                 clear: f32::INFINITY,
