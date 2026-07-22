@@ -15,8 +15,6 @@ use serde::{Deserialize, Serialize};
 
 const TRACE_DOWN: f32 = 2.0;
 const MIN_GROUND_NORMAL_Z: f32 = 0.7;
-const PLAYER_MINS: Vec3 = Vec3::new(-16.0, -16.0, -24.0);
-const PLAYER_MAXS: Vec3 = Vec3::new(16.0, 16.0, 32.0);
 
 #[derive(Deserialize)]
 struct Request {
@@ -32,9 +30,14 @@ struct Response {
     status: &'static str,
 }
 
+struct Mover {
+    headnode: i32,
+    offsets: Vec<Vec3>,
+}
+
 struct Probe {
     bsp: Bsp,
-    mover_bounds: Vec<(Vec3, Vec3)>,
+    movers: Vec<Mover>,
 }
 
 impl Probe {
@@ -42,11 +45,8 @@ impl Probe {
         let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
         let bsp =
             Bsp::parse(&bytes).ok_or_else(|| format!("parse {}: unsupported or malformed BSP", path.display()))?;
-        let mover_bounds = mover_model_indices(&bsp.entities)
-            .into_iter()
-            .filter_map(|index| bsp.submodel(index).map(|model| (model.mins, model.maxs)))
-            .collect();
-        Ok(Self { bsp, mover_bounds })
+        let movers = mover_specs(&bsp);
+        Ok(Self { bsp, movers })
     }
 
     fn query(&self, origin: Vec3) -> Response {
@@ -54,7 +54,7 @@ impl Probe {
         let trace = self.bsp.hull1_trace(origin, end);
         let contents = self.bsp.pointcontents(origin);
         let floor_z = trace.endpos.z - ORIGIN_TO_FEET;
-        if self.overlaps_mover_sweep(origin, end) {
+        if self.trace_hits_mover_space(origin, end) {
             return Response {
                 grounded: false,
                 floor_z,
@@ -82,25 +82,20 @@ impl Probe {
         }
     }
 
-    fn overlaps_mover_sweep(&self, start: Vec3, end: Vec3) -> bool {
-        let swept_mins = start.min(end) + PLAYER_MINS;
-        let swept_maxs = start.max(end) + PLAYER_MAXS;
-        self.mover_bounds.iter().any(|(mins, maxs)| {
-            swept_mins.x <= maxs.x
-                && swept_maxs.x >= mins.x
-                && swept_mins.y <= maxs.y
-                && swept_maxs.y >= mins.y
-                && swept_mins.z <= maxs.z
-                && swept_maxs.z >= mins.z
+    fn trace_hits_mover_space(&self, start: Vec3, end: Vec3) -> bool {
+        self.movers.iter().any(|mover| {
+            mover.offsets.iter().any(|offset| {
+                let trace = self.bsp.hull_trace(mover.headnode, start - *offset, end - *offset);
+                trace.start_solid || trace.fraction < 1.0
+            })
         })
     }
 }
 
-/// Parse just enough of the entity lump to associate moving brush classnames with `*N` models.
-fn mover_model_indices(entities: &str) -> Vec<usize> {
+fn entity_blocks(entities: &str) -> Vec<HashMap<String, String>> {
     let tokens = quoted_tokens(entities);
-    let mut movers = Vec::new();
-    let mut current: HashMap<&str, &str> = HashMap::new();
+    let mut blocks = Vec::new();
+    let mut current = HashMap::new();
     let mut i = 0;
     while i < tokens.len() {
         match tokens[i] {
@@ -109,28 +104,120 @@ fn mover_model_indices(entities: &str) -> Vec<usize> {
                 i += 1;
             }
             "}" => {
-                let classname = current.get("classname").copied().unwrap_or("");
-                if matches!(classname, "func_door" | "func_door_secret" | "func_plat" | "func_train") {
-                    if let Some(index) = current
-                        .get("model")
-                        .and_then(|model| model.strip_prefix('*'))
-                        .and_then(|number| number.parse().ok())
-                    {
-                        movers.push(index);
-                    }
+                if !current.is_empty() {
+                    blocks.push(std::mem::take(&mut current));
                 }
-                current.clear();
                 i += 1;
             }
             key if i + 1 < tokens.len() => {
-                current.insert(key, tokens[i + 1]);
+                current.insert(key.to_owned(), tokens[i + 1].to_owned());
                 i += 2;
             }
             _ => i += 1,
         }
     }
-    movers.sort_unstable();
-    movers.dedup();
+    blocks
+}
+
+fn parse_vec3(value: Option<&String>) -> Vec3 {
+    let mut values = value.into_iter().flat_map(|value| value.split_whitespace());
+    Vec3::new(
+        values.next().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+        values.next().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+        values.next().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+    )
+}
+
+fn parse_f32(entity: &HashMap<String, String>, key: &str, default: f32) -> f32 {
+    entity.get(key).and_then(|value| value.parse().ok()).unwrap_or(default)
+}
+
+fn movedir(entity: &HashMap<String, String>) -> Vec3 {
+    let angle = entity.get("angle").and_then(|value| value.parse::<f32>().ok());
+    match angle {
+        Some(-1.0) => Vec3::Z,
+        Some(-2.0) => -Vec3::Z,
+        Some(yaw) => Vec3::new(yaw.to_radians().cos(), yaw.to_radians().sin(), 0.0),
+        None => {
+            let angles = parse_vec3(entity.get("angles"));
+            let pitch = angles.x.to_radians();
+            let yaw = angles.y.to_radians();
+            Vec3::new(pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), -pitch.sin())
+        }
+    }
+}
+
+fn sampled_segment(a: Vec3, b: Vec3) -> Vec<Vec3> {
+    let steps = (a.distance(b) / 4.0).ceil().max(1.0) as usize;
+    (0..=steps).map(|i| a.lerp(b, i as f32 / steps as f32)).collect()
+}
+
+/// Reconstruct every position a moving brush can occupy under stock door/plat/train rules, then
+/// retain its real hull rather than treating the brush's bounding box as solid.
+fn mover_specs(bsp: &Bsp) -> Vec<Mover> {
+    let entities = entity_blocks(&bsp.entities);
+    let by_targetname: HashMap<&str, &HashMap<String, String>> = entities
+        .iter()
+        .filter_map(|entity| entity.get("targetname").map(|name| (name.as_str(), entity)))
+        .collect();
+    let mut movers = Vec::new();
+    for entity in &entities {
+        let classname = entity.get("classname").map(String::as_str).unwrap_or("");
+        if !matches!(classname, "func_door" | "func_plat" | "func_train") {
+            continue;
+        }
+        let Some(index) = entity
+            .get("model")
+            .and_then(|model| model.strip_prefix('*'))
+            .and_then(|number| number.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        let Some(model) = bsp.submodel(index) else { continue };
+        let origin = parse_vec3(entity.get("origin"));
+        let offsets = match classname {
+            "func_door" => {
+                let direction = movedir(entity);
+                let travel = direction.abs().dot(model.maxs - model.mins) - parse_f32(entity, "lip", 8.0);
+                sampled_segment(origin, origin + direction * travel.max(0.0))
+            }
+            "func_plat" => {
+                let height = parse_f32(entity, "height", 0.0);
+                let travel = if height != 0.0 {
+                    height
+                } else {
+                    model.maxs.z - model.mins.z - 8.0
+                };
+                sampled_segment(origin, origin - Vec3::Z * travel.max(0.0))
+            }
+            "func_train" => {
+                let mut points = Vec::new();
+                let mut target = entity.get("target").map(String::as_str);
+                let mut seen = std::collections::HashSet::new();
+                while let Some(name) = target {
+                    if !seen.insert(name.to_owned()) {
+                        break;
+                    }
+                    let Some(corner) = by_targetname.get(name) else { break };
+                    points.push(parse_vec3(corner.get("origin")) - model.mins);
+                    target = corner.get("target").map(String::as_str);
+                }
+                let mut sampled = Vec::new();
+                for pair in points.windows(2) {
+                    sampled.extend(sampled_segment(pair[0], pair[1]));
+                }
+                if sampled.is_empty() {
+                    sampled.extend(points);
+                }
+                sampled
+            }
+            _ => unreachable!(),
+        };
+        movers.push(Mover {
+            headnode: model.clip1,
+            offsets,
+        });
+    }
     movers
 }
 
@@ -172,12 +259,16 @@ fn map_arg() -> Result<PathBuf, String> {
 }
 
 fn main() -> Result<(), String> {
+    if env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--probe-commit")) {
+        println!("{}", env!("BSP_PROBE_COMMIT"));
+        return Ok(());
+    }
     let path = map_arg()?;
     let probe = Probe::load(&path)?;
     eprintln!(
         "bsp-probe: loaded {} ({} mover models)",
         path.display(),
-        probe.mover_bounds.len()
+        probe.movers.len()
     );
     let stdin = io::stdin();
     let mut stdout = BufWriter::new(io::stdout().lock());

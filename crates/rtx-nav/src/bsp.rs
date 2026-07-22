@@ -72,7 +72,7 @@ struct Header {
     nodes: Lump, // lump 5 (render tree) — skip textures/vertexes/vis
     #[br(pad_before = 24)]
     clipnodes: Lump, // lump 9 — skip texinfo/faces/lighting
-    leafs: Lump, // lump 10 (render leaf contents)
+    leafs: Lump,    // lump 10 (render leaf contents)
     #[br(pad_before = 24)]
     models: Lump, // lump 14 — skip marksurfaces/edges/surfedges
 }
@@ -171,12 +171,18 @@ struct RenderNode {
 
 impl From<NodeV1> for RenderNode {
     fn from(n: NodeV1) -> Self {
-        RenderNode { plane: n.plane, children: [n.children[0] as i32, n.children[1] as i32] }
+        RenderNode {
+            plane: n.plane,
+            children: [n.children[0] as i32, n.children[1] as i32],
+        }
     }
 }
 impl From<NodeV2> for RenderNode {
     fn from(n: NodeV2) -> Self {
-        RenderNode { plane: n.plane, children: n.children }
+        RenderNode {
+            plane: n.plane,
+            children: n.children,
+        }
     }
 }
 
@@ -198,7 +204,10 @@ struct LeafV2 {
 /// (`Mod_MakeHull0`).
 fn leaf_or_node(child: i32, leaf_contents: &[i32]) -> i32 {
     if child < 0 {
-        leaf_contents.get((-1 - child) as usize).copied().unwrap_or(CONTENTS_SOLID)
+        leaf_contents
+            .get((-1 - child) as usize)
+            .copied()
+            .unwrap_or(CONTENTS_SOLID)
     } else {
         child
     }
@@ -262,9 +271,17 @@ impl Bsp {
             read_lump_stride::<NodeV1, RenderNode>(&mut c, &header.nodes, 24).ok()?
         };
         let leaf_contents: Vec<i32> = if bsp2 {
-            read_lump_stride::<LeafV2, LeafV2>(&mut c, &header.leafs, 44).ok()?.iter().map(|l| l.contents).collect()
+            read_lump_stride::<LeafV2, LeafV2>(&mut c, &header.leafs, 44)
+                .ok()?
+                .iter()
+                .map(|l| l.contents)
+                .collect()
         } else {
-            read_lump_stride::<LeafV1, LeafV1>(&mut c, &header.leafs, 28).ok()?.iter().map(|l| l.contents).collect()
+            read_lump_stride::<LeafV1, LeafV1>(&mut c, &header.leafs, 28)
+                .ok()?
+                .iter()
+                .map(|l| l.contents)
+                .collect()
         };
 
         let mut models = read_lump_stride::<Model, Model>(&mut c, &header.models, MODEL_SIZE).ok()?;
@@ -349,7 +366,10 @@ impl Bsp {
             num = node.children[usize::from(d < 0.0)];
         }
         // A negative child is leaf `-1 - num`.
-        self.leaf_contents.get((-1 - num) as usize).copied().unwrap_or(CONTENTS_SOLID)
+        self.leaf_contents
+            .get((-1 - num) as usize)
+            .copied()
+            .unwrap_or(CONTENTS_SOLID)
     }
 
     /// Whether `p` is inside a liquid volume (water / slime / lava) per the render hull. Used by the
@@ -412,6 +432,12 @@ impl Bsp {
     /// `start_solid` means `p1` was already inside solid. Pure over `planes`/`clipnodes`, no syscall.
     pub fn hull1_trace(&self, p1: Vec3, p2: Vec3) -> HullTrace {
         self.trace_in(&self.clipnodes, self.hull1_headnode, p1, p2)
+    }
+
+    /// Trace through an explicit hull-1 headnode. Inline brush-model callers first translate
+    /// world coordinates into that model's coordinate space.
+    pub fn hull_trace(&self, headnode: i32, p1: Vec3, p2: Vec3) -> HullTrace {
+        self.trace_in(&self.clipnodes, headnode, p1, p2)
     }
 
     /// Trace the segment `p1 → p2` through the world's **point** hull (hull 0).
@@ -717,7 +743,10 @@ mod tests {
 
         assert!(opens > 1, "a real map has a worldspawn and then some");
         assert_eq!(opens, closes, "every block closes");
-        assert!(bsp.entities.contains("\"classname\" \"worldspawn\""), "worldspawn comes first");
+        assert!(
+            bsp.entities.contains("\"classname\" \"worldspawn\""),
+            "worldspawn comes first"
+        );
         // A deathmatch map has somewhere to spawn. This is the field the shadow world lives or dies
         // on: no spawn points means no bots.
         assert!(
@@ -751,7 +780,10 @@ mod tests {
         // models[0] is the world, and is what the top-level fields were taken from.
         assert_eq!(bsp.submodel(0).map(|m| m.mins), Some(bsp.mins));
         assert_eq!(bsp.submodel(0).map(|m| m.clip1), Some(bsp.hull1_headnode));
-        assert!(bsp.submodel(bsp.models.len()).is_none(), "and asking past the end is None");
+        assert!(
+            bsp.submodel(bsp.models.len()).is_none(),
+            "and asking past the end is None"
+        );
 
         // Every box must come out the right way round. It's the `Mod_LoadSubmodels` spread that
         // makes that true: on disk, qbsp's shrink leaves a paper-thin brush inside-out (catalyst's
@@ -761,11 +793,17 @@ mod tests {
         // world-bounds check below catches.
         eprintln!("{}: {} models", path, bsp.models.len());
         for (i, m) in bsp.models.iter().enumerate() {
-            assert!(m.mins.is_finite() && m.maxs.is_finite(), "submodel *{i}: {:?}..{:?}", m.mins, m.maxs);
+            assert!(
+                m.mins.is_finite() && m.maxs.is_finite(),
+                "submodel *{i}: {:?}..{:?}",
+                m.mins,
+                m.maxs
+            );
             assert!(
                 (m.maxs - m.mins).min_element() > 0.0,
                 "submodel *{i} is inside-out: {:?}..{:?} — was the load-time spread applied?",
-                m.mins, m.maxs
+                m.mins,
+                m.maxs
             );
             // Inside Quake's map limit. Note this deliberately isn't "inside the world's box":
             // `models[0]` bounds only the *world* brushes, so a submodel can legitimately sit
@@ -774,7 +812,8 @@ mod tests {
             assert!(
                 m.mins.cmpge(Vec3::splat(-4096.0)).all() && m.maxs.cmple(Vec3::splat(4096.0)).all(),
                 "submodel *{i} {:?}..{:?} is outside the ±4096 map limit — wrong stride?",
-                m.mins, m.maxs
+                m.mins,
+                m.maxs
             );
         }
     }
