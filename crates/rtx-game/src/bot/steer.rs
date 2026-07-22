@@ -691,7 +691,11 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 // 0.98, not 0.9: leaping at 0.90–0.98·v_req undershoots the gap by the same margin
                 // and lands in the pit — a measured, common failure. Below the bar, keep building at
                 // the lip; the leap fires only inside the band the flight actually needs.
-                (to_edge.length() < 48.0 || to_edge.dot(v_xy) < 0.0) && speed < v_req * 0.98
+                // The counter-pointed branch (past the lip line) only counts NEAR the lip: early on
+                // the runway a turning bot's velocity briefly points away from the takeoff, and an
+                // unbounded dot test held (and friction-dumped) mid-corridor runs. Frame-traced.
+                (to_edge.length() < 48.0 || (to_edge.length() < 160.0 && to_edge.dot(v_xy) < 0.0))
+                    && speed < v_req * 0.98
             }
             None => false,
         }
