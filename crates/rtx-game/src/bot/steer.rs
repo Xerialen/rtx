@@ -633,7 +633,23 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             sj_active = false;
         }
     }
-    let sj_hold = sj_active && {
+    // Ascending runway ahead: pmove steps up a ≤18u riser losslessly only when *grounded* — an
+    // airborne hop into the riser face clips horizontal speed (it's a wall). So while the cached
+    // runway path climbs within the next few cells, stay grounded (prestrafe/zigzag both step
+    // cleanly and build past 400) and resume the hop chain once the path flattens toward the lip.
+    let sj_ascending = sj_active
+        && bot
+            .sj_runway
+            .as_ref()
+            .filter(|r| Some(r.leg) == cur_leg)
+            .and_then(|r| r.path.as_ref().map(|p| (p, r.path_pos)))
+            .is_some_and(|(path, pos)| {
+                path[pos..path.len().min(pos + 5)].iter().any(|&li| {
+                    graph.cell_origin(graph.link_target(li)).z - graph.cell_origin(graph.link_source(li)).z >= 8.0
+                })
+            });
+    let sj_hold = sj_ascending
+        || sj_active && {
         match sj_takeoff {
             Some((takeoff, v_req)) => {
                 let to_edge = takeoff.xy() - origin.xy();
