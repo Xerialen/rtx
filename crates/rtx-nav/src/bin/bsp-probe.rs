@@ -332,6 +332,47 @@ mod tests {
         assert!(!apex.grounded, "apex: {apex:?}");
     }
 
+    #[test]
+    fn pinned_dm3_mover_travel_uses_real_translated_hulls() {
+        let probe = pinned_dm3();
+        let mover = probe
+            .movers
+            .iter()
+            .find(|mover| {
+                mover
+                    .offsets
+                    .first()
+                    .zip(mover.offsets.last())
+                    .is_some_and(|(a, b)| a.distance(*b) > 8.0)
+            })
+            .expect("dm3 must have a travelling mover");
+        let offset = mover.offsets[mover.offsets.len() / 2];
+        let model = probe
+            .bsp
+            .models
+            .iter()
+            .find(|model| model.clip1 == mover.headnode)
+            .expect("mover headnode belongs to an inline model");
+        let mut found = None;
+        let mut x = model.mins.x;
+        while x <= model.maxs.x && found.is_none() {
+            let mut y = model.mins.y;
+            while y <= model.maxs.y {
+                let origin = Vec3::new(x + offset.x, y + offset.y, model.maxs.z + offset.z + ORIGIN_TO_FEET);
+                if probe.query(origin).status == "unknown" {
+                    found = Some(origin);
+                    break;
+                }
+                y += 8.0;
+            }
+            x += 8.0;
+        }
+        assert!(
+            found.is_some(),
+            "translated mover hull must mark intermediate travel space unknown"
+        );
+    }
+
     // Small dependency-free SHA-256 used only to fail closed on fixture drift.
     fn sha256(input: &[u8]) -> String {
         use std::fmt::Write as _;
