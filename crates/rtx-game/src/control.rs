@@ -245,6 +245,9 @@ enum ControlCmd {
     /// nearest `from` (the run-up start), taking off at `takeoff` (the lip), to the cell nearest `tgt`,
     /// requiring `v_req` ups at the lip. Lets us fly the takeoff regime before the generator emits it.
     PlanLink { from: Vec3, takeoff: Vec3, tgt: Vec3, v_req: f32 },
+    /// Hand-plant a standable cell at a gap-analysis coordinate, snapped onto the BSP floor and
+    /// joined to nearby Walk/Step neighbors in the live graph.
+    PlanCell { pos: Vec3 },
     /// Hard-disable one link until the navmesh is rebuilt, without renumbering any link IDs.
     Unlink { link: u32 },
 }
@@ -373,6 +376,13 @@ fn parse_line(line: &str) -> Result<(i64, ControlCmd), String> {
             let v_req = parse_f32(t.next(), "v_req")?;
             ControlCmd::PlanLink { from, takeoff, tgt, v_req }
         }
+        "plancell" => {
+            let mut t = rest.split_whitespace();
+            let x = parse_f32(t.next(), "x")?;
+            let y = parse_f32(t.next(), "y")?;
+            let z = parse_f32(t.next(), "z")?;
+            ControlCmd::PlanCell { pos: Vec3::new(x, y, z) }
+        }
         "unlink" => ControlCmd::Unlink { link: parse_u32(rest.split_whitespace().next(), "link")? },
         other => return Err(format!("unknown verb '{other}'")),
     };
@@ -419,6 +429,7 @@ fn exec_cmd(game: &mut GameState, id: i64, cmd: ControlCmd) {
         ControlCmd::Probe { takeoff, tgt, psi0, runway } => probe_json(game, takeoff, tgt, psi0, runway),
         ControlCmd::Curl { src, tgt } => curl_json(game, src, tgt),
         ControlCmd::PlanLink { from, takeoff, tgt, v_req } => plant_link_json(game, from, takeoff, tgt, v_req),
+        ControlCmd::PlanCell { pos } => plant_cell_json(game, pos),
         ControlCmd::Unlink { link } => unlink_json(game, link),
     };
     match result {
@@ -936,6 +947,21 @@ fn plant_link_json(game: &mut GameState, from: Vec3, takeoff: Vec3, tgt: Vec3, v
     ))
 }
 
+/// Hand-plant a standable cell into the live graph at a gap-analysis coordinate. The nav layer
+/// performs the BSP floor snap and neighbor classification; this wrapper reports the resolved cell.
+fn plant_cell_json(game: &mut GameState, pos: Vec3) -> Result<String, String> {
+    let bsp = game.nav.bsp.as_ref().ok_or("no bsp")?;
+    let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+    let (cell, links_created) = graph
+        .plant_cell(bsp, pos)
+        .ok_or("cell position is not standable dry floor")?;
+    let origin = graph.cell_origin(cell);
+    Ok(format!(
+        "{{\"cell\":{cell},\"origin\":{},\"links_created\":{links_created}}}",
+        jvec3(origin),
+    ))
+}
+
 /// Hard-disable a link while retaining its slot. Every router skips the tombstone, and later
 /// `planlink` appends cannot shift the IDs used by live route/editor diagnostics.
 fn unlink_json(game: &mut GameState, link: u32) -> Result<String, String> {
@@ -1307,6 +1333,10 @@ mod tests {
         );
         assert_eq!(parse_line("9 rj 1 412").unwrap(), (9, ControlCmd::Rj { bot: 1, link: 412 }));
         assert_eq!(parse_line("10 unlink 412").unwrap(), (10, ControlCmd::Unlink { link: 412 }));
+        assert_eq!(
+            parse_line("11 plancell -320 64 128.5").unwrap(),
+            (11, ControlCmd::PlanCell { pos: Vec3::new(-320.0, 64.0, 128.5) })
+        );
     }
 
     #[test]
@@ -1344,6 +1374,7 @@ mod tests {
         assert!(parse_line("1 bogusverb").is_err());
         assert!(parse_line("1 rj 1").is_err()); // missing link
         assert!(parse_line("1 unlink").is_err()); // missing link
+        assert!(parse_line("1 plancell 0 0").is_err()); // missing z
         assert!(parse_line("1 teleport 1 0 0").is_err()); // missing z
         assert!(parse_line("1 set").is_err()); // missing cvar
     }

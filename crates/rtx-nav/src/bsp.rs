@@ -242,6 +242,31 @@ pub struct Bsp {
 }
 
 impl Bsp {
+    /// A flat hull-1 floor for navmesh unit tests: player origins rest at `origin_z`, with empty
+    /// space above and solid below. It intentionally has no render tree, so point contents resolve
+    /// conservatively to solid (and, importantly for cell planting, never to liquid).
+    #[cfg(test)]
+    pub(crate) fn test_floor(origin_z: f32) -> Bsp {
+        Bsp {
+            planes: vec![Plane { normal: Vec3::Z, dist: origin_z, kind: 2 }],
+            clipnodes: vec![ClipNode { plane: 0, children: [CONTENTS_EMPTY, CONTENTS_SOLID] }],
+            hull1_headnode: 0,
+            mins: Vec3::splat(-256.0),
+            maxs: Vec3::splat(256.0),
+            entities: String::new(),
+            models: vec![Model {
+                mins: Vec3::splat(-256.0),
+                maxs: Vec3::splat(256.0),
+                render_head: 0,
+                clip1: 0,
+            }],
+            hull0_clipnodes: Vec::new(),
+            render_nodes: Vec::new(),
+            leaf_contents: Vec::new(),
+            render_headnode: 0,
+        }
+    }
+
     /// Parse the lumps the navmesh needs from a whole-file byte buffer. Returns `None` on an
     /// unsupported version or a malformed/truncated lump.
     pub fn parse(bytes: &[u8]) -> Option<Bsp> {

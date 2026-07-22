@@ -44,7 +44,7 @@ use sidetable::SideTable;
 pub use splice::{Gate, GateInfo, Plat, PlatInfo, TeleportInfo};
 
 use crate::bsp::Bsp;
-use crate::qphys::STEP_HEIGHT;
+use crate::qphys::{ORIGIN_TO_FEET, STEP_HEIGHT};
 
 // --- grappling-hook traversal (see `add_hooks`) ---
 
@@ -398,6 +398,10 @@ impl NavGraph {
     #[cfg(test)]
     pub(super) fn test_graph(cells: Vec<Cell>, links: Vec<Link>) -> NavGraph {
         let mut adjacency = vec![Vec::new(); cells.len()];
+        let mut grid: GridIndex = HashMap::new();
+        for (id, cell) in cells.iter().enumerate() {
+            grid.entry((cell.gx, cell.gy)).or_default().push(id as CellId);
+        }
         for (i, l) in links.iter().enumerate() {
             adjacency[l.from as usize].push(i as u32);
         }
@@ -413,7 +417,7 @@ impl NavGraph {
             hazard: Vec::new(),
             hazard_hp: Vec::new(),
             under_plat: Vec::new(),
-            grid: GridIndex::default(),
+            grid,
             gates: SideTable::default(),
             hooks: SideTable::default(),
             speed_jumps: SideTable::default(),
@@ -510,6 +514,12 @@ impl NavGraph {
         self.adjacency[link.from as usize].push(idx);
         self.links.push(link);
         self.removed.push(false);
+        if !self.hazard_hp.is_empty() {
+            self.hazard_hp.push(0.0);
+        }
+        if !self.water_extra.is_empty() {
+            self.water_extra.push(0.0);
+        }
     }
 
     /// Hard-disable a runtime link without erasing it or changing any link indices. Returns `true`
@@ -1149,6 +1159,42 @@ impl NavGraph {
         (self.links.len() - 1) as u32
     }
 
+    /// Hand-plant a standable cell into a live graph. The supplied point is snapped down onto the
+    /// player-hull floor, rejected if the resting origin is solid or its footing is liquid, then
+    /// joined bidirectionally to nearby cells using the build's normal Walk/Step classification.
+    /// Returns the appended cell id and number of directed links created.
+    pub fn plant_cell(&mut self, bsp: &Bsp, pos: Vec3) -> Option<(CellId, usize)> {
+        const TRACE_UP: f32 = 8.0;
+        const TRACE_DOWN: f32 = GRID * 4.0;
+
+        let start = pos + Vec3::Z * TRACE_UP;
+        let trace = bsp.hull1_trace(start, pos - Vec3::Z * TRACE_DOWN);
+        if trace.start_solid || trace.fraction >= 1.0 || trace.plane_normal.z <= 0.0 {
+            return None;
+        }
+        let origin = trace.endpos;
+        let feet = origin - Vec3::Z * (ORIGIN_TO_FEET - 1.0);
+        if bsp.is_solid(origin) || bsp.is_liquid_at(feet) {
+            return None;
+        }
+
+        let existing = self.cells_near(origin.xy(), GRID * 1.5);
+        let id = self.add_cell(origin);
+        let mut links_created = 0;
+        for other in existing {
+            if (self.cells[other as usize].origin.z - origin.z).abs() > STEP_HEIGHT {
+                continue;
+            }
+            for (from, to) in [(other, id), (id, other)] {
+                if let Some(link) = self.classify_grounded(bsp, from, to) {
+                    self.push_link(link);
+                    links_created += 1;
+                }
+            }
+        }
+        Some((id, links_created))
+    }
+
     /// Push a speed-jump link with its traversal, tagging the new link in the side table.
     fn push_speed_jump(&mut self, link: Link, traversal: SpeedJumpTraversal) {
         let s = self.speed_jumps.push(traversal);
@@ -1176,6 +1222,18 @@ impl NavGraph {
         self.cells.push(Cell { origin, gx, gy });
         self.adjacency.push(Vec::new());
         self.grid.entry((gx, gy)).or_default().push(id);
+        if !self.water.is_empty() {
+            self.water.push(false);
+        }
+        if !self.breathable.is_empty() {
+            self.breathable.push(true);
+        }
+        if !self.hazard.is_empty() {
+            self.hazard.push(None);
+        }
+        if !self.under_plat.is_empty() {
+            self.under_plat.push(None);
+        }
         id
     }
 
@@ -1569,6 +1627,32 @@ mod tests {
         let strip = |p: Vec3| p.z <= 24.0 && p.y.abs() <= 16.0;
         assert!(ground_along(&strip, Vec3::new(0.0, 0.0, 24.0), Vec3::new(32.0, 0.0, 24.0)));
         assert!(ground_along(&strip, Vec3::new(0.0, 0.0, 24.0), Vec3::new(64.0, 0.0, 24.0)));
+    }
+
+    #[test]
+    fn planted_cell_is_indexed_linked_both_ways_and_routable() {
+        let bsp = Bsp::test_floor(24.0);
+        let cells = vec![
+            Cell { origin: Vec3::new(0.0, 0.0, 24.0), gx: 0, gy: 0 },
+            Cell { origin: Vec3::new(64.0, 0.0, 24.0), gx: 2, gy: 0 },
+        ];
+        let mut graph = NavGraph::test_graph(cells, Vec::new());
+
+        let (planted, links_created) = graph
+            .plant_cell(&bsp, Vec3::new(32.0, 0.0, 28.0))
+            .expect("flat floor should accept a planted cell");
+
+        assert_eq!(planted, 2);
+        assert_eq!(links_created, 4);
+        assert_eq!(graph.nearest(Vec3::new(32.0, 0.0, 24.0)), Some(planted));
+        assert_eq!(graph.adjacency[planted as usize].len(), 2);
+        assert_eq!(graph.links.iter().filter(|link| link.to == planted).count(), 2);
+        assert!(graph.links.iter().all(|link| link.kind == LinkKind::Walk));
+
+        let path = graph.find_path(0, 1, &LinkCosts::default()).expect("planted bridge should route");
+        assert_eq!(path.len(), 2);
+        assert_eq!(graph.link_target(path[0]), planted);
+        assert_eq!(graph.link_target(path[1]), 1);
     }
 
     /// Build the navmesh from a real map (`RTX_TEST_BSP`) and sanity-check it: cells and links
