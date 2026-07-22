@@ -597,7 +597,11 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             cv(c"sv_friction", 4.0),
             cv(c"sv_stopspeed", 100.0),
         );
-        if predicted < v_req * 0.85 {
+        // 0.6, not 0.85: the flat-ground prestrafe oracle under-predicts a runway that crosses
+        // steps (the committed hop chain builds speed there in a way the oracle has no term for),
+        // and at 0.85 those runs aborted mid-approach and wandered. Keep the abort as a hopeless-
+        // case backstop only; marginal arrivals are the hold gate's job below.
+        if predicted < v_req * 0.6 {
             penalize_leg(bot, cur_leg, kind, now);
             bot.sj = None;
             bot.route.clear();
@@ -609,7 +613,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         match sj_takeoff {
             Some((takeoff, v_req)) => {
                 let to_edge = takeoff.xy() - origin.xy();
-                (to_edge.length() < 48.0 || to_edge.dot(v_xy) < 0.0) && speed < v_req * 0.9
+                // 0.98, not 0.9: leaping at 0.90–0.98·v_req undershoots the gap by the same margin
+                // and lands in the pit — a measured, common failure. Below the bar, keep building at
+                // the lip; the leap fires only inside the band the flight actually needs.
+                (to_edge.length() < 48.0 || to_edge.dot(v_xy) < 0.0) && speed < v_req * 0.98
             }
             None => false,
         }
