@@ -481,7 +481,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // A chain of Walk/Step legs immediately before a SpeedJump is part of its committed
     // approach. Keep the same hop-cycle ownership across those stairs instead of letting the normal
     // ascent/runway veto turn the run into a friction-heavy walk just before takeoff. The window
-    // must span a full corridor approach (cells are 32u, so 16 legs ≈ 512u of runway). Gated on
+    // must span a full corridor approach (cells are 32u, so 24 legs ≈ 768u of runway). Gated on
     // [`bhop::RUN_UP_SPEED`]: from a standstill (or mid-turn) the bot runs up on the ground first —
     // committing to hops while slow trades steering authority for nothing and wedges on walls.
     let sj_approach = matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
@@ -491,7 +491,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             .get(bot.route_pos.saturating_add(1)..)
             .unwrap_or_default()
             .iter()
-            .take(16)
+            .take(24)
             .take_while(|&&leg| {
                 matches!(graph.link_kind(leg), LinkKind::Walk | LinkKind::Step | LinkKind::SpeedJump)
             })
