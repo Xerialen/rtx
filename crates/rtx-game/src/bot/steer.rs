@@ -97,9 +97,14 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // A teleport (or any large instant displacement) invalidates the planned route — drop it
     // and re-path from where we landed. ~200u in one frame is far beyond running/falling. Skipped
     // mid-hook: the reel and the parabola move fast on purpose and must not clear the hook route.
+    // Failed-link surcharges go with it: they are anti-loop memory for *continuous* play, and their
+    // evidence (that leg failed from where I was approaching it) no longer applies after an instant
+    // relocation — carrying them over made a freshly placed bot divert around legs it never tried
+    // from here (measured: alternating detours in teleport-repeated trials, PENALTY_TTL-paced).
     if !route_frozen && bot.watchdog.last_origin != Vec3::ZERO && (origin - bot.watchdog.last_origin).length() > 200.0 {
         bot.route.clear();
         bot.repath_time = now;
+        bot.failed_links = Default::default();
     }
     bot.watchdog.last_origin = origin;
 
