@@ -126,16 +126,18 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     let route_frozen = hooking || on_sj || on_rj || on_air || pinned;
 
     // A teleport (or any large instant displacement) invalidates the planned route — drop it
-    // and re-path from where we landed. ~200u in one frame is far beyond running/falling. Skipped
-    // mid-hook: the reel and the parabola move fast on purpose and must not clear the hook route.
-    // Failed-link surcharges go with it: they are anti-loop memory for *continuous* play, and their
-    // evidence (that leg failed from where I was approaching it) no longer applies after an instant
-    // relocation — carrying them over made a freshly placed bot divert around legs it never tried
-    // from here (measured: alternating detours in teleport-repeated trials, PENALTY_TTL-paced).
-    if !route_frozen && bot.watchdog.last_origin != Vec3::ZERO && (origin - bot.watchdog.last_origin).length() > 200.0 {
+    // and re-path from where we landed. 200u in ONE frame is ~15000 ups — far beyond any legitimate
+    // movement including a hook reel or parabola (~10u/frame), so this fires only on true
+    // relocations and must run even mid-traversal (`route_frozen`): gating it left a bot teleported
+    // out of a committed jump still carrying that route's state. Failed-link surcharges go with it:
+    // they are anti-loop memory for *continuous* play, and their evidence no longer applies after an
+    // instant relocation — carrying them over made a freshly placed bot plan detours around legs it
+    // never tried from here (measured: penalty-correlated 42-leg detour plans after teleports).
+    if bot.watchdog.last_origin != Vec3::ZERO && (origin - bot.watchdog.last_origin).length() > 200.0 {
         bot.route.clear();
         bot.repath_time = now;
         bot.failed_links = Default::default();
+        bot.drop_speed_jump();
     }
     bot.watchdog.last_origin = origin;
 
