@@ -4,6 +4,8 @@
 //! hook and grenade drivers run on. Split out of `entity.rs` so the ~60-field blackboard lives with
 //! the code that reads it (`crate::bot`), not with the engine-shared entity layout.
 
+use std::collections::VecDeque;
+
 use glam::Vec3;
 
 use crate::navmesh::CellId;
@@ -85,6 +87,8 @@ pub struct BotState {
     /// A committed [`LinkKind::SpeedJump`](crate::navmesh::LinkKind::SpeedJump) leg (a bhop run-up +
     /// leap) being flown. `None` = not on a speed jump. See [`Commit`].
     pub sj: Option<Commit>,
+    /// Per-frame telemetry for the latest committed speed-jump leg, oldest frame first.
+    pub sj_trace: VecDeque<SpeedJumpTraceFrame>,
     /// Default-cost A* corridor from the cell where the current speed-jump commitment began to the
     /// takeoff cell. The outer `Option` keys the cache to a leg; the inner one also caches "no path"
     /// so a disconnected takeoff falls back to the legacy beeline without re-running A* every frame.
@@ -108,7 +112,17 @@ impl BotState {
         if self.sj.map(|c| c.leg) != Some(leg) {
             self.sj = Some(Commit { leg, since: now });
             self.sj_runway = None;
+            self.sj_trace.clear();
         }
+    }
+
+    /// Append one committed speed-jump frame, retaining roughly 13 seconds at 77 fps.
+    pub(crate) fn record_speed_jump_frame(&mut self, frame: SpeedJumpTraceFrame) {
+        const CAPACITY: usize = 1024;
+        if self.sj_trace.len() == CAPACITY {
+            self.sj_trace.pop_front();
+        }
+        self.sj_trace.push_back(frame);
     }
 
     /// Drop the speed-jump commitment and every cached result tied to it.
@@ -272,9 +286,36 @@ pub struct SpeedJumpRunway {
     pub path_pos: usize,
 }
 
+/// One frame from a committed speed-jump execution. Serialized compactly by the control channel.
+#[derive(Default)]
+pub(crate) struct SpeedJumpTraceFrame {
+    pub time: f32,
+    pub origin: Vec3,
+    pub speed: f32,
+    pub phase: crate::bot::bhop::Phase,
+    pub on_ground: bool,
+    pub clear: f32,
+    pub runway_path_pos: usize,
+    pub hold: bool,
+    pub ascending: bool,
+}
+
 #[cfg(test)]
 mod speed_jump_tests {
     use super::*;
+
+    #[test]
+    fn trace_resets_only_when_a_new_leg_latches() {
+        let mut bot = BotState::default();
+
+        bot.commit_speed_jump(7, 1.0);
+        bot.sj_trace.push_back(SpeedJumpTraceFrame::default());
+        bot.commit_speed_jump(7, 2.0);
+        assert_eq!(bot.sj_trace.len(), 1, "the same committed leg keeps its trace");
+
+        bot.commit_speed_jump(8, 3.0);
+        assert!(bot.sj_trace.is_empty(), "a newly latched leg starts a fresh trace");
+    }
 
     #[test]
     fn runway_cache_invalidates_on_leg_change_and_drop() {

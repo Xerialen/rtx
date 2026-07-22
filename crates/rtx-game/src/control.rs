@@ -228,6 +228,10 @@ enum ControlCmd {
     Cell { pos: Vec3 },
     /// Dump a bot's current A* route: each leg's index, kind, source and target.
     Route { bot: u32 },
+    /// Dump the latest committed speed-jump leg's compact per-frame telemetry.
+    SjTrace { bot: u32 },
+    /// Dump this bot's currently active failed-link penalties.
+    Penalties { bot: u32 },
     /// List every generated curl link (a SpeedJump with `curl_gain > 0`): index, from, takeoff, target,
     /// v_req, gain — for verifying which gaps the build's curl certifier covered.
     Curls,
@@ -344,6 +348,8 @@ fn parse_line(line: &str) -> Result<(i64, ControlCmd), String> {
             ControlCmd::Cell { pos: Vec3::new(x, y, z) }
         }
         "route" => ControlCmd::Route { bot: parse_u32(rest.split_whitespace().next(), "bot")? },
+        "sjtrace" => ControlCmd::SjTrace { bot: parse_u32(rest.split_whitespace().next(), "bot")? },
+        "penalties" => ControlCmd::Penalties { bot: parse_u32(rest.split_whitespace().next(), "bot")? },
         "curls" => ControlCmd::Curls,
         "probe" => {
             let mut t = rest.split_whitespace();
@@ -407,6 +413,8 @@ fn exec_cmd(game: &mut GameState, id: i64, cmd: ControlCmd) {
         }
         ControlCmd::Cell { pos } => cell_json(game, pos),
         ControlCmd::Route { bot } => route_json(game, bot),
+        ControlCmd::SjTrace { bot } => sjtrace_json(game, bot),
+        ControlCmd::Penalties { bot } => penalties_json(game, bot),
         ControlCmd::Curls => curls_json(game),
         ControlCmd::Probe { takeoff, tgt, psi0, runway } => probe_json(game, takeoff, tgt, psi0, runway),
         ControlCmd::Curl { src, tgt } => curl_json(game, src, tgt),
@@ -756,6 +764,59 @@ fn route_json(game: &GameState, bot: u32) -> Result<String, String> {
         b.route_pos,
         jvec3(game.entities[e].v.origin),
     ))
+}
+
+/// Dump the latest committed speed-jump trace. Each frame is
+/// `[time,x,y,z,speed,phase,on_ground,clear,path_pos,hold,ascending]`.
+fn sjtrace_json(game: &GameState, bot: u32) -> Result<String, String> {
+    // Leave room for reply_ok's envelope, the widest i64 request id, and the writer's newline so the
+    // complete TCP line—not just this data array—stays below the requested 1 MB ceiling.
+    const MAX_DATA_BYTES: usize = 1_000_000 - 100;
+
+    let e = valid_bot(game, bot)?;
+    let mut frames: Vec<String> = game.entities[e]
+        .bot
+        .sj_trace
+        .iter()
+        .map(|f| {
+            format!(
+                "[{},{},{},{},{},{},{},{},{},{},{}]",
+                jnum(f.time),
+                jnum(f.origin.x),
+                jnum(f.origin.y),
+                jnum(f.origin.z),
+                jnum(f.speed),
+                jstr(&format!("{:?}", f.phase)),
+                f.on_ground as u8,
+                jnum(f.clear),
+                f.runway_path_pos,
+                f.hold as u8,
+                f.ascending as u8,
+            )
+        })
+        .collect();
+    let mut bytes = 2 + frames.iter().map(String::len).sum::<usize>() + frames.len().saturating_sub(1);
+    let mut first = 0;
+    while bytes > MAX_DATA_BYTES && first < frames.len() {
+        bytes -= frames[first].len() + usize::from(frames.len() - first > 1);
+        first += 1;
+    }
+    Ok(format!("[{}]", frames.drain(first..).collect::<Vec<_>>().join(",")))
+}
+
+/// Dump active failed-link penalty expiries relative to the current server time.
+fn penalties_json(game: &GameState, bot: u32) -> Result<String, String> {
+    let e = valid_bot(game, bot)?;
+    let now = game.time();
+    let items = game.entities[e]
+        .bot
+        .failed_links
+        .iter()
+        .filter(|(_, until, _)| *until > now)
+        .map(|(link, until, _)| format!("{{\"link\":{link},\"expires_in_s\":{}}}", jnum(*until - now)))
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!("[{items}]"))
 }
 
 /// Search the offline pmove sim (against the live BSP) for a speed-curl jump from `src` to `tgt`: a
@@ -1230,6 +1291,8 @@ mod tests {
         assert_eq!(parse_line("  12   links  ").unwrap(), (12, ControlCmd::Links));
         assert_eq!(parse_line("3 hold 1").unwrap(), (3, ControlCmd::Hold { bot: 1 }));
         assert_eq!(parse_line("4 stop 2").unwrap(), (4, ControlCmd::Stop { bot: 2 }));
+        assert_eq!(parse_line("5 sjtrace 3").unwrap(), (5, ControlCmd::SjTrace { bot: 3 }));
+        assert_eq!(parse_line("6 penalties 3").unwrap(), (6, ControlCmd::Penalties { bot: 3 }));
     }
 
     #[test]

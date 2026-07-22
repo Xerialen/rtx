@@ -15,7 +15,7 @@ use glam::{Vec2, Vec3, Vec3Swizzles};
 use super::*;
 use crate::bsp::Bsp;
 use rtx_nav::qphys::ORIGIN_TO_FEET;
-use crate::bot::state::{AirCommit, GateErrand, PlatWait, SpeedJumpRunway};
+use crate::bot::state::{AirCommit, GateErrand, PlatWait, SpeedJumpRunway, SpeedJumpTraceFrame};
 use crate::math::{angle_vectors, angles_to, yaw_of};
 use crate::defs::{Weapon, BOT_MOVE_SPEED as MOVE_SPEED, BUTTON_ATTACK, BUTTON_JUMP};
 use crate::game::cstring;
@@ -786,6 +786,19 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 "rtx bot{client}: bhop {phase_was:?}->{:?}{why} spd={speed:.0} runway={bhop_runway:.0}\n",
                 bot.bhop.phase,
             )));
+        }
+        if sj_active {
+            bot.record_speed_jump_frame(SpeedJumpTraceFrame {
+                time: now,
+                origin,
+                speed,
+                phase: bot.bhop.phase,
+                on_ground,
+                clear,
+                runway_path_pos: bot.sj_runway.as_ref().map_or(0, |r| r.path_pos),
+                hold: sj_hold,
+                ascending: sj_ascending,
+            });
         }
         cmd
     };
