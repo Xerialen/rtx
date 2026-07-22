@@ -152,6 +152,27 @@ fn sampled_segment(a: Vec3, b: Vec3) -> Vec<Vec3> {
     (0..=steps).map(|i| a.lerp(b, i as f32 / steps as f32)).collect()
 }
 
+fn angle_vectors(angles: Vec3) -> (Vec3, Vec3, Vec3) {
+    let (sp, cp) = angles.x.to_radians().sin_cos();
+    let (sy, cy) = angles.y.to_radians().sin_cos();
+    let (sr, cr) = angles.z.to_radians().sin_cos();
+    let forward = Vec3::new(cp * cy, cp * sy, -sp);
+    let right = Vec3::new(-sr * sp * cy + cr * sy, -sr * sp * sy - cr * cy, -sr * cp);
+    let up = Vec3::new(cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp);
+    (forward, right, up)
+}
+
+fn sampled_path(points: &[Vec3]) -> Vec<Vec3> {
+    let mut sampled = Vec::new();
+    for pair in points.windows(2) {
+        sampled.extend(sampled_segment(pair[0], pair[1]));
+    }
+    if sampled.is_empty() {
+        sampled.extend(points.iter().copied());
+    }
+    sampled
+}
+
 /// Reconstruct every position a moving brush can occupy under stock door/plat/train rules, then
 /// retain its real hull rather than treating the brush's bounding box as solid.
 fn mover_specs(bsp: &Bsp) -> Vec<Mover> {
@@ -163,7 +184,7 @@ fn mover_specs(bsp: &Bsp) -> Vec<Mover> {
     let mut movers = Vec::new();
     for entity in &entities {
         let classname = entity.get("classname").map(String::as_str).unwrap_or("");
-        if !matches!(classname, "func_door" | "func_plat" | "func_train") {
+        if !matches!(classname, "func_door" | "func_door_secret" | "func_plat" | "func_train") {
             continue;
         }
         let Some(index) = entity
@@ -181,6 +202,38 @@ fn mover_specs(bsp: &Bsp) -> Vec<Mover> {
                 let travel = direction.abs().dot(model.maxs - model.mins) - parse_f32(entity, "lip", 8.0);
                 sampled_segment(origin, origin + direction * travel.max(0.0))
             }
+            "func_door_secret" => {
+                let size = model.maxs - model.mins;
+                let (forward, right, up) = angle_vectors(parse_vec3(entity.get("angles")));
+                let flags = parse_f32(entity, "spawnflags", 0.0) as i32;
+                let first_down = flags & 4 != 0;
+                let width = {
+                    let configured = parse_f32(entity, "t_width", 0.0);
+                    if configured != 0.0 {
+                        configured
+                    } else if first_down {
+                        up.abs().dot(size)
+                    } else {
+                        right.abs().dot(size)
+                    }
+                };
+                let length = {
+                    let configured = parse_f32(entity, "t_length", 0.0);
+                    if configured != 0.0 {
+                        configured
+                    } else {
+                        forward.abs().dot(size)
+                    }
+                };
+                let dest1 = if first_down {
+                    origin - up * width
+                } else {
+                    let side = if flags & 2 != 0 { -1.0 } else { 1.0 };
+                    origin + right * width * side
+                };
+                let dest2 = dest1 + forward * length;
+                sampled_path(&[origin, dest1, dest2])
+            }
             "func_plat" => {
                 let height = parse_f32(entity, "height", 0.0);
                 let travel = if height != 0.0 {
@@ -196,20 +249,16 @@ fn mover_specs(bsp: &Bsp) -> Vec<Mover> {
                 let mut seen = std::collections::HashSet::new();
                 while let Some(name) = target {
                     if !seen.insert(name.to_owned()) {
+                        if let Some(corner) = by_targetname.get(name) {
+                            points.push(parse_vec3(corner.get("origin")) - model.mins);
+                        }
                         break;
                     }
                     let Some(corner) = by_targetname.get(name) else { break };
                     points.push(parse_vec3(corner.get("origin")) - model.mins);
                     target = corner.get("target").map(String::as_str);
                 }
-                let mut sampled = Vec::new();
-                for pair in points.windows(2) {
-                    sampled.extend(sampled_segment(pair[0], pair[1]));
-                }
-                if sampled.is_empty() {
-                    sampled.extend(points);
-                }
-                sampled
+                sampled_path(&points)
             }
             _ => unreachable!(),
         };
