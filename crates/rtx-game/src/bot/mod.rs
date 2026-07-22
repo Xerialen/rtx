@@ -35,7 +35,7 @@ pub(crate) use population::{drain_roster, RosterOp};
 use population::bot_target;
 
 use crate::bot::state::{
-    AirCommit, BotState, CombatPosture, Commit, GoalCommit, GrenadePhase, HookPhase, RjPhase, Wander,
+    AirCommit, BotState, CombatPosture, GoalCommit, GrenadePhase, HookPhase, RjPhase, Wander,
 };
 use crate::defs::{
     Bits, DeadFlag, Flags, Items, Solid, TakeDamage, Weapon, BUTTON_ATTACK, BUTTON_JUMP, VEC_VIEW_OFS,
@@ -1127,7 +1127,7 @@ fn prearm_traversal(game: &mut GameState, e: EntId, now: f32, on_ground: bool) {
             }
         }
         LinkKind::SpeedJump if bhop && b.sj.map(|c| c.leg) != Some(leg) => {
-            b.sj = Some(Commit { leg, since: now });
+            b.commit_speed_jump(leg, now);
         }
         _ => {}
     }
@@ -1152,7 +1152,7 @@ fn run_bot(game: &mut GameState, e: EntId) {
             (b.goal.hold_item, b.goal.hold_for, b.goal.hold_until) = (0, 0, 0.0);
         }
         b.air = None;
-        b.sj = None;
+        b.drop_speed_jump();
         b.goal.commit = GoalCommit::None;
         b.posture = CombatPosture::Hold;
     }

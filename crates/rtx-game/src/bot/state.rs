@@ -85,6 +85,10 @@ pub struct BotState {
     /// A committed [`LinkKind::SpeedJump`](crate::navmesh::LinkKind::SpeedJump) leg (a bhop run-up +
     /// leap) being flown. `None` = not on a speed jump. See [`Commit`].
     pub sj: Option<Commit>,
+    /// Default-cost A* corridor from the cell where the current speed-jump commitment began to the
+    /// takeoff cell. The outer `Option` keys the cache to a leg; the inner one also caches "no path"
+    /// so a disconnected takeoff falls back to the legacy beeline without re-running A* every frame.
+    pub sj_runway: Option<SpeedJumpRunway>,
     /// A committed plain jump leg (JumpGap/DoubleJump) being flown. Pre-armed before objective
     /// selection, it freezes the route and locks out combat until a physical landing — so an enemy
     /// appearing at the lip or mid-arc cannot flip the goal and yank the bot off the jump.
@@ -99,6 +103,20 @@ pub struct BotState {
 }
 
 impl BotState {
+    /// Commit to `leg`, invalidating the one-shot runway path only when the leg changes.
+    pub(crate) fn commit_speed_jump(&mut self, leg: u32, now: f32) {
+        if self.sj.map(|c| c.leg) != Some(leg) {
+            self.sj = Some(Commit { leg, since: now });
+            self.sj_runway = None;
+        }
+    }
+
+    /// Drop the speed-jump commitment and every cached result tied to it.
+    pub(crate) fn drop_speed_jump(&mut self) {
+        self.sj = None;
+        self.sj_runway = None;
+    }
+
     /// Add `item` to the avoid ring until `until` (bumping a matching entry's expiry, else evicting
     /// the soonest-to-expire slot). Ignores `0` (the "no item" sentinel).
     pub fn mark_avoid(&mut self, item: u32, until: f32) {
@@ -244,6 +262,38 @@ pub struct Vigil {
 pub struct Commit {
     pub leg: u32,
     pub since: f32,
+}
+
+/// One-shot path cache for a committed speed-jump runway.
+pub struct SpeedJumpRunway {
+    pub leg: u32,
+    pub path: Option<Vec<u32>>,
+    /// Next link in `path`, advanced monotonically as the bot crosses cached cells.
+    pub path_pos: usize,
+}
+
+#[cfg(test)]
+mod speed_jump_tests {
+    use super::*;
+
+    #[test]
+    fn runway_cache_invalidates_on_leg_change_and_drop() {
+        let mut bot = BotState::default();
+
+        bot.commit_speed_jump(7, 1.0);
+        bot.sj_runway = Some(SpeedJumpRunway { leg: 7, path: Some(vec![10, 11]), path_pos: 0 });
+        bot.commit_speed_jump(7, 2.0);
+        assert_eq!(bot.sj_runway.as_ref().and_then(|r| r.path.as_ref()).unwrap(), &[10, 11]);
+
+        bot.commit_speed_jump(8, 3.0);
+        assert_eq!(bot.sj.map(|c| c.leg), Some(8));
+        assert!(bot.sj_runway.is_none(), "a new leg must discard the old runway");
+
+        bot.sj_runway = Some(SpeedJumpRunway { leg: 8, path: None, path_pos: 0 });
+        bot.drop_speed_jump();
+        assert!(bot.sj.is_none());
+        assert!(bot.sj_runway.is_none(), "dropping a leg must discard even a cached A* miss");
+    }
 }
 
 /// A plain gap/double-jump commitment. Unlike [`Commit`] (the speed-jump run-up latch), this records

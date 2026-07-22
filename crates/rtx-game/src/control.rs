@@ -486,7 +486,7 @@ fn reset_nav_state(bot: &mut crate::bot::state::BotState, at: Vec3, now: f32) {
     bot.route_pos = 0;
     bot.rj = RjState::default();
     bot.hook = HookState::default();
-    bot.sj = None;
+    bot.drop_speed_jump();
     bot.air = None;
     bot.bhop = Default::default();
     bot.watchdog.last_origin = at;

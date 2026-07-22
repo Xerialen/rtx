@@ -15,7 +15,7 @@ use glam::{Vec2, Vec3, Vec3Swizzles};
 use super::*;
 use crate::bsp::Bsp;
 use rtx_nav::qphys::ORIGIN_TO_FEET;
-use crate::bot::state::{AirCommit, Commit, GateErrand, PlatWait};
+use crate::bot::state::{AirCommit, GateErrand, PlatWait, SpeedJumpRunway};
 use crate::math::{angle_vectors, angles_to, yaw_of};
 use crate::defs::{Weapon, BOT_MOVE_SPEED as MOVE_SPEED, BUTTON_ATTACK, BUTTON_JUMP};
 use crate::game::cstring;
@@ -502,21 +502,47 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     let mut sj_active =
         matches!(kind, Some(LinkKind::SpeedJump)) && host.cvar_bool(c"rtx_bot_bhop") && !hook_active && !rj_active;
     if sj_active {
-        if bot.sj.map(|c| c.leg) != cur_leg {
-            bot.sj = cur_leg.map(|leg| Commit { leg, since: now });
+        bot.commit_speed_jump(cur_leg.unwrap(), now);
+        if bot.sj_runway.as_ref().map(|r| r.leg) != cur_leg {
+            bot.sj_runway = cur_leg.map(|leg| SpeedJumpRunway {
+                leg,
+                path: graph
+                    .speed_jump_of_link(leg)
+                    .and_then(|tr| graph.nearest(tr.takeoff))
+                    .and_then(|takeoff_cell| graph.find_path(bot_cell, takeoff_cell, &LinkCosts::default())),
+                path_pos: 0,
+            });
+        }
+        if let Some(runway) = bot.sj_runway.as_mut() {
+            if let Some(path) = runway.path.as_ref() {
+                // Advance monotonically to the first cached leg whose source is our current cell;
+                // matching a target advances past that leg. A* paths are contiguous, so either form
+                // identifies the same cursor at cell boundaries and tolerates crossing several cells.
+                if let Some(pos) = path.iter().enumerate().skip(runway.path_pos).find_map(|(i, &link)| {
+                    if graph.link_source(link) == bot_cell {
+                        Some(i)
+                    } else if graph.link_target(link) == bot_cell {
+                        Some(i + 1)
+                    } else {
+                        None
+                    }
+                }) {
+                    runway.path_pos = pos;
+                }
+            }
         }
         // Watchdog: the route is frozen mid-leg, so if the run-up stalls (blocked, shoved, never
         // built speed) abandon it and re-path rather than wedging on the runway forever. Penalize the
         // leg so the deterministic A* actually diverts instead of handing back the same run-up.
         if bot.sj.is_some_and(|c| now - c.since > 4.0) {
             penalize_leg(bot, cur_leg, kind, now);
-            bot.sj = None;
+            bot.drop_speed_jump();
             bot.route.clear();
             bot.repath_time = now;
             sj_active = false;
         }
-    } else if bot.sj.is_some() {
-        bot.sj = None;
+    } else {
+        bot.drop_speed_jump();
     }
     // Fallback latch for a jump leg created by this frame's repath. Ordinarily `prearm_traversal`
     // installed it before objective resolution; this closes the first-frame route-build case.
@@ -603,7 +629,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // case backstop only; marginal arrivals are the hold gate's job below.
         if predicted < v_req * 0.6 {
             penalize_leg(bot, cur_leg, kind, now);
-            bot.sj = None;
+            bot.drop_speed_jump();
             bot.route.clear();
             bot.repath_time = now;
             sj_active = false;
@@ -639,7 +665,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // (race mode, when a line exists) or a *speed-scaled* corridor look-ahead — ~0.6 s of travel
         // ahead (clamped 96–448u) so a fast bot's bearing anticipates the corridor far enough to
         // start curving, rather than chasing the fixed ~2-legs `look_point` it has already overrun.
-        let bhop_look = corridor_point(graph, &bot.route, bot.route_pos, origin, (speed * 0.6).clamp(96.0, 448.0));
+        let lookahead = (speed * 0.6).clamp(96.0, 448.0);
+        let bhop_look = corridor_point(graph, &bot.route, bot.route_pos, origin, lookahead);
+        let sj_runway_look = bot
+            .sj_runway
+            .as_ref()
+            .filter(|r| Some(r.leg) == cur_leg)
+            .and_then(|r| r.path.as_ref().map(|path| (path, r.path_pos)))
+            .map(|(path, pos)| corridor_point(graph, path, pos, origin, lookahead))
+            .filter(|look| (look.xy() - origin.xy()).length() > 8.0);
         let ahead = match race_line_ahead {
             Some(lp) if !sj_active => lp.xy() - origin.xy(),
             // On a speed jump the run-up aims at the *takeoff* (follow the corridor to the lip), and
@@ -647,16 +681,24 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             // leap not collinear) tracks its corridor instead of cutting across it and off the edge.
             // For a straight speed jump takeoff and target are collinear, so this is a no-op.
             _ if sj_active => {
-                let aim = match (sj_takeoff, sj_progress) {
+                let (aim, aims_takeoff) = match (sj_takeoff, sj_progress) {
                     // Curl run-up: aim at the takeoff (follow the corridor) while still behind the lip —
                     // grounded *or* briefly airborne (a bumped or carried-airborne entry) — so it never
                     // curls toward the offset landing while still over the run-up and pulls off the edge.
-                    (Some((takeoff, _)), Some(p)) if p > bhop::LIP_REACH => takeoff,
+                    (Some((takeoff, _)), Some(p)) if p > bhop::LIP_REACH => (takeoff, true),
                     // Straight speed jump on the ground: aim at the takeoff (collinear → no-op vs landing).
-                    (Some((takeoff, _)), None) if on_ground => takeoff,
-                    _ => waypoint,
+                    (Some((takeoff, _)), None) if on_ground => (takeoff, true),
+                    _ => (waypoint, false),
                 };
-                aim.xy() - origin.xy()
+                let direct_takeoff = sj_takeoff.is_some_and(|(takeoff, _)| {
+                    (takeoff.xy() - origin.xy()).length() <= 96.0
+                        || bsp.is_some_and(|bsp| bsp.hull1_trace(origin, takeoff).fraction >= 1.0)
+                });
+                if on_ground && aims_takeoff && !direct_takeoff {
+                    sj_runway_look.unwrap_or(aim).xy() - origin.xy()
+                } else {
+                    aim.xy() - origin.xy()
+                }
             }
             _ => bhop_look.xy() - origin.xy(),
         };
