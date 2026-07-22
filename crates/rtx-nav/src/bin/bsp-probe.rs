@@ -147,6 +147,14 @@ fn movedir(entity: &HashMap<String, String>) -> Vec3 {
     }
 }
 
+fn entity_angles(entity: &HashMap<String, String>) -> Vec3 {
+    if entity.contains_key("angles") {
+        parse_vec3(entity.get("angles"))
+    } else {
+        Vec3::new(0.0, parse_f32(entity, "angle", 0.0), 0.0)
+    }
+}
+
 fn sampled_segment(a: Vec3, b: Vec3) -> Vec<Vec3> {
     let steps = (a.distance(b) / 4.0).ceil().max(1.0) as usize;
     (0..=steps).map(|i| a.lerp(b, i as f32 / steps as f32)).collect()
@@ -204,7 +212,7 @@ fn mover_specs(bsp: &Bsp) -> Vec<Mover> {
             }
             "func_door_secret" => {
                 let size = model.maxs - model.mins;
-                let (forward, right, up) = angle_vectors(parse_vec3(entity.get("angles")));
+                let (forward, right, up) = angle_vectors(entity_angles(entity));
                 let flags = parse_f32(entity, "spawnflags", 0.0) as i32;
                 let first_down = flags & 4 != 0;
                 let width = {
@@ -420,6 +428,15 @@ mod tests {
             found.is_some(),
             "translated mover hull must mark intermediate travel space unknown"
         );
+    }
+
+    #[test]
+    fn secret_door_scalar_angle_is_yaw() {
+        let entity = HashMap::from([("angle".to_owned(), "90".to_owned())]);
+        let (forward, right, up) = angle_vectors(entity_angles(&entity));
+        assert!(forward.distance(Vec3::Y) < 1e-5, "forward={forward:?}");
+        assert!(right.distance(Vec3::X) < 1e-5, "right={right:?}");
+        assert!(up.distance(Vec3::Z) < 1e-5, "up={up:?}");
     }
 
     // Small dependency-free SHA-256 used only to fail closed on fixture drift.
