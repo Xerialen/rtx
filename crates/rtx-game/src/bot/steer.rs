@@ -556,7 +556,14 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         .map(|tr| (tr.takeoff, tr.v_req));
     // A curl speed jump carries a nonzero air-curl gain; a straight one carries 0 (keeps the slalom).
     let sj_curl_gain = cur_leg.and_then(|l| graph.speed_jump_of_link(l)).map(|tr| tr.curl_gain).unwrap_or(0.0);
-    let sj_curl = sj_active && sj_curl_gain > 0.0;
+    // A straight speed jump whose `v_req` the ground circle-strafe can genuinely deliver also runs
+    // the takeoff regime (hold-to-lip, line-crossing leap, too-slow abort): on a narrow runway the
+    // grounded run-up replaces air-hop lobes that wall-clip, and the leap fires in-band instead of
+    // short. Hotter jumps keep the air-strafe hop chain — prestrafe (~490 ceiling) can't reach them,
+    // which is why the regime was curl-only before.
+    const SJ_GROUND_REGIME_V: f32 = 470.0;
+    let sj_curl = sj_active
+        && (sj_curl_gain > 0.0 || sj_takeoff.is_some_and(|(_, v_req)| v_req <= SJ_GROUND_REGIME_V));
     // Signed along-corridor distance from the bot to a curl's takeoff (>0 behind the lip, <0 past it):
     // the run-up direction is the link's `from`→takeoff line. Used to trigger the leap on crossing the
     // takeoff *line* (not a radial ball the weave can skirt into a U-turn) and to gate the run-up aim.
@@ -683,12 +690,12 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 committed: sj_active || sj_approach,
                 carry,
                 hold_jump: sj_hold,
-                // The takeoff regime (hold ground prestrafe to the lip, leap once) is only for *curl*
-                // jumps, which need a run-up the ground circle-strafe builds. A straight speed jump keeps
-                // the pre-existing hop-chain takeoff — its air-strafe runway can exceed the ~490 prestrafe
-                // ceiling, which the hold-to-lip regime would cap it below. So gate on the curl flag.
+                // The takeoff regime (hold ground prestrafe to the lip, leap once) runs for curls and
+                // for straight jumps within the prestrafe ceiling (`sj_curl`, see its definition). A
+                // hotter straight jump keeps the pre-existing hop-chain takeoff — its air-strafe runway
+                // can exceed the ~490 prestrafe ceiling, which the hold-to-lip regime would cap it below.
                 takeoff_speed: match sj_takeoff {
-                    Some((_, v_req)) if sj_active && sj_curl_gain > 0.0 => v_req,
+                    Some((_, v_req)) if sj_curl => v_req,
                     _ => 0.0,
                 },
                 // Curl only jumps flagged as curls (straight speed jumps keep the slalom untouched). The
