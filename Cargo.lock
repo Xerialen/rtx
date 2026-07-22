@@ -2671,6 +2671,8 @@ dependencies = [
  "binrw",
  "glam",
  "rayon",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
