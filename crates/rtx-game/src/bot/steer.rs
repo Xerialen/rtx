@@ -478,16 +478,17 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         && !final_leg
         && goal_dist > 150.0
         && runway_dist >= bhop::ZIGZAG_ENGAGE;
-    // A short chain of Walk/Step legs immediately before a SpeedJump is part of its committed
+    // A chain of Walk/Step legs immediately before a SpeedJump is part of its committed
     // approach. Keep the same hop-cycle ownership across those stairs instead of letting the normal
-    // ascent/runway veto turn the run into a friction-heavy walk just before takeoff.
+    // ascent/runway veto turn the run into a friction-heavy walk just before takeoff. The window
+    // must span a full corridor approach (cells are 32u, so 16 legs ≈ 512u of runway).
     let sj_approach = matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
         && bot
             .route
             .get(bot.route_pos.saturating_add(1)..)
             .unwrap_or_default()
             .iter()
-            .take(4)
+            .take(16)
             .take_while(|&&leg| {
                 matches!(graph.link_kind(leg), LinkKind::Walk | LinkKind::Step | LinkKind::SpeedJump)
             })
@@ -674,7 +675,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 zigzag: zigzag_ok,
                 sustain: bhop_sustain,
                 veto: bhop_veto,
-                // The actual SpeedJump and its final four-leg ground approach bypass the ordinary
+                // The actual SpeedJump and its ground approach chain bypass the ordinary
                 // runway/landing gates. `bhop_veto` still honors rtx_bot_bhop and traversal vetoes.
                 committed: sj_active || sj_approach,
                 carry,
