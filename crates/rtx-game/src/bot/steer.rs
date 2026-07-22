@@ -515,18 +515,16 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         }
         if let Some(runway) = bot.sj_runway.as_mut() {
             if let Some(path) = runway.path.as_ref() {
-                // Advance monotonically to the first cached leg whose source is our current cell;
-                // matching a target advances past that leg. A* paths are contiguous, so either form
-                // identifies the same cursor at cell boundaries and tolerates crossing several cells.
-                if let Some(pos) = path.iter().enumerate().skip(runway.path_pos).find_map(|(i, &link)| {
-                    if graph.link_source(link) == bot_cell {
-                        Some(i)
-                    } else if graph.link_target(link) == bot_cell {
-                        Some(i + 1)
-                    } else {
-                        None
-                    }
-                }) {
+                // Advance the cursor to the nearest upcoming path cell by *projection*, monotonic and
+                // bounded. Exact cell-match advancement froze whenever a hop drifted onto a parallel
+                // row of cells (never touching the path's own cells) — the stale look-ahead then
+                // steered the bot back in a circle. Distance to the leg's source cell is robust to
+                // that drift; the +8 window keeps it linear and forward-only.
+                let dist = |i: usize| {
+                    (graph.cell_origin(graph.link_source(path[i])).xy() - origin.xy()).length()
+                };
+                let end = path.len().min(runway.path_pos + 8);
+                if let Some(pos) = (runway.path_pos..end).min_by(|&a, &b| dist(a).total_cmp(&dist(b))) {
                     runway.path_pos = pos;
                 }
             }
