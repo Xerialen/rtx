@@ -215,6 +215,7 @@ pub fn rollout(bsp: &Bsp, line: &RaceLine, nodes: &[RaceRouteNode], pm: &PmParam
             carry: tech == TECH_HOP || tech == TECH_SPEEDJUMP,
             hold_jump: tech == TECH_SPEEDJUMP && st.vel.xy().length() < pts[cursor.min(last)].target_speed,
             defer_jump: false, // offline racing lines have no stair-phase BSP probe
+            phase_defer_frames: None,
             // Racing-line speed jumps are straight (curl_gain 0) and must NOT enter the curl takeoff
             // regime: `runway` here is remaining-line arclength, not distance-to-takeoff, so the
             // hold-to-lip branch would misfire. `hold_jump` above already gates the leap by target_speed.

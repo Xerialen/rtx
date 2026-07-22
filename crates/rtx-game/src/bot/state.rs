@@ -284,6 +284,9 @@ pub struct SpeedJumpRunway {
     pub path: Option<Vec<u32>>,
     /// Next link in `path`, advanced monotonically as the bot crosses cached cells.
     pub path_pos: usize,
+    /// Last cached-path link in the detected ascending series. Latched so planning stays active while
+    /// the cursor is inside the series even after the first risers have moved behind the bot.
+    pub step_series_end: Option<usize>,
 }
 
 /// One frame from a committed speed-jump execution. Serialized compactly by the control channel.
@@ -322,7 +325,12 @@ mod speed_jump_tests {
         let mut bot = BotState::default();
 
         bot.commit_speed_jump(7, 1.0);
-        bot.sj_runway = Some(SpeedJumpRunway { leg: 7, path: Some(vec![10, 11]), path_pos: 0 });
+        bot.sj_runway = Some(SpeedJumpRunway {
+            leg: 7,
+            path: Some(vec![10, 11]),
+            path_pos: 0,
+            step_series_end: Some(1),
+        });
         bot.commit_speed_jump(7, 2.0);
         assert_eq!(bot.sj_runway.as_ref().and_then(|r| r.path.as_ref()).unwrap(), &[10, 11]);
 
@@ -330,7 +338,7 @@ mod speed_jump_tests {
         assert_eq!(bot.sj.map(|c| c.leg), Some(8));
         assert!(bot.sj_runway.is_none(), "a new leg must discard the old runway");
 
-        bot.sj_runway = Some(SpeedJumpRunway { leg: 8, path: None, path_pos: 0 });
+        bot.sj_runway = Some(SpeedJumpRunway { leg: 8, path: None, path_pos: 0, step_series_end: None });
         bot.drop_speed_jump();
         assert!(bot.sj.is_none());
         assert!(bot.sj_runway.is_none(), "dropping a leg must discard even a cached A* miss");

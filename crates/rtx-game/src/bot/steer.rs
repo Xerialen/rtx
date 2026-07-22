@@ -27,6 +27,124 @@ const STEP_DEFER_MAX_RISE: f32 = 18.0;
 const STEP_DEFER_LOW_ARC_FRACTION: f32 = 0.75;
 const STEP_DEFER_TRACE_UP: f32 = 32.0;
 const STEP_DEFER_TRACE_DOWN: f32 = 64.0;
+const STEP_PHASE_TRACE_UP: f32 = 80.0;
+const STEP_PHASE_TRACE_DOWN: f32 = 96.0;
+const STEP_SERIES_MIN_RISE: f32 = 8.0;
+const STEP_SERIES_MAX_SPAN: f32 = 160.0;
+const STEP_PHASE_HOPS_AHEAD: f32 = 2.0;
+const STEP_PHASE_CONTACTS: u8 = 3;
+const STEP_PHASE_FRICTION_PER_FRAME: f32 = 8.0;
+const STEP_PHASE_FRONT_PROBE: f32 = 12.0;
+const STEP_PHASE_HEIGHT_EPSILON: f32 = 2.0;
+const STEP_PHASE_JUMP_APEX: f32 = 45.5;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StepPhasePlan {
+    defer_frames: u8,
+    good_contacts: u8,
+}
+
+/// Pick the least ground delay whose next three hop contacts all land on stable floor and whose
+/// intervening arcs clear the sampled profile. If no delay is wholly safe, retain the delay with the
+/// most good contacts; ascending `f` iteration makes equal scores prefer less friction.
+fn plan_step_phase(
+    origin: Vec3,
+    v_xy: Vec2,
+    dt: f32,
+    mut ground_z: impl FnMut(Vec2) -> Option<f32>,
+) -> StepPhasePlan {
+    let speed = v_xy.length();
+    if speed <= 1.0 {
+        return StepPhasePlan { defer_frames: 0, good_contacts: 0 };
+    }
+    let dir = v_xy / speed;
+    let start_z = ground_z(origin.xy()).unwrap_or(origin.z - ORIGIN_TO_FEET);
+    let mut best = StepPhasePlan { defer_frames: 0, good_contacts: 0 };
+
+    for defer_frames in 0..=bhop::MAX_PHASE_DEFER_FRAMES {
+        let f = defer_frames as f32;
+        let simulated_speed = (speed - STEP_PHASE_FRICTION_PER_FRAME * f).max(1.0);
+        let mut previous_xy = origin.xy();
+        let mut previous_z = start_z;
+        let mut good_contacts = 0;
+
+        for k in 1..=STEP_PHASE_CONTACTS {
+            let t = bhop::T_HOP * k as f32 + f * dt;
+            let contact_xy = origin.xy() + dir * (simulated_speed * t);
+            let Some(contact_z) = ground_z(contact_xy) else { continue };
+            let plateau = ground_z(contact_xy + dir * STEP_PHASE_FRONT_PROBE)
+                .is_some_and(|ahead_z| (ahead_z - contact_z).abs() <= STEP_PHASE_HEIGHT_EPSILON);
+            let rise_reachable = contact_z - previous_z <= STEP_PHASE_JUMP_APEX + STEP_PHASE_HEIGHT_EPSILON;
+            let arc_clear = [0.5_f32, STEP_DEFER_LOW_ARC_FRACTION].into_iter().all(|arc_t| {
+                let sample_xy = previous_xy.lerp(contact_xy, arc_t);
+                let arc_z = previous_z
+                    + (contact_z - previous_z) * arc_t
+                    + 4.0 * STEP_PHASE_JUMP_APEX * arc_t * (1.0 - arc_t);
+                ground_z(sample_xy).is_some_and(|floor_z| floor_z <= arc_z + STEP_PHASE_HEIGHT_EPSILON)
+            });
+            if plateau && rise_reachable && arc_clear {
+                good_contacts += 1;
+            }
+            previous_xy = contact_xy;
+            previous_z = contact_z;
+        }
+
+        let plan = StepPhasePlan { defer_frames, good_contacts };
+        if good_contacts == STEP_PHASE_CONTACTS {
+            return plan;
+        }
+        if good_contacts > best.good_contacts {
+            best = plan;
+        }
+    }
+    best
+}
+
+/// Return the cached-path index of the last rise in the next stair series. A series is at least two
+/// >=8u rising links no more than 160u apart, and must begin within two current hop lengths.
+fn step_series_end(
+    graph: &NavGraph,
+    path: &[u32],
+    path_pos: usize,
+    origin: Vec3,
+    speed: f32,
+) -> Option<usize> {
+    let max_ahead = STEP_PHASE_HOPS_AHEAD * speed * bhop::T_HOP;
+    let mut previous_xy = origin.xy();
+    let mut distance = 0.0;
+    let mut last_rise_distance = None;
+    let mut series_end = None;
+
+    for (path_index, &link) in path.iter().enumerate().skip(path_pos) {
+        let target = graph.cell_origin(graph.link_target(link));
+        distance += (target.xy() - previous_xy).length();
+        previous_xy = target.xy();
+        if distance > max_ahead {
+            break;
+        }
+        let source = graph.cell_origin(graph.link_source(link));
+        if target.z - source.z < STEP_SERIES_MIN_RISE {
+            continue;
+        }
+        if let Some(last_rise) = last_rise_distance {
+            if distance - last_rise <= STEP_SERIES_MAX_SPAN {
+                series_end = Some(path_index);
+            } else if series_end.is_some() {
+                break;
+            }
+        }
+        last_rise_distance = Some(distance);
+    }
+    series_end
+}
+
+fn path_link_passed(graph: &NavGraph, path: &[u32], path_index: usize, origin: Vec3) -> bool {
+    let link = path[path_index];
+    let source = graph.cell_origin(graph.link_source(link)).xy();
+    let target = graph.cell_origin(graph.link_target(link)).xy();
+    let direction = target - source;
+    direction.length_squared() > 1.0 && (origin.xy() - target).dot(direction) > 0.0
+}
 
 /// A landing predicted onto a low stair is dangerous only while the stair front is still in the
 /// last quarter of the hop footprint. Once the 75% sample is on the same top, the next arc has enough
@@ -46,8 +164,16 @@ fn should_defer_step_jump(origin: Vec3, v_xy: Vec2, mut ground_z: impl FnMut(Vec
 /// Sample standable BSP ground at `xy`, expressed as foot/surface Z. The trace starts above the
 /// largest accepted stair and extends below the current floor; a missing or non-floor hit is unknown.
 fn bsp_ground_z(bsp: &Bsp, origin: Vec3, xy: Vec2) -> Option<f32> {
-    let start = Vec3::new(xy.x, xy.y, origin.z + STEP_DEFER_TRACE_UP);
-    let end = Vec3::new(xy.x, xy.y, origin.z - STEP_DEFER_TRACE_DOWN);
+    bsp_ground_z_span(bsp, origin, xy, STEP_DEFER_TRACE_UP, STEP_DEFER_TRACE_DOWN)
+}
+
+fn bsp_phase_ground_z(bsp: &Bsp, origin: Vec3, xy: Vec2) -> Option<f32> {
+    bsp_ground_z_span(bsp, origin, xy, STEP_PHASE_TRACE_UP, STEP_PHASE_TRACE_DOWN)
+}
+
+fn bsp_ground_z_span(bsp: &Bsp, origin: Vec3, xy: Vec2, trace_up: f32, trace_down: f32) -> Option<f32> {
+    let start = Vec3::new(xy.x, xy.y, origin.z + trace_up);
+    let end = Vec3::new(xy.x, xy.y, origin.z - trace_down);
     let trace = bsp.hull1_trace(start, end);
     (!trace.start_solid && trace.fraction < 1.0 && trace.plane_normal.z > 0.7)
         .then_some(trace.endpos.z - ORIGIN_TO_FEET)
@@ -556,6 +682,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                     .and_then(|tr| graph.nearest(tr.takeoff))
                     .and_then(|takeoff_cell| graph.find_path(bot_cell, takeoff_cell, &LinkCosts::default())),
                 path_pos: 0,
+                step_series_end: None,
             });
         }
         if let Some(runway) = bot.sj_runway.as_mut() {
@@ -571,6 +698,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 let end = path.len().min(runway.path_pos + 8);
                 if let Some(pos) = (runway.path_pos..end).min_by(|&a, &b| dist(a).total_cmp(&dist(b))) {
                     runway.path_pos = pos;
+                }
+                let series_ended = runway.step_series_end.is_some_and(|series_end| {
+                    runway.path_pos > series_end || path_link_passed(graph, path, series_end, origin)
+                });
+                if series_ended {
+                    runway.step_series_end = None;
+                }
+                if !series_ended && runway.step_series_end.is_none() {
+                    runway.step_series_end = step_series_end(graph, path, runway.path_pos, origin, speed);
                 }
             }
         }
@@ -777,14 +913,26 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             }
             _ => f32::INFINITY,
         };
-        // Only an ordinary Hop landing inside the committed SpeedJump leg may phase-adjust. The
-        // takeoff regime (`sj_curl`) owns its grounded line-crossing leap and 0.98 hold gate; ordinary
-        // bhop, the pre-leg approach, and every airborne/curl frame never enter this BSP probe.
-        let defer_jump = sj_active
+        // Only an ordinary Hop landing inside the committed SpeedJump leg may phase-adjust. While a
+        // cached-path stair series is latched, choose and lock a 0..8-frame phase plan over the next
+        // three contacts. Once its last rising link is behind the cursor, the original greedy
+        // four-frame edge probe resumes as fallback/finishing trim.
+        let phase_landing = sj_active
             && !sj_curl
             && !sj_hold
             && on_ground
-            && bot.bhop.phase == bhop::Phase::Hop
+            && bot.bhop.phase == bhop::Phase::Hop;
+        let phase_defer_frames = phase_landing
+            .then(|| {
+                bot.sj_runway.as_ref().is_some_and(|runway| {
+                    runway.step_series_end.is_some_and(|series_end| runway.path_pos <= series_end)
+                })
+            })
+            .filter(|&active| active)
+            .and_then(|_| bsp)
+            .map(|bsp| plan_step_phase(origin, v_xy, dt, |xy| bsp_phase_ground_z(bsp, origin, xy)).defer_frames);
+        let defer_jump = phase_defer_frames.is_none()
+            && phase_landing
             && bsp.is_some_and(|bsp| should_defer_step_jump(origin, v_xy, |xy| bsp_ground_z(bsp, origin, xy)));
         let phase_was = bot.bhop.phase;
         let cmd = bot.bhop.step(
@@ -803,6 +951,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 carry,
                 hold_jump: sj_hold,
                 defer_jump,
+                phase_defer_frames,
                 // The takeoff regime (hold ground prestrafe to the lip, leap once) runs for curls and
                 // for straight jumps within the prestrafe ceiling (`sj_curl`, see its definition). A
                 // hotter straight jump keeps the pre-existing hop-chain takeoff — its air-strafe runway
@@ -1244,6 +1393,33 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phase_planner_keeps_zero_delay_on_a_flat_corridor() {
+        let origin = Vec3::new(0.0, 0.0, ORIGIN_TO_FEET);
+        let plan = plan_step_phase(origin, Vec2::new(450.0, 0.0), 1.0 / 77.0, |_| Some(0.0));
+
+        assert_eq!(plan, StepPhasePlan { defer_frames: 0, good_contacts: STEP_PHASE_CONTACTS });
+    }
+
+    #[test]
+    fn phase_planner_defers_into_safe_contacts_across_a_stair_series() {
+        let origin = Vec3::new(0.0, 0.0, ORIGIN_TO_FEET);
+        let stairs = |p: Vec2| {
+            Some(match p.x {
+                x if x >= 618.0 => 64.0,
+                x if x >= 600.0 => 48.0,
+                x if x >= 580.0 => 32.0,
+                x if x >= 560.0 => 16.0,
+                _ => 0.0,
+            })
+        };
+
+        let plan = plan_step_phase(origin, Vec2::new(450.0, 0.0), 1.0 / 77.0, stairs);
+
+        assert!(plan.defer_frames > 0, "the unsafe zero-delay phase must move");
+        assert_eq!(plan.good_contacts, STEP_PHASE_CONTACTS, "every simulated contact must be good");
+    }
 
     #[test]
     fn step_edge_defer_requires_a_late_rising_front() {

@@ -36,6 +36,8 @@ const DT_NOMINAL: f32 = 1.0 / 77.0;
 /// Flat-ground hop airtime: `2 · JUMP_VZ / gravity` = 2·270/800 (see `navmesh`). Public so the
 /// caller can size its forward wall probe to one hop's flight (`speed · T_HOP`).
 pub const T_HOP: f32 = 0.675;
+/// Maximum ground-frame delay selected by the multi-contact stair-phase planner.
+pub const MAX_PHASE_DEFER_FRAMES: u8 = 8;
 /// How many times per hop the ground serpentine ([`prestrafe`]/zigzag) switches sides. ~3 matches
 /// how human runners weave; the *air* hop path uses the lobe scheduler below instead.
 const FLIPS_PER_HOP: f32 = 3.0;
@@ -261,6 +263,10 @@ pub struct Input {
     /// A committed speed-jump runway landing is phased just before a stair front: delay this grounded
     /// re-jump while the caller re-samples the predicted hop. Ignored outside the ordinary hop regime.
     pub defer_jump: bool,
+    /// Active stair-series planner result for this landing (`Some(0..=8)`). The controller latches a
+    /// positive choice until exactly that many ground frames have elapsed; `Some(0)` suppresses the
+    /// greedy per-edge fallback while planning owns the series.
+    pub phase_defer_frames: Option<u8>,
     /// Required takeoff speed for a committed speed jump (0 = none / a plain leg). A high-`v_req` jump
     /// (a curl/speed jump the bot can't reach at ordinary run speed) drives the *takeoff regime*: keep
     /// **ground prestrafe** (circle-strafe, which outgains the air cap far below maxspeed) all the way
@@ -298,6 +304,9 @@ pub struct Bhop {
     jump_prev: bool,
     /// Consecutive stair-edge delay frames. Hard-capped so a bad height sample cannot ground the run.
     step_defer_frames: u8,
+    /// Latched active-planner cap for the current landing; zero leaves the legacy edge fallback in
+    /// control. Reset in flight and at every controller phase reset.
+    step_phase_defer_cap: u8,
     /// Telemetry: hops taken, weave sign flips, and peak speed this engagement.
     pub hops: u32,
     pub flips: u32,
@@ -389,7 +398,7 @@ impl Bhop {
     /// docs on `PM_CheckJump` running before `PM_Friction`).
     fn hop_cmd(&mut self, i: &Input, speed: f32, a_max: f32, a_g: f32, maxspeed: f32, dt: f32) -> Option<Cmd> {
         if !i.on_ground {
-            self.step_defer_frames = 0;
+            self.reset_step_defer();
             self.jump_prev = false; // airborne releases the button, re-arming PM_CheckJump
             // A committed speed jump is a single leap onto a fixed landing: curl the velocity smoothly
             // onto the bearing with `air_correct` (pursuit guidance), not the hop slalom (whose lobe
@@ -418,21 +427,35 @@ impl Bhop {
         // the air cap below maxspeed, so holding on the ground only ever helps the speed.
         let sj_takeoff = i.committed && i.takeoff_speed > 0.0;
         if sj_takeoff {
-            self.step_defer_frames = 0;
+            self.reset_step_defer();
             if i.runway >= LIP_REACH {
                 // Hold the solved takeoff speed to the lip (coast above the band, build below).
                 return Some(self.takeoff_cmd(i, a_g, maxspeed));
             }
         } else if i.hold_jump || speed < LAUNCH_MIN_FRAC * maxspeed || i.clear < speed * T_HOP * WALL_HOLD_FRAC {
-            self.step_defer_frames = 0;
+            self.reset_step_defer();
             return Some(self.ground_cmd(i, a_g, maxspeed, f32::INFINITY));
         }
         const MAX_STEP_DEFER_FRAMES: u8 = 4;
-        if i.defer_jump && i.committed && self.step_defer_frames < MAX_STEP_DEFER_FRAMES {
+        let phase_plan_was_latched = self.step_phase_defer_cap > 0;
+        if !phase_plan_was_latched {
+            self.step_phase_defer_cap = i.phase_defer_frames.unwrap_or(0).min(MAX_PHASE_DEFER_FRAMES);
+        }
+        if self.step_phase_defer_cap > 0 && self.step_defer_frames < self.step_phase_defer_cap {
             self.step_defer_frames += 1;
             return Some(self.ground_cmd(i, a_g, maxspeed, f32::INFINITY));
         }
-        self.step_defer_frames = 0;
+        if phase_plan_was_latched {
+            self.reset_step_defer();
+        } else if i.phase_defer_frames.is_none()
+            && i.defer_jump
+            && i.committed
+            && self.step_defer_frames < MAX_STEP_DEFER_FRAMES
+        {
+            self.step_defer_frames += 1;
+            return Some(self.ground_cmd(i, a_g, maxspeed, f32::INFINITY));
+        }
+        self.reset_step_defer();
         let jump = !self.jump_prev;
         self.jump_prev = jump;
         if jump {
@@ -505,6 +528,11 @@ impl Bhop {
         Cmd { view_yaw: s.view_yaw, forward: s.forward, side: s.side, jump: false }
     }
 
+    fn reset_step_defer(&mut self) {
+        self.step_defer_frames = 0;
+        self.step_phase_defer_cap = 0;
+    }
+
     /// Record a strafe's sign into the sticky state, counting flips for telemetry.
     fn weave(&mut self, s: Strafe) -> Strafe {
         if self.sigma != 0.0 && s.sigma != self.sigma {
@@ -537,7 +565,7 @@ impl Bhop {
         self.phase_start = i.now;
         self.sigma = 0.0;
         self.jump_prev = false;
-        self.step_defer_frames = 0;
+        self.reset_step_defer();
         self.hops = 0;
         self.flips = 0;
         self.peak = 0.0;
@@ -550,7 +578,7 @@ impl Bhop {
         self.phase_start = i.now;
         self.sigma = 0.0;
         self.jump_prev = false;
-        self.step_defer_frames = 0;
+        self.reset_step_defer();
         self.hops = 0;
         self.flips = 0;
         self.peak = 0.0;
@@ -560,7 +588,7 @@ impl Bhop {
         self.phase = Phase::Off;
         self.sigma = 0.0;
         self.jump_prev = false;
-        self.step_defer_frames = 0;
+        self.reset_step_defer();
         self.eligible_since = 0.0;
         self.off_reason = reason;
     }
@@ -816,6 +844,7 @@ mod sim {
             carry: false,
             hold_jump: false,
             defer_jump: false,
+            phase_defer_frames: None,
             takeoff_speed: 0.0,
             curl_gain: 0.0,
             clear: f32::INFINITY,
@@ -845,6 +874,7 @@ mod sim {
             carry: false,
             hold_jump: false,
             defer_jump: false,
+            phase_defer_frames: None,
             takeoff_speed: 0.0,
             curl_gain: 0.0,
             clear: f32::INFINITY,
@@ -901,6 +931,18 @@ mod sim {
         }
         i.now = 4.0 * DT;
         assert!(b.step(&i, &ENV).unwrap().jump, "a persistent sample must not ground a fifth frame");
+
+        let mut planned = Bhop { phase: Phase::Hop, ..Bhop::default() };
+        i.defer_jump = false;
+        i.phase_defer_frames = Some(6);
+        for frame in 0..6 {
+            i.now = frame as f32 * DT;
+            let cmd = planned.step(&i, &ENV).expect("planned hop owns the ground frame");
+            assert!(!cmd.jump, "planned defer frame {frame} jumped early");
+        }
+        i.now = 6.0 * DT;
+        i.phase_defer_frames = Some(0); // a live re-plan cannot shorten the cap latched at landing
+        assert!(planned.step(&i, &ENV).unwrap().jump, "the selected six-frame plan must leap exactly on cap");
     }
 
     #[test]
@@ -954,6 +996,7 @@ mod sim {
                 carry: false,
                 hold_jump: false,
                 defer_jump: false,
+                phase_defer_frames: None,
                 takeoff_speed: V_REQ,
                 curl_gain: 0.0,
                 clear: f32::INFINITY,
@@ -999,6 +1042,7 @@ mod sim {
                     carry: false,
                     hold_jump: false,
                     defer_jump: false,
+                    phase_defer_frames: None,
                     takeoff_speed: V_STAR,
                     curl_gain: 12.0,
                     clear: f32::INFINITY,
@@ -1041,6 +1085,7 @@ mod sim {
                 carry: false,
                 hold_jump: false,
                 defer_jump: false,
+                phase_defer_frames: None,
                 takeoff_speed: 415.0,
                 curl_gain: 12.0,
                 clear: f32::INFINITY,
