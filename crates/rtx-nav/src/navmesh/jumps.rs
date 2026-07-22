@@ -381,7 +381,11 @@ impl NavGraph {
         let mut cands_chained: Vec<(f32, Link, SpeedJumpTraversal)> = Vec::new(); // chained
         // The most speed a chained entry can ever carry into a jump (the top band's floor); a jump
         // needing more than this is unroutable even chained, so it bounds the chained target scan.
-        let v_chain_max = BAND_FLOOR[NBANDS - 1] / SJ_MARGIN;
+        // Must mirror `banded_step`'s feasibility test (`v_in >= v_req * SJ_MARGIN` against the same
+        // floor) exactly: dividing by SJ_MARGIN here margined twice, silently dropping every jump in
+        // the v_req 408..470 band that the planner itself would happily route (dm3's walkway→SNG
+        // platform jump, v_req ≈ 437, is one).
+        let v_chain_max = BAND_FLOOR[NBANDS - 1];
         for (dgx, dgy) in COMPASS {
             // Take off from a ledge edge (a runway only *helps* — a chained jump needs none).
             if self.has_ground_near(a.gx + dgx.signum(), a.gy + dgy.signum(), a.origin.z) {
