@@ -138,6 +138,13 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         bot.repath_time = now;
         bot.failed_links = Default::default();
         bot.drop_speed_jump();
+        // The watchdogs' baselines are relative to the *old* position: after a relocation the
+        // progress-best (possibly ~0 from standing at a goal) would read the whole fresh run as
+        // "no improvement" and strike a healthy leg at PROGRESS_STALL_TIME. Re-baseline them here.
+        bot.watchdog.stuck_origin = origin;
+        bot.watchdog.stuck_since = now;
+        bot.watchdog.progress_best = f32::INFINITY;
+        bot.watchdog.progress_since = now;
     }
     bot.watchdog.last_origin = origin;
 
