@@ -202,6 +202,9 @@ pub struct NavGraph {
     pub cells: Vec<Cell>,
     pub links: Vec<Link>,
     pub adjacency: Vec<Vec<u32>>,
+    /// Runtime nav-editor tombstones, parallel to `links`. Removed links keep their indices so later
+    /// planted links cannot renumber routes already being inspected. Empty/missing entries are live.
+    removed: Vec<bool>,
     /// Per-cell "the standing origin is under water" flag (parallel to `cells`), so the planner can
     /// price swimming above walking and the runtime can tell a wet cell from a dry one. Empty until
     /// [`surcharge_water_links`](Self::surcharge_water_links) runs at graph-swap (it needs the
@@ -369,6 +372,7 @@ impl NavGraph {
             adjacency: vec![Vec::new(); cells_grid.0.len()],
             cells: cells_grid.0,
             links: Vec::new(),
+            removed: Vec::new(),
             water: Vec::new(),       // filled at graph-swap by flag_water
             breathable: Vec::new(),  // (needs the engine's liquid-carrying pointcontents)
             water_extra: Vec::new(), // (same)
@@ -397,10 +401,12 @@ impl NavGraph {
         for (i, l) in links.iter().enumerate() {
             adjacency[l.from as usize].push(i as u32);
         }
+        let removed = vec![false; links.len()];
         NavGraph {
             cells,
             links,
             adjacency,
+            removed,
             water: Vec::new(),
             breathable: Vec::new(),
             water_extra: Vec::new(),
@@ -503,6 +509,23 @@ impl NavGraph {
         let idx = self.links.len() as u32;
         self.adjacency[link.from as usize].push(idx);
         self.links.push(link);
+        self.removed.push(false);
+    }
+
+    /// Hard-disable a runtime link without erasing it or changing any link indices. Returns `true`
+    /// only for the first unlink; out-of-range links and already removed links return `false`.
+    pub fn unlink(&mut self, li: u32) -> bool {
+        if li as usize >= self.links.len() {
+            return false;
+        }
+        self.removed.resize(self.links.len(), false);
+        !std::mem::replace(&mut self.removed[li as usize], true)
+    }
+
+    /// Whether a link has been hard-disabled by [`Self::unlink`].
+    #[inline]
+    pub fn link_removed(&self, li: u32) -> bool {
+        self.removed.get(li as usize).copied().unwrap_or(false)
     }
 
     /// A grounded move (walk/step/drop) to a grid-adjacent cell, if the path is clear. An
@@ -2170,6 +2193,26 @@ mod tests {
             ..Default::default()
         };
         assert!(g.find_path(0, 3, &costs).is_some(), "finite penalties must not sever the route");
+    }
+
+    /// An editor-unlinked edge is absent from every router, not merely expensive. Its tombstone
+    /// also survives later link appends without shifting the stable IDs of existing links.
+    #[test]
+    fn unlinked_link_is_hard_blocked_and_ids_stay_stable() {
+        let mut g = diamond();
+        assert!(g.unlink(0), "first unlink should remove the edge");
+        assert!(!g.unlink(0), "unlink should be idempotent");
+
+        assert_eq!(g.find_path(0, 3, &LinkCosts::default()).unwrap(), vec![2, 3]);
+        assert_eq!(g.find_path_banded(0, 3, 0.0, &LinkCosts::default()).unwrap().links, vec![2, 3]);
+        assert!(!g.costs_from(0, &LinkCosts::default())[1].is_finite());
+
+        let appended = g.links.len() as u32;
+        g.push_link(Link { from: 0, to: 1, kind: LinkKind::Walk, cost: 5.0 });
+        assert_eq!(appended, 4, "append must not renumber existing links");
+        assert!(g.link_removed(0), "the tombstone must survive a replant append");
+        assert!(!g.link_removed(appended), "new links start live");
+        assert_ne!(g.find_path(0, 3, &LinkCosts::default()).unwrap()[0], 0);
     }
 
     /// Jitter is deterministic per (seed, link) and bounded to `[0, JITTER_FRAC·cost]`.

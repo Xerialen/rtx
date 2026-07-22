@@ -241,6 +241,8 @@ enum ControlCmd {
     /// nearest `from` (the run-up start), taking off at `takeoff` (the lip), to the cell nearest `tgt`,
     /// requiring `v_req` ups at the lip. Lets us fly the takeoff regime before the generator emits it.
     PlanLink { from: Vec3, takeoff: Vec3, tgt: Vec3, v_req: f32 },
+    /// Hard-disable one link until the navmesh is rebuilt, without renumbering any link IDs.
+    Unlink { link: u32 },
 }
 
 /// Split the first whitespace-delimited token off `s`, returning `(token, rest)` with `rest` trimmed
@@ -365,6 +367,7 @@ fn parse_line(line: &str) -> Result<(i64, ControlCmd), String> {
             let v_req = parse_f32(t.next(), "v_req")?;
             ControlCmd::PlanLink { from, takeoff, tgt, v_req }
         }
+        "unlink" => ControlCmd::Unlink { link: parse_u32(rest.split_whitespace().next(), "link")? },
         other => return Err(format!("unknown verb '{other}'")),
     };
     Ok((id, cmd))
@@ -408,6 +411,7 @@ fn exec_cmd(game: &mut GameState, id: i64, cmd: ControlCmd) {
         ControlCmd::Probe { takeoff, tgt, psi0, runway } => probe_json(game, takeoff, tgt, psi0, runway),
         ControlCmd::Curl { src, tgt } => curl_json(game, src, tgt),
         ControlCmd::PlanLink { from, takeoff, tgt, v_req } => plant_link_json(game, from, takeoff, tgt, v_req),
+        ControlCmd::Unlink { link } => unlink_json(game, link),
     };
     match result {
         Ok(data) => reply_ok(game, id, &data),
@@ -871,6 +875,25 @@ fn plant_link_json(game: &mut GameState, from: Vec3, takeoff: Vec3, tgt: Vec3, v
     ))
 }
 
+/// Hard-disable a link while retaining its slot. Every router skips the tombstone, and later
+/// `planlink` appends cannot shift the IDs used by live route/editor diagnostics.
+fn unlink_json(game: &mut GameState, link: u32) -> Result<String, String> {
+    let g = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+    let n = g.links.len() as u32;
+    if link >= n {
+        return Err(format!("link {link} out of range (0..{n})"));
+    }
+    if !g.unlink(link) {
+        return Err(format!("link {link} is already unlinked"));
+    }
+    let (src, tgt) = (g.cell_origin(g.link_source(link)), g.cell_origin(g.link_target(link)));
+    Ok(format!(
+        "{{\"link\":{link},\"removed\":true,\"src\":{},\"tgt\":{}}}",
+        jvec3(src),
+        jvec3(tgt),
+    ))
+}
+
 /// Probe the build-time curl certifier — see `ControlCmd::Probe`.
 fn probe_json(game: &GameState, takeoff: Vec3, tgt: Vec3, psi0: f32, runway: f32) -> Result<String, String> {
     let bsp = game.nav.bsp.as_ref().ok_or("no bsp")?;
@@ -1220,6 +1243,7 @@ mod tests {
             (2, ControlCmd::Goto { bot: 1, pos: Vec3::ZERO })
         );
         assert_eq!(parse_line("9 rj 1 412").unwrap(), (9, ControlCmd::Rj { bot: 1, link: 412 }));
+        assert_eq!(parse_line("10 unlink 412").unwrap(), (10, ControlCmd::Unlink { link: 412 }));
     }
 
     #[test]
@@ -1256,6 +1280,7 @@ mod tests {
         assert!(parse_line("notanumber status").is_err());
         assert!(parse_line("1 bogusverb").is_err());
         assert!(parse_line("1 rj 1").is_err()); // missing link
+        assert!(parse_line("1 unlink").is_err()); // missing link
         assert!(parse_line("1 teleport 1 0 0").is_err()); // missing z
         assert!(parse_line("1 set").is_err()); // missing cvar
     }

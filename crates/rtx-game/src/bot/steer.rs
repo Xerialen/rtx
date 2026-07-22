@@ -478,6 +478,20 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         && !final_leg
         && goal_dist > 150.0
         && runway_dist >= bhop::ZIGZAG_ENGAGE;
+    // A short chain of Walk/Step legs immediately before a SpeedJump is part of its committed
+    // approach. Keep the same hop-cycle ownership across those stairs instead of letting the normal
+    // ascent/runway veto turn the run into a friction-heavy walk just before takeoff.
+    let sj_approach = matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
+        && bot
+            .route
+            .get(bot.route_pos.saturating_add(1)..)
+            .unwrap_or_default()
+            .iter()
+            .take(4)
+            .take_while(|&&leg| {
+                matches!(graph.link_kind(leg), LinkKind::Walk | LinkKind::Step | LinkKind::SpeedJump)
+            })
+            .any(|&leg| graph.link_kind(leg) == LinkKind::SpeedJump);
     // A speed-jump leg is a *committed* bhop run-up + leap: engage bhop unconditionally (the link is a
     // pre-verified runway) and track it so the route stays frozen. Latch/clear `sj_leg` on the leg.
     let mut sj_active =
@@ -660,7 +674,9 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 zigzag: zigzag_ok,
                 sustain: bhop_sustain,
                 veto: bhop_veto,
-                committed: sj_active,
+                // The actual SpeedJump and its final four-leg ground approach bypass the ordinary
+                // runway/landing gates. `bhop_veto` still honors rtx_bot_bhop and traversal vetoes.
+                committed: sj_active || sj_approach,
                 carry,
                 hold_jump: sj_hold,
                 // The takeoff regime (hold ground prestrafe to the lip, leap once) is only for *curl*

@@ -100,6 +100,9 @@ impl NavGraph {
                 return Some(self.reconstruct(&came_from, start, goal));
             }
             for &li in &self.adjacency[cell as usize] {
+                if self.link_removed(li) {
+                    continue;
+                }
                 let link = self.links[li as usize];
                 let ng = g_cost[cell as usize] + link.cost + self.link_extra(li, costs) + self.chained_block(li);
                 if ng < g_cost[link.to as usize] {
@@ -167,6 +170,9 @@ impl NavGraph {
             let in_link = came_link[state as usize];
             let in_dir = (in_link != u32::MAX).then(|| self.link_dir(in_link));
             for &li in &self.adjacency[cell as usize] {
+                if self.link_removed(li) {
+                    continue;
+                }
                 // Carried speed only counts if the corridor continues within the cone.
                 let entry = match in_dir {
                     Some(d) if d.length_squared() > 0.01 => {
@@ -249,6 +255,9 @@ impl NavGraph {
                 continue; // a cheaper path already settled this cell
             }
             for &li in &self.adjacency[cell as usize] {
+                if self.link_removed(li) {
+                    continue;
+                }
                 let link = self.links[li as usize];
                 let ng = g + link.cost + self.link_extra(li, costs) + self.chained_block(li);
                 if ng < cost[link.to as usize] {
