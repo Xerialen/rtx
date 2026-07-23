@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Deterministic DM3 red-armor acceptance trial for the external control harness.
+//! Deterministic DM3 item acceptance trials (red armor, SNG megahealth) for the external
+//! control harness.
 
 use glam::{Vec2, Vec3, Vec3Swizzles};
 
@@ -21,11 +22,19 @@ const DM3_RA_LOCAL_START: Vec3 = Vec3::new(360.0, -677.0, 264.0);
 const DM3_RA_SPAWN: Vec3 = Vec3::new(192.0, -208.0, -176.0);
 const DM3_RA_RING_HINT: Vec3 = Vec3::new(240.0, -32.0, 56.0);
 const DM3_RA_ORIGIN: Vec3 = Vec3::new(256.0, -704.0, 304.0);
+// DM3 → SNG-megahealth acceptance anchors. Both starts are exact stock deathmatch spawns in the
+// SNG-tele room (BSP entity lump, angle 90); the target is the spawnflags-2 megahealth on the SNG
+// ledge — the coordinate guard pins that instance among dm3's three megas.
+const DM3_SNG_SPAWN_W: Vec3 = Vec3::new(-880.0, -232.0, -16.0);
+const DM3_SNG_SPAWN_S: Vec3 = Vec3::new(-632.0, -680.0, -16.0);
+const DM3_SNG_MEGA_ORIGIN: Vec3 = Vec3::new(-720.0, 80.0, 160.0);
 pub(super) const RA_TRIAL_LOCAL_DEFAULT_SECS: f32 = 2.435_059;
 // MVD exact-spawn → authoritative RA-taken calibration, restricted to one life where RA was
 // active at spawn and this runner made the first subsequent RA take: n=86, 77 demos, p50=12.6255 s.
 pub(super) const RA_TRIAL_SPAWN_DEFAULT_SECS: f32 = 12.6255;
 pub(super) const RA_TRIAL_RING_DEFAULT_SECS: f32 = 9.604_003;
+// No corpus calibration for SNG-spawn → mega yet; gate drivers pass an explicit deadline.
+pub(super) const RA_TRIAL_SNG_MEGA_DEFAULT_SECS: f32 = 15.0;
 const RA_TRIAL_FALL_DEPTH: f32 = 56.0;
 const RA_TRIAL_LOCAL_FLOOR_SLOP: f32 = 8.0;
 const RA_TRIAL_STALL_SECS: f32 = 1.0;
@@ -46,6 +55,8 @@ pub(super) enum RaTrialStart {
     Local,
     RaSpawn,
     Ring,
+    SngMegaW,
+    SngMegaS,
 }
 
 impl RaTrialStart {
@@ -54,6 +65,8 @@ impl RaTrialStart {
             Self::Local => "local",
             Self::RaSpawn => "ra_spawn",
             Self::Ring => "ring",
+            Self::SngMegaW => "sng_mega_w",
+            Self::SngMegaS => "sng_mega_s",
         }
     }
 
@@ -62,7 +75,34 @@ impl RaTrialStart {
             Self::Local => RA_TRIAL_LOCAL_DEFAULT_SECS,
             Self::RaSpawn => RA_TRIAL_SPAWN_DEFAULT_SECS,
             Self::Ring => RA_TRIAL_RING_DEFAULT_SECS,
+            Self::SngMegaW | Self::SngMegaS => RA_TRIAL_SNG_MEGA_DEFAULT_SECS,
         }
+    }
+
+    /// The exact-BSP deathmatch spawn this scenario is contracted to start from, if any.
+    fn spawn_contract(self) -> Option<Vec3> {
+        match self {
+            Self::RaSpawn => Some(DM3_RA_SPAWN),
+            Self::SngMegaW => Some(DM3_SNG_SPAWN_W),
+            Self::SngMegaS => Some(DM3_SNG_SPAWN_S),
+            Self::Local | Self::Ring => None,
+        }
+    }
+
+    /// Which map item this scenario races to: classname plus the coordinate that pins the exact
+    /// instance (dm3 has three megahealths; the guard keeps a custom entity set from retargeting).
+    fn item_contract(self) -> (&'static str, Vec3) {
+        match self {
+            Self::SngMegaW | Self::SngMegaS => ("item_health", DM3_SNG_MEGA_ORIGIN),
+            Self::Local | Self::RaSpawn | Self::Ring => ("item_armorInv", DM3_RA_ORIGIN),
+        }
+    }
+
+    /// Planned Drop links are a structural violation only for the RA climb scenarios. The SNG-mega
+    /// route may legitimately route over small planned drops; the fall/stall detectors still fail
+    /// any attempt that actually drops more than [`RA_TRIAL_FALL_DEPTH`] or stops moving.
+    fn forbids_planned_drop(name: &str) -> bool {
+        !name.starts_with("sng_mega")
     }
 }
 
@@ -71,8 +111,8 @@ impl RaTrialStart {
 /// `client::place_at_spawn` and avoids starting embedded in the floor.
 fn ra_trial_start_origin(start: RaTrialStart, hint: Vec3, planner_cell_origin: Vec3) -> Vec3 {
     let base = match start {
-        RaTrialStart::Local | RaTrialStart::RaSpawn => hint,
         RaTrialStart::Ring => planner_cell_origin,
+        _ => hint,
     };
     base + Vec3::new(0.0, 0.0, 1.0)
 }
@@ -151,44 +191,44 @@ pub(super) fn do_ra_trial(
     }
     let now = game.time();
 
-    // Select the stock DM3 red armor by both classname and map coordinate. The coordinate guard
+    // Select the scenario's trial item by both classname and map coordinate. The coordinate guard
     // prevents a custom entity set from silently turning this map-specialized acceptance test into
     // a different item run.
+    let (item_class, item_origin) = start.item_contract();
     let ra = game
-        .find_by_classname("item_armorInv")
+        .find_by_classname(item_class)
         .min_by(|&a, &b| {
-            (game.entities[a].v.origin - DM3_RA_ORIGIN)
+            (game.entities[a].v.origin - item_origin)
                 .length_squared()
-                .total_cmp(&(game.entities[b].v.origin - DM3_RA_ORIGIN).length_squared())
+                .total_cmp(&(game.entities[b].v.origin - item_origin).length_squared())
         })
-        .ok_or("dm3 red armor entity not found")?;
-    if (game.entities[ra].v.origin - DM3_RA_ORIGIN).length() > 8.0 {
-        return Err(format!("dm3 red armor moved to {:?}", game.entities[ra].v.origin));
+        .ok_or_else(|| format!("dm3 trial item {item_class} not found"))?;
+    if (game.entities[ra].v.origin - item_origin).length() > 8.0 {
+        return Err(format!(
+            "dm3 trial item {item_class} moved to {:?} (expected {item_origin:?})",
+            game.entities[ra].v.origin
+        ));
     }
 
-    // `ra_spawn` is a semantic map contract, not merely a convenient coordinate. Refuse to run it
-    // if a custom entity set removed or moved the stock RA-tunnel deathmatch spawn.
-    let ra_spawn = if start == RaTrialStart::RaSpawn {
-        Some(
+    // A spawn scenario is a semantic map contract, not merely a convenient coordinate. Refuse to
+    // run it if a custom entity set removed or moved the stock deathmatch spawn.
+    let ra_spawn = match start.spawn_contract() {
+        Some(contract) => Some(
             game.find_by_classname("info_player_deathmatch")
-                .find(|&spawn| {
-                    (game.entities[spawn].v.origin - DM3_RA_SPAWN).length() <= 0.125
-                })
+                .find(|&spawn| (game.entities[spawn].v.origin - contract).length() <= 0.125)
                 .ok_or_else(|| {
-                    format!(
-                        "dm3 RA-tunnel info_player_deathmatch missing at {:?}",
-                        DM3_RA_SPAWN
-                    )
+                    format!("dm3 info_player_deathmatch missing at {contract:?}")
                 })?,
-        )
-    } else {
-        None
+        ),
+        None => None,
     };
 
     let hint = match start {
         RaTrialStart::Local => DM3_RA_LOCAL_START,
         RaTrialStart::RaSpawn => DM3_RA_SPAWN,
         RaTrialStart::Ring => DM3_RA_RING_HINT,
+        RaTrialStart::SngMegaW => DM3_SNG_SPAWN_W,
+        RaTrialStart::SngMegaS => DM3_SNG_SPAWN_S,
     };
     let start_cell = game
         .nav
@@ -202,8 +242,8 @@ pub(super) fn do_ra_trial(
         // Gate A intentionally starts at the exact historical reproduction point. Gate B's corpus
         // location is a semantic hint, so snap it to a valid standing cell. The exact BSP spawn is
         // already a physical placement contract and must not inherit the planner cell's 16u Y skew.
-        RaTrialStart::Local | RaTrialStart::RaSpawn => hint,
         RaTrialStart::Ring => planner_origin,
+        _ => hint,
     };
     let at = ra_trial_start_origin(start, hint, planner_origin);
     debug_assert_eq!(at, snapped + Vec3::new(0.0, 0.0, 1.0));
@@ -226,7 +266,7 @@ pub(super) fn do_ra_trial(
             .filter(|&cell| crate::bot::item_terminal_touches(g.cell_origin(cell), &game.entities[ra]))
             .filter(|&cell| travel[cell as usize].is_finite())
             .min_by(|&a, &b| travel[a as usize].total_cmp(&travel[b as usize]))
-            .ok_or("red armor has no reachable touch-valid terminal")?;
+            .ok_or_else(|| format!("{item_class} has no reachable touch-valid terminal"))?;
         let route_costs = pricing.costs(e.0);
         let use_bands = game.host.cvar_bool(c"rtx_bot_bhop")
             && game.host.cvar_bool(c"rtx_bot_bandplan");
@@ -236,7 +276,9 @@ pub(super) fn do_ra_trial(
         } else {
             g.find_path(start_cell, terminal, &route_costs)
         }
-        .ok_or("red armor terminal became unreachable under production planner")?;
+        .ok_or_else(|| {
+            format!("{item_class} terminal became unreachable under production planner")
+        })?;
         (terminal, route)
     };
 
@@ -342,6 +384,15 @@ pub(super) fn do_ra_trial(
 /// bot changed, while the trigger disappearing proves the server completed the item touch.
 fn ra_pickup_complete(armor: f32, items: f32, ra_solid: Solid) -> bool {
     armor >= 199.0 && items.has(Items::ARMOR3) && ra_solid != Solid::Trigger
+}
+
+/// The authoritative megahealth pickup signal, same three-fact shape: the SUPERHEALTH inventory
+/// bit proves *this* bot took it, health above the 100 spawn max proves the heal landed (mega adds
+/// +100 from current health, so a bot that took incidental damage en route still ends >100 — a
+/// fixed ≥199 bar would misclassify that pickup), and the trigger disappearing proves the server
+/// completed the item touch.
+fn mega_pickup_complete(health: f32, items: f32, item_solid: Solid) -> bool {
+    health > 100.0 && items.has(Items::SUPERHEALTH) && item_solid != Solid::Trigger
 }
 
 /// Whether this frame physically reached the static-BSP surface found by the forward hull probe.
@@ -507,6 +558,7 @@ pub(super) fn poll_ra_trial(game: &mut GameState, e: EntId, bot: u32, now: f32) 
     let on_ground = game.entities[e].v.flags.has(Flags::ONGROUND);
     let alive = game.entities[e].is_alive();
     let armor = game.entities[e].v.armorvalue;
+    let health = game.entities[e].v.health;
     let items = game.entities[e].v.items;
     let ra_solid = game.entities[EntId(trial.item)].v.solid;
     let touching = crate::bot::item_terminal_touches(origin, &game.entities[EntId(trial.item)]);
@@ -615,7 +667,8 @@ pub(super) fn poll_ra_trial(game: &mut GameState, e: EntId, bot: u32, now: f32) 
             .skip(route_pos)
             .any(|&link| g.link_kind(link) == LinkKind::Drop)
     });
-    let planned_drop = trial_route_has_planned_drop(goal_item, trial.item, remaining_has_drop);
+    let planned_drop = RaTrialStart::forbids_planned_drop(trial.scenario)
+        && trial_route_has_planned_drop(goal_item, trial.item, remaining_has_drop);
     // Compare against the previous grounded height before accepting a new grounded anchor, so a
     // landing on the floor below is classified as a fall rather than silently resetting the datum.
     let fell = fell_from_ground(trial.ground_z, origin.z)
@@ -625,7 +678,11 @@ pub(super) fn poll_ra_trial(game: &mut GameState, e: EntId, bot: u32, now: f32) 
         trial.ground_z = origin.z;
     }
 
-    let pickup = ra_pickup_complete(armor, items, ra_solid);
+    let pickup = if trial.scenario.starts_with("sng_mega") {
+        mega_pickup_complete(health, items, ra_solid)
+    } else {
+        ra_pickup_complete(armor, items, ra_solid)
+    };
     // A normal armor touch clears the item goal in the same authoritative frame. Latch goal loss
     // only when it disappears without that success signal; once latched, a later pickup cannot pass.
     if goal_item != trial.item && !pickup {

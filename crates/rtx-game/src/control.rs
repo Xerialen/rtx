@@ -399,6 +399,8 @@ fn parse_line(line: &str) -> Result<(i64, ControlCmd), String> {
                 Some("local") => (RaTrialStart::Local, t.next()),
                 Some("ra_spawn") => (RaTrialStart::RaSpawn, t.next()),
                 Some("ring") => (RaTrialStart::Ring, t.next()),
+                Some("sng_mega_w") => (RaTrialStart::SngMegaW, t.next()),
+                Some("sng_mega_s") => (RaTrialStart::SngMegaS, t.next()),
                 Some(secs) => (RaTrialStart::Ring, Some(secs)),
             };
             let max_secs = max_tok
@@ -1730,6 +1732,28 @@ mod tests {
                     start: RaTrialStart::RaSpawn,
                     max_secs: RA_TRIAL_SPAWN_DEFAULT_SECS,
                 },
+            )
+        );
+        assert_eq!(
+            parse_line("27 ra_trial 2 sng_mega_w 15").unwrap(),
+            (
+                27,
+                ControlCmd::RaTrial {
+                    bot: 2,
+                    start: RaTrialStart::SngMegaW,
+                    max_secs: 15.0
+                }
+            )
+        );
+        assert_eq!(
+            parse_line("28 ra_trial 2 sng_mega_s").unwrap(),
+            (
+                28,
+                ControlCmd::RaTrial {
+                    bot: 2,
+                    start: RaTrialStart::SngMegaS,
+                    max_secs: 15.0
+                }
             )
         );
         assert!(parse_line("1 ra_trial 1 local 0.5").is_err());
