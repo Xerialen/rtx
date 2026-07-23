@@ -808,6 +808,10 @@ pub struct ItemTrial {
     pub request_id: i64,
     pub item: u32,
     pub terminal: CellId,
+    /// Optional mandatory pickup before the trial item (0 = none). The scenario forces this as
+    /// the first item goal; on its authoritative pickup the goal switches to `item`.
+    pub waypoint_item: u32,
+    pub waypoint_done: bool,
     pub scenario: &'static str,
     pub start_hint: Vec3,
     pub started: f32,

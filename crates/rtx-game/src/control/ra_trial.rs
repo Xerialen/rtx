@@ -28,6 +28,9 @@ const DM3_RA_ORIGIN: Vec3 = Vec3::new(256.0, -704.0, 304.0);
 const DM3_SNG_SPAWN_W: Vec3 = Vec3::new(-880.0, -232.0, -16.0);
 const DM3_SNG_SPAWN_S: Vec3 = Vec3::new(-632.0, -680.0, -16.0);
 const DM3_SNG_MEGA_ORIGIN: Vec3 = Vec3::new(-720.0, 80.0, 160.0);
+// Owner requirement (2026-07-23): the SNG-mega acceptance run must take the big rockets pack on
+// the SNG mid-level before the mega. Stock BSP placement of that `item_rockets` (spawnflags 1).
+const DM3_SNG_ROCKETS_ORIGIN: Vec3 = Vec3::new(-752.0, 464.0, 96.0);
 pub(super) const RA_TRIAL_LOCAL_DEFAULT_SECS: f32 = 2.435_059;
 // MVD exact-spawn → authoritative RA-taken calibration, restricted to one life where RA was
 // active at spawn and this runner made the first subsequent RA take: n=86, 77 demos, p50=12.6255 s.
@@ -103,6 +106,15 @@ impl RaTrialStart {
     /// any attempt that actually drops more than [`RA_TRIAL_FALL_DEPTH`] or stops moving.
     fn forbids_planned_drop(name: &str) -> bool {
         !name.starts_with("sng_mega")
+    }
+
+    /// Mandatory pickup before the trial item, if the scenario has one: classname plus the
+    /// coordinate pinning the exact instance.
+    fn waypoint_contract(self) -> Option<(&'static str, Vec3)> {
+        match self {
+            Self::SngMegaW | Self::SngMegaS => Some(("item_rockets", DM3_SNG_ROCKETS_ORIGIN)),
+            Self::Local | Self::RaSpawn | Self::Ring => None,
+        }
     }
 }
 
@@ -210,6 +222,29 @@ pub(super) fn do_ra_trial(
         ));
     }
 
+    // Resolve the scenario's mandatory waypoint pickup (rockets before mega), with the same
+    // classname + coordinate contract as the trial item.
+    let waypoint = match start.waypoint_contract() {
+        Some((wp_class, wp_origin)) => {
+            let wp = game
+                .find_by_classname(wp_class)
+                .min_by(|&a, &b| {
+                    (game.entities[a].v.origin - wp_origin)
+                        .length_squared()
+                        .total_cmp(&(game.entities[b].v.origin - wp_origin).length_squared())
+                })
+                .ok_or_else(|| format!("dm3 waypoint {wp_class} not found"))?;
+            if (game.entities[wp].v.origin - wp_origin).length() > 8.0 {
+                return Err(format!(
+                    "dm3 waypoint {wp_class} moved to {:?} (expected {wp_origin:?})",
+                    game.entities[wp].v.origin
+                ));
+            }
+            Some(wp)
+        }
+        None => None,
+    };
+
     // A spawn scenario is a semantic map contract, not merely a convenient coordinate. Refuse to
     // run it if a custom entity set removed or moved the stock deathmatch spawn.
     let ra_spawn = match start.spawn_contract() {
@@ -255,7 +290,7 @@ pub(super) fn do_ra_trial(
     // item-goal representation production selection uses; importantly, the target is a terminal cell
     // whose standing hull overlaps RA, not RA's coordinate.
     let pricing = game.bot_item_trial_link_pricing(e, now);
-    let (terminal, planned_route) = {
+    let (terminal, wp_terminal, planned_route) = {
         let g = game.nav.graph.as_ref().unwrap();
         let travel = g.costs_from(start_cell, &pricing.costs(0));
         let terminal = game
@@ -267,6 +302,21 @@ pub(super) fn do_ra_trial(
             .filter(|&cell| travel[cell as usize].is_finite())
             .min_by(|&a, &b| travel[a as usize].total_cmp(&travel[b as usize]))
             .ok_or_else(|| format!("{item_class} has no reachable touch-valid terminal"))?;
+        let wp_terminal = match waypoint {
+            Some(wp) => Some(
+                game.nav
+                    .goals
+                    .iter()
+                    .filter_map(|&(item, cell)| (item == wp.0).then_some(cell))
+                    .filter(|&cell| {
+                        crate::bot::item_terminal_touches(g.cell_origin(cell), &game.entities[wp])
+                    })
+                    .filter(|&cell| travel[cell as usize].is_finite())
+                    .min_by(|&a, &b| travel[a as usize].total_cmp(&travel[b as usize]))
+                    .ok_or("waypoint item has no reachable touch-valid terminal")?,
+            ),
+            None => None,
+        };
         let route_costs = pricing.costs(e.0);
         let use_bands = game.host.cvar_bool(c"rtx_bot_bhop")
             && game.host.cvar_bool(c"rtx_bot_bandplan");
@@ -279,7 +329,7 @@ pub(super) fn do_ra_trial(
         .ok_or_else(|| {
             format!("{item_class} terminal became unreachable under production planner")
         })?;
-        (terminal, route)
+        (terminal, wp_terminal, route)
     };
 
     // Everything above is read-only and fallible. Only after the item, start, touch terminal and
@@ -290,6 +340,13 @@ pub(super) fn do_ra_trial(
     }
     game.entities[ra].think = Think::None;
     game.entities[ra].v.nextthink = 0.0;
+    if let Some(wp) = waypoint {
+        if game.entities[wp].v.solid != Solid::Trigger {
+            game.sub_regen(wp);
+        }
+        game.entities[wp].think = Think::None;
+        game.entities[wp].v.nextthink = 0.0;
+    }
 
     // Fresh-spawn stock removes loadout-dependent routing and makes the armor touch itself the sole
     // success signal. Reuse production's body/pose helpers (including dead-body revival, hull,
@@ -315,8 +372,18 @@ pub(super) fn do_ra_trial(
     let sample_limit = ra_trial_sample_limit(max_secs);
     {
         let b = &mut game.entities[e].bot;
-        b.goal.set_item(ra.0);
-        b.goal.item_cell = terminal;
+        // The waypoint (when present) is the first forced goal; the poller switches to the trial
+        // item on the waypoint's authoritative pickup.
+        match (waypoint, wp_terminal) {
+            (Some(wp), Some(wpt)) => {
+                b.goal.set_item(wp.0);
+                b.goal.item_cell = wpt;
+            }
+            _ => {
+                b.goal.set_item(ra.0);
+                b.goal.item_cell = terminal;
+            }
+        }
         b.goal.commit = GoalCommit::Pickup;
         b.goal.since = now;
         b.goal.next_pick = deadline + 1.0;
@@ -325,6 +392,8 @@ pub(super) fn do_ra_trial(
             request_id,
             item: ra.0,
             terminal,
+            waypoint_item: waypoint.map_or(0, |wp| wp.0),
+            waypoint_done: false,
             scenario: start.name(),
             start_hint: hint,
             started: now,
@@ -363,9 +432,11 @@ pub(super) fn do_ra_trial(
     }
 
     let g = game.nav.graph.as_ref().unwrap();
+    let waypoint_json = waypoint.map_or_else(|| "null".to_string(), |wp| wp.0.to_string());
     Ok(format!(
         "{{\"bot\":{bot},\"scenario\":{},\"start_hint\":{},\"start\":{},\"start_cell\":{start_cell},\
          \"item\":{},\"item_origin\":{},\"terminal\":{terminal},\"terminal_origin\":{},\
+         \"waypoint\":{waypoint_json},\
          \"max_secs\":{},\"planned_route\":{}}}",
         jstr(start.name()),
         jvec3(hint),
@@ -562,6 +633,25 @@ pub(super) fn poll_ra_trial(game: &mut GameState, e: EntId, bot: u32, now: f32) 
     let items = game.entities[e].v.items;
     let ra_solid = game.entities[EntId(trial.item)].v.solid;
     let touching = crate::bot::item_terminal_touches(origin, &game.entities[EntId(trial.item)]);
+
+    // Waypoint leg: on the rockets' authoritative pickup (trigger consumed + this bot's ammo
+    // changed from the fresh-spawn zero), switch the forced goal to the trial item. This runs
+    // before the goal snapshot below so the transition frame is never misread as goal loss.
+    if trial.waypoint_item != 0 && !trial.waypoint_done {
+        let wp_solid = game.entities[EntId(trial.waypoint_item)].v.solid;
+        let rockets = game.entities[e].v.ammo_rockets;
+        if wp_solid != Solid::Trigger && rockets > 0.0 {
+            trial.waypoint_done = true;
+            let b = &mut game.entities[e].bot;
+            b.goal.set_item(trial.item);
+            b.goal.item_cell = trial.terminal;
+            b.goal.commit = GoalCommit::Pickup;
+            b.goal.since = now;
+            b.goal.next_pick = trial.deadline + 1.0;
+            b.goal.magnet_item = 0;
+        }
+    }
+
     let (goal_item, selected_terminal, route_pos, current_link) = {
         let b = &game.entities[e].bot;
         (
@@ -637,7 +727,9 @@ pub(super) fn poll_ra_trial(game: &mut GameState, e: EntId, bot: u32, now: f32) 
 
     // Replace the acknowledgement's prevalidated production-planner route with the route steering
     // actually installed. Hard structural checks below inspect only this executed route.
-    if goal_item == trial.item && !trial.route_captured && !game.entities[e].bot.route.is_empty() {
+    let goal_is_trials = goal_item == trial.item
+        || (trial.waypoint_item != 0 && goal_item == trial.waypoint_item);
+    if goal_is_trials && !trial.route_captured && !game.entities[e].bot.route.is_empty() {
         trial.initial_route = game.entities[e].bot.route.clone();
         trial.route_captured = true;
     }
@@ -678,14 +770,22 @@ pub(super) fn poll_ra_trial(game: &mut GameState, e: EntId, bot: u32, now: f32) 
         trial.ground_z = origin.z;
     }
 
-    let pickup = if trial.scenario.starts_with("sng_mega") {
-        mega_pickup_complete(health, items, ra_solid)
-    } else {
-        ra_pickup_complete(armor, items, ra_solid)
-    };
+    // With a waypoint, the trial item only counts after the waypoint pickup: touching the mega
+    // first consumes it without passing, which the item_taken_elsewhere clause then fails loudly.
+    let pickup = (trial.waypoint_item == 0 || trial.waypoint_done)
+        && if trial.scenario.starts_with("sng_mega") {
+            mega_pickup_complete(health, items, ra_solid)
+        } else {
+            ra_pickup_complete(armor, items, ra_solid)
+        };
     // A normal armor touch clears the item goal in the same authoritative frame. Latch goal loss
     // only when it disappears without that success signal; once latched, a later pickup cannot pass.
-    if goal_item != trial.item && !pickup {
+    let expected_item = if trial.waypoint_item != 0 && !trial.waypoint_done {
+        trial.waypoint_item
+    } else {
+        trial.item
+    };
+    if goal_item != expected_item && !pickup {
         trial.goal_lost = true;
     }
 
@@ -793,6 +893,7 @@ fn finish_ra_trial(
     let event = format!(
         "{{\"ev\":\"ra_trial_result\",\"request_id\":{},\"map\":{},\"bot\":{bot},\"client\":{client},\
          \"ok\":{ok},\"reason\":{},\"scenario\":{},\"forced_item_goal\":true,\
+         \"waypoint_item\":{},\"waypoint_done\":{},\
          \"started\":{},\"ended\":{},\"elapsed\":{},\"max_secs\":{},\
          \"start_hint\":{},\"start\":{},\"origin\":{},\"velocity\":{},\"wish\":{},\
          \"buttons\":{},\"on_ground\":{on_ground},\"item\":{},\"item_origin\":{},\
@@ -807,6 +908,8 @@ fn finish_ra_trial(
         jstr(&game.level.mapname),
         jstr(reason),
         jstr(trial.scenario),
+        trial.waypoint_item,
+        trial.waypoint_done,
         jnum(trial.started),
         jnum(now),
         jnum(now - trial.started),
