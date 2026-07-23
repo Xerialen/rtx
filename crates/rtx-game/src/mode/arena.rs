@@ -330,6 +330,17 @@ impl GameMode for Arena {
             }
         }
     }
+
+    fn bot_idle_roam(&self, g: &mut GameState, bot: EntId) -> Option<Vec3> {
+        // No opponent in sight and no goal to fetch: roam our *own* space, never the whole map.
+        // `spawn_pool` already splits by role — a fighter's arena (its teleport-destination ring), an
+        // audience member's deathmatch stands — so a fighter picked to duel never sets a roam target
+        // among the unreachable stands cells and jams itself into the wall below the audience trying
+        // to reach it, and the audience keep to the stands. Mirrors the Fighter arm's own no-enemy
+        // fallback (`bot_intent` above), which is why they read the same pool.
+        let pool = spawn_pool(g, bot).unwrap_or("info_player_deathmatch");
+        Some(super::wander_point(g, bot, pool, |_| None))
+    }
 }
 
 impl Arena {
@@ -391,6 +402,12 @@ impl Arena {
                 // leak back into the carried-over arsenal each round.
                 g.filter_disabled_weapons(e);
                 g.w_set_current_ammo(e);
+                // Same reason the opponent model must be reset by hand: the winner never crosses the
+                // respawn path (`grant_spawn_loadout`) that resets every other spawn, so without this
+                // the shared belief keeps last round's low health — and the next challenger reads a
+                // full-stack survivor as "nearly dead" and shotgun-rushes them. Restore the RA
+                // spawn baseline (100 hp / 200 red), matching the loadout just applied.
+                g.model_reset_target(e);
             } else {
                 g.entities[e].mode_p.arena.pending_spawn = true;
             }

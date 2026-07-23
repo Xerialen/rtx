@@ -17,8 +17,9 @@
 //!   ─────────────────                     ──────────────────
 //!   engine fills EntVars       ──▶        mirror writes EntVars from svc_playerinfo /
 //!                                         svc_packetentities / stats
-//!   engine answers traceline,  ──▶        NetHost answers from the map's own BSP
-//!     pointcontents, cvars                (rtx-nav) and its own cvar store
+//!   engine answers cvars       ──▶        NetHost answers from its own cvar store
+//!   (traceline & pointcontents are no longer host-specific: both embodiments answer them from the
+//!    parsed BSP + entity array — GameState::sv_trace / GameState::pointcontents)
 //!   set_bot_cmd → SV_RunCmd    ──▶        cmd sink → clc_move on the wire
 //!   server runs trigger touches──▶        the server does it for us (we're a real client)
 //! ```
@@ -73,6 +74,8 @@ pub(crate) mod frames;
 pub(crate) mod host;
 pub(crate) mod mirror;
 pub(crate) mod modes;
+pub(crate) mod nq_frames;
+pub(crate) mod nq_session;
 pub(crate) mod pak;
 pub(crate) mod senses;
 pub(crate) mod session;
@@ -81,11 +84,12 @@ pub(crate) mod world;
 use std::io;
 use std::time::{Duration, Instant};
 
-pub use config::{parse as parse_args, Config, USAGE};
+pub use config::{parse as parse_args, Config, Protocol, USAGE};
 use rtx_proto::info::UserinfoBuilder;
 use rtx_proto::svc::SvcEvent;
 use frames::EntityState;
 use mirror::{Mirror, Squad, WorldMirror};
+use nq_session::NqSession;
 use session::{Session, Signon};
 
 use crate::entity::EntId;
@@ -108,8 +112,111 @@ const MAX_LEAD: f32 = 0.25;
 /// sight — and a [`Mirror`] knows the game and nothing about sockets. This is the seam between them,
 /// and there is exactly one of these per connection because QuakeWorld has no notion of a connection
 /// carrying two players.
+/// A connection, whichever protocol it speaks.
+///
+/// The tick loop drives a connection through this one surface, so it never has to know whether a bot
+/// is on a QuakeWorld or a NetQuake server — the difference is entirely below here. Each arm just
+/// forwards to the session that owns the wire. New per-protocol behaviour goes in the sessions; only
+/// the shared vocabulary the loop needs is delegated.
+enum AnySession {
+    Qw(Session),
+    Nq(NqSession),
+}
+
+/// Forward a `&self` accessor to whichever session backs this connection.
+macro_rules! any_get {
+    ($name:ident -> $ret:ty) => {
+        fn $name(&self) -> $ret {
+            match self {
+                AnySession::Qw(s) => s.$name(),
+                AnySession::Nq(s) => s.$name(),
+            }
+        }
+    };
+}
+
+impl AnySession {
+    any_get!(signon -> Signon);
+    any_get!(playernum -> u8);
+    any_get!(sounds -> &[String]);
+    any_get!(models -> &[String]);
+    any_get!(serverinfo -> &rtx_proto::info::Info);
+    any_get!(mapname -> &str);
+    any_get!(rtt -> f32);
+    any_get!(frames_at -> Instant);
+    any_get!(at_intermission -> bool);
+    any_get!(servercount -> i32);
+    any_get!(frames_current -> &[EntityState]);
+    any_get!(chokes -> u32);
+
+    fn poll(&mut self, host: &NetHost) -> io::Result<Vec<SvcEvent>> {
+        match self {
+            AnySession::Qw(s) => s.poll(host),
+            AnySession::Nq(s) => s.poll(host),
+        }
+    }
+
+    fn send_move(&mut self, angles: glam::Vec3, forward: i32, side: i32, up: i32, buttons: u8, impulse: u8) -> io::Result<()> {
+        match self {
+            AnySession::Qw(s) => s.send_move(angles, forward, side, up, buttons, impulse),
+            AnySession::Nq(s) => s.send_move(angles, forward, side, up, buttons, impulse),
+        }
+    }
+
+    fn send_nop(&mut self) -> io::Result<()> {
+        match self {
+            AnySession::Qw(s) => s.send_nop(),
+            AnySession::Nq(s) => s.send_nop(),
+        }
+    }
+
+    fn send_idle(&mut self) -> io::Result<()> {
+        match self {
+            AnySession::Qw(s) => s.send_idle(),
+            AnySession::Nq(s) => s.send_idle(),
+        }
+    }
+
+    fn stringcmd(&mut self, cmd: &str) {
+        match self {
+            AnySession::Qw(s) => s.stringcmd(cmd),
+            AnySession::Nq(s) => s.stringcmd(cmd),
+        }
+    }
+
+    fn ready_up(&mut self) {
+        match self {
+            AnySession::Qw(s) => s.ready_up(),
+            AnySession::Nq(s) => s.ready_up(),
+        }
+    }
+
+    #[cfg(test)]
+    fn name(&self) -> &str {
+        match self {
+            AnySession::Qw(s) => s.name(),
+            AnySession::Nq(s) => s.name(),
+        }
+    }
+
+    /// The player-slot entities this connection sees, with their estimated velocities — NetQuake
+    /// only, since QuakeWorld delivers players as `svc_playerinfo` events instead. Empty for
+    /// QuakeWorld, so the caller's per-tick player pass is a no-op there.
+    fn nq_players(&self) -> Vec<(EntityState, Option<glam::Vec3>)> {
+        match self {
+            AnySession::Qw(_) => Vec::new(),
+            AnySession::Nq(s) => s
+                .frames_current()
+                .iter()
+                .filter(|e| e.number >= 1 && (e.number as usize) <= mirror::MAX_CLIENTS)
+                .map(|e| (*e, s.velocity_of(e.number)))
+                .collect(),
+        }
+    }
+}
+
 struct Bot {
-    session: Session,
+    session: AnySession,
     mirror: Mirror,
     /// How far it has actually travelled. A bot that connects, spawns and then stands still looks
     /// identical to a working one in every other line of output; this is the number that tells them
@@ -232,6 +339,12 @@ impl Client {
         // maps, the way the server is tuned by its own cfg.
         let cfg = config.config_file.clone().unwrap_or_else(|| config.basedir.join("rtx.cfg"));
         exec_cfg(host, &cfg, 0);
+        // The trick-movement repertoire — rocket jumps, bunnyhop/strafe, curl jumps — is left on for
+        // NetQuake too: these are real NetQuake maneuvers (the whole of Quake Done Quick is built on
+        // them). The one caveat is that the planners *certify* a jump against a QuakeWorld `pmove_sim`,
+        // and NetQuake's server-side physics differ enough in the margins that a certified jump can
+        // occasionally mis-land — a tuning follow-up (re-certify against NetQuake pmove), not a reason
+        // to withhold the capability.
         // Explicit overrides last, so a command-line `+set` always wins — over the cfg and the rest.
         for (name, value) in &config.cvars {
             host.set(name, value);
@@ -266,31 +379,49 @@ impl Client {
     /// concerned — QuakeWorld has no notion of a connection carrying two players.
     pub fn connect(&mut self) -> io::Result<()> {
         for i in 0..self.config.bots {
-            let name = if self.config.bots == 1 {
-                self.config.name.clone()
-            } else {
-                format!("{}{}", self.config.name, i + 1)
+            // The label after the `bot•` tag: a name from the list per bot by default, or the
+            // operator's `--name` (a squad appending a number). Then wrap it in the coloured tag so
+            // every rtx bot reads `bot•<label>` on the scoreboard.
+            let label = match &self.config.name {
+                None => crate::bot::bot_name(i as i32).to_string(),
+                Some(base) if self.config.bots == 1 => base.clone(),
+                Some(base) => format!("{base}{}", i + 1),
             };
             let ui = UserinfoBuilder {
-                name,
+                name: crate::bot::bot_display_name(&label),
                 team: self.config.team.clone(),
                 skin: self.config.skin.clone(),
                 topcolor: self.config.colors.0,
                 bottomcolor: self.config.colors.1,
                 spectator: self.config.spectate,
+                bot: true, // announce ourselves — a bot on a human server should say so
                 ..Default::default()
             };
-            // The qport identifies us across a NAT rebinding, so a squad needs distinct ones. Real
-            // clients randomize; deriving them keeps a capture readable.
-            let qport = 0x4000u16.wrapping_add(i as u16);
-            self.bots.push(Bot {
-                session: Session::connect(
+            let session = match self.config.proto {
+                Protocol::Qw => {
+                    // The qport identifies us across a NAT rebinding, so a squad needs distinct ones.
+                    // Real clients randomize; deriving them keeps a capture readable.
+                    let qport = 0x4000u16.wrapping_add(i as u16);
+                    AnySession::Qw(Session::connect(
+                        self.config.server,
+                        ui,
+                        qport,
+                        self.config.wiretap.as_deref(),
+                        self.config.download,
+                    )?)
+                }
+                Protocol::Nq => AnySession::Nq(NqSession::connect(
                     self.config.server,
-                    ui,
-                    qport,
+                    ui.name,
+                    self.config.colors,
+                    self.config.spectate,
+                    self.config.game.clone(),
                     self.config.wiretap.as_deref(),
                     self.config.download,
-                )?,
+                )?),
+            };
+            self.bots.push(Bot {
+                session,
                 mirror: Mirror::default(),
                 travelled: 0.0,
                 last_at: None,
@@ -384,6 +515,16 @@ impl Client {
             }
         }
 
+        // 1b. NetQuake carries players as ordinary entity updates rather than per-player messages,
+        //     so a NetQuake bot's own body and the enemies it sees are folded in here, from its
+        //     settled frame store, once the frame is complete. A no-op for QuakeWorld bots.
+        for i in 0..self.bots.len() {
+            let players = self.bots[i].session.nq_players();
+            if !players.is_empty() {
+                self.bots[i].mirror.write_players_nq(&mut self.game, &mut self.world, &squad, &players);
+            }
+        }
+
         // 2. Build the world, if the map changed under us.
         self.rebuild_world_if_map_changed();
 
@@ -420,7 +561,10 @@ impl Client {
         self.game.client_lead = self.latency();
         self.feed_phase();
         crate::control::frame_begin(&mut self.game);
-        crate::bot::run_bots(&mut self.game);
+        crate::bot::run_bots(
+            &mut self.game,
+            crate::bot::BotFrameScheduleClaim::Unclaimed,
+        );
         for b in &mut self.bots {
             b.measure_travel(&self.game);
         }
@@ -520,6 +664,9 @@ impl Client {
         // `worldspawn`. The server described itself in serverinfo, which arrived during signon — long
         // before this point.
         self.select_mode();
+        // And match the rtx movement features the server actually provides, before the navmesh build
+        // reads them — so we don't plan a double-jump the server won't grant.
+        self.sync_movement();
 
         // A new level voids every entity: the shadow furniture belongs to the old map, and the
         // network numbers are about to be reassigned. A server module gets this done for it by the
@@ -532,7 +679,7 @@ impl Client {
         // The items are what the world reasons about the *absence* of, so it has to know where they
         // all are before the first frame lands. Everything else it remembered — which shadow entity
         // was which door, what was in the air — named slots in a map that no longer exists.
-        self.world.index_items(&self.game);
+        self.world.index_items(&mut self.game);
         // And the nail pools were allocated out of the old map's entity range, which
         // `spawn_shadow_world` has just handed back.
         for b in &mut self.bots {
@@ -624,6 +771,28 @@ impl Client {
         );
     }
 
+    /// Match the rtx-specific movement features to what the server actually provides.
+    ///
+    /// These run *server-side* (a double jump, a wall dodge, the shootable-grenade combo), so they
+    /// exist only on an rtx server — and the sharp one, the double jump, decides whether the navmesh
+    /// plans routes across gaps that need it (`nav_build.rs`'s `djump` links). On a KTX or vanilla
+    /// server that second jump is never granted, so a bot planning around it would leap into a pit.
+    ///
+    /// So: not an rtx server → force every one off, and the navmesh never mints a link the server
+    /// won't honour. An rtx server → mirror exactly what it advertised in serverinfo (it publishes
+    /// each, `mode/mod.rs::publish_movement`), so a server running with, say, double jump off is
+    /// matched rather than assumed on. A key the operator pinned with `+set` is left alone — they know
+    /// something we don't. Run before the world spawns, since the navmesh build reads these.
+    fn sync_movement(&self) {
+        let pinned = |key: &str| self.config.cvars.iter().any(|(k, _)| k == key);
+        let Some(info) = self.lead().map(|b| b.session.serverinfo()) else {
+            return;
+        };
+        for (cv, value) in modes::movement_overrides(info, pinned) {
+            self.host.set(cv, &value);
+        }
+    }
+
     /// Feed the server's match phase into the game, so the bot's rocket-jump gate respects a
     /// countdown. Cheap and per-tick: `match_phase` is a serverinfo lookup, and only a change to
     /// `team_match.phase` matters downstream.
@@ -677,7 +846,7 @@ impl Client {
         let playing = || self.bots.iter().filter(|b| b.session.signon() == Signon::Active);
         for b in playing() {
             let at = b.session.frames_at();
-            for e in b.session.frames.current() {
+            for e in b.session.frames_current() {
                 match seen.iter_mut().find(|(x, _)| x.number == e.number) {
                     Some(held) if held.1 < at => *held = (*e, at),
                     Some(_) => {}
@@ -712,11 +881,11 @@ impl Client {
             SvcEvent::ServerData(sd) => eprintln!(
                 "rtx-client: [{index}] joined {} on {:?} as slot {}{}",
                 if sd.gamedir.is_empty() { "qw" } else { &sd.gamedir },
-                sd.levelname,
+                crate::text::readable(&sd.levelname),
                 sd.playernum,
                 if sd.spectator { " (spectating)" } else { "" }
             ),
-            SvcEvent::Print { text, .. } if lead == Some(index) => eprint!("{text}"),
+            SvcEvent::Print { text, .. } if lead == Some(index) => eprint!("{}", crate::text::readable(text)),
             SvcEvent::Disconnect => eprintln!("rtx-client: [{index}] dropped by the server"),
             _ => {}
         }
@@ -735,7 +904,7 @@ impl Client {
                 s.signon(),
                 s.mapname(),
                 s.rtt() * 1000.0,
-                s.chokes
+                s.chokes()
             );
             // Travel is the honest measure of "is it playing": everything else can look right while
             // the bot stands on its spawn.
@@ -809,17 +978,28 @@ mod tests {
         assert_eq!(client.game().host().cvar(c"rtx_bot_bhop"), 0.0, "an explicit +set wins");
     }
 
-    /// A squad is N independent clients; the server tells them apart by qport and name, so both
-    /// have to differ. A lone bot keeps the plain name.
+    /// A squad is N independent clients; the server tells them apart by name, so they have to
+    /// differ. Default naming draws a distinct list name per bot, each under the coloured `bot•`
+    /// tag (`\u{e2}\u{ef}\u{f4}\u{85}` = coloured `bot` + the `0x85` dot). An explicit `--name`
+    /// numbers a squad and stays wrapped; a lone bot keeps a single label.
     #[test]
-    fn a_squad_gets_distinct_names_and_qports() {
-        let mut squad = Client::new(Config { bots: 3, name: "bot".into(), ..config() });
-        squad.connect().expect("bind");
-        assert_eq!(squad.bots.len(), 3);
+    fn a_squad_gets_distinct_names() {
+        const TAG: &str = "\u{e2}\u{ef}\u{f4}\u{85}"; // coloured `bot` + dot
 
-        let mut solo = Client::new(Config { bots: 1, name: "bot".into(), ..config() });
+        let mut squad = Client::new(Config { bots: 3, ..config() });
+        squad.connect().expect("bind");
+        let names: Vec<&str> = squad.bots.iter().map(|b| b.session.name()).collect();
+        assert!(names.iter().all(|n| n.starts_with(TAG)), "each carries the bot• tag: {names:?}");
+        assert_eq!(names.iter().collect::<std::collections::HashSet<_>>().len(), 3, "distinct: {names:?}");
+
+        let mut named = Client::new(Config { bots: 2, name: Some("botto".into()), ..config() });
+        named.connect().expect("bind");
+        assert_eq!(named.bots[0].session.name(), format!("{TAG}botto1"));
+        assert_eq!(named.bots[1].session.name(), format!("{TAG}botto2"));
+
+        let mut solo = Client::new(Config { bots: 1, name: Some("botto".into()), ..config() });
         solo.connect().expect("bind");
-        assert_eq!(solo.bots.len(), 1);
+        assert_eq!(solo.bots[0].session.name(), format!("{TAG}botto"));
     }
 
     /// The send rate follows the server, because that's the rate it wants moves at — with a sane

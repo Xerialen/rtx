@@ -39,6 +39,10 @@ const NAIL_SPEED: f32 = 1000.0;
 const PREFERRED_RANGE: f32 = 400.0;
 /// Below this we're in self-splash territory for the RL — switch to the super shotgun.
 const SPLASH_RANGE: f32 = 140.0;
+/// The lightning gun's beam reaches this far (`w_fire_lightning` traces `v_forward * 600`). The normal
+/// mid-range pick caps LG at a conservative `PREFERRED_RANGE + 150` (550); the *finishing* pick uses
+/// the true reach, so a believed-low enemy in the 550–600 band still draws the bolt over the rocket.
+const LG_RANGE: f32 = 600.0;
 /// KTX's `AvoidQuadBore` treats an enemy inside 250 units as a quad-explosive danger even though
 /// the physical radius is 160: quad turns the normally-small edge splash into a fight-ending hit,
 /// and the projectile strikes the near face of the target rather than its reported origin.
@@ -51,8 +55,22 @@ const EXPLOSIVE_IMPACT_MARGIN: f32 = 24.0;
 /// self-splash; blast radius is 160 and attacker self-damage is only halved). Matches the slack in
 /// [`crate::bot::grenade::rocket_shove`].
 const LINE_OF_FIRE_SLACK: f32 = 48.0;
+/// How long *before* an airborne enemy touches down a rocket may still arrive and be better put into
+/// the ground under them than into the body ([`aim_solution`]). The blast reaches 160 units, so a
+/// target this close to landing — tens of units up, and dropping into it — eats the floor splash
+/// anyway; and eating it airborne is the point, since the blast throws them further up, where the
+/// next rocket has a body on a clean parabola to solve. Past this they're properly in the air, with
+/// room to be anywhere by the time the shot lands, and the hull is the better target.
+const FLOOR_SPLASH_LEEWAY: f32 = 0.15;
 /// Retreat when hurt below this.
 const LOW_HEALTH: f32 = 40.0;
+/// Upper range on the single-barrel *shotgun* finish (the lightning finish keeps its full
+/// [`LG_RANGE`] beam). The pattern holds its full ~24-dmg six pellets only while its cone half-width
+/// (`dist · 0.04`, the [`w_fire_shotgun`](crate::weapons) spread) stays under the ~16u target
+/// half-width — about 400 units; two shots then close out a [`FINISH_STACK`] enemy. Past this the
+/// cone opens up and it needs 3+ hits, so a believed-low enemy is better finished with the rocket's
+/// splash than a switch to a shotgun that can't reach — the "swapped too early" the user saw.
+const FINISH_SHOTGUN_RANGE: f32 = 450.0;
 
 /// Opponent-model "press the advantage" thresholds. When the current enemy is believed to be on a
 /// finishable stack (below [`FINISH_STACK`] — under one rocket even through green armor), the belief
@@ -188,7 +206,15 @@ impl Loadout {
 /// dumps all cells as a self-lethal discharge. The server's auto-pick guard (`w_best_weapon`) can't
 /// help — the bot forces its weapon by impulse, which bypasses it — so the ban lives here (and, as a
 /// belt-and-suspenders fire gate, in [`engage`]).
-fn choose_weapon(inv: Loadout, dist: f32, gl_air: bool, gl_ground: bool, underwater: bool) -> WeaponChoice {
+///
+/// `finishable` — the opponent model believes this enemy is on a finishable stack (set by [`engage`]
+/// from [`est_strength`](crate::bot::model::est_strength) against [`FINISH_STACK`], the same read the
+/// movement `press` uses). When set, a mid-range pick that would otherwise be a dodgeable projectile
+/// becomes a hitscan direct hit — the lightning gun in beam range, else the tight single-barrel
+/// shotgun within [`FINISH_SHOTGUN_RANGE`] — so the near-kill lands the instant it fires instead of
+/// being strafed clear of a rocket's ~0.4 s flight. Past the shotgun's finishing range (and out of
+/// beam range) the rocket's splash is the better closer, so the finish leaves the pick alone.
+fn choose_weapon(inv: Loadout, dist: f32, gl_air: bool, gl_ground: bool, underwater: bool, finishable: bool) -> WeaponChoice {
     // A solved airborne grenade intercept takes precedence: it's the shot we came here to take.
     if gl_air {
         return WeaponChoice::grenade();
@@ -205,6 +231,21 @@ fn choose_weapon(inv: Loadout, dist: f32, gl_air: bool, gl_ground: bool, underwa
     // Mid range: the lightning gun (fast, high DPS) when fed — never submerged (it would discharge).
     if dist < PREFERRED_RANGE + 150.0 && inv.fed(Weapon::Lightning) && !underwater {
         return WeaponChoice::of(Weapon::Lightning);
+    }
+    // A finishable enemy past point blank: a hitscan direct hit lands the kill the instant it fires,
+    // where the rocket's flight lets a near-dead target strafe clear. Lightning if fed and in beam
+    // range (its true 600, past the conservative 550 the branch above stops at), else the tight
+    // single-barrel shotgun — not the wide SSG, which patterns worse at this distance — but only
+    // within FINISH_SHOTGUN_RANGE, where two barrels still close the enemy out; beyond it the pattern
+    // can't finish and we keep the rocket's splash. Only reached when the branches above didn't
+    // already pick a hitscan gun, i.e. exactly the RL/projectile case.
+    if finishable && dist >= SPLASH_RANGE {
+        if inv.fed(Weapon::Lightning) && dist < LG_RANGE && !underwater {
+            return WeaponChoice::of(Weapon::Lightning);
+        }
+        if inv.fed(Weapon::Shotgun) && dist < FINISH_SHOTGUN_RANGE {
+            return WeaponChoice::of(Weapon::Shotgun);
+        }
     }
     // Default: the rocket launcher (projectile, lead the target).
     if inv.fed(Weapon::RocketLauncher) {
@@ -496,11 +537,11 @@ fn steps_under_plat(plats: &[(glam::Vec2, glam::Vec2)], feet: Vec3, d: Vec3) -> 
 /// Classify where a horizontal step `mv` from `feet` lands, for the combat/flee/dodge hazard ladders.
 /// A zero move is Dry — holding ground is never a step into anything. A raised lift's shaft rates Wet,
 /// not Hazard: somewhere to leave, not something that kills — move to open ground when there is any,
-/// step in only if every other way is worse. Pure over the oracles (clip-hull solidity plus the
-/// engine's `pointcontents`, the only hull that reports liquids).
+/// step in only if every other way is worse. Pure over the oracles (clip-hull solidity plus
+/// `pointcontents`, the render hull that reports liquids).
 fn step_footing(
     is_solid: &impl Fn(Vec3) -> bool,
-    contents: &impl Fn(Vec3) -> f32,
+    contents: &impl Fn(Vec3) -> i32,
     plats: &[(glam::Vec2, glam::Vec2)],
     feet: Vec3,
     mv: Vec3,
@@ -528,9 +569,8 @@ fn safe_flee_move(game: &GameState, e: EntId, origin: Vec3, away: Vec3) -> (Vec3
         return (away * MOVE_SPEED, grounded);
     };
     let plats = raised_plat_boxes(game, origin);
-    let host = game.host();
     let is_solid = |p: Vec3| bsp.is_solid(p);
-    let contents = |p: Vec3| host.pointcontents(p);
+    let contents = |p: Vec3| game.pointcontents(p);
     let feet = origin - Vec3::new(0.0, 0.0, 24.0);
     let footing = |d: Vec3| step_footing(&is_solid, &contents, &plats, feet, d);
     safe_flee_choice(&footing, away, grounded, is_burning(&game.entities[e].v))
@@ -602,9 +642,8 @@ fn safe_dodge_move(game: &GameState, e: EntId, origin: Vec3, dodge: Vec3, away: 
         return (dodge * MOVE_SPEED, grounded);
     };
     let plats = raised_plat_boxes(game, origin);
-    let host = game.host();
     let is_solid = |p: Vec3| bsp.is_solid(p);
-    let contents = |p: Vec3| host.pointcontents(p);
+    let contents = |p: Vec3| game.pointcontents(p);
     let feet = origin - Vec3::new(0.0, 0.0, 24.0);
     let footing = |d: Vec3| step_footing(&is_solid, &contents, &plats, feet, d);
     safe_dodge_choice(&footing, dodge, away, grounded, is_burning(&game.entities[e].v))
@@ -687,7 +726,8 @@ struct GrenadeSol {
 /// Projectile planning computed inside one immutable BSP borrow, handed back as plain data.
 struct BallisticPlan {
     /// Where an airborne enemy would touch down (time, point), so the rocket lead clamps at the
-    /// floor instead of aiming through it.
+    /// floor instead of aiming through it — and, once they're down by the time a rocket could reach
+    /// them, the floor the shot is put into rather than the body (see [`aim_solution`]).
     land: Option<(f32, Vec3)>,
     /// A *validated* airborne grenade intercept: still airborne at the meet, far enough that the
     /// blast doesn't catch us, and a real bounce sim confirms the arc reaches them.
@@ -780,9 +820,11 @@ fn plan_ballistics(
 /// projectiles solve the true intercept — where the enemy *will be* when the shot arrives; airborne
 /// targets ride the gravity-displaced, floor-clamped parabola from the muzzle (falling back to a
 /// linear lead if the fixed point can't settle), aimed at the hull centre (+4) for the most
-/// direct-hit margin; grounded/swimming targets get a linear lead from the eye (a grounded RL
-/// strafer gets the shin-drop so a near miss becomes floor splash, but nailguns need a direct hit).
-/// Hitscan aims straight at the eye, led only by `lead`.
+/// direct-hit margin — *unless* a rocket's target is down, or all but down, by the time it could get
+/// there, in which case it aims at the floor under them and leans on the splash. Grounded/swimming
+/// targets get a linear lead from the eye (a grounded RL strafer gets the same shin-drop so a near
+/// miss becomes floor splash, but nailguns need a direct hit). Hitscan aims straight at the eye, led
+/// only by `lead`.
 ///
 /// `lead` is the latency the shot is fired across — zero inside a server, and a network client's
 /// round trip otherwise (see [`GameState::aim_lead`]). It's simply added to the flight time, because
@@ -813,9 +855,23 @@ fn aim_solution(
             // Fallback (fixed point didn't settle — a target falling away near projectile speed):
             // the linear-seed flight time evaluated on the *clamped* `pos_at`, so a target that lands
             // mid-flight still resolves to the landing spot rather than a point below the floor.
-            let (_t, meet) = ballistic_intercept(muzzle_base, &pos_at, s, seed).unwrap_or((seed, pos_at(seed)));
-            let aim = meet + Vec3::new(0.0, 0.0, 4.0);
-            (aim, angles_to(muzzle_base, aim), true)
+            let (t, meet) = ballistic_intercept(muzzle_base, &pos_at, s, seed).unwrap_or((seed, pos_at(seed)));
+            // Down, or as good as, before the rocket can get there ([`FLOOR_SPLASH_LEEWAY`]): put the
+            // shot in the floor under them rather than into the body. Against an enemy who dodges what
+            // is aimed *at* them, the ground is the better target — stand on it and eat the splash, or
+            // jump off it and get catapulted, which only hands us the shot we want next. The blast is
+            // instantaneous, so it goes under where they'll *be* when it arrives (`meet`, which past
+            // touchdown is the landing spot with the run-on already in it), at the landing floor:
+            // `land_pos` is the resting *origin*, so −16 is the shin — the grounded strafer's
+            // floor-splash convention below, keeping 8u of clearance so a shallow shot doesn't graze
+            // the ground short of the spot. Rocket only: a nail in the floor is a wasted shot.
+            let floor_splash = plan
+                .land
+                .filter(|_| choice.weapon == Weapon::RocketLauncher)
+                .filter(|&(t_land, _)| t + lead >= t_land - FLOOR_SPLASH_LEEWAY)
+                .map(|(_, land_pos)| Vec3::new(meet.x, meet.y, land_pos.z - 16.0));
+            let aim = floor_splash.unwrap_or(meet + Vec3::new(0.0, 0.0, 4.0));
+            (aim, angles_to(muzzle_base, aim), floor_splash.is_none())
         } else {
             // A swimmer is led in full 3D with no gravity term (water isn't free-fall).
             let pred_vel = if tgt.swimming {
@@ -924,8 +980,8 @@ fn feed_forward(game: &mut GameState, e: EntId, now: f32, skill: f32, clean: Vec
 /// fresh, and we're not ourselves critical) the bot closes to finish rather than holding range;
 /// `press` is false when modeling is off, leaving the range logic unchanged. Grounded near a hazard
 /// the move is filtered so the bot won't strafe or backpedal into lava/slime or off a ledge (the
-/// probes reuse the offensive-shove oracles — clip-hull solidity plus the engine's `pointcontents`,
-/// the only hull that reports liquids), nor orbit a fight into a raised lift's shaft, where its body
+/// probes reuse the offensive-shove oracles — clip-hull solidity plus `pointcontents`, the render
+/// hull that reports liquids), nor orbit a fight into a raised lift's shaft, where its body
 /// would hold the lift up; airborne or map-less it's the original blind composition.
 fn combat_move(game: &mut GameState, e: EntId, enemy: EntId, now: f32, origin: Vec3, to_enemy: Vec3) -> Vec3 {
     let health = game.entities[e].v.health;
@@ -973,9 +1029,8 @@ fn combat_move(game: &mut GameState, e: EntId, enemy: EntId, now: f32, origin: V
     match (grounded_self, game.nav.bsp.as_ref()) {
         (true, Some(bsp)) => {
             let plats = raised_plat_boxes(game, origin);
-            let host = game.host();
             let is_solid = |p: Vec3| bsp.is_solid(p);
-            let contents = |p: Vec3| host.pointcontents(p);
+            let contents = |p: Vec3| game.pointcontents(p);
             let feet = origin - Vec3::new(0.0, 0.0, 24.0);
             let footing = |mv: Vec3| step_footing(&is_solid, &contents, &plats, feet, mv);
             safe_combat_move(&footing, dir, perp, want_forward, strafe_sign, burning)
@@ -1084,9 +1139,11 @@ pub(crate) fn engage(
     let enemy_vel = game.entities[enemy].v.velocity;
 
     // Line of sight? Trace to the enemy's eyes, ignoring ourselves. Clear if we hit the enemy or
-    // nothing at all.
+    // nothing at all — unless the enemy is a stale network shadow (teleported or ducked out of PVS,
+    // frozen where we last saw it), in which case that clear line is to a ghost, not a target, and we
+    // must not fire down it. Same guard perception uses, so aim and trigger agree on who's really there.
     let tr = game.traceline(my_eye, enemy_eye, false, e);
-    let los = tr.ent == enemy || tr.fraction > 0.95;
+    let los = (tr.ent == enemy || tr.fraction > 0.95) && !game.net_shadow_stale(enemy, now);
     if !los {
         // No shooting through walls; navigation keeps driving the movement. But if we saw the
         // enemy moments ago, hold the angle where they disappeared instead of snapping the view
@@ -1141,10 +1198,18 @@ pub(crate) fn engage(
     // unavailable) — not a clock or geometry threshold — so it can't flip mid-jump and re-slew the
     // aim off the shot; RL/GL share ammo, so the only transition is the pool running dry, grounding
     // both at once. Midair's RL-only loadout never reaches the grenade path.
+    // The opponent model's finish read: is this enemy believed to be on a finishable stack, freshly?
+    // The same belief the movement `press` uses (`combat_move`), minus its own-health gate — a hurt
+    // bot still wants the *reliable* finishing weapon. When set, `choose_weapon` swaps a dodgeable
+    // rocket at range for a hitscan direct hit. `None` (modeling off, or a client with no health
+    // belief yet) ⇒ `false` ⇒ the pick is unchanged.
+    let finishable = game.opponent_est(e, enemy, now).is_some_and(|est| {
+        now - est.last_update < FINISH_FRESH && crate::bot::model::est_strength(&est, now) < FINISH_STACK
+    });
     let mut choice = if discharge {
         WeaponChoice::of(Weapon::Lightning)
     } else {
-        choose_weapon(inv, dist, plan.air_gl.is_some(), plan.gl_ground.is_some(), underwater)
+        choose_weapon(inv, dist, plan.air_gl.is_some(), plan.gl_ground.is_some(), underwater, finishable)
     };
     // Do not even select an explosive weapon when a teammate occupies the target blast or its own
     // projected splash is too costly (especially KTX's enlarged quad caution zone). The fire gate
@@ -1164,6 +1229,30 @@ pub(crate) fn engage(
     // W_ChangeWeapon each frame otherwise).
     if game.entities[e].v.weapon != choice.weapon {
         cmd.impulse = choice.impulse;
+        // Make the finish read observable live (`rtx_bot_debug`): log only when it actually diverts the
+        // pick from what range + inventory alone would choose — the "he's low, hit him with something
+        // that lands" swap. Throttled by the switch itself, and off the hot path unless debugging.
+        //
+        // The belief prints *beside the truth it is a guess at*: the failure this catches is never the
+        // gate arithmetic, it's the model quietly disagreeing with the world (a stale baseline, a missed
+        // reset, over-modelled damage), and a believed-strength number alone cannot show that. Both
+        // sides come from the frame that took the decision, so they're directly comparable.
+        if finishable && game.host().cvar_bool(c"rtx_bot_debug") {
+            let plain = choose_weapon(inv, dist, plan.air_gl.is_some(), plan.gl_ground.is_some(), underwater, false);
+            if plain.weapon != choice.weapon {
+                let (bh, ba, be, age) = game.opponent_est(e, enemy, now).map_or((-1.0, -1.0, -1.0, -1.0), |est| {
+                    (est.health, est.armor_value, crate::bot::model::est_strength(&est, now), now - est.last_update)
+                });
+                let v = &game.entities[enemy].v;
+                let (rh, ra, rt) = (v.health, v.armorvalue, v.armortype);
+                let real = crate::bot::goals::total_strength(rh, ra, rt);
+                game.host().conprint(&crate::game::cstring(&format!(
+                    "rtx bot{}: finishing with {:?} (range pick was {:?}) at {dist:.0}u — \
+                     belief H{bh:.0}/A{ba:.0} E{be:.0} age {age:.1}s | real H{rh:.0}/A{ra:.0}@{rt:.1} E{real:.0}\n",
+                    e.0, choice.weapon, plain.weapon,
+                )));
+            }
+        }
     }
 
     // Aim point and clean firing angles (pure ballistics). `gate_direct` marks a shot that needs a
@@ -2091,6 +2180,113 @@ mod tests {
         assert!(ballistic_pos(p0, v0, g, land, 5.0).z >= 0.0);
     }
 
+    /// An airborne target 600u downrange, solved from a bot at the origin — a rocket's flight over
+    /// that range is ~0.6s, which is what the touchdown times below are placed either side of.
+    /// The floor is at z = 0 throughout, so a landed player's origin rests at z = 24 and the shin
+    /// the floor-splash aims at is z = 8.
+    fn solve_air(weapon: Weapon, tgt: &Target, land: Option<(f32, Vec3)>, lead: f32) -> (Vec3, bool) {
+        let plan = BallisticPlan { land, air_gl: None, gl_ground: None };
+        let (aim, _, gate_direct) = aim_solution(
+            WeaponChoice::of(weapon),
+            tgt,
+            Vec3::new(0.0, 0.0, 22.0),
+            Vec3::new(0.0, 0.0, 16.0),
+            800.0,
+            &plan,
+            lead,
+        );
+        (aim, gate_direct)
+    }
+
+    /// A target 600u downrange at height `z`, in the air. `land` times below are the real solution of
+    /// this parabola against the floor, as `fall_land` would trace them.
+    fn falling_target(z: f32, vel: Vec3) -> Target {
+        let org = Vec3::new(600.0, 0.0, z);
+        Target {
+            org,
+            eye: org + Vec3::new(0.0, 0.0, 22.0),
+            vel,
+            dist: (org - Vec3::new(0.0, 0.0, 22.0)).length(),
+            swimming: false,
+            airborne: true,
+        }
+    }
+
+    /// The dodge answer: an enemy who'll be standing when the rocket gets there is shot at the ground
+    /// they'll be standing on, not at the body — so the splash lands whether they hold or jump.
+    #[test]
+    fn rocket_floor_splashes_a_target_that_lands_first() {
+        // Dropping from 60 at 200ups: down at t = 0.14, long before a ~0.6s rocket arrives.
+        let tgt = falling_target(60.0, Vec3::new(0.0, 0.0, -200.0));
+        let land = Some((0.14, Vec3::new(600.0, 0.0, 24.0)));
+        let (aim, gate_direct) = solve_air(Weapon::RocketLauncher, &tgt, land, 0.0);
+        assert_eq!(aim, Vec3::new(600.0, 0.0, 8.0), "the shin of the spot they're standing on");
+        assert!(!gate_direct, "a floor shot rides the splash tolerance, not the hull");
+    }
+
+    /// The leeway: they're still airborne when it arrives, but only just — the floor blast reaches
+    /// them anyway, and catches them off the ground, which is where we want them.
+    #[test]
+    fn rocket_floor_splashes_a_target_about_to_land() {
+        // Falling from an apex at 200: down at t = 0.66, a shade after the ~0.60s flight — so the
+        // rocket meets them ~30u up, inside the leeway and well inside the blast.
+        let tgt = falling_target(200.0, Vec3::ZERO);
+        let land = Some((0.66, Vec3::new(600.0, 0.0, 24.0)));
+        let (aim, gate_direct) = solve_air(Weapon::RocketLauncher, &tgt, land, 0.0);
+        assert_eq!(aim, Vec3::new(600.0, 0.0, 8.0), "the floor under where they'll be");
+        assert!(!gate_direct);
+    }
+
+    /// The mid-air intercept is still the right answer while they're a body on a parabola.
+    #[test]
+    fn rocket_keeps_midair_intercept_when_it_arrives_first() {
+        // Rising at 100ups from 300: not down until t = 0.97, and the rocket is there at ~0.63.
+        let tgt = falling_target(300.0, Vec3::new(0.0, 0.0, 100.0));
+        let land = Some((0.97, Vec3::new(600.0, 0.0, 24.0)));
+        let (aim, gate_direct) = solve_air(Weapon::RocketLauncher, &tgt, land, 0.0);
+        assert!(aim.z > 100.0, "hull centre up on the parabola, nowhere near the floor: {aim:?}");
+        assert!(gate_direct, "a body shot needs the hull");
+    }
+
+    /// Nails don't splash, so the floor is never a target for them — the aim still rides the clamp to
+    /// the landing spot, but at the hull it has to hit.
+    #[test]
+    fn nailgun_never_aims_at_the_floor() {
+        let tgt = falling_target(60.0, Vec3::new(0.0, 0.0, -200.0));
+        let land = Some((0.14, Vec3::new(600.0, 0.0, 24.0)));
+        let (aim, gate_direct) = solve_air(Weapon::SuperNailgun, &tgt, land, 0.0);
+        assert_eq!(aim, Vec3::new(600.0, 0.0, 28.0), "hull centre at the landing spot (24 + 4)");
+        assert!(gate_direct);
+    }
+
+    /// The blast goes under where they'll *be*, not where they touched down: a target that lands
+    /// running keeps running, and the shot follows.
+    #[test]
+    fn floor_splash_follows_the_post_landing_run() {
+        // Same 0.14s drop, running +y at 320ups: they touch down 45u along and keep going.
+        let tgt = falling_target(60.0, Vec3::new(0.0, 320.0, -200.0));
+        let land = Some((0.14, Vec3::new(600.0, 44.8, 24.0)));
+        let (aim, gate_direct) = solve_air(Weapon::RocketLauncher, &tgt, land, 0.0);
+        assert_eq!(aim.z, 8.0, "still the shin of the floor");
+        assert!(aim.y > 44.8, "and past the touchdown point at their ground speed: {aim:?}");
+        assert!(!gate_direct);
+    }
+
+    /// Latency is time the target keeps falling before our shot even exists, so it counts toward
+    /// their landing exactly as it counts toward the flight.
+    #[test]
+    fn latency_counts_toward_the_landing() {
+        // Falling from an apex at 300: down at t = 0.83, with the rocket there at ~0.61.
+        let tgt = falling_target(300.0, Vec3::ZERO);
+        let land = Some((0.83, Vec3::new(600.0, 0.0, 24.0)));
+        let (_, direct_now) = solve_air(Weapon::RocketLauncher, &tgt, land, 0.0);
+        // A client 150ms behind: they've had that long to keep falling before the shot even exists.
+        let (aim_late, direct_late) = solve_air(Weapon::RocketLauncher, &tgt, land, 0.15);
+        assert!(direct_now, "in the server's present they're still well up when it arrives");
+        assert!(!direct_late, "seen 150ms late, they're on the floor by then — shoot the floor");
+        assert_eq!(aim_late.z, 8.0, "{aim_late:?}");
+    }
+
     /// A shot solved 400u downrange along +x, clean angles dead ahead — the geometry the on-target
     /// tests vary a view against. `speed`/`arc`/`direct` pick which gate branch is exercised.
     fn test_shot(weapon: Weapon, speed: f32, arc: bool, direct: bool) -> Shot {
@@ -2212,14 +2408,14 @@ mod tests {
     #[test]
     fn choose_weapon_falls_back_to_nailguns() {
         // A bot restricted to a nailgun (via rtx_weapons) must fire it, not the axe. Super first.
-        let sng = choose_weapon(armed(Items::SUPER_NAILGUN), 400.0, false, false, false);
+        let sng = choose_weapon(armed(Items::SUPER_NAILGUN), 400.0, false, false, false, false);
         assert_eq!(sng.weapon, Weapon::SuperNailgun);
         assert_eq!(sng.projectile_speed, NAIL_SPEED);
-        let ng = choose_weapon(armed(Items::NAILGUN), 400.0, false, false, false);
+        let ng = choose_weapon(armed(Items::NAILGUN), 400.0, false, false, false, false);
         assert_eq!(ng.weapon, Weapon::Nailgun);
         // Out of nails → nothing else to fire → the axe.
         let dry = Loadout { nails: 0.0, ..armed(Items::SUPER_NAILGUN | Items::NAILGUN) };
-        assert_eq!(choose_weapon(dry, 400.0, false, false, false).weapon, Weapon::Axe);
+        assert_eq!(choose_weapon(dry, 400.0, false, false, false, false).weapon, Weapon::Axe);
     }
 
     #[test]
@@ -2227,19 +2423,19 @@ mod tests {
         // A GL-only bot only fires the GL when engage supplies an arc (gl_ground/gl_air); with no
         // solution there's nothing else to fire, so it holds the axe (never lobs blindly).
         let gl = armed(Items::GRENADE_LAUNCHER);
-        assert_eq!(choose_weapon(gl, 400.0, false, false, false).weapon, Weapon::Axe);
-        assert_eq!(choose_weapon(gl, 400.0, false, true, false).weapon, Weapon::GrenadeLauncher);
-        assert_eq!(choose_weapon(gl, 400.0, true, false, false).weapon, Weapon::GrenadeLauncher);
+        assert_eq!(choose_weapon(gl, 400.0, false, false, false, false).weapon, Weapon::Axe);
+        assert_eq!(choose_weapon(gl, 400.0, false, true, false, false).weapon, Weapon::GrenadeLauncher);
+        assert_eq!(choose_weapon(gl, 400.0, true, false, false, false).weapon, Weapon::GrenadeLauncher);
     }
 
     #[test]
     fn choose_weapon_full_arsenal_unchanged() {
-        // Regression guard: with everything (and dry), the range order is still SSG (point-blank
-        // <140) / LG (mid <550) / RL (beyond) — the nailgun fallbacks never pre-empt it.
+        // Regression guard: with everything (and dry) and no finish read, the range order is still SSG
+        // (point-blank <140) / LG (mid <550) / RL (beyond) — the nailgun fallbacks never pre-empt it.
         let all = armed(Items::all());
-        assert_eq!(choose_weapon(all, 100.0, false, false, false).weapon, Weapon::SuperShotgun);
-        assert_eq!(choose_weapon(all, 400.0, false, false, false).weapon, Weapon::Lightning);
-        assert_eq!(choose_weapon(all, 600.0, false, false, false).weapon, Weapon::RocketLauncher);
+        assert_eq!(choose_weapon(all, 100.0, false, false, false, false).weapon, Weapon::SuperShotgun);
+        assert_eq!(choose_weapon(all, 400.0, false, false, false, false).weapon, Weapon::Lightning);
+        assert_eq!(choose_weapon(all, 600.0, false, false, false, false).weapon, Weapon::RocketLauncher);
     }
 
     #[test]
@@ -2247,12 +2443,38 @@ mod tests {
         // Underwater the lightning gun is barred (it would discharge). With a full arsenal the
         // mid-range pick falls through to the rocket launcher instead of the LG...
         let all = armed(Items::all());
-        assert_eq!(choose_weapon(all, 400.0, false, false, true).weapon, Weapon::RocketLauncher);
+        assert_eq!(choose_weapon(all, 400.0, false, false, true, false).weapon, Weapon::RocketLauncher);
         // ...and a bot whose only fed gun is the LG drops to the axe rather than discharging.
         let lg_only = armed(Items::LIGHTNING);
-        assert_eq!(choose_weapon(lg_only, 400.0, false, false, true).weapon, Weapon::Axe);
+        assert_eq!(choose_weapon(lg_only, 400.0, false, false, true, false).weapon, Weapon::Axe);
         // Dry, that same LG-only bot fires the LG as usual (regression guard on the gate).
-        assert_eq!(choose_weapon(lg_only, 400.0, false, false, false).weapon, Weapon::Lightning);
+        assert_eq!(choose_weapon(lg_only, 400.0, false, false, false, false).weapon, Weapon::Lightning);
+    }
+
+    #[test]
+    fn choose_weapon_finishes_a_low_enemy_with_a_hitscan_hit() {
+        // A believed-low enemy past point blank: the pick swaps the dodgeable rocket for a hitscan
+        // direct hit so the near-kill lands before the target can strafe clear of the flight.
+        let all = armed(Items::all());
+        // In the 550–600 band (past the normal LG cap of PREFERRED_RANGE+150) it's the rocket without
+        // a finish read; with one, the lightning gun's true 600-unit reach takes the guaranteed hit.
+        assert_eq!(choose_weapon(all, 580.0, false, false, false, false).weapon, Weapon::RocketLauncher);
+        assert_eq!(choose_weapon(all, 580.0, false, false, false, true).weapon, Weapon::Lightning);
+        // No lightning gun, inside the shotgun's finishing range: the tight single-barrel shotgun —
+        // not the rocket, and not the wider SSG, which patterns worse at this distance. Contrast the
+        // no-finish rocket.
+        let no_lg = armed(Items::all() & !Items::LIGHTNING);
+        assert_eq!(choose_weapon(no_lg, 400.0, false, false, false, false).weapon, Weapon::RocketLauncher);
+        assert_eq!(choose_weapon(no_lg, 400.0, false, false, false, true).weapon, Weapon::Shotgun);
+        // Past FINISH_SHOTGUN_RANGE the single-barrel can't close the kill out, so the finish keeps
+        // the rocket's splash rather than swapping too early — even without a lightning gun.
+        assert_eq!(choose_weapon(no_lg, 500.0, false, false, false, true).weapon, Weapon::RocketLauncher);
+        // And past the lightning gun's reach the shotgun no longer serves either — the rocket stays.
+        assert_eq!(choose_weapon(all, 700.0, false, false, false, true).weapon, Weapon::RocketLauncher);
+        // Point blank is untouched — the super shotgun already one-shots a low enemy up close.
+        assert_eq!(choose_weapon(all, 100.0, false, false, false, true).weapon, Weapon::SuperShotgun);
+        // Underwater bars even the finish lightning gun; the shotgun still serves.
+        assert_eq!(choose_weapon(all, 400.0, false, false, true, true).weapon, Weapon::Shotgun);
     }
 
     #[test]

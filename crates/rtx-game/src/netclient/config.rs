@@ -8,17 +8,33 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 
+/// Which network protocol family to speak. A connection picks one; they share no wire bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Protocol {
+    /// QuakeWorld (the default): `getchallenge`/`connect`, port 27500.
+    #[default]
+    Qw,
+    /// NetQuake — the original Quake protocol: `CCREQ_CONNECT`, port 26000.
+    Nq,
+}
+
 /// A bot client's configuration.
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// Which protocol family to speak.
+    pub proto: Protocol,
+    /// The gamedir to look for maps under. NetQuake never announces one, so it defaults to `id1`;
+    /// QuakeWorld learns it from `svc_serverdata`, so this stays empty there unless overridden.
+    pub game: String,
     /// The server to connect to.
     pub server: SocketAddr,
     /// The directory holding `qw/`, `id1/`, … — where the maps are.
     pub basedir: PathBuf,
     /// How many bots to bring.
     pub bots: usize,
-    /// Base name; a squad appends a number.
-    pub name: String,
+    /// The label after the `bot•` tag. `None` draws a name per bot from the built-in list
+    /// (`bot•Grunt`, …); `Some(base)` uses it instead (`bot•base`, a squad appending a number).
+    pub name: Option<String>,
     /// Team string, for teamplay servers.
     pub team: String,
     /// Skin name; empty for the default.
@@ -31,8 +47,8 @@ pub struct Config {
     pub spectate: bool,
     /// Say `ready` on a server that waits to be told, so a match can actually start.
     pub auto_ready: bool,
-    /// Fetch a map we don't have (over HTTP) rather than fail the connection. See
-    /// [`crate::netclient::download`].
+    /// Fetch a map we don't have rather than fail the connection: HTTP first, then the connected
+    /// QuakeWorld server when available. See [`crate::netclient::download`].
     pub download: bool,
     /// A cfg file of cvar settings to apply on startup — the client's `server.cfg`. Defaults to
     /// `<basedir>/rtx.cfg` if that exists; `--config` names another. Empty = none.
@@ -51,10 +67,12 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            proto: Protocol::Qw,
+            game: String::new(),
             server: ([127, 0, 0, 1], rtx_proto::protocol::PORT).into(),
             basedir: PathBuf::from("."),
             bots: 1,
-            name: "rtx".to_string(),
+            name: None,
             team: String::new(),
             skin: String::new(),
             colors: (0, 0),
@@ -73,14 +91,16 @@ impl Default for Config {
 
 /// The `--help` text.
 pub const USAGE: &str = "\
-rtx-client — the rtx bots, as real QuakeWorld clients
+rtx-client — the rtx bots, as real QuakeWorld or NetQuake clients
 
 usage: rtx-client --server <host[:port]> --basedir <dir> [options]
 
-  --server <host[:port]>  server to join (default port 27500)
+  --server <host[:port]>  server to join (default port 27500, or 26000 with --proto nq)
+  --proto <qw|nq>         wire protocol: QuakeWorld (default) or NetQuake
+  --game <dir>            gamedir the maps live under (default id1 for --proto nq)
   --basedir <dir>         Quake directory holding qw/ and id1/ — the maps must be here
   --bots <n>              how many bots to bring (default 1)
-  --name <s>              base name; a squad appends a number (default \"rtx\")
+  --name <s>              label after the `bot•` tag (default: a random name per bot)
   --team <s>              team, on a teamplay server
   --skin <s>              skin name
   --colors <top> <bottom> shirt and trouser colours, 0-13
@@ -98,7 +118,9 @@ usage: rtx-client --server <host[:port]> --basedir <dir> [options]
 /// Parse a command line. `Err` carries a message worth printing.
 pub fn parse(argv: &[String]) -> Result<Config, String> {
     let mut c = Config::default();
-    let mut have_server = false;
+    // The server's default port depends on `--proto`, which may be given after `--server`, so hold
+    // the raw string and resolve it once the whole line is parsed.
+    let mut server_raw: Option<String> = None;
     let mut i = 0;
 
     // Positional-ish flags need their value; report the missing one rather than panicking.
@@ -134,8 +156,19 @@ pub fn parse(argv: &[String]) -> Result<Config, String> {
                 i += 2;
             }
             "--server" => {
-                c.server = resolve(&need(i, "--server")?)?;
-                have_server = true;
+                server_raw = Some(need(i, "--server")?);
+                i += 2;
+            }
+            "--proto" => {
+                c.proto = match need(i, "--proto")?.as_str() {
+                    "qw" => Protocol::Qw,
+                    "nq" => Protocol::Nq,
+                    other => return Err(format!("--proto wants `qw` or `nq`, not `{other}`")),
+                };
+                i += 2;
+            }
+            "--game" => {
+                c.game = need(i, "--game")?;
                 i += 2;
             }
             "--basedir" => {
@@ -147,7 +180,7 @@ pub fn parse(argv: &[String]) -> Result<Config, String> {
                 i += 2;
             }
             "--name" => {
-                c.name = need(i, "--name")?;
+                c.name = Some(need(i, "--name")?);
                 i += 2;
             }
             "--team" => {
@@ -190,8 +223,18 @@ pub fn parse(argv: &[String]) -> Result<Config, String> {
         }
     }
 
-    if !have_server {
+    let Some(server_raw) = server_raw else {
         return Err(format!("--server is required\n\n{USAGE}"));
+    };
+    // Resolve now that the protocol (hence the default port) is settled.
+    let default_port = match c.proto {
+        Protocol::Qw => rtx_proto::protocol::PORT,
+        Protocol::Nq => rtx_proto::nq::protocol::PORT,
+    };
+    c.server = resolve(&server_raw, default_port)?;
+    // NetQuake never announces a gamedir, so it needs a default; QuakeWorld learns it on connect.
+    if c.proto == Protocol::Nq && c.game.is_empty() {
+        c.game = "id1".to_string();
     }
     if c.bots == 0 {
         return Err("--bots must be at least 1".to_string());
@@ -270,14 +313,14 @@ fn tokenize(line: &str) -> Vec<String> {
     out
 }
 
-/// Resolve `host` or `host:port`, defaulting to the QuakeWorld port.
-fn resolve(s: &str) -> Result<SocketAddr, String> {
+/// Resolve `host` or `host:port`, defaulting to `default_port` when none is given.
+fn resolve(s: &str, default_port: u16) -> Result<SocketAddr, String> {
     // An IPv6 literal is full of colons, so "does it have a colon" isn't the question — "does it
     // end in one that isn't inside brackets" is.
     let with_port = if s.rsplit(':').next().is_some_and(|p| p.parse::<u16>().is_ok()) {
         s.to_string()
     } else {
-        format!("{s}:{}", rtx_proto::protocol::PORT)
+        format!("{s}:{default_port}")
     };
     with_port
         .to_socket_addrs()
@@ -344,6 +387,33 @@ mod tests {
         assert_eq!(c.server.port(), 1234);
     }
 
+    /// `--proto nq` changes the default port to 26000 and gamedir to id1 — even when `--server`
+    /// comes first, since the port is resolved after the whole line is parsed. An explicit port and
+    /// gamedir still win.
+    #[test]
+    fn nq_protocol_sets_port_and_gamedir_defaults() {
+        let c = parse(&args(&["--server", "127.0.0.1", "--proto", "nq"])).unwrap();
+        assert_eq!(c.proto, Protocol::Nq);
+        assert_eq!(c.server.port(), 26000);
+        assert_eq!(c.game, "id1");
+
+        // Defaults yield to explicit values.
+        let c = parse(&args(&["--proto", "nq", "--server", "127.0.0.1:12345", "--game", "rogue"])).unwrap();
+        assert_eq!(c.server.port(), 12345);
+        assert_eq!(c.game, "rogue");
+
+        // Without --proto, QuakeWorld defaults are unchanged.
+        let c = parse(&args(&["--server", "127.0.0.1"])).unwrap();
+        assert_eq!(c.proto, Protocol::Qw);
+        assert_eq!(c.server.port(), 27500);
+    }
+
+    /// A bad protocol name is a sentence, not a panic.
+    #[test]
+    fn rejects_unknown_protocol() {
+        assert!(parse(&args(&["--server", "x", "--proto", "dp"])).unwrap_err().contains("qw` or `nq"));
+    }
+
     /// Every flag, so a rename or a mis-stepped index shows up here rather than at a LAN party.
     #[test]
     fn parses_every_option() {
@@ -355,7 +425,7 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(c.bots, 4);
-        assert_eq!(c.name, "botto");
+        assert_eq!(c.name, Some("botto".to_string()));
         assert_eq!(c.team, "red");
         assert_eq!(c.skin, "base");
         assert_eq!(c.colors, (4, 11));

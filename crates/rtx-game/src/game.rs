@@ -33,8 +33,9 @@ pub const GAME_API_VERSION: i32 = 16;
 pub(crate) type SpawnFields = Vec<(String, String)>;
 pub(crate) type SpawnFn = fn(&mut GameState, EntId) -> bool;
 
-/// The result of a [`GameState::traceline`], read out of the engine's `trace_*` globals.
-/// (Some fields are not yet consumed by the ported subset but complete the trace contract.)
+/// The result of a [`GameState::traceline`] — computed by [`GameState::sv_trace`] and mirrored into
+/// the engine-shared `trace_*` globals. (Some fields are not yet consumed by the ported subset but
+/// complete the trace contract.)
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)]
 pub struct TraceResult {
@@ -43,6 +44,7 @@ pub struct TraceResult {
     pub fraction: f32,
     pub endpos: Vec3,
     pub plane_normal: Vec3,
+    pub plane_dist: f32,
     pub ent: EntId,
     pub in_open: bool,
     pub in_water: bool,
@@ -140,6 +142,15 @@ pub struct GameState {
     map_spawned: bool,
     /// One-shot: whether we've logged that the normal frame is driving the bots (diagnostic).
     normal_bot_drive_logged: bool,
+    /// Opt-in wall-clock profile of the bot brain (`rtx_bot_prof <seconds>`). Inert — and free — until
+    /// the cvar is set. Lives here rather than in `bot` so both embodiments get it: the netclient owns
+    /// a `GameState` too, and drives the same `run_bots`. See [`bot::prof`].
+    pub(crate) bot_prof: bot::prof::BotProf,
+    /// The bot brain's persistent worker pool, for fanning a goal pick's independent floods across
+    /// cores (see [`bot::par`]). Lazily built (gated on `rtx_bot_par`), and torn down at
+    /// `GAME_SHUTDOWN` so its workers are joined before the engine unloads us. Both embodiments share
+    /// it — the netclient owns a `GameState` too and drives the same `run_bots`.
+    pub(crate) bot_pool: bot::par::BotPool,
     /// A population change the bot manager wants applied this frame (add or remove one bot),
     /// deferred out of the frame. `add_bot`/`remove_bot` make the engine run our
     /// `ClientConnect`/`PutClientInServer`/`ClientDisconnect` *synchronously and re-entrantly*; if
@@ -233,6 +244,8 @@ impl GameState {
             bot_frame_seen: false,
             map_spawned: false,
             normal_bot_drive_logged: false,
+            bot_prof: bot::prof::BotProf::default(),
+            bot_pool: bot::par::BotPool::default(),
             pending_roster: None,
             dyn_assets: DynAssets::default(),
             control: crate::control::ControlState::default(),
@@ -249,7 +262,12 @@ impl GameState {
             GameCommand::Init => self.init(arg0, arg1),
             GameCommand::LoadEntities => self.load_entities(),
             GameCommand::StartFrame => self.start_frame(arg0, arg1),
-            GameCommand::Shutdown => 0,
+            GameCommand::Shutdown => {
+                // Join the bot pool's workers before the engine unloads us — dropping the pool only
+                // signals them (see `bot::par`). Idempotent and a no-op when the pool was never built.
+                self.bot_pool.shutdown();
+                0
+            }
             GameCommand::ClientConnect if !is_spectator => {
                 self.client_connect(player);
                 1
@@ -375,7 +393,9 @@ impl GameState {
     /// raw pointer the engine keeps stays valid for the client's lifetime.
     pub(crate) fn set_netname(&mut self, e: EntId, name: &str) {
         let ent = &mut self.entities[e];
-        ent.netname_cs = Some(cstring(name));
+        // A conchar name (a coloured `bot•Grunt`) goes to the engine as latin-1 bytes, so the
+        // FTEQW-synced scoreboard draws one glyph per conchar rather than UTF-8's two.
+        ent.netname_cs = Some(crate::text::conchar_cstring(name));
         let ptr = ent.netname_cs.as_deref().map_or(0, |c| c.as_ptr() as u64);
         ent.string_refs[STRING_REF_NETNAME] = ptr;
     }
@@ -415,27 +435,26 @@ impl GameState {
         id
     }
 
-    /// `traceline` — trace from `start` to `end` and read the result out of the engine
-    /// globals into a value (so callers don't juggle the shared `trace_*` block).
+    /// `traceline` — trace from `start` to `end`, ignoring `ignore` (the shooter), and return the
+    /// result. Answered from our own parsed BSP + entity array ([`sv_trace`](Self::sv_trace)) in both
+    /// embodiments — no engine syscall — then mirrored into the shared `trace_*` globals, which a
+    /// touch callback still reads stale (see [`write_trace_globals`](Self::write_trace_globals)).
     pub(crate) fn traceline(&mut self, start: Vec3, end: Vec3, nomonsters: bool, ignore: EntId) -> TraceResult {
-        #[cfg(feature = "netclient")]
-        if self.host.is_client() {
-            return self.client_traceline(start, end, ignore);
-        }
-        // The traceline builtin takes the ignore entity as an edict *index* (it runs
-        // `EdictNum(arg)`), unlike entvars `.entity` fields which store byte offsets.
-        self.host.traceline(start, end, nomonsters, ignore);
-        let g = &self.globals;
-        TraceResult {
-            allsolid: g.trace_allsolid != 0.0,
-            startsolid: g.trace_startsolid != 0.0,
-            fraction: g.trace_fraction,
-            endpos: g.trace_endpos,
-            plane_normal: g.trace_plane_normal,
-            ent: EntId::from_prog(g.trace_ent),
-            in_open: g.trace_inopen != 0.0,
-            in_water: g.trace_inwater != 0.0,
-        }
+        let tr = self.sv_trace(start, end, nomonsters, ignore);
+        self.write_trace_globals(&tr);
+        tr
+    }
+
+    /// `pointcontents` — the Quake point-contents at `p` (`SOLID`/`EMPTY`/`WATER`/`SLIME`/`LAVA`/
+    /// `SKY`), answered from our own parsed BSP render hull rather than an engine syscall. Walks the
+    /// same hull-0 tree the engine's `SV_PointContents` does (see [`crate::bsp::Bsp::pointcontents`]),
+    /// so it's bit-identical — one implementation for both embodiments, and no variadic FFI per query.
+    /// `CONTENTS_EMPTY` (open air) when no map BSP has been parsed.
+    pub(crate) fn pointcontents(&self, p: Vec3) -> i32 {
+        self.nav
+            .bsp
+            .as_deref()
+            .map_or(crate::bsp::CONTENTS_EMPTY, |b| b.pointcontents(p))
     }
 
     /// `setorigin` — move an entity and relink it.
@@ -612,6 +631,10 @@ impl GameState {
             self.host.cvar_default(name, seed);
         }
 
+        // A map load is not bot time. Drop any half-collected profile window so the first report on
+        // the new map doesn't bill it for the changeover.
+        self.bot_prof.reset();
+
         // conprint (not dprint) so it shows without `developer 1` — lets you confirm at a glance
         // that the freshly built module is the one actually loaded.
         self.host
@@ -670,6 +693,11 @@ impl GameState {
         self.setup_string_refs(EntId::WORLD);
         self.apply_fields(EntId::WORLD, &world_fields);
         world::worldspawn(self);
+        // Parse the map BSP now — `worldspawn` has set `level.mapname`, so this can find the file, and
+        // it runs before any entity spawns so `pointcontents`/world traces (and the netclient's item
+        // settling) have geometry from the first query. Independent of bots; the navmesh worker later
+        // shares this Arc.
+        self.load_map_bsp();
         self.host.flush_signon();
 
         // Parse and spawn each remaining entity one at a time, flushing the signon after each
@@ -718,7 +746,7 @@ impl GameState {
                         .dprint(c"rtx: no engine bot frame — driving bots from the normal frame\n");
                     self.normal_bot_drive_logged = true;
                 }
-                bot::run_bots(self);
+                bot::run_bots(self, bot::BotFrameScheduleClaim::Unclaimed);
             }
             self.bot_frame_seen = false;
             // Emit the harness's puppet lifecycle events after the bots have run (so a landing/stall
@@ -726,7 +754,10 @@ impl GameState {
             crate::control::frame_end(self);
         } else {
             self.bot_frame_seen = true;
-            bot::run_bots(self);
+            // The deployed mvdsv SERVERONLY scheduler is expected to publish the fixed 1/maxfps
+            // quantum. `is_bot_frame` alone does not prove that build variant, so this is only a
+            // claim: `run_bots` withholds the witness unless this and every later frame match bits.
+            bot::run_bots(self, bot::BotFrameScheduleClaim::ClaimedFixed);
         }
         1
     }

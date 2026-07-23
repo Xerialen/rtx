@@ -24,6 +24,7 @@
 
 use crate::protocol::{self, magic};
 use crate::sizebuf::Reader;
+use crate::svc::{op, DOWNLOAD_CHUNK_SIZE};
 
 /// Out-of-band packet type bytes.
 mod s2c {
@@ -67,6 +68,12 @@ pub enum Oob {
     Ack,
     /// A console command from the server.
     ClientCommand(String),
+    /// An FTE chunked-download reply sent outside the sequenced netchan to keep the pipe full.
+    DownloadChunk {
+        cookie: u32,
+        chunk: u32,
+        data: Box<[u8; DOWNLOAD_CHUNK_SIZE]>,
+    },
     /// Recognisably out-of-band, but not something we act on.
     Unknown(u8),
 }
@@ -130,6 +137,16 @@ pub fn parse(data: &[u8]) -> Option<Oob> {
             Some(Oob::Challenge { challenge, fte, fte2, mvd1 })
         }
         s2c::CONNECTION => Some(Oob::Accepted),
+        s2c::PRINT if rest.starts_with(b"\\chunk") => {
+            let mut r = Reader::new(&rest[6..]);
+            let cookie = r.u32().ok()?;
+            if r.u8().ok()? != op::DOWNLOAD {
+                return Some(Oob::Unknown(kind));
+            }
+            let chunk = r.u32().ok()?;
+            let data: [u8; DOWNLOAD_CHUNK_SIZE] = r.bytes(DOWNLOAD_CHUNK_SIZE).ok()?.try_into().ok()?;
+            Some(Oob::DownloadChunk { cookie, chunk, data: Box::new(data) })
+        }
         s2c::PRINT => Some(Oob::Print(Reader::new(rest).string().ok()?)),
         s2c::PING => Some(Oob::Ping),
         s2c::ACK => Some(Oob::Ack),
@@ -197,7 +214,9 @@ pub fn connect(qport: u16, challenge: i32, userinfo: &str, n: &Negotiated) -> Ve
             s.push_str(&format!("0x{tag:x} 0x{mask:x}\n"));
         }
     }
-    wrap(s.as_bytes())
+    // Latin-1, not UTF-8: a coloured player name carries high-half conchars (0x80+), and each must
+    // go out as a single byte. The ASCII of the command itself is unchanged by this.
+    wrap(&crate::sizebuf::latin1_bytes(&s))
 }
 
 #[cfg(test)]
@@ -291,6 +310,30 @@ mod tests {
         assert_eq!(parse(&wrap(b"?")), Some(Oob::Unknown(b'?')));
     }
 
+    /// Extra chunk replies masquerade as `A2C_PRINT` packets, but are binary after the six-byte
+    /// marker and must not be fed through the console-string parser.
+    #[test]
+    fn parses_oob_download_chunks() {
+        let mut body = Vec::new();
+        body.push(s2c::PRINT);
+        body.extend_from_slice(b"\\chunk");
+        body.extend_from_slice(&17u32.to_le_bytes());
+        body.push(op::DOWNLOAD);
+        body.extend_from_slice(&23u32.to_le_bytes());
+        body.extend_from_slice(&[0xa5; DOWNLOAD_CHUNK_SIZE]);
+        assert_eq!(
+            parse(&wrap(&body)),
+            Some(Oob::DownloadChunk {
+                cookie: 17,
+                chunk: 23,
+                data: Box::new([0xa5; DOWNLOAD_CHUNK_SIZE]),
+            })
+        );
+
+        body.truncate(body.len() - 1);
+        assert_eq!(parse(&wrap(&body)), None, "a truncated fixed-size chunk is not usable");
+    }
+
     /// Negotiation can only narrow: a server offering a bit we can't parse must not end up in the
     /// agreed set, because the agreed set is a promise that we'll understand what arrives.
     #[test]
@@ -299,8 +342,8 @@ mod tests {
         let n = Negotiated::intersect(u32::MAX, u32::MAX, u32::MAX);
         assert_eq!(n, Negotiated { fte: protocol::FTE, fte2: protocol::FTE2, mvd1: protocol::MVD1 });
 
-        // In particular, the bits we deliberately don't implement stay out.
-        assert_eq!(n.fte & protocol::fte::CHUNKEDDOWNLOADS, 0);
+        // Chunked downloads are now part of the promise; unrelated unimplemented bits stay out.
+        assert_ne!(n.fte & protocol::fte::CHUNKEDDOWNLOADS, 0);
         assert_eq!(n.fte & protocol::fte::CSQC, 0);
         assert_eq!(n.fte2, 0);
         assert_eq!(n.mvd1 & protocol::mvd1::SIMPLEPROJECTILE, 0);
@@ -357,5 +400,23 @@ mod tests {
         assert!(text.starts_with("connect 28 4242 31337 \"\\name\\bot\\*z_ext\\511\"\n"));
 
         assert_eq!(parse(&wrap(b"j")), Some(Oob::Accepted));
+    }
+
+    /// A coloured name reaches the wire as single high-half bytes, not the two-byte UTF-8 a Rust
+    /// `String` would otherwise encode them as — the server reads conchars, not Unicode. The name
+    /// here is a coloured `bot`, a `0x85` dot, then plain `Grunt` (`\u{e2}\u{ef}\u{f4}\u{85}Grunt`).
+    #[test]
+    fn connect_encodes_coloured_name_as_latin1() {
+        let name = "\u{e2}\u{ef}\u{f4}\u{85}Grunt";
+        let pkt = connect(1, 2, &format!("\\name\\{name}"), &Negotiated { fte: 0, fte2: 0, mvd1: 0 });
+
+        // The coloured `bot`, the dot, and `Grunt` are each one byte on the wire.
+        let needle = [0xe2, 0xef, 0xf4, 0x85, b'G', b'r', b'u', b'n', b't'];
+        assert!(
+            pkt.windows(needle.len()).any(|w| w == needle),
+            "coloured name not found as latin-1 bytes in {pkt:?}"
+        );
+        // And no UTF-8 lead byte (0xc3) smuggled a two-byte sequence in.
+        assert!(!pkt.contains(&0xc3), "name was UTF-8 encoded, not latin-1");
     }
 }

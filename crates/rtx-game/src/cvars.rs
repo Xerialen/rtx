@@ -27,6 +27,18 @@ impl CvarValue for CvarSeed {
     }
 }
 
+/// The rtx-specific movement and combat features — the ones the *server* applies (in
+/// `PlayerPreThink`, or in the shootable-grenade combat path), so they exist only on an rtx server.
+///
+/// This is the set a network client must not assume. A double jump is the sharp one: the navmesh
+/// plans routes across gaps that only cross with the mid-air second jump (`nav_build.rs`, the `djump`
+/// links), and on a KTX or vanilla server that jump is never granted — the bot would commit to the
+/// leap and fall in. So the server **advertises** these in serverinfo (like KTX's `pm_*` keys) and a
+/// client mirrors them; a client on any other server forces them off. Grapple isn't here — the client
+/// forces it off unconditionally, because the hook's *state* isn't on the wire to mirror at all.
+pub(crate) const RTX_MOVE_CVARS: &[&str] =
+    &["rtx_doublejump", "rtx_walljump", "rtx_elevator_jump", "rtx_shootable_grenades"];
+
 /// The rtx tunables and their first-run defaults, registered in [`GameState::init`](crate::game).
 /// `cvar_default` only seeds a cvar that's unset, so a value from `server.cfg` (or a `set` before
 /// `map`) survives each `GAME_INIT`. Declared as data so the tunables read as one registry.
@@ -46,6 +58,35 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // Bots plan over speed bands (kinodynamic A*), crediting speed carried between legs so
         // chained speed jumps and hot corridors route; on by default. Escape hatch: 0 → plain A*.
         ("rtx_bot_bandplan", Bool(true)),
+        // Fan a goal pick's independent navmesh floods out across a persistent worker pool (see
+        // `bot::par`) — on by default; the result is bit-identical to serial. 0 → run them inline on
+        // the main thread (the live A/B switch, and the fallback if the pool can't be built).
+        ("rtx_bot_par", Bool(true)),
+        // Navigate over the coarse LOD hierarchy (clusters + portals — see `navmesh::lod`) instead of
+        // whole-graph floods: goal scoring and long-range steering read a near-exact/bounded-overestimate
+        // coarse cost, and the steer search is bounded to the corridor window. On by default (validated:
+        // stronghold/rocka/ultrav 6 bots stay under the frame budget, behaviour parity incl. the ultrav
+        // gated quad). Escape hatch: 0 → the exact whole-graph floods + unwindowed steer.
+        ("rtx_bot_lod", Bool(true)),
+        // Steer the last metre off a fine (8u) near-field clearance grid built around each grounded bot
+        // (see `nearfield`): the wish is nudged off nearby walls and drop-edges and centres through
+        // doorways, instead of homing on the raw 32u cell centre. Off the routing path — only the
+        // immediate wish changes. On by default; 0 → today's `hazard::edge_bias` drop-only probe.
+        ("rtx_bot_nearfield", Bool(true)),
+        // Sub-toggle of `rtx_bot_nearfield`: when the near-field certifies a straight look-ahead chord
+        // is clear, glide toward it instead of the next 32u cell centre (smooths the residual grid
+        // zigzag on plain walk legs). On by default; inert when `rtx_bot_nearfield` is 0.
+        ("rtx_bot_glide", Bool(true)),
+        // Careful-ledge walk speed (u/s): on a navmesh cell flagged beside a fatal drop (a wall-hugging
+        // walkway over an open pit — an open-cored spiral staircase's inner edge) the walk is held to
+        // this speed for the whole run, not just at the corners. A full-speed walk builds momentum on
+        // the straights that carries off the inner edge at the bends, faster than the 40u `ledge_ahead`
+        // brake or the edge nudge can bleed it. Jump run-ups are exempt (they keep bhop speed to clear
+        // the gap). 0 disables the cap (full maxspeed on ledges). See the ledge flag in `navmesh`.
+        // Default 0, not 210: the lab prohibition set (dj/wj/ledgecap) must read 0 on every rig —
+        // parity_readback fails a deploy closed otherwise, and the RA certification era ran with 0.
+        // Opt in per server cfg where the cap is wanted.
+        ("rtx_bot_ledgecap", Float(0.0)),
         // A bot's health weights how willing it is to shortcut through lava/slime: hurt bots detour,
         // healthy (or armored, or biosuited) ones clip the corner. `0` prices every bot as a bare
         // spawn — hazards still cost, but the same to everyone. See `bot::bot_hazard_strength`.
@@ -93,6 +134,9 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // default), `ffa` (open free-for-all), or a team format `1on1`/`duel`/`2on2`/`2on2on2`/…
         // (a locked N×M match). `ra` ignores this (its 1v1 round queue is fixed). See `crate::mode`.
         ("rtx_match", Str("")),
+        // Non-empty: the first bot is named this (e.g. the experiment/route label)
+        // instead of the rotating roster name; later bots keep the rotation.
+        ("rtx_bot_label", Str("")),
         // Rocket Arena: seconds of spawn-protected countdown before "FIGHT". (Always a 1v1 duel.)
         ("rtx_ra_countdown", Float(3.0)),
         // Team match (`rtx_match 1on1`/`2on2`/…): seconds of spawn-protected countdown after the
@@ -126,8 +170,24 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // Greedy bots: let a fighting bot break off to grab a compelling nearby pickup (powerup, a
         // weapon it lacks, big health/armor) instead of only chasing the enemy — ktx-style item play.
         ("rtx_bot_greed", Bool(true)),
+        // Waypoint magnetism: bend the immediate steering waypoint through a desirable, up item lying
+        // just off the route corridor so the bot actually steps onto it. The fake-client pickup net
+        // grabs incidental items via a generous touch box; a real network client only gets the tight
+        // server-side trigger overlap, so steering has to put the hull on the trigger. On by default.
+        ("rtx_bot_magnet", Bool(true)),
+        // Resource discipline: value health/armor more steeply below the bare-spawn stack, enter the
+        // Recover posture on a thin stack (not just low health), treat red armor and megahealth as
+        // major "must-cycle" pickups, and panic for ammo when a bot's firepower is about to collapse.
+        // Off = the leaner ktx-parity valuation (a topped-up bot ignores items until a true need). On.
+        ("rtx_bot_stack", Bool(true)),
         // Per-bot goal/pickup diagnostics to the server console (off by default).
         ("rtx_bot_debug", Bool(false)),
+        // Bot evaluation profiler: seconds between server-console reports of what the bot brain costs
+        // per bot frame (p95, worst, and the head-room left against the `maxfps` slice the engine
+        // allots it). On by default — it's console-only, three lines per report, and the timing is a
+        // couple of clock reads per bot; a server that gets slow should say so unprompted rather than
+        // wait to be asked. `0` = off, and nothing is timed at all. See [`crate::bot::prof`].
+        ("rtx_bot_prof", Float(10.0)),
         // Bots rocket-jump to ledges that would otherwise need a long detour (or are unreachable).
         // Costs health, so a bot only plans one when it clearly beats the walk and it's fit to fly it
         // (has the RL, a rocket, and the health). On by default.
@@ -164,13 +224,28 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // All default to today's behavior.
         ("rtx_jump_curl_hold", Float(0.0)),
         ("rtx_jump_curl_gain", Float(0.0)),
-        ("rtx_jump_runup", Float(0.0)),
+        // Optional two-phase profile copied into a hand-planted SpeedJump by `planlink`.
+        // A positive switch distance enables it; zero keeps the historical single-target curl.
+        ("rtx_jump_curl_entry_x", Float(0.0)),
+        ("rtx_jump_curl_entry_y", Float(0.0)),
+        ("rtx_jump_curl_switch_dist", Float(0.0)),
+        ("rtx_jump_curl_landing_x", Float(0.0)),
+        ("rtx_jump_curl_landing_y", Float(0.0)),
+        // Minimum run-up speed toward the waypoint (fraction of sv_maxspeed) before a plain jump leg
+        // fires — 0.5 (160 ups, ~4 ticks of ground accel) kills the useless standstill pogo without
+        // stalling short approaches (a jump within JUMP_NOW_DIST of the lip fires regardless). 0 = off.
+        ("rtx_jump_runup", Float(0.5)),
         // Perception (human-like targeting). `rtx_bot_fov` is the view cone (full angle, degrees)
         // within which a bot can *see* a target, widened with skill; 0 = 360° (see everywhere, the
         // old behavior). `rtx_bot_reaction` is the base delay (seconds) a target must stay seen
         // before the bot reacts, shortened with skill; 0 = instant. Both 0 ≈ pre-perception bots.
         ("rtx_bot_fov", Float(120.0)),
         ("rtx_bot_reaction", Float(0.4)),
+        // Ceiling on how fast a bot's view turns (deg/s) — the aim spring's angular-speed clamp, so a
+        // large look-target flip (a spawn-wait scan, a goal re-pick, a flickering enemy) is a fast human
+        // pan, not an instant snap or a spin. 0 = the skill-scaled default (`combat::aim_rate_cap`);
+        // > 0 overrides it for tuning. Small combat corrections sit well under it, so aim is unaffected.
+        ("rtx_bot_turnrate", Float(0.0)),
         // Opponent modeling: bots keep a shared, observation-gated hypothesis of each opponent's
         // health/armor stack and arsenal (per-team blackboards; the FFA bots share one), reset on
         // death, updated only from events a bot could witness (pickups/gunfire in earshot, damage it

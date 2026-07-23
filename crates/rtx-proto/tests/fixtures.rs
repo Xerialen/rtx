@@ -190,7 +190,7 @@ fn kind(ev: &SvcEvent) -> String {
         SvcEvent::MaxSpeed(_) => "maxspeed",
         SvcEvent::EntGravity(_) => "entgravity",
         SvcEvent::SetPause(_) => "setpause",
-        SvcEvent::Download { .. } => "download",
+        SvcEvent::Download(_) => "download",
         SvcEvent::PlayerInfo(_) => "playerinfo",
         SvcEvent::PacketEntities(pe) => {
             // Full and delta updates take different paths, and a capture that only ever saw full
@@ -201,6 +201,16 @@ fn kind(ev: &SvcEvent) -> String {
         SvcEvent::ModelList(_) => "modellist",
         SvcEvent::SoundList(_) => "soundlist",
         SvcEvent::Voice => "voice",
+        // NetQuake-only events; a QuakeWorld capture never produces them.
+        SvcEvent::Time(_) => "time (nq)",
+        SvcEvent::SignonNum(_) => "signonnum (nq)",
+        SvcEvent::NqServerData(_) => "serverinfo (nq)",
+        SvcEvent::ClientData(_) => "clientdata (nq)",
+        SvcEvent::UpdateName { .. } => "updatename (nq)",
+        SvcEvent::UpdateColors { .. } => "updatecolors (nq)",
+        SvcEvent::SetView(_) => "setview (nq)",
+        SvcEvent::EntityUpdate(_) => "entityupdate (nq)",
+        SvcEvent::Particle { .. } => "particle (nq)",
     }
     .to_string()
 }

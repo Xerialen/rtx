@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 
 use glam::Vec3;
 
+use crate::entity::EntId;
 use crate::navmesh::CellId;
 
 /// Per-bot navigation/AI state, on the bot's client edict (`1..=maxclients`). Non-bot edicts
@@ -18,6 +19,19 @@ pub struct BotState {
     pub is_bot: bool,
     /// 1-based engine client number, for `set_bot_cmd`/`remove_bot`.
     pub client: i32,
+    /// Whether this body was alive on the previous bot frame. The false→true edge is the one spawn
+    /// signal shared by server bots and network-client mirrors.
+    pub was_alive: bool,
+    /// Fresh-DM-spawn stack run: suppress initiating a fight and keep one reachable armor/weapon
+    /// pickup completion-critical. Ends as soon as that pickup changes armor or weapon inventory.
+    pub spawn_exit: bool,
+    /// Hard deadline for [`spawn_exit`](Self::spawn_exit). The exit also aborts sooner on damage or
+    /// close enemy contact, so a failed/contested pickup can never suppress combat indefinitely.
+    pub spawn_exit_until: f32,
+    /// Previous bot-frame health/armor, used to detect damage from both server-side combat and a
+    /// network client's mirrored player state while a fresh-spawn exit is active.
+    pub last_health: f32,
+    pub last_armor_value: f32,
     /// Current A* route as link indices into the navmesh, and our leg within it.
     pub route: Vec<u32>,
     pub route_pos: usize,
@@ -38,6 +52,13 @@ pub struct BotState {
     /// planner *divert* around a dead leg instead of re-issuing the identical route to retry forever.
     /// A fixed ring; a fresh failure bumps a matching entry or evicts the soonest-to-expire slot.
     pub failed_links: [(u32, f32, u8); 8],
+    /// Teleport links this bot recently rode, each `(link idx, until)` — a per-bot decaying surcharge
+    /// ring (mirrors [`Self::failed_links`], evict-soonest) priced in `bot_link_pricing`. Damps the
+    /// re-entry shuttle: after teleporting, the just-used pad *and* the reverse pad by the exit cost
+    /// extra for a few seconds, so a stable far-side goal re-routes by foot (or gives up) instead of
+    /// bouncing back through the free 0.2 link. Cost-shaping, not a ban — a sole-route teleport is still
+    /// taken.
+    pub recent_tele: [(u32, f32); 8],
     /// Earliest time we may recompute the route (throttles A*).
     pub repath_time: f32,
     /// The route-progress watchdogs — three ways a bot notices it isn't getting anywhere.
@@ -76,6 +97,11 @@ pub struct BotState {
     pub vigil: Vigil,
     /// Plat standoff — the lift we're holding off from while it's raised. See [`PlatWait`].
     pub plat_wait: Option<PlatWait>,
+    /// Near-field steering grid (see [`crate::nearfield`]): an 8u clearance field around the bot for
+    /// last-metre wall/ledge repulsion, rebuilt lazily when the bot strays off it or a nearby door
+    /// changes state (`None` until first built, or when `rtx_bot_nearfield` is off). Off the routing
+    /// path entirely — it only reshapes the immediate wish on grounded walk/step/approach legs.
+    pub near: Option<crate::nearfield::NearField>,
     /// Grappling-hook traversal state machine (see [`HookState`]), driven when the current route leg
     /// is a [`LinkKind::Hook`](crate::navmesh::LinkKind::Hook).
     pub hook: HookState,
@@ -110,7 +136,7 @@ impl BotState {
     /// Commit to `leg`, invalidating the one-shot runway path only when the leg changes.
     pub(crate) fn commit_speed_jump(&mut self, leg: u32, now: f32) {
         if self.sj.map(|c| c.leg) != Some(leg) {
-            self.sj = Some(Commit { leg, since: now });
+            self.sj = Some(Commit::new(leg, now, false));
             self.sj_runway = None;
             self.sj_trace.clear();
         }
@@ -149,6 +175,17 @@ impl BotState {
         self.goal.avoid_items.iter().any(|&(it, until)| it == item && now < until)
     }
 
+    /// Abandon the active item goal through the shared failure tail: avoid it, discard any bounded
+    /// continuation/commitment, and permit selection again immediately.
+    pub(crate) fn abandon_item_goal(&mut self, now: f32, avoid_until: f32) {
+        self.mark_avoid(self.goal.item, avoid_until);
+        self.goal.set_item(0);
+        self.goal.next_item = 0;
+        self.goal.commit = GoalCommit::None;
+        self.goal.next_commit = GoalCommit::None;
+        self.goal.next_pick = now;
+    }
+
     /// Shared failure tail for the hook / rocket-jump leg drivers (see [`Driver`]): bump the driver's
     /// consecutive-fail count and force a repath; after two failures in a row, abandon a chased goal
     /// item — drop the route, briefly avoid-list the item, and re-select next frame. The
@@ -172,12 +209,7 @@ impl BotState {
             }
             self.route.clear();
             if chasing {
-                self.mark_avoid(self.goal.item, now + super::GOAL_AVOID_TIME);
-                self.goal.item = 0;
-                self.goal.next_item = 0;
-                self.goal.commit = GoalCommit::None;
-                self.goal.next_commit = GoalCommit::None;
-                self.goal.next_pick = now;
+                self.abandon_item_goal(now, now + super::GOAL_AVOID_TIME);
             }
         }
     }
@@ -272,10 +304,105 @@ pub struct Vigil {
 /// A latched route-leg commitment — a speed jump or a plain-jump arc — that freezes the route while
 /// in flight: the leg being flown and when the commitment began (the watchdog's timeout base). While
 /// Some, a goal flip mid-air can't replace the route and yank the bot off the jump.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroundTurnPhase {
+    Setup {
+        airborne_streak: usize,
+        /// Fixed scheduler contract admitted by the prospective edge witness. `None` before an
+        /// edge episode and after physical re-landing; `Some` must match every airborne setup frame.
+        clock: Option<crate::navmesh::GroundTurnSetupClock>,
+    },
+    Launched,
+}
+
+impl GroundTurnPhase {
+    pub const fn setup() -> Self {
+        Self::Setup { airborne_streak: 0, clock: None }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Commit {
     pub leg: u32,
     pub since: f32,
+    /// Number of launch-yaw vetoes observed for this link, retained across parallel-profile
+    /// selection so operator telemetry is per traversal rather than per controller frame.
+    pub launch_vetoes: u32,
+    /// A ground-turn entry envelope is checked exactly once. Its controller intentionally rotates
+    /// out of that envelope after acceptance, so rechecking on later runway frames is incorrect.
+    pub entry_checked: bool,
+    /// Explicit execution phase for a checked ground-turn contract. Physical floor contact is not
+    /// a launch bit: the certified setup tolerates brief airborne seams before an actual +jump.
+    pub ground_turn_phase: GroundTurnPhase,
+}
+
+impl Commit {
+    pub(crate) const fn new(leg: u32, since: f32, entry_checked: bool) -> Self {
+        Self {
+            leg,
+            since,
+            launch_vetoes: 0,
+            entry_checked,
+            ground_turn_phase: GroundTurnPhase::setup(),
+        }
+    }
+
+    /// Change to a parallel certified profile while preserving watchdog/veto history. The new link
+    /// always starts before launch even when the physical state happens to be transient-airborne.
+    pub(crate) fn retarget_ground_turn(&mut self, leg: u32, entry_checked: bool) {
+        self.leg = leg;
+        self.entry_checked = entry_checked;
+        self.ground_turn_phase = GroundTurnPhase::setup();
+    }
+
+    /// Whether the current physical setup frame still belongs to the admitted clock episode. A
+    /// grounded frame has already re-landed and ends the episode. An airborne frame must carry the
+    /// exact stored raw/wire pair; missing or changed provenance fails closed before its command.
+    pub(crate) fn ground_turn_setup_clock_valid(
+        &self,
+        on_ground: bool,
+        observed: Option<crate::navmesh::GroundTurnSetupClock>,
+    ) -> bool {
+        match self.ground_turn_phase {
+            GroundTurnPhase::Setup { .. } if on_ground => true,
+            GroundTurnPhase::Setup { clock: Some(admitted), .. } => observed == Some(admitted),
+            GroundTurnPhase::Setup { clock: None, .. } => false,
+            GroundTurnPhase::Launched => false,
+        }
+    }
+
+    /// Commit the one-step result. The first physical edge departure latches the proven clock;
+    /// every airborne continuation preserves it, and the first grounded result clears it.
+    pub(crate) fn continue_ground_turn_setup(
+        &mut self,
+        airborne_streak: usize,
+        on_ground: bool,
+        observed: Option<crate::navmesh::GroundTurnSetupClock>,
+    ) -> bool {
+        let GroundTurnPhase::Setup { clock, .. } = self.ground_turn_phase else {
+            return false;
+        };
+        let clock = if on_ground {
+            None
+        } else {
+            match (clock, observed) {
+                (None, Some(first)) => Some(first),
+                (Some(admitted), Some(current)) if admitted == current => Some(admitted),
+                _ => return false,
+            }
+        };
+        self.ground_turn_phase = GroundTurnPhase::Setup { airborne_streak, clock };
+        true
+    }
+
+    pub(crate) fn ground_turn_launch_emitted(&mut self, emitted_jump: bool) -> bool {
+        if emitted_jump && matches!(self.ground_turn_phase, GroundTurnPhase::Setup { .. }) {
+            self.ground_turn_phase = GroundTurnPhase::Launched;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// One-shot path cache for a committed speed-jump runway.
@@ -385,6 +512,11 @@ pub struct GateState {
     pub errand: Option<GateErrand>,
     /// A gate to skip when picking the next errand, until the paired expiry (`None` = none avoided).
     pub avoid: Option<(usize, f32)>,
+    /// Gate ids the last repath's LOD corridor crosses beyond the interim window, **nearest first**.
+    /// The route stops at the interim, so `route_blocking_gate` can't see a far shut door; this stands
+    /// in, restoring exact mode's far button-errand pre-arm — the far block works the first *shut* one
+    /// in route order (not the lowest id). Empty when lod is off or the corridor crosses no far gate.
+    pub corridor_gates: Vec<u32>,
 }
 
 /// A bot's item-fetch goal (see [`crate::bot::goals`]) and the bookkeeping around it.
@@ -404,6 +536,12 @@ pub struct GoalState {
     /// Earliest time to run the cheap nearby lifesaving-pickup pre-pass. This is much faster than
     /// normal goal selection but need not flood the navmesh every server frame.
     pub next_urgent: f32,
+    /// Waypoint magnetism (see [`crate::bot::goals::GameState::select_route_magnet`]): a desirable
+    /// item lying just off the current route the bot bends its immediate waypoint through so it steps
+    /// onto the trigger. `0` = none. Distinct from `item` — this is grabbed *in passing*, never
+    /// chased — and re-picked on `magnet_pick`'s throttle (the classname scan isn't per-frame cheap).
+    pub magnet_item: u32,
+    pub magnet_pick: f32,
     /// When the bot began chasing its current item goal. If it's *still* chasing the same item long
     /// after (one it can't actually reach — e.g. behind an elevator/button/movewall/teleporter chain
     /// the router can't thread), it abandons that goal rather than circling forever. Uses time-on-
@@ -411,9 +549,17 @@ pub struct GoalState {
     /// for being stuck.
     pub since: f32,
     /// Completion lock for a pickup that must not lose movement ownership to combat or a periodic
-    /// goal re-pick. `Pickup` is a nearby lifesaving health/armor item; `Powerup` is a selected timed
-    /// powerup. The lock ends only on touch, invalidation, route failure, or its watchdog.
+    /// goal re-pick. `Pickup` covers local recovery, a selected major, or a fresh-spawn stack item;
+    /// `Powerup` is a selected timed powerup. The lock ends only on touch, invalidation, route
+    /// failure, or its watchdog.
     pub commit: GoalCommit,
+    /// The selected pickup terminal has been reached but the item is still present. Steering gives
+    /// the server a short touch-confirmation grace, then retries one alternate terminal before
+    /// abandoning the item. `(item, cell, arrived_at)` keeps stale state from old goals inert.
+    pub terminal_arrival: Option<TerminalArrival>,
+    /// Item for which the one alternate-terminal retry has already been spent. Cleared once there is
+    /// no active goal, so a later fresh attempt at the same pickup starts cleanly.
+    pub terminal_retried_item: Option<EntId>,
     /// Handoff hold (team opponent modeling): a spawned RL/LG this bot stands on but deliberately
     /// does **not** pick up (`bot_pickup_items` skips it), reserving it for a powerup-carrying
     /// teammate that lacks it. `0` = not holding. `hold_for` is that teammate; `hold_until` the hard
@@ -428,8 +574,31 @@ pub struct GoalState {
     pub avoid_items: [(u32, f32); 4],
 }
 
+impl GoalState {
+    /// Replace the active item and invalidate terminal state that belongs to the previous goal.
+    /// Returns whether the item changed so callers can restart their goal watchdog at the same seam.
+    pub(crate) fn set_item(&mut self, item: u32) -> bool {
+        let changed = self.item != item;
+        if changed {
+            self.terminal_arrival = None;
+            self.terminal_retried_item = None;
+        }
+        self.item = item;
+        changed
+    }
+}
+
+/// A pickup terminal that steering has physically reached and is waiting for the authoritative
+/// take to confirm.
+#[derive(Clone, Copy)]
+pub struct TerminalArrival {
+    pub item: EntId,
+    pub cell: CellId,
+    pub at: f32,
+}
+
 /// How strongly the current item goal is committed. Ordinary goals remain freely re-scored;
-/// lifesaving local pickups and timed powerups own movement until completion.
+/// completion-critical stack pickups and timed powerups own movement until completion.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GoalCommit {
     #[default]
@@ -600,6 +769,82 @@ pub struct Puppet {
     /// FlyLink bring-up: the horizontal speed captured at the takeoff frame (ground → airborne). 0 until
     /// takeoff. Reported in `fly_result` so the harness can read what the takeoff regime delivered.
     pub fly_takeoff_speed: f32,
+    /// Deterministic item-goal acceptance run driven by the control channel. Unlike `order`, this
+    /// deliberately leaves the ordinary item objective/router/terminal machinery in charge; the
+    /// harness only freezes competing intent and records whether that real path actually succeeds.
+    pub item_trial: Option<ItemTrial>,
+}
+
+/// One frame of an item-goal acceptance run. The compact row is retained until the terminal event
+/// so failures can be replayed without enabling noisy server-wide debug logging.
+#[derive(Clone, Copy)]
+pub struct ItemTrialSample {
+    pub t: f32,
+    pub origin: Vec3,
+    pub velocity: Vec3,
+    pub wish: Vec3,
+    pub buttons: u32,
+    pub on_ground: bool,
+    pub wall: bool,
+    pub route_pos: usize,
+    pub link: u32,
+    pub terminal: CellId,
+}
+
+/// Route state that produced the item-trial command currently awaiting physical observation.
+/// Steering may advance to another leg while emitting the next command, so this snapshot must
+/// travel with `wish`; reading the bot's live route one frame later would misattribute the move.
+#[derive(Clone, Copy)]
+pub struct ItemTrialMoveFrame {
+    pub route_pos: usize,
+    pub link: u32,
+    pub terminal: CellId,
+}
+
+/// State for a control-channel item-goal acceptance run (currently DM3 Ring-side entrance → RA).
+/// `wish` is the command whose physical result is observed this frame; `pending_wish` is what
+/// `emit` just submitted for the following engine movement step.
+pub struct ItemTrial {
+    pub request_id: i64,
+    pub item: u32,
+    pub terminal: CellId,
+    pub scenario: &'static str,
+    pub start_hint: Vec3,
+    pub started: f32,
+    pub deadline: f32,
+    pub start_origin: Vec3,
+    pub initial_armor: f32,
+    pub wish: Vec3,
+    pub pending_wish: Vec3,
+    pub buttons: u32,
+    pub pending_buttons: u32,
+    pub move_frame: ItemTrialMoveFrame,
+    pub last_origin: Vec3,
+    /// Velocity entering the movement step represented by `wish`. Unlike the new wish direction,
+    /// this retains lateral momentum that can carry the player into a different wall plane.
+    pub last_velocity: Vec3,
+    pub last_t: f32,
+    pub motion_anchor: Vec3,
+    pub motion_since: f32,
+    pub wall_run: f32,
+    pub wall_max: f32,
+    pub wall_contacts: u32,
+    pub wall_normal: Vec3,
+    pub ground_z: f32,
+    pub terminal_touch_since: Option<f32>,
+    /// Latched only when the forced RA goal disappears on a frame without an authoritative pickup.
+    /// A normal armor touch clears the goal in its success frame and must not look like cancellation.
+    pub goal_lost: bool,
+    pub min_z: f32,
+    pub peak_speed: f32,
+    pub initial_route: Vec<u32>,
+    pub route_captured: bool,
+    /// Per-attempt telemetry budget derived from this trial's deadline. Keeping it on the trial
+    /// makes collection independent of later cvar/protocol changes and prevents a 100 Hz run from
+    /// silently truncating before its own timeout.
+    pub sample_limit: usize,
+    pub samples: Vec<ItemTrialSample>,
+    pub samples_truncated: bool,
 }
 
 /// A scripted control order for a puppeted bot (see [`crate::control`]). Lives here (not in

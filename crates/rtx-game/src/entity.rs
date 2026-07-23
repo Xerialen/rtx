@@ -336,6 +336,12 @@ pub struct Entity {
     // --- private tail: engine never addresses these ---
     /// Whether this slot is currently a live entity.
     pub in_use: bool,
+    /// Network client only: the game time this entity was last updated from the wire. A player is
+    /// sent every frame it's in our PVS, so a stale stamp means it left our view — walked behind a
+    /// wall or teleported across the map — and its shadow is frozen at the last spot we saw it. Combat
+    /// and perception read this (via [`GameState::net_shadow_stale`]) so a live line of sight to that
+    /// frozen spot isn't mistaken for a live target. Always `0.0` server-side (the edict is live).
+    pub net_seen: f32,
 
     // callbacks (QuakeC `.think`/`.touch`/`.use`/`.blocked`/`.th_pain`/`.th_die`)
     pub think: Think,
@@ -498,7 +504,7 @@ pub struct BobState {
 
 /// Per-player grappling-hook state (`grapple.rs`). The hook itself is a separate entity (this
 /// player's `hook`); it stores its target in `enemy` and the chain head in `goalentity`.
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 pub struct GrappleState {
     /// The player's live hook entity, or [`EntId::WORLD`] when none is out.
     pub hook: u32,
@@ -522,7 +528,7 @@ pub struct CustomRefs {
     pub movetarget: u32,
 }
 
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 #[allow(dead_code)]
 pub struct CombatState {
     /// Anti-double-fire latch for projectiles (`voided`).

@@ -24,6 +24,10 @@ use glam::Vec3;
 use crate::protocol::{fte, mvd1, z_ext, ProtoState};
 use crate::sizebuf::{Reader, Underflow};
 
+/// FTE chunked downloads always transfer this many bytes. The final chunk is zero-padded on the
+/// wire and truncated to the advertised file size by the receiver.
+pub const DOWNLOAD_CHUNK_SIZE: usize = 1024;
+
 /// `svc_*` opcodes (ezQuake `qwprot/src/protocol.h`). Only the ones a QuakeWorld server sends;
 /// the NetQuake-legacy numbers in the same range are deliberately absent, and land as
 /// [`ParseError::UnknownSvc`] if a server ever sends one.
@@ -357,8 +361,9 @@ pub struct EntityDelta {
     pub remove: bool,
     /// Model index.
     pub model: Option<u16>,
-    /// Animation frame.
-    pub frame: Option<u8>,
+    /// Animation frame. 16-bit to carry NetQuake 666's `U_FRAME2` high byte; QuakeWorld only ever
+    /// fills the low 8.
+    pub frame: Option<u16>,
     /// Colormap.
     pub colormap: Option<u8>,
     /// Skin.
@@ -413,8 +418,9 @@ pub struct Nail {
 pub struct Baseline {
     /// Model index.
     pub modelindex: u16,
-    /// Animation frame.
-    pub frame: u8,
+    /// Animation frame. 16-bit for NetQuake 666's `B_LARGEFRAME` baselines; QuakeWorld fills the
+    /// low 8 only.
+    pub frame: u16,
     /// Colormap.
     pub colormap: u8,
     /// Skin.
@@ -443,6 +449,11 @@ pub enum TempEntityKind {
     Teleport = 11,
     Blood = 12,
     LightningBlood = 13,
+    /// NetQuake `TE_EXPLOSION2` (wire byte 12): a colour-mapped explosion. QuakeWorld puts `Blood`
+    /// at 12, so this takes a distinct tag — the wire→kind mapping is each parser's job.
+    Explosion2 = 14,
+    /// NetQuake `TE_BEAM` (wire byte 13): the grapple beam.
+    GrappleBeam = 15,
 }
 
 /// A temp entity — the one-shot visual effects. A bot reads them as evidence: an explosion is a
@@ -538,6 +549,75 @@ impl Default for MoveVars {
     }
 }
 
+/// `svc_serverinfo` — NetQuake's map-change message, the counterpart to QuakeWorld's [`ServerData`].
+///
+/// Unlike QuakeWorld, the precache lists ride *inside* this one message rather than in a separate
+/// `modellist`/`soundlist` exchange, so there is no signon round trip to fetch them. Both lists are
+/// 1-indexed on the wire (index 0 is a reserved empty slot); [`models`](Self::models) and
+/// [`sounds`](Self::sounds) keep that convention with an empty string at index 0, so a wire index
+/// dereferences them directly.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NqServerData {
+    /// Protocol version: 15, 666 or 999.
+    pub protocol: u32,
+    /// `protocolflags` (999 only), for the coord/angle widths.
+    pub flags: u32,
+    /// Maximum player slots — the scoreboard size and the player-entity range `1..=maxclients`.
+    pub maxclients: u8,
+    /// Game type: 0 = coop, 1 = deathmatch (`GAME_*`).
+    pub gametype: u8,
+    /// The map's display name (not its filename — that's `models[1]`).
+    pub levelname: String,
+    /// The model precache list, 1-indexed (index 0 empty). `models[1]` is `maps/<name>.bsp`.
+    pub models: Vec<String>,
+    /// The sound precache list, 1-indexed (index 0 empty).
+    pub sounds: Vec<String>,
+}
+
+/// `svc_clientdata` — the whole of our own player state in one bitfielded message, sent every frame.
+///
+/// QuakeWorld dribbles this out as individual `svc_updatestat`s plus playerinfo; NetQuake packs it
+/// into one message. Fields absent from the bitfield default to zero (or, for viewheight, 22).
+/// `active_weapon` is the `IT_*` weapon bit under standard Quake rules (id1), matching what the
+/// `STAT_ACTIVEWEAPON` consumer expects.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ClientData {
+    /// Eye height above the origin (`STAT_VIEWHEIGHT`, default 22).
+    pub viewheight: i16,
+    /// Server's suggested pitch for auto-aim assist (`STAT_IDEALPITCH`).
+    pub ideal_pitch: i8,
+    /// View punch from recent damage, per axis in degrees.
+    pub punch: Vec3,
+    /// Our velocity, per axis (`char * 16`).
+    pub velocity: Vec3,
+    /// Carried items and powerups (`IT_*` / `STAT_ITEMS`).
+    pub items: u32,
+    /// Standing on the ground this frame.
+    pub on_ground: bool,
+    /// Standing in water this frame.
+    pub in_water: bool,
+    /// Weapon-model animation frame.
+    pub weaponframe: u16,
+    /// Armour points.
+    pub armor: u16,
+    /// The viewmodel's model index (`STAT_WEAPON`).
+    pub weapon_model: u16,
+    /// Health; non-positive means dead.
+    pub health: i16,
+    /// Ammo for the current weapon (`STAT_AMMO`).
+    pub ammo: u16,
+    /// Shells.
+    pub shells: u16,
+    /// Nails.
+    pub nails: u16,
+    /// Rockets.
+    pub rockets: u16,
+    /// Cells.
+    pub cells: u16,
+    /// The active weapon's `IT_*` bit (`STAT_ACTIVEWEAPON`).
+    pub active_weapon: u8,
+}
+
 /// A soundlist or modellist chunk. The list is sent in batches because it won't fit one packet.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResourceList {
@@ -547,6 +627,20 @@ pub struct ResourceList {
     pub names: Vec<String>,
     /// The next index to ask for, or 0 when the list is complete.
     pub next: u8,
+}
+
+/// One `svc_download` message. Its wire shape changes completely when
+/// `FTE_PEXT_CHUNKEDDOWNLOADS` is negotiated.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DownloadMessage {
+    /// A sequential QuakeWorld block. `percent == 100` completes the file.
+    LegacyBlock { percent: u8, data: Vec<u8> },
+    /// A sequential download failed. FTEQW uses `-1` for a missing or denied file.
+    LegacyError(i16),
+    /// Metadata beginning a random-access transfer. Negative results are FTE's `DLERR_*` values.
+    ChunkedStart { name: String, size: Result<u64, i32> },
+    /// One fixed-size random-access block. This form can also arrive out of band.
+    ChunkedBlock { chunk: u32, data: Box<[u8; DOWNLOAD_CHUNK_SIZE]> },
 }
 
 /// One decoded server message.
@@ -595,8 +689,8 @@ pub enum SvcEvent {
         entity: u16,
         /// Channel 0–7.
         channel: u8,
-        /// Index into the soundlist.
-        sound: u8,
+        /// Index into the soundlist. 16-bit for NetQuake 666's `SND_LARGESOUND`; QuakeWorld fits 8.
+        sound: u16,
         /// Volume 0–255.
         volume: u8,
         /// Attenuation — how fast it fades with distance.
@@ -642,7 +736,8 @@ pub enum SvcEvent {
     /// A looping ambient sound.
     SpawnStaticSound {
         origin: Vec3,
-        sound: u8,
+        /// Index into the soundlist. 16-bit for NetQuake's `svc_spawnstaticsound2`.
+        sound: u16,
         volume: u8,
         attenuation: u8,
     },
@@ -674,9 +769,8 @@ pub enum SvcEvent {
     EntGravity(f32),
     /// The game was paused or unpaused.
     SetPause(bool),
-    /// A file download chunk, which we skip: we never ask for one, but a server may push the map
-    /// anyway, and skipping it correctly is the difference between ignoring it and desyncing.
-    Download { size: i16, percent: u8 },
+    /// A legacy or negotiated-FTE file download message.
+    Download(DownloadMessage),
     /// A player's per-frame state.
     PlayerInfo(Box<PlayerInfo>),
     /// Entity updates for this frame.
@@ -689,6 +783,36 @@ pub enum SvcEvent {
     SoundList(ResourceList),
     /// Voice chat, skipped.
     Voice,
+
+    // ── NetQuake-only messages ──────────────────────────────────────────────────────────────────
+    // QuakeWorld folds these into other messages (own state into stats, frame time into the netchan
+    // sequence); NetQuake sends them explicitly, so they need their own events. The mirror consumes
+    // them through the same match as the shared ones above.
+    /// `svc_time` — the server's frame clock. Delimits an entity frame and is echoed in `clc_move`
+    /// for the server's ping calculation.
+    Time(f32),
+    /// `svc_signonnum` — advance the signon handshake to this step.
+    SignonNum(u8),
+    /// `svc_serverinfo` — NetQuake's map change (the counterpart to [`ServerData`]).
+    NqServerData(Box<NqServerData>),
+    /// `svc_clientdata` — our own player state for this frame.
+    ClientData(Box<ClientData>),
+    /// `svc_updatename` — a player slot's name (NetQuake has no userinfo string).
+    UpdateName { player: u8, name: String },
+    /// `svc_updatecolors` — a player slot's colours, packed `(top << 4) | bottom`.
+    UpdateColors { player: u8, colors: u8 },
+    /// `svc_setview` — the entity we're viewing from; our own player number is this minus one.
+    SetView(u16),
+    /// A NetQuake fast entity update, delta'd from the entity's **baseline** (not the previous
+    /// frame). The store resolves absent fields against the baseline.
+    EntityUpdate(EntityDelta),
+    /// `svc_particle` — a particle burst. Carried for completeness; the bot ignores it.
+    Particle {
+        origin: Vec3,
+        dir: Vec3,
+        count: u8,
+        color: u8,
+    },
 }
 
 /// Parse every message in one packet payload.
@@ -740,7 +864,7 @@ fn parse_one(
                 DEFAULT_SOUND_ATTENUATION
             };
             SvcEvent::Sound {
-                sound: r.u8()?,
+                sound: r.u8()? as u16,
                 origin: r.coord3()?,
                 entity: (channel >> 3) & 1023,
                 channel: (channel & 7) as u8,
@@ -794,7 +918,7 @@ fn parse_one(
         op::FOUNDSECRET => SvcEvent::FoundSecret,
         op::SPAWNSTATICSOUND => SvcEvent::SpawnStaticSound {
             origin: r.coord3()?,
-            sound: r.u8()?,
+            sound: r.u8()? as u16,
             volume: r.u8()?,
             attenuation: r.u8()?,
         },
@@ -822,14 +946,37 @@ fn parse_one(
             userinfo: r.string()?,
         },
         op::DOWNLOAD => {
-            // We never ask for a file, but a server can push one anyway. -1 means "no such file"
-            // and carries no payload; anything else is followed by that many bytes.
-            let size = r.i16()?;
-            let percent = r.u8()?;
-            if size > 0 {
-                r.skip(size as usize)?;
+            if proto.has_fte(fte::CHUNKEDDOWNLOADS) {
+                let chunk = r.i32()?;
+                if chunk == -1 {
+                    let flag = r.i32()?;
+                    let size = if flag == i32::MIN {
+                        let low = r.u32()? as u64;
+                        let high = r.u32()? as u64;
+                        Ok(low | high << 32)
+                    } else if flag < 0 {
+                        Err(flag)
+                    } else {
+                        Ok(flag as u64)
+                    };
+                    SvcEvent::Download(DownloadMessage::ChunkedStart { name: r.string()?, size })
+                } else {
+                    let data: [u8; DOWNLOAD_CHUNK_SIZE] = r.bytes(DOWNLOAD_CHUNK_SIZE)?.try_into().unwrap();
+                    SvcEvent::Download(DownloadMessage::ChunkedBlock {
+                        chunk: chunk as u32,
+                        data: Box::new(data),
+                    })
+                }
+            } else {
+                let size = r.i16()?;
+                let percent = r.u8()?;
+                if size < 0 {
+                    SvcEvent::Download(DownloadMessage::LegacyError(size))
+                } else {
+                    let data = r.bytes(size as usize)?.to_vec();
+                    SvcEvent::Download(DownloadMessage::LegacyBlock { percent, data })
+                }
             }
-            SvcEvent::Download { size, percent }
         }
         op::PLAYERINFO => SvcEvent::PlayerInfo(Box::new(read_playerinfo(proto, r)?)),
         op::NAILS => SvcEvent::Nails(read_nails(r, false)?),
@@ -921,7 +1068,7 @@ fn parse_serverdata(proto: &mut ProtoState, r: &mut Reader) -> Result<SvcEvent, 
 /// The classic baseline body, shared by `svc_spawnbaseline` and `svc_spawnstatic`.
 fn read_baseline(r: &mut Reader) -> Result<Baseline, Underflow> {
     let modelindex = r.u8()? as u16;
-    let frame = r.u8()?;
+    let frame = r.u8()? as u16;
     let colormap = r.u8()?;
     let skinnum = r.u8()?;
     // Origin and angle interleave, one axis at a time.
@@ -1150,7 +1297,7 @@ fn read_delta_entity_bits(proto: &ProtoState, r: &mut Reader, word: u32) -> Resu
         d.model = Some(r.u16()?);
     }
     if bits & u::FRAME != 0 {
-        d.frame = Some(r.u8()?);
+        d.frame = Some(r.u8()? as u16);
     }
     if bits & u::COLORMAP != 0 {
         d.colormap = Some(r.u8()?);
@@ -1788,10 +1935,10 @@ mod tests {
         assert_eq!(pe.updates[0].colourmod, Some([10, 20, 30]));
     }
 
-    /// A `svc_download` we never asked for must still be skipped by exactly its length, or
+    /// Legacy download data is retained for the transfer layer and consumes exactly its length, or
     /// everything after it in the packet is garbage.
     #[test]
-    fn skips_download_payload_exactly() {
+    fn parses_legacy_download_payload_exactly() {
         let mut w = Writer::new();
         w.u8(op::DOWNLOAD);
         w.i16(4);
@@ -1799,7 +1946,16 @@ mod tests {
         w.bytes(&[0xde, 0xad, 0xbe, 0xef]);
         w.u8(op::NOP);
         let evs = parse(&mut vanilla(), &w.into_vec()).unwrap();
-        assert_eq!(evs, vec![SvcEvent::Download { size: 4, percent: 50 }, SvcEvent::Nop]);
+        assert_eq!(
+            evs,
+            vec![
+                SvcEvent::Download(DownloadMessage::LegacyBlock {
+                    percent: 50,
+                    data: vec![0xde, 0xad, 0xbe, 0xef],
+                }),
+                SvcEvent::Nop,
+            ]
+        );
 
         // -1 means "no such file" and carries no payload at all.
         let mut w = Writer::new();
@@ -1808,7 +1964,69 @@ mod tests {
         w.u8(0);
         w.u8(op::NOP);
         let evs = parse(&mut vanilla(), &w.into_vec()).unwrap();
-        assert_eq!(evs, vec![SvcEvent::Download { size: -1, percent: 0 }, SvcEvent::Nop]);
+        assert_eq!(
+            evs,
+            vec![SvcEvent::Download(DownloadMessage::LegacyError(-1)), SvcEvent::Nop]
+        );
+    }
+
+    /// FTE replaces the legacy short/percent body with either file metadata or a fixed-size random
+    /// access chunk. Both the ordinary and 64-bit size forms are on the wire in deployed servers.
+    #[test]
+    fn parses_fte_chunked_download_messages() {
+        let mut p = with(fte::CHUNKEDDOWNLOADS, 0, 0);
+        let mut w = Writer::new();
+        w.u8(op::DOWNLOAD);
+        w.i32(-1);
+        w.i32(4097);
+        w.string("maps/test.bsp");
+        w.u8(op::DOWNLOAD);
+        w.i32(2);
+        w.bytes(&[0x5a; DOWNLOAD_CHUNK_SIZE]);
+        let evs = parse(&mut p, &w.into_vec()).unwrap();
+        assert_eq!(
+            evs,
+            vec![
+                SvcEvent::Download(DownloadMessage::ChunkedStart {
+                    name: "maps/test.bsp".into(),
+                    size: Ok(4097),
+                }),
+                SvcEvent::Download(DownloadMessage::ChunkedBlock {
+                    chunk: 2,
+                    data: Box::new([0x5a; DOWNLOAD_CHUNK_SIZE]),
+                }),
+            ]
+        );
+
+        let mut w = Writer::new();
+        w.u8(op::DOWNLOAD);
+        w.i32(-1);
+        w.i32(i32::MIN);
+        w.u32(7);
+        w.u32(1);
+        w.string("maps/huge.bsp");
+        let evs = parse(&mut p, &w.into_vec()).unwrap();
+        assert_eq!(
+            evs,
+            vec![SvcEvent::Download(DownloadMessage::ChunkedStart {
+                name: "maps/huge.bsp".into(),
+                size: Ok((1u64 << 32) | 7),
+            })]
+        );
+
+        let mut w = Writer::new();
+        w.u8(op::DOWNLOAD);
+        w.i32(-1);
+        w.i32(-3);
+        w.string("maps/missing.bsp");
+        let evs = parse(&mut p, &w.into_vec()).unwrap();
+        assert_eq!(
+            evs,
+            vec![SvcEvent::Download(DownloadMessage::ChunkedStart {
+                name: "maps/missing.bsp".into(),
+                size: Err(-3),
+            })]
+        );
     }
 
     /// Resource lists arrive in chunks with a continuation index; `next == 0` ends the list.

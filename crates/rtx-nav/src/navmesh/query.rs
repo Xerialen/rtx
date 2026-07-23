@@ -77,6 +77,27 @@ impl NavGraph {
     /// so the route bends around closed doors when it can and only crosses one (leaving the bot to
     /// open it) when there's no other way. Pass [`LinkCosts::gated`] (or `default`) for gates-only.
     pub fn find_path(&self, start: CellId, goal: CellId, costs: &LinkCosts) -> Option<Vec<u32>> {
+        self.find_path_filtered(start, goal, costs, None)
+    }
+
+    /// [`find_path`](Self::find_path) restricted to a cluster window: expansion rejects any cell whose
+    /// LOD cluster isn't flagged in `allowed` (indexed by cluster id). Steer bounds a far-goal route to
+    /// the coarse corridor's clusters with this, so the search stays a local neighbourhood.
+    pub fn find_path_within(&self, start: CellId, goal: CellId, costs: &LinkCosts, allowed: &[bool]) -> Option<Vec<u32>> {
+        self.find_path_filtered(start, goal, costs, Some(allowed))
+    }
+
+    /// Whether `cell` may be expanded under an optional cluster window (`None` ⇒ unrestricted; a cell
+    /// with no LOD cluster, or a cluster past the slice, defaults to allowed).
+    #[inline]
+    fn in_window(&self, cell: CellId, allowed: Option<&[bool]>) -> bool {
+        match allowed {
+            None => true,
+            Some(a) => self.cluster_of(cell).is_none_or(|cl| a.get(cl as usize).copied().unwrap_or(true)),
+        }
+    }
+
+    fn find_path_filtered(&self, start: CellId, goal: CellId, costs: &LinkCosts, allowed: Option<&[bool]>) -> Option<Vec<u32>> {
         use std::collections::BinaryHeap;
 
         if start == goal {
@@ -104,6 +125,9 @@ impl NavGraph {
                     continue;
                 }
                 let link = self.links[li as usize];
+                if !self.in_window(link.to, allowed) {
+                    continue;
+                }
                 let ng = g_cost[cell as usize] + link.cost + self.link_extra(li, costs) + self.chained_block(li);
                 if ng < g_cost[link.to as usize] {
                     g_cost[link.to as usize] = ng;
@@ -138,16 +162,45 @@ impl NavGraph {
         start_speed: f32,
         costs: &LinkCosts,
     ) -> Option<BandedRoute> {
+        self.find_path_banded_filtered(start, goal, start_speed, costs, None)
+    }
+
+    /// [`find_path_banded`](Self::find_path_banded) restricted to a cluster window (see
+    /// [`find_path_within`](Self::find_path_within)) — the bounded search steer runs to a corridor
+    /// interim, so band-infeasible exhaustion stays inside the window instead of draining the whole map.
+    pub fn find_path_banded_within(
+        &self,
+        start: CellId,
+        goal: CellId,
+        start_speed: f32,
+        costs: &LinkCosts,
+        allowed: &[bool],
+    ) -> Option<BandedRoute> {
+        self.find_path_banded_filtered(start, goal, start_speed, costs, Some(allowed))
+    }
+
+    fn find_path_banded_filtered(
+        &self,
+        start: CellId,
+        goal: CellId,
+        start_speed: f32,
+        costs: &LinkCosts,
+        allowed: Option<&[bool]>,
+    ) -> Option<BandedRoute> {
         use std::collections::BinaryHeap;
 
         if start == goal {
-            return Some(BandedRoute { links: Vec::new(), bands: Vec::new(), cost: 0.0, end_band: band_of(start_speed) });
+            return Some(BandedRoute {
+                links: Vec::new(),
+                bands: Vec::new(),
+                cost: 0.0,
+                end_band: band_of(start_speed),
+            });
         }
         let nb = NBANDS as u32;
         let nstates = self.cells.len() * NBANDS;
-        let h = |cell: CellId| {
-            (self.cells[goal as usize].origin - self.cells[cell as usize].origin).length() / BAND_V_MAX
-        };
+        let h =
+            |cell: CellId| (self.cells[goal as usize].origin - self.cells[cell as usize].origin).length() / BAND_V_MAX;
 
         let mut g_cost = vec![f32::INFINITY; nstates];
         let mut came_link = vec![u32::MAX; nstates]; // link used to reach this state
@@ -155,7 +208,10 @@ impl NavGraph {
         let mut heap = BinaryHeap::new();
         let s0 = start * nb + band_of(start_speed) as u32;
         g_cost[s0 as usize] = 0.0;
-        heap.push(MinCost { key: h(start), payload: s0 });
+        heap.push(MinCost {
+            key: h(start),
+            payload: s0,
+        });
 
         while let Some(MinCost { payload: state, .. }) = heap.pop() {
             let cell = state / nb;
@@ -166,21 +222,60 @@ impl NavGraph {
                 route.end_band = band;
                 return Some(route);
             }
-            // The heading we arrived along, for the carry-around-corners test.
+            // The heading we arrived along, for the carry-around-corners test. A ground-turn curl
+            // rotates far off its from→to chord by design, so the direction its carry actually
+            // points after landing is the CERTIFIED landing heading, not the chord.
             let in_link = came_link[state as usize];
-            let in_dir = (in_link != u32::MAX).then(|| self.link_dir(in_link));
+            let in_dir = (in_link != u32::MAX).then(|| {
+                match self.speed_jump_of_link(in_link) {
+                    Some(t) if t.ground_turn.is_some() => {
+                        let (s, c) = t.ground_turn.unwrap().landing_yaw.to_radians().sin_cos();
+                        Vec2::new(c, s)
+                    }
+                    // A straight speed jump's carry points along the FLIGHT (takeoff → target),
+                    // not the from→to chord, which the runway segment drags off-axis.
+                    Some(t) => {
+                        let to = self.links[in_link as usize].to;
+                        (self.cells[to as usize].origin.xy() - t.takeoff.xy()).normalize_or_zero()
+                    }
+                    None => self.link_dir(in_link),
+                }
+            });
             for &li in &self.adjacency[cell as usize] {
                 if self.link_removed(li) {
                     continue;
                 }
-                // Carried speed only counts if the corridor continues within the cone.
+                if !self.in_window(self.links[li as usize].to, allowed) {
+                    continue;
+                }
+                // Carried speed only counts if the corridor continues within the cone — except into
+                // a ground-turn curl, which certifies its own entry-heading envelope (the grounded
+                // rotation happens inside the leg): test the arrival heading against that envelope.
                 let entry = match in_dir {
                     Some(d) if d.length_squared() > 0.01 => {
-                        let cos = d.dot(self.link_dir(li)).clamp(-1.0, 1.0);
-                        if cos.acos().to_degrees() > SPEED_CONE_DEG {
-                            0
+                        if let Some(gt) = self.speed_jump_of_link(li).and_then(|t| t.ground_turn) {
+                            let mut yaw = d.y.atan2(d.x).to_degrees().rem_euclid(360.0);
+                            // A blended runway-turn starts while ordinary ground steering is still
+                            // completing the corner into the source cell. Predict the same geometric
+                            // continuation that generated the separate turned contract; the last
+                            // graph chord alone can admit a straight-entry certificate the live
+                            // controller cannot enter.
+                            if gt.blended_runway {
+                                let turn_away = (yaw - gt.runway_yaw + 180.0).rem_euclid(360.0) - 180.0;
+                                yaw = (yaw + turn_away * 0.40).rem_euclid(360.0);
+                            }
+                            if super::yaw_in_envelope(yaw, gt.entry_yaw_lo, gt.entry_yaw_hi) {
+                                band
+                            } else {
+                                continue;
+                            }
                         } else {
-                            band
+                            let cos = d.dot(self.link_dir(li)).clamp(-1.0, 1.0);
+                            if cos.acos().to_degrees() > SPEED_CONE_DEG {
+                                0
+                            } else {
+                                band
+                            }
                         }
                     }
                     _ => band,
@@ -194,7 +289,10 @@ impl NavGraph {
                     g_cost[ns as usize] = ng;
                     came_link[ns as usize] = li;
                     came_state[ns as usize] = state;
-                    heap.push(MinCost { key: ng + h(self.links[li as usize].to), payload: ns });
+                    heap.push(MinCost {
+                        key: ng + h(self.links[li as usize].to),
+                        payload: ns,
+                    });
                 }
             }
         }
@@ -216,7 +314,12 @@ impl NavGraph {
         }
         links.reverse();
         bands.reverse();
-        BandedRoute { links, bands, cost: 0.0, end_band: 0 } // cost/end_band filled by the caller
+        BandedRoute {
+            links,
+            bands,
+            cost: 0.0,
+            end_band: 0,
+        } // cost/end_band filled by the caller
     }
 
     /// Unit horizontal heading of a link (source cell → target cell), or zero for a degenerate link.
@@ -225,19 +328,30 @@ impl NavGraph {
         (self.cells[l.to as usize].origin.xy() - self.cells[l.from as usize].origin.xy()).normalize_or_zero()
     }
 
-    /// The reachable cell (per current door states) whose origin is closest to `goal`'s, when
-    /// `goal` itself can't be reached. Lets a bot head as far toward an unreachable target as the
-    /// graph allows — approaching a wall/door/connection to get line of sight — instead of homing
-    /// straight into geometry. `None` only if nothing but `start` is reachable.
-    pub fn nearest_reachable_to(&self, start: CellId, goal: CellId, costs: &LinkCosts) -> Option<CellId> {
-        let flood = self.costs_from(start, costs);
+    /// The reachable cell whose origin is closest to `goal`'s, when `goal` itself can't be reached.
+    /// Lets a bot head as far toward an unreachable target as the graph allows — approaching a
+    /// wall/door/connection to get line of sight — instead of homing straight into geometry. `None`
+    /// only if nothing but `start` is reachable.
+    ///
+    /// Reachability is static topology (every dynamic cost is finite — see [`super::reach`]), so on a
+    /// built graph this is an O(cells) scan against the precomputed table with no search at all. A bare
+    /// graph (no table) falls back to a Dijkstra flood, the original behavior.
+    pub fn nearest_reachable_to(&self, start: CellId, goal: CellId) -> Option<CellId> {
         let goal_pos = self.cells[goal as usize].origin;
-        (0..self.cells.len() as CellId)
-            .filter(|&c| c != start && flood[c as usize].is_finite())
-            .min_by(|&a, &b| {
-                let d = |c: CellId| (self.cells[c as usize].origin - goal_pos).length_squared();
-                d(a).total_cmp(&d(b))
-            })
+        let nearest = |reachable: &dyn Fn(CellId) -> bool| {
+            (0..self.cells.len() as CellId)
+                .filter(|&c| c != start && reachable(c))
+                .min_by(|&a, &b| {
+                    let d = |c: CellId| (self.cells[c as usize].origin - goal_pos).length_squared();
+                    d(a).total_cmp(&d(b))
+                })
+        };
+        if self.reach.is_some() {
+            nearest(&|c| self.reachable(start, c))
+        } else {
+            let flood = self.costs_from(start, &LinkCosts::default());
+            nearest(&|c| flood[c as usize].is_finite())
+        }
     }
 
     /// Dijkstra cost-flood from `start`: the travel-time cost to reach every cell (`INFINITY`
@@ -249,7 +363,10 @@ impl NavGraph {
         let mut cost = vec![f32::INFINITY; self.cells.len()];
         let mut heap = BinaryHeap::new();
         cost[start as usize] = 0.0;
-        heap.push(MinCost { key: 0.0, payload: start });
+        heap.push(MinCost {
+            key: 0.0,
+            payload: start,
+        });
         while let Some(MinCost { key: g, payload: cell }) = heap.pop() {
             if g > cost[cell as usize] {
                 continue; // a cheaper path already settled this cell
@@ -262,11 +379,54 @@ impl NavGraph {
                 let ng = g + link.cost + self.link_extra(li, costs) + self.chained_block(li);
                 if ng < cost[link.to as usize] {
                     cost[link.to as usize] = ng;
-                    heap.push(MinCost { key: ng, payload: link.to });
+                    heap.push(MinCost {
+                        key: ng,
+                        payload: link.to,
+                    });
                 }
             }
         }
         cost
+    }
+
+    /// Bounded [`costs_from`](Self::costs_from): a Dijkstra flood that stops the moment it settles a
+    /// cell costing more than `t_max`, returning the (partial) cost table plus the cells it settled —
+    /// those with cost ≤ `t_max` — in nondecreasing-cost order.
+    ///
+    /// **Exact within the bound.** Dijkstra settles in cost order, so every cell whose true cost is
+    /// ≤ `t_max` is final in the table, and no cell reads a finite value ≤ `t_max` unless its true
+    /// cost really is ≤ `t_max` (a written cost is an upper bound on the truth). A caller that only
+    /// cares about cells within a travel-time threshold — pass `t_max` = that threshold — gets exactly
+    /// what the full flood would give it, without touching the rest of the map. The returned `settled`
+    /// list lets a "nearest cell with property X" scan (nearest air, nearest safe footing) walk only
+    /// the local neighbourhood; the first qualifying cell in it is the globally nearest such cell *iff*
+    /// one settled at all (else the property's nearest cell, if any, lies beyond `t_max`).
+    pub fn costs_from_within(&self, start: CellId, costs: &LinkCosts, t_max: f32) -> (Vec<f32>, Vec<CellId>) {
+        use std::collections::BinaryHeap;
+
+        let mut cost = vec![f32::INFINITY; self.cells.len()];
+        let mut settled = Vec::new();
+        let mut heap = BinaryHeap::new();
+        cost[start as usize] = 0.0;
+        heap.push(MinCost { key: 0.0, payload: start });
+        while let Some(MinCost { key: g, payload: cell }) = heap.pop() {
+            if g > cost[cell as usize] {
+                continue; // a cheaper path already settled this cell
+            }
+            if g > t_max {
+                break; // everything still queued costs more than the bound
+            }
+            settled.push(cell);
+            for &li in &self.adjacency[cell as usize] {
+                let link = self.links[li as usize];
+                let ng = g + link.cost + self.link_extra(li, costs) + self.chained_block(li);
+                if ng < cost[link.to as usize] {
+                    cost[link.to as usize] = ng;
+                    heap.push(MinCost { key: ng, payload: link.to });
+                }
+            }
+        }
+        (cost, settled)
     }
 
     /// Walk `came_from` link indices back from `goal` to `start` into a forward link route.
@@ -321,7 +481,7 @@ impl NavGraph {
     }
 
     /// Whether a bot standing on this cell is under water (its origin is submerged, so pmove swims).
-    /// Set by [`surcharge_water_links`](Self::surcharge_water_links); an unmarked graph reads as dry.
+    /// Set by [`flag_water`](Self::flag_water); an unmarked graph reads as dry.
     pub fn cell_in_water(&self, cell: CellId) -> bool {
         self.water.get(cell as usize).copied().unwrap_or(false)
     }
@@ -333,10 +493,17 @@ impl NavGraph {
     }
 
     /// The liquid a bot standing on this cell is *in* — lava/slime at its feet, which the game burns
-    /// it for — or `None` for safe footing. Set by [`surcharge_hazard_links`](Self::surcharge_hazard_links);
-    /// an unmarked graph reads as all-safe.
+    /// it for — or `None` for safe footing. Set by [`flag_hazards`](Self::flag_hazards); an unmarked
+    /// graph reads as all-safe.
     pub fn cell_hazard(&self, cell: CellId) -> Option<crate::hazard::HazardKind> {
         self.hazard.get(cell as usize).copied().flatten()
+    }
+
+    /// Whether the map has *any* lava/slime cell — a cheap gate so the near-field's per-column liquid
+    /// oracle (a `pointcontents` walk of our parsed BSP) is skipped entirely on the dry maps that are
+    /// the norm.
+    pub fn has_hazards(&self) -> bool {
+        self.hazard.iter().any(Option::is_some)
     }
 
     /// The lift whose swept volume covers this cell, as an index into `plats` — the same index space as

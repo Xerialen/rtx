@@ -32,7 +32,7 @@
 
 use glam::Vec3;
 
-use crate::defs::{Items, Weapon};
+use crate::defs::{Items, TakeDamage, Weapon};
 use crate::entity::EntId;
 use crate::game::{cstring, GameState};
 
@@ -294,6 +294,15 @@ pub(crate) trait GameMode: Sync {
         None
     }
 
+    /// Where a bot with *no* live objective (no visible enemy, no item to fetch, no human to tail)
+    /// should idle-roam this frame — the mode's chance to keep it in its own space instead of the
+    /// generic whole-map [`roam_target`](crate::bot). Rocket Arena confines a fighter to the arena and
+    /// the audience to the stands, so a fighter never sets off toward — and jams itself against the
+    /// wall beneath — the untouchable spectators. `None` (the default) falls back to the generic roam.
+    fn bot_idle_roam(&self, _g: &mut GameState, _bot: EntId) -> Option<Vec3> {
+        None
+    }
+
     /// May `rtx_bot_pacifist` replace this mode's bot intent with "follow the nearest human"?
     /// Default: yes. Race disables the override because its checkpoint/finish route is already
     /// pacifist and must remain the runner's sole strategic objective.
@@ -464,6 +473,13 @@ impl GameState {
                 config: cfg,
                 ..Default::default()
             };
+            // Re-seed the opponent hypotheses on the new ruleset's spawn kit, exactly as a map load
+            // does ([`on_worldspawn`]). The baseline is what *every* belief reset copies — spawn,
+            // death, the Arena winner-stays — so leaving the old mode's kit here would model each
+            // fighter with the wrong stack for the rest of the map: switching into `ra` live, the
+            // dm baseline's bare 100hp/no-armor makes one rocket read as a finishable 20 EHP while
+            // the real fighter still has 220 behind red armor, and the bots shotgun-rush a full stack.
+            self.opponents = crate::bot::model::OpponentModel::new(crate::bot::model::baseline_for_mode(next.name()));
             host.conprint(&cstring(&format!("rtx: game mode = {}\n", next.name())));
         } else if cfg != self.team_match.config {
             self.team_match = MatchState {
@@ -484,6 +500,23 @@ impl GameState {
         // touches the wire when the resolved mode actually changes.
         let wire = team::mode_serverinfo(self.mode.name(), self.team_match.config);
         self.publish_serverinfo("mode", &wire);
+    }
+
+    /// Publish the rtx-specific movement features into serverinfo, so a network client mirrors them
+    /// instead of assuming its own defaults. See [`crate::cvars::RTX_MOVE_CVARS`]. Each key carries
+    /// the live cvar value (`1`/`0`, or the elevator-jump multiplier), deduped by `publish_serverinfo`.
+    pub(crate) fn publish_movement(&mut self) {
+        for &cv in crate::cvars::RTX_MOVE_CVARS {
+            let name = std::ffi::CString::new(cv).unwrap_or_default();
+            let value = self.host.cvar(&name);
+            // Whole numbers as ints (`1`, not `1.0`) so the wire reads like KTX's own `pm_*` keys.
+            let text = if value.fract() == 0.0 {
+                (value as i64).to_string()
+            } else {
+                value.to_string()
+            };
+            self.publish_serverinfo(cv, &text);
+        }
     }
 }
 
@@ -543,7 +576,7 @@ pub(crate) fn nearest_player_where(
 /// one makes the engine warn "msg_entity: not a client").
 pub(crate) fn centerprint_all(g: &GameState, msg: &str) {
     let host = *g.host();
-    let cmsg = cstring(msg);
+    let cmsg = crate::text::conchar_cstring(msg);
     for e in players(g) {
         if g.entities[e].bot.is_bot {
             continue;
@@ -571,6 +604,7 @@ pub(crate) fn countdown_announce(until: f32, now: f32, last: i32) -> (i32, Optio
 /// Arena's audience and a structured match's benched late-joiners; damage to (and from) these
 /// players is refused by the bench/audience damage gates. Health/armor must stay positive — a
 /// client (and the bot AI) treats 0 health as dead and locks movement, freezing the spectator.
+/// [`audience_loadout`] also clears `takedamage` so the whole world reads these as non-participants.
 /// A fixed spawn kit — the arena fighter, midair, race and audience kits each hand-wrote these
 /// fields. `apply` *assigns* `items` (not `.with`), which drops the grapple bit
 /// `put_client_in_server` hands out first (the intended no-hook-in-the-arena behavior). `max_health:
@@ -620,6 +654,13 @@ pub(crate) fn audience_loadout(g: &mut GameState, e: EntId) {
         weapon: Weapon::Axe,
     }
     .apply(g, e);
+    // Mark a spectator as a non-participant the way FBRA's `becomeinvisible` does (arena.qc): a
+    // `takedamage == No` body is refused damage at the top of `t_damage`, ignored by the teleporter /
+    // jump-pad touch gates (so a solid, roaming audience member can't ride a teleporter into the live
+    // arena), and skipped by bot enemy selection. The mode damage hook still protects a fighter during
+    // the countdown, which keeps its `Aim`; a promotion re-spawns through `configure_fresh_player_body`
+    // and regains `Aim` there.
+    g.entities[e].v.takedamage = TakeDamage::No;
 }
 
 /// A roaming destination among `classname` spawns for a bot with nothing to fight — re-picked on a

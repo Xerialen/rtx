@@ -579,6 +579,47 @@ pub fn nav_surface(graph: &NavGraph, bsp: &Bsp) -> Vec<LineVertex> {
     out
 }
 
+/// A distinct-ish color per LOD cluster id (a hash to RGB, floored so every cluster stays visible),
+/// so adjacent clusters read as different tiles in the [`nav_clusters`] overlay.
+fn cluster_color(id: u32) -> [f32; 3] {
+    let mut x = id.wrapping_mul(0x9e37_79b1);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x85eb_ca6b);
+    x ^= x >> 13;
+    let chan = |shift: u32| 0.35 + 0.6 * (((x >> shift) & 0xff) as f32 / 255.0);
+    [chan(0), chan(8), chan(16)]
+}
+
+/// The LOD-overlay surface: the same walkable tiles as [`nav_surface`], but each cell tinted by its
+/// coarse cluster ([`NavGraph::cluster_of`]) so the hierarchy's block/connectivity partition is
+/// visible. Falls back to a flat grey where the LOD layer isn't built.
+pub fn nav_clusters(graph: &NavGraph, bsp: &Bsp) -> Vec<LineVertex> {
+    let full = GRID * 0.5;
+    let sub = GRID / SURF_SUB as f32;
+    let hs = sub * 0.5;
+    let mut out: Vec<LineVertex> = Vec::with_capacity(graph.cells.len() * 6);
+    for (i, cell) in graph.cells.iter().enumerate() {
+        let color = graph.cluster_of(i as u32).map_or([0.3, 0.3, 0.3], cluster_color);
+        let o = cell.origin;
+        let z = o.z - FEET_DROP + 1.0;
+        for iy in 0..SURF_SUB {
+            for ix in 0..SURF_SUB {
+                let cx = o.x - full + hs + ix as f32 * sub;
+                let cy = o.y - full + hs + iy as f32 * sub;
+                let supported = bsp.is_solid(Vec3::new(cx, cy, o.z - (STEP_HEIGHT + 4.0)))
+                    && !bsp.is_solid(Vec3::new(cx, cy, o.z + 1.0));
+                if !supported {
+                    continue;
+                }
+                let corner = |dx: f32, dy: f32| LineVertex { pos: [cx + dx * hs, cy + dy * hs, z], color };
+                let (a, b, c, d) = (corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0));
+                out.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
+    }
+    out
+}
+
 /// Emit a polyline as `LineList` pairs, shading each vertex from `DIR_DIM`·color at the start to full
 /// color at the end (by fraction of arc length) so the line reads as a directional flow.
 fn push_gradient(out: &mut Vec<LineVertex>, path: &[Vec3], color: [f32; 3]) {
@@ -670,14 +711,16 @@ mod tests {
     /// Skipped when `NAVVIEW_TEST_BSP` is unset.
     #[test]
     fn builds_nav_overlay() {
+        use rtx_nav::bsp::Bsp;
         use rtx_nav::navmesh::{build_navmesh, RocketJumpParams, SpeedJumpParams};
         let Ok(path) = std::env::var("NAVVIEW_TEST_BSP") else {
             eprintln!("NAVVIEW_TEST_BSP unset — skipping");
             return;
         };
         let bytes = std::fs::read(&path).expect("read bsp");
-        let (bsp, graph) = build_navmesh(
-            bytes,
+        let bsp = Bsp::parse(&bytes).expect("parse bsp");
+        let graph = build_navmesh(
+            &bsp,
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -692,8 +735,7 @@ mod tests {
                 curl: true,
             }),
             Some(RocketJumpParams { gravity: 800.0, rj_extra: 0.0 }),
-        )
-        .expect("build navmesh");
+        );
 
         // No jump-type link may take off from a submerged cell — you can't jump underwater.
         let jump_kinds =

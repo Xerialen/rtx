@@ -27,7 +27,7 @@
 
 use glam::Vec3;
 use rtx_proto::protocol::stat;
-use rtx_proto::svc::{PlayerInfo, SvcEvent};
+use rtx_proto::svc::{ClientData, PlayerInfo, SvcEvent, TempEntity, TempEntityKind};
 
 use crate::bot::model::PickupKind;
 use crate::client::movement::AIR_TIME;
@@ -40,6 +40,12 @@ use crate::weapons::projectiles::{GRENADE_FUSE, NAIL_SPEED, ROCKET_SPEED};
 use crate::entity::{EntId, Entity, FlagPhase, MoverPhase, Touch};
 use crate::game::GameState;
 use crate::netclient::frames::EntityState;
+
+/// `player.mdl`'s death animations — `AXDETH1` (frame 41) through `DEATHE9` (frame 102), fixed by
+/// the model file. NetQuake carries no `PF_DEAD` for other players, so a corpse is told from a live
+/// body by whether its animation frame sits in this range (the same table `player.rs` animates
+/// deaths with). Living poses — stand/run/pain (0–40) and the attacks (103+) — fall outside it.
+const PLAYER_DEATH_FRAMES: std::ops::RangeInclusive<u16> = 41..=102;
 
 /// The wire's player slot as an entity id. Slots are 0-based; entity 0 is the world, so players
 /// start at 1.
@@ -199,7 +205,27 @@ impl Mirror {
                 }
                 self.write_own_stats(game);
             }
-            SvcEvent::PlayerInfo(pi) => self.write_player(game, squad, pi),
+            SvcEvent::PlayerInfo(pi) => self.write_player(game, world, squad, pi),
+            // NetQuake packs our own state into one message rather than per-stat updates.
+            SvcEvent::ClientData(cd) => self.write_clientdata(game, cd),
+            // NetQuake has no userinfo string — a slot's name and colours arrive on their own.
+            SvcEvent::UpdateName { player, name } => self.write_name_nq(game, *player, name),
+            SvcEvent::UpdateColors { player, colors } => {
+                if (*player as usize) < MAX_CLIENTS {
+                    let e = slot_to_ent(*player);
+                    if is_player_slot(game, e) {
+                        // NetQuake teamplay keys off the trouser (low-nibble) colour.
+                        game.entities[e].mode_p.team = *colors & 0x0f;
+                    }
+                }
+            }
+            // NetQuake tells us our slot via the view entity (one less than its number).
+            SvcEvent::SetView(e) => {
+                let slot = e.saturating_sub(1) as u8;
+                if self.playernum != slot {
+                    self.set_slot(slot, self.spectator);
+                }
+            }
             // The bot's ears. Sounds carry by PHS rather than PVS — you hear things through walls,
             // which is the whole point of listening — so this reaches further than sight, and is
             // exactly what a player works from when they say "he's got the rocket launcher".
@@ -210,9 +236,19 @@ impl Mirror {
                     if is_player_slot(game, e) {
                         game.client_heard_fire(e, weapon, *origin);
                     }
+                    // Remember it: a blood puff a moment later scales by the weapon that caused it.
+                    world.recent_fire = Some((weapon, game.time()));
                 }
                 if name == ITEM_RESPAWN_SOUND {
                     world.heard_item_respawn(game, *origin);
+                } else if let Some(class) = powerup_pickup_class(name) {
+                    // A powerup's pickup sound just played somewhere — that powerup is now held, so it's
+                    // off the floor and on its ~60 s clock, knowable even with the pad out of sight. This
+                    // is one of the ways a bot "knows the quad is gone" without seeing the pad, alongside
+                    // the glow on whoever holds it (see `write_player`) and its own pickup (which plays
+                    // this same sound). Only powerups: their sounds are unique, so position isn't needed.
+                    let now = game.time();
+                    world.note_powerup_taken(game, class, now);
                 }
             }
             // Being shot. Tells us someone's there and roughly where — a bearing, not a position.
@@ -241,6 +277,11 @@ impl Mirror {
                 game.entities[e].v.angles = *angles;
                 game.entities[e].bot.aim.angles = *angles;
             }
+            // Blood — the honest, PVS-gated "someone got hit" a player reads off a spurt. It's the one
+            // signal that can fill the opponent model's *health* channel on a client (nothing on the
+            // wire carries enemy health), so its bots can tell when an enemy is finishable. Other temp
+            // entities (explosions, gunshots on walls) carry no health news and fall through.
+            SvcEvent::TempEntity(te) => world.note_blood(game, te),
             _ => {}
         }
     }
@@ -339,7 +380,7 @@ impl Mirror {
     }
 
     /// One player's per-frame state.
-    fn write_player(&mut self, game: &mut GameState, squad: &Squad, pi: &PlayerInfo) {
+    fn write_player(&mut self, game: &mut GameState, world: &mut WorldMirror, squad: &Squad, pi: &PlayerInfo) {
         if pi.player as usize >= MAX_CLIENTS {
             return; // not a slot this server has; everything below indexes by it
         }
@@ -353,6 +394,12 @@ impl Mirror {
         if !own && !is_player_slot(game, e) {
             return;
         }
+
+        // Stamp the wire-update time: getting this at all means the player is in our PVS this frame,
+        // so combat and perception can tell a live sighting from a shadow frozen where the player was
+        // when it dropped out of view (behind a wall, or through a teleporter). Without it a stale
+        // shadow reads as a live target and the bot empties its ammo into the empty spot.
+        game.entities[e].net_seen = game.time();
 
         {
             let v = &mut game.entities[e].v;
@@ -415,6 +462,15 @@ impl Mirror {
                 let lit = glow.contains(bit);
                 if lit && !known.contains(bit) {
                     game.client_saw_pickup(e, kind);
+                    // The glow also dates the *map* item: whoever just lit up is holding that powerup,
+                    // so its pad is empty and on the respawn clock even if it's across the map (ultrav's
+                    // quad). Effect duration bounds the wait tighter than a bare 60s — they picked it up
+                    // within the last ~30s — but the conservative full clock is enough to send a bot to
+                    // arrive and wait rather than believe it's still sitting there.
+                    if let Some(class) = powerup_glow_class(kind) {
+                        let now = game.time();
+                        world.note_powerup_taken(game, class, now);
+                    }
                 }
                 known.set(bit, lit);
             }
@@ -425,12 +481,180 @@ impl Mirror {
         // *transition* is what makes it an event rather than a state.
         let now_alive = !pi.dead();
         if self.alive[pi.player as usize] && !now_alive {
+            // Snapshot what they were holding *before* `client_saw_death` wipes the estimate, so the
+            // backpack they're about to drop can inherit the hypothesis. Their origin now is the death
+            // spot the pack will land near. Modeling-gated: no belief, no guess.
+            if game.host().cvar_bool(c"rtx_bot_model") {
+                let (items, ammo) = hypothesized_pack(game.opponents.believed_arsenal(e));
+                let origin = game.entities[e].v.origin;
+                world.remember_death_drop(origin, items, ammo, game.time());
+            }
             game.client_saw_death(e);
         }
         self.alive[pi.player as usize] = now_alive;
 
         // Water is not on the wire either, but it's not a secret: anyone can see where the water is.
         // The map says, and we have the map.
+        self.write_waterlevel(game, e);
+        if own {
+            self.write_air(game, e);
+        }
+        game.link_edict(e);
+    }
+
+    /// Our own state, from NetQuake's monolithic `svc_clientdata`.
+    ///
+    /// The stat fields feed the same [`write_own_stats`](Self::write_own_stats) QuakeWorld drives
+    /// from per-stat updates; velocity and on-ground ride this message too (QuakeWorld gets them from
+    /// playerinfo), while our *origin* comes from the entity update for our own body, applied in
+    /// [`write_player_nq`](Self::write_player_nq).
+    fn write_clientdata(&mut self, game: &mut GameState, cd: &ClientData) {
+        if self.spectator {
+            return;
+        }
+        self.stats[stat::HEALTH as usize] = cd.health as i32;
+        self.stats[stat::ARMOR as usize] = cd.armor as i32;
+        self.stats[stat::ITEMS as usize] = cd.items as i32;
+        self.stats[stat::SHELLS as usize] = cd.shells as i32;
+        self.stats[stat::NAILS as usize] = cd.nails as i32;
+        self.stats[stat::ROCKETS as usize] = cd.rockets as i32;
+        self.stats[stat::CELLS as usize] = cd.cells as i32;
+        self.stats[stat::ACTIVEWEAPON as usize] = cd.active_weapon as i32;
+        self.stats[stat::WEAPON as usize] = cd.weapon_model as i32;
+        self.stats[stat::AMMO as usize] = cd.ammo as i32;
+        self.write_own_stats(game); // embodies us if needed, then writes health/items/ammo/weapon
+
+        let e = self.own();
+        let v = &mut game.entities[e].v;
+        v.velocity = cd.velocity;
+        v.flags = if cd.on_ground {
+            v.flags.with(Flags::ONGROUND)
+        } else {
+            v.flags.without(Flags::ONGROUND)
+        };
+        self.write_waterlevel(game, e);
+        self.write_air(game, e);
+    }
+
+    /// A player slot's name (NetQuake's substitute for a userinfo string). Non-empty makes the slot a
+    /// player the bot reasons about; empty means the slot emptied.
+    fn write_name_nq(&mut self, game: &mut GameState, slot: u8, name: &str) {
+        if slot as usize >= MAX_CLIENTS {
+            return;
+        }
+        let e = slot_to_ent(slot);
+        if name.is_empty() {
+            if slot != self.playernum {
+                game.entities[e] = Entity::default();
+            }
+            return;
+        }
+        let ent = &mut game.entities[e];
+        ent.in_use = true;
+        ent.classname = Some("player".into());
+        ent.netname = Some(Box::from(name));
+    }
+
+    /// Mirror every player-slot entity from this connection's settled frame store.
+    ///
+    /// The QuakeWorld analogue is [`write_player`](Self::write_player), one call per `svc_playerinfo`;
+    /// NetQuake carries players as ordinary entity updates, so they arrive together in the frame and
+    /// are folded in here, per tick, once the frame is complete.
+    pub(crate) fn write_players_nq(
+        &mut self,
+        game: &mut GameState,
+        world: &mut WorldMirror,
+        squad: &Squad,
+        players: &[(EntityState, Option<Vec3>)],
+    ) {
+        if self.spectator {
+            return;
+        }
+        for (state, vel) in players {
+            self.write_player_nq(game, world, squad, state, *vel);
+        }
+    }
+
+    /// One player's per-frame state, from an entity update rather than a playerinfo message.
+    ///
+    /// Our own body takes only its origin from here — health, ammo, velocity and on-ground came from
+    /// [`svc_clientdata`](Self::write_clientdata), and our aim is the brain's, not the model's yaw.
+    /// Everyone else is known exactly as much as a spectator would know: position, facing, and — since
+    /// no `PF_DEAD` is on the wire — life-or-death inferred from the animation frame.
+    fn write_player_nq(
+        &mut self,
+        game: &mut GameState,
+        world: &mut WorldMirror,
+        squad: &Squad,
+        state: &EntityState,
+        vel: Option<Vec3>,
+    ) {
+        let slot = (state.number.saturating_sub(1)) as u8;
+        if slot as usize >= MAX_CLIENTS {
+            return;
+        }
+        let e = slot_to_ent(slot);
+        let own = !self.spectator && slot == self.playernum;
+        if own && !self.embodied {
+            self.embody(game);
+        }
+        // A slot no name has arrived for isn't a player to reason about yet.
+        if !own && !is_player_slot(game, e) {
+            return;
+        }
+
+        // In our PVS this frame — so combat and perception can tell a live sighting from a shadow
+        // frozen where the player was when it left view.
+        game.entities[e].net_seen = game.time();
+        let dead = PLAYER_DEATH_FRAMES.contains(&state.frame);
+
+        {
+            let v = &mut game.entities[e].v;
+            v.origin = state.origin;
+            v.frame = state.frame as f32;
+            v.modelindex = state.model as f32;
+            v.effects = state.effects as f32;
+            v.movetype = MoveType::Walk;
+            v.solid = Solid::SlideBox;
+            v.mins = crate::defs::VEC_HULL_MIN;
+            v.maxs = crate::defs::VEC_HULL_MAX;
+            v.flags = v.flags.with(Flags::CLIENT);
+
+            if !own {
+                v.velocity = vel.unwrap_or(Vec3::ZERO);
+                // NetQuake sends no view angles for others — the model's yaw is the facing a watcher
+                // reads, and there is no pitch on a body.
+                let facing = Vec3::new(0.0, state.angles.y, 0.0);
+                v.angles = facing;
+                v.v_angle = facing;
+                // On-ground isn't on the wire; treat others as grounded, which is the conservative
+                // read for the rocket-at-an-airborne-target heuristic.
+                v.flags = v.flags.with(Flags::ONGROUND);
+
+                // Their health is a guess (the protocol carries none); death, at least, is legible
+                // from the corpse pose. A squadmate has its own mirror that knows both exactly.
+                if !squad.ours(slot) {
+                    v.deadflag = if dead { DeadFlag::Dead } else { DeadFlag::No };
+                    v.health = if dead { 0.0 } else { 100.0 };
+                }
+            }
+        }
+
+        // A death is the moment an estimate stops being a guess — whoever that was is about to
+        // respawn, so the pack they drop inherits what we believed, and the strength model resets.
+        if !own {
+            let now_alive = !dead;
+            if self.alive[slot as usize] && !now_alive {
+                if game.host().cvar_bool(c"rtx_bot_model") {
+                    let (items, ammo) = hypothesized_pack(game.opponents.believed_arsenal(e));
+                    let origin = game.entities[e].v.origin;
+                    world.remember_death_drop(origin, items, ammo, game.time());
+                }
+                game.client_saw_death(e);
+            }
+            self.alive[slot as usize] = now_alive;
+        }
+
         self.write_waterlevel(game, e);
         if own {
             self.write_air(game, e);
@@ -508,8 +732,13 @@ impl Mirror {
             let v = &game.entities[e].v;
             (v.origin, v.mins, v.maxs)
         };
-        let host = *game.host();
-        let probe = |z: f32| host.pointcontents(Vec3::new(origin.x, origin.y, z));
+        // Probe our own parsed BSP (a cheap `Arc` clone so the closure doesn't borrow `game`, leaving
+        // the `&mut` entity write below free). No map bound → open air, exactly as before.
+        let bsp = game.nav.bsp.clone();
+        let probe = |z: f32| {
+            bsp.as_deref()
+                .map_or(rtx_nav::bsp::CONTENTS_EMPTY, |b| b.pointcontents(Vec3::new(origin.x, origin.y, z)))
+        };
 
         let feet = probe(origin.z + mins.z + 1.0);
         let v = &mut game.entities[e].v;
@@ -519,7 +748,7 @@ impl Mirror {
             v.flags = v.flags.without(Flags::INWATER);
             return;
         }
-        v.watertype = feet;
+        v.watertype = feet as f32;
         v.waterlevel = 1.0;
         v.flags = v.flags.with(Flags::INWATER);
 
@@ -615,6 +844,33 @@ fn classify(model: &str) -> Kind {
     }
 }
 
+/// The item classname for a powerup lying on the floor, by its model — or `None` if the model isn't
+/// a powerup.
+///
+/// A powerup a killed carrier dropped looks like any other model on the wire: a position and
+/// `progs/quaddama.mdl`. Mapping it back to the item classname is what lets it become a goal the bots
+/// value — `category` reads the classname, and a quad is worth `200 + strength` to a bot.
+fn dropped_powerup_classname(model: &str) -> Option<&'static str> {
+    match model {
+        "progs/quaddama.mdl" => Some("item_artifact_super_damage"),
+        "progs/invulner.mdl" => Some("item_artifact_invulnerability"),
+        "progs/invisibl.mdl" => Some("item_artifact_invisibility"),
+        _ => None,
+    }
+}
+
+fn dropped_powerup_shadow(classname: &str, origin: Vec3) -> Entity {
+    let mut ent = Entity::default();
+    ent.in_use = true;
+    ent.classname = Some(classname.into());
+    ent.v.solid = Solid::Trigger;
+    // Exact server entity box from `items::spawn_powerup`; terminal hull math depends on it.
+    ent.v.mins = Vec3::new(-16.0, -16.0, -24.0);
+    ent.v.maxs = Vec3::new(16.0, 16.0, 32.0);
+    ent.v.origin = origin;
+    ent
+}
+
 /// Which team a networked flag belongs to (`1` red / `2` blue), or `None` if the model isn't a flag.
 ///
 /// `progs/flag.mdl` is both teams' flag and tells them apart by skin (0 red / 1 blue, `flags.rs`);
@@ -632,6 +888,11 @@ fn flag_team(model: &str, skin: u8) -> Option<u8> {
 /// this only has to absorb the difference between where the mapper put it and where it settled.
 const ITEM_MATCH_DIST: f32 = 48.0;
 
+/// How near a blood puff a player must stand to *be* the one it came off — the spurt spawns on the
+/// hull it struck, so within roughly a hull's reach of the body's origin. Beyond it, world blood (a
+/// stray trace against geometry) that names no victim.
+const BLOOD_MATCH_DIST: f32 = 48.0;
+
 /// How near its end a mover has to be to count as resting there. The same eight units
 /// `gate_closed_flags` calls a closed door, and for the same reason: the wire quantizes coordinates,
 /// so "arrived" is a neighbourhood rather than a point.
@@ -644,6 +905,30 @@ const ITEM_SIGHT_RANGE: f32 = 2000.0;
 /// The noise an item makes coming back (`SUB_regen`) — played on the item itself, so where it comes
 /// from is which item it was. See [`Mirror::heard_item_respawn`].
 const ITEM_RESPAWN_SOUND: &str = "items/itembk2.wav";
+
+/// The powerup a distinctive pickup sound announces, or `None`. Each artifact plays its own sound on
+/// pickup (set in `spawn_powerup`), and a powerup is unique on the map, so — unlike an ammo box or a
+/// dropped weapon, whose shared noises the general item timing rightly ignores — hearing one names the
+/// exact item without any position. The 300 s ring of invulnerability shares the 60 s clock class here;
+/// its longer respawn is applied by `respawn_delay_of` when the timer is set.
+fn powerup_pickup_class(sound: &str) -> Option<&'static str> {
+    match sound {
+        "items/damage.wav" => Some("item_artifact_super_damage"),
+        "items/protect.wav" => Some("item_artifact_invulnerability"),
+        "items/inv1.wav" => Some("item_artifact_invisibility"),
+        _ => None,
+    }
+}
+
+/// The map item a player's powerup glow names. Quad (blue) and pentagram (red) glow; the ring of
+/// shadows carries no effect, so a held ring is unobservable and left `None` — the honesty principle.
+fn powerup_glow_class(kind: PickupKind) -> Option<&'static str> {
+    match kind {
+        PickupKind::Quad => Some("item_artifact_super_damage"),
+        PickupKind::Pent => Some("item_artifact_invulnerability"),
+        _ => None,
+    }
+}
 
 /// What this frame said about one item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -683,7 +968,7 @@ fn anyone_looked(game: &mut GameState, squad: &Squad, home: Vec3) -> bool {
         .eyes
         .iter()
         .filter(|(_, eye)| eye.distance(home) <= ITEM_SIGHT_RANGE)
-        .any(|&(body, eye)| game.client_traceline(eye, to, body).fraction >= 1.0)
+        .any(|&(body, eye)| game.traceline(eye, to, false, body).fraction >= 1.0)
 }
 
 /// The squad's one world: the map's furniture, and everything in flight.
@@ -713,6 +998,13 @@ pub(crate) struct WorldMirror {
     /// inferred from where the flag entity is visible and which player wears its effect. See
     /// [`Self::write_flags`].
     flags: Vec<EntId>,
+    /// Powerups lying in the field that the map didn't put there — a quad (or pent, or ring) a killed
+    /// carrier dropped, on a server that drops them (KTX's `dropquad`). Server number → the shadow
+    /// goal we spawned for it. These aren't in the map's static goal catalog, so the bots would walk
+    /// past a quad on the floor; this makes each a live goal for as long as it's there. See
+    /// [`Self::write_dropped_powerups`]. `None` is a visible drop that exposed no touch-valid nav
+    /// terminal: a tombstone prevents rebuilding the full catalog every frame until it disappears.
+    dropped_powerups: std::collections::HashMap<u16, Option<EntId>>,
     /// How many projectiles we've ever seen fly, and the most at once. A path that never runs looks
     /// exactly like one with nothing to do — this tells them apart.
     ///
@@ -721,6 +1013,49 @@ pub(crate) struct WorldMirror {
     /// entirely with shotguns.
     pub(crate) projectiles_seen: u32,
     pub(crate) projectiles_peak: usize,
+    /// Recent player deaths, remembered just long enough to attribute the backpack they drop. A pack's
+    /// contents are on the wire nowhere, so a pack appearing near a remembered death inherits its
+    /// hypothesised loadout (what the opponent model last believed the victim held). See
+    /// [`Self::write_backpack`] and [`Self::remember_death_drop`].
+    death_drops: Vec<DeathDrop>,
+    /// The most recent weapon-fire sound heard, and when. A blood puff a moment later can then be
+    /// scaled to real damage by the weapon that caused it — a shotgun's `count` is pellets-that-hit
+    /// (4 dmg each), a nail's is the damage itself. See [`Self::note_blood`].
+    recent_fire: Option<(Items, f32)>,
+    /// Blood impacts already credited this tick (origin, tick time). A hit multicast to several of the
+    /// squad's connections reaches each of them, and each runs `apply`; this counts it once, not once
+    /// per bot. Keyed on the tick clock (identical across a tick's connections, so `==` is exact) and
+    /// pruned when it moves on.
+    blood_seen: Vec<(Vec3, f32)>,
+}
+
+/// A player death held just long enough to guess the loadout of the backpack it drops (network client
+/// only — on the server the pack carries its real contents). `until` is the memory's expiry.
+#[derive(Clone, Copy)]
+struct DeathDrop {
+    origin: Vec3,
+    items: f32,
+    ammo: [f32; 4],
+    until: f32,
+}
+
+/// A dropped pack appears within a frame or two of the death; keep the memory a few seconds so the
+/// packet carrying the pack (and the small position drift from the server's random toss) still matches.
+const DEATH_DROP_WINDOW: f32 = 4.0;
+/// How far a pack may have bounced from the death origin and still be attributed to it — generous,
+/// because the server tosses the pack with a random horizontal velocity off the death spot.
+const DEATH_DROP_RADIUS: f32 = 200.0;
+
+/// A plausible dropped-pack loadout for a believed arsenal: the witnessed weapons (carried straight
+/// through, so `backpack_desire`'s `weapon_kind_of` reads them) plus a modest ammo guess per weapon.
+/// The wire carries neither, so the weapon is the honest evidence-based signal and the ammo a
+/// conservative default — a fresh corpse isn't assumed full. Same shape as goals' `estimated_stats`.
+fn hypothesized_pack(items: f32) -> (f32, [f32; 4]) {
+    let shells = if items.has(Items::SUPER_SHOTGUN) { 10.0 } else { 5.0 };
+    let nails = if items.has(Items::NAILGUN) || items.has(Items::SUPER_NAILGUN) { 40.0 } else { 0.0 };
+    let rockets = if items.has(Items::GRENADE_LAUNCHER) || items.has(Items::ROCKET_LAUNCHER) { 5.0 } else { 0.0 };
+    let cells = if items.has(Items::LIGHTNING) { 15.0 } else { 0.0 };
+    (items, [shells, nails, rockets, cells])
 }
 
 impl WorldMirror {
@@ -746,6 +1081,7 @@ impl WorldMirror {
             }
         }
         self.write_flags(game, seen, models);
+        self.write_dropped_powerups(game, seen, models);
         self.write_item_presence(game, squad, seen, models, now);
         let flying = seen.iter().filter(|e| matches!(classify(name(e.model)), Kind::Projectile(_))).count();
         self.projectiles_peak = self.projectiles_peak.max(flying);
@@ -879,24 +1215,63 @@ impl WorldMirror {
 
     /// A dead player's dropped kit.
     ///
-    /// It's mirrored as a real entity so it exists to be seen and walked over, but deliberately not
-    /// made a *goal*: what's inside is not on the wire, and a bot that pathed to a pack knowing what
-    /// it held would know something it has no way of knowing. Reasoning about that from evidence —
-    /// who died there, and what we last saw them holding — is the opponent model's business.
+    /// It's mirrored as a real entity so it exists to be seen and walked over. What's inside isn't on
+    /// the wire, so a bot may not path to one knowing its contents for free — but reasoning about that
+    /// from evidence (who died here, and what we last saw them holding) is exactly the opponent model's
+    /// business. So a pack that lands near a remembered death inherits that death's hypothesised loadout
+    /// and becomes a real goal (`Solid::Trigger`); an unattributable pack stays present-but-not-a-goal.
     fn write_backpack(&mut self, game: &mut GameState, e: &EntityState) {
         let slot = EntId(e.number as u32);
         if !self.tracked.contains_key(&e.number) {
+            let hypothesis = self.take_matching_death_drop(e.origin, game.time());
             let ent = &mut game.entities[slot];
             *ent = Entity::default();
             ent.in_use = true;
             ent.set_touch(Touch::Backpack);
-            ent.v.solid = Solid::Not; // present, but not a goal — see above
             ent.v.mins = Vec3::new(-16.0, -16.0, 0.0);
             ent.v.maxs = Vec3::new(16.0, 16.0, 56.0);
+            match hypothesis {
+                // A guess from a nearby death: fill the fields `backpack_desire` reads and make it a
+                // goal. This is the shadow the *brain* routes by; the real touch is still the server's,
+                // so believing the wrong contents only mis-values the walk, it never grants a pickup.
+                Some(d) => {
+                    ent.v.items = d.items;
+                    ent.v.ammo_shells = d.ammo[0];
+                    ent.v.ammo_nails = d.ammo[1];
+                    ent.v.ammo_rockets = d.ammo[2];
+                    ent.v.ammo_cells = d.ammo[3];
+                    ent.v.solid = Solid::Trigger;
+                }
+                None => ent.v.solid = Solid::Not, // contents unknown → present, but not a goal
+            }
         }
         game.entities[slot].v.origin = e.origin;
         game.link_edict(slot);
         self.tracked.insert(e.number, e.origin);
+    }
+
+    /// Remember a player death so a backpack landing nearby can inherit its loadout. Prunes expired
+    /// memories on the way in, so the list stays as short as recent deaths.
+    fn remember_death_drop(&mut self, origin: Vec3, items: f32, ammo: [f32; 4], now: f32) {
+        self.death_drops.retain(|d| d.until > now);
+        self.death_drops.push(DeathDrop { origin, items, ammo, until: now + DEATH_DROP_WINDOW });
+    }
+
+    /// The nearest live remembered death within [`DEATH_DROP_RADIUS`] of a pack's spawn, removed so a
+    /// second pack can't claim the same death. `None` — no attributable death — leaves the pack a
+    /// contents-unknown non-goal, exactly as before this feature.
+    fn take_matching_death_drop(&mut self, origin: Vec3, now: f32) -> Option<DeathDrop> {
+        self.death_drops.retain(|d| d.until > now);
+        let idx = self
+            .death_drops
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| (d.origin - origin).length() <= DEATH_DROP_RADIUS)
+            .min_by(|(_, a), (_, b)| {
+                (a.origin - origin).length().total_cmp(&(b.origin - origin).length())
+            })
+            .map(|(i, _)| i)?;
+        Some(self.death_drops.remove(idx))
     }
 
     /// The live state of the two CTF flags, none of which is on the wire directly.
@@ -976,6 +1351,81 @@ impl WorldMirror {
         }
     }
 
+    /// A powerup lying on the floor that the map didn't place — a dropped quad, pent, or ring.
+    ///
+    /// A server that drops a powerup when its carrier dies (KTX's `dropquad`) leaves a quad on the
+    /// ground, worth crossing the map for — but the bots' goal catalogue is the map's *static* items,
+    /// so a dropped one isn't in it and they'd walk straight past. This makes each dropped powerup a
+    /// live goal: a shadow item at its position, appended to `nav.goals`, retired when it's gone.
+    ///
+    /// It needs no server that *has* dropquad to be detected as such — if no powerup ever drops, no
+    /// powerup-model entity appears off its spawn, and this does nothing. A powerup at its map home is
+    /// left to [`write_item_presence`]; only one lying *elsewhere* is a drop.
+    fn write_dropped_powerups(&mut self, game: &mut GameState, seen: &[EntityState], models: &[String]) {
+        // No graph yet ⇒ no cell to hang a goal on, and nothing can path to it anyway.
+        if game.nav.graph.is_none() {
+            return;
+        }
+        let name = |m: u16| models.get(m as usize).map(String::as_str).unwrap_or("");
+
+        for e in seen {
+            let Some(classname) = dropped_powerup_classname(name(e.model)) else {
+                continue;
+            };
+            // A powerup sitting at a map spawn is that map item, tracked by `write_item_presence` —
+            // not a drop. Only one lying away from every spawn is a drop worth adding.
+            if self.items.iter().any(|(_, home)| home.distance(e.origin) < ITEM_MATCH_DIST) {
+                continue;
+            }
+            let slot = EntId(e.number as u32);
+            if let std::collections::hash_map::Entry::Vacant(entry) = self.dropped_powerups.entry(e.number) {
+                // Build off-slot first: the server-numbered slot may already carry useful mirrored
+                // state, and a failed catalog attempt must not erase it.
+                let ent = dropped_powerup_shadow(classname, e.origin);
+                let terminals = crate::nav_build::collect_touch_terminals(
+                    game.nav
+                        .graph
+                        .as_ref()
+                        .into_iter()
+                        .flat_map(|g| g.cells.iter().enumerate())
+                        .map(|(cell, c)| (cell as crate::navmesh::CellId, c.origin)),
+                    &ent,
+                );
+                if terminals.is_empty() {
+                    entry.insert(None);
+                    eprintln!("rtx-client: a dropped {classname} has no touch-valid nav terminal");
+                } else {
+                    game.entities[slot] = ent;
+                    game.nav.goals.extend(terminals.into_iter().map(|cell| (slot.0, cell)));
+                    entry.insert(Some(slot));
+                    eprintln!("rtx-client: a {classname} is on the floor — now a goal");
+                }
+            }
+            if let Some(Some(slot)) = self.dropped_powerups.get(&e.number).copied() {
+                game.entities[slot].v.origin = e.origin;
+                game.link_edict(slot);
+            }
+        }
+
+        // Retire any we're no longer shown — grabbed, or expired. A dropped powerup is transient, so
+        // "out of sight" is treated as gone (it re-adds if it comes back); the goal must leave
+        // `nav.goals` with it, or bots would path to a quad that isn't there.
+        let live: std::collections::HashSet<u16> = seen.iter().map(|e| e.number).collect();
+        let gone: Vec<(u16, Option<EntId>)> = self
+            .dropped_powerups
+            .iter()
+            .filter(|(num, _)| !live.contains(num))
+            .map(|(&num, &slot)| (num, slot))
+            .collect();
+        for (num, slot) in gone {
+            self.dropped_powerups.remove(&num);
+            if let Some(slot) = slot {
+                game.nav.goals.retain(|&(idx, _)| idx != slot.0);
+                game.entities[slot] = Entity::default();
+            }
+        }
+    }
+
     /// Which of the map's items are actually there.
     ///
     /// The shadow world spawns every item the map has, all of them available, because that's the
@@ -1051,6 +1501,71 @@ impl WorldMirror {
         }
     }
 
+    /// A powerup was just taken — its pickup sound played, or its carrier lit up. Mark the map's item
+    /// of `class` off the floor and on its respawn clock, even with the pad out of sight.
+    ///
+    /// The general item timing deliberately ignores pickup sounds: they play on the *player*, so a
+    /// backpack lying near an armour spot makes the same noise and position can't tell them apart. A
+    /// powerup is the exception — it's unique on the map, so its own distinctive sound (or the glow on
+    /// whoever holds it) names it without any position at all. This is the evidence a player runs on to
+    /// know the quad is gone the instant they hear it across the map, and to be back at the pad ~60 s
+    /// later. `take_item` no-ops if we already believe it gone, so repeated evidence can't double-count.
+    pub(crate) fn note_powerup_taken(&mut self, game: &mut GameState, class: &str, now: f32) {
+        let found = self.items.iter().find(|&&(item, _)| game.entities[item].classname() == Some(class));
+        if let Some((item, _)) = found.copied() {
+            self.take_item(game, item, now);
+        }
+    }
+
+    /// A blood puff we witnessed: attribute it to the victim and dock their believed health.
+    ///
+    /// The observation-gated way a client learns an enemy is hurt with no health stat on the wire —
+    /// exactly a player reading a spurt. The `count` scales with damage but the scale is weapon-
+    /// dependent: a shotgun's is pellets-that-hit (4 dmg each), a nail's or axe's is the damage itself,
+    /// and the lightning-blood variant carries no count at all (a fixed 30-dmg bolt). We tell them apart
+    /// by the weapon whose fire we heard a moment before ([`Self::recent_fire`]), defaulting to treating
+    /// the count as damage. Only the two blood kinds say anything about health; other temp entities
+    /// (wall gunshots, explosions, teleports) carry none and fall through.
+    ///
+    /// Unlike the weapon/pickup channels this credit is *not* idempotent, so it's deduped per tick
+    /// ([`Self::blood_seen`]): the same hit is multicast to every squad connection whose PVS holds it,
+    /// and each runs `apply` — the belief must fall by the damage dealt, not that times the squad size.
+    pub(crate) fn note_blood(&mut self, game: &mut GameState, te: &TempEntity) {
+        let (kind, count, origin) = match *te {
+            TempEntity::Puff { kind, count, origin } => (kind, count, origin),
+            TempEntity::Point { kind, origin } => (kind, 0u8, origin),
+            _ => return,
+        };
+        let now = game.time();
+        let dmg = match kind {
+            TempEntityKind::LightningBlood => 30.0, // one shaft bolt (w_fire_lightning deals 30)
+            TempEntityKind::Blood => {
+                let recent = self.recent_fire.filter(|&(_, t)| now - t < 0.3).map(|(w, _)| w);
+                let shotgun = recent == Some(Items::SHOTGUN) || recent == Some(Items::SUPER_SHOTGUN);
+                count as f32 * if shotgun { 4.0 } else { 1.0 }
+            }
+            _ => return, // wall gunshots, explosions, teleports — no health news
+        };
+        if dmg <= 0.0 {
+            return;
+        }
+        // Dedup this tick (keyed on the tick clock, identical across a tick's connections).
+        self.blood_seen.retain(|&(_, t)| t == now);
+        if self.blood_seen.iter().any(|&(o, _)| o.distance_squared(origin) < 64.0) {
+            return;
+        }
+        self.blood_seen.push((origin, now));
+        // The victim stands in the spurt — blood spawns on the hull it struck.
+        let victim = crate::netclient::live_players(game).min_by(|&a, &b| {
+            let d = |p: EntId| game.entities[p].v.origin.distance_squared(origin);
+            d(a).total_cmp(&d(b))
+        });
+        let close = |p: EntId| game.entities[p].v.origin.distance_squared(origin) < BLOOD_MATCH_DIST * BLOOD_MATCH_DIST;
+        if let Some(v) = victim.filter(|&p| close(p)) {
+            game.client_saw_hit(v, dmg, origin);
+        }
+    }
+
     /// Bring an item back on schedule, if its timer has come due.
     fn expect_respawn(&mut self, game: &mut GameState, item: EntId, now: f32) {
         let ent = &mut game.entities[item];
@@ -1071,11 +1586,21 @@ impl WorldMirror {
         if game.entities[item].v.solid != Solid::Trigger {
             return; // already known gone
         }
-        // The same rule the server's own pickup uses (`items.rs`), asked rather than copied.
-        let delay = game.entities[item]
-            .classname()
-            .map(str::to_owned)
-            .and_then(|cn| game.respawn_delay_of(&cn));
+        // The same rule the server's own pickup uses (`items.rs`), asked rather than copied. A
+        // megahealth is the exception the classname can't express: `item_health` with `healtype == 2`
+        // rots back at an unknowable time (items.rs says so), so don't fake a 20 s timer for it — leave
+        // it un-scheduled and let the evidence pass (heard respawn / seen present) restore it, or the
+        // bot would cycle to an empty pad. A priority target now (Phases 3/5), so getting this right matters.
+        let is_mega = game.entities[item].classname() == Some("item_health")
+            && game.entities[item].item.healtype == 2.0;
+        let delay = if is_mega {
+            None
+        } else {
+            game.entities[item]
+                .classname()
+                .map(str::to_owned)
+                .and_then(|cn| game.respawn_delay_of(&cn))
+        };
         let ent = &mut game.entities[item];
         ent.v.solid = Solid::Not;
         ent.v.modelindex = 0.0;
@@ -1131,13 +1656,29 @@ impl WorldMirror {
 
     /// Note the map's items, so their absence can be reasoned about. Called once per map, after the
     /// shadow world is spawned.
-    pub(crate) fn index_items(&mut self, game: &GameState) {
+    ///
+    /// Seeds every one *believed up*. A fresh level — or a mid-game connect — starts with all items on
+    /// the floor, but the client never runs the item's `place_item` think that would make the shadow
+    /// entity solid, so without this a client bot believes *nothing* is up until it has physically
+    /// looked at each pad, and spends the opening minutes ignoring the quad it should be racing for
+    /// (qwprogs bots run the think, so they know at once — this closes that gap). The seed is
+    /// optimistic and self-correcting: the first clear look at a pad that's actually empty (a connect
+    /// mid-respawn) flips it to taken with the right timer, and for the quad "wrong" can never cost
+    /// more than one 60 s respawn cycle. It survives the bot's own death for free — this store is the
+    /// squad's shared world, rebuilt only on a map change, not per life.
+    pub(crate) fn index_items(&mut self, game: &mut GameState) {
         self.items = game
             .entities
             .live()
             .filter(|(_, e)| e.classname().is_some_and(crate::bot::goals::is_goal_classname))
             .map(|(i, e)| (i, e.v.origin))
             .collect();
+        for &(item, _) in &self.items {
+            let ent = &mut game.entities[item];
+            ent.v.solid = Solid::Trigger;
+            ent.think = crate::entity::Think::None;
+            ent.v.nextthink = 0.0;
+        }
         // The CTF flags too — spawned from the map only in CTF, so this is empty in every other mode
         // and `write_flags` no-ops. Their team and home are already on the shadow entity.
         self.flags = game
@@ -1148,6 +1689,9 @@ impl WorldMirror {
             .collect();
         self.brushes.clear();
         self.tracked.clear();
+        // The new map's `nav.goals` is rebuilt fresh from its own items; any dropped-powerup goals
+        // belonged to the old one.
+        self.dropped_powerups.clear();
     }
 }
 
@@ -1183,10 +1727,9 @@ fn is_player_slot(game: &GameState, e: EntId) -> bool {
 }
 
 /// Whether a `pointcontents` value is one of the liquids.
-fn is_liquid(contents: f32) -> bool {
+fn is_liquid(contents: i32) -> bool {
     use rtx_nav::bsp::{CONTENTS_LAVA, CONTENTS_SLIME, CONTENTS_WATER};
-    let c = contents as i32;
-    c == CONTENTS_WATER || c == CONTENTS_SLIME || c == CONTENTS_LAVA
+    matches!(contents, CONTENTS_WATER | CONTENTS_SLIME | CONTENTS_LAVA)
 }
 
 /// The armour's damage-absorption fraction, from which armour we're wearing. There's no stat for
@@ -1483,6 +2026,77 @@ mod tests {
         assert_eq!(g.entities[slot_to_ent(2)].v.health, 100.0, "alive, and that's all we can say");
     }
 
+    /// A player that walks out of our PVS — behind a wall, or through a teleporter — stops arriving on
+    /// the wire, and its shadow freezes where we last saw it. A live line of sight to that frozen spot
+    /// is a ghost, not a target, so `net_shadow_stale` flags it and combat/perception stop firing at
+    /// it. Without this the bot empties its magazine into an empty teleporter.
+    #[test]
+    fn a_player_gone_from_pvs_reads_as_a_stale_ghost() {
+        let mut g = game();
+        let enemy = player(&mut g, slot_to_ent(1).0, Vec3::new(100.0, 0.0, 0.0));
+        let mut m = Solo::at(0);
+        let squad = Squad::new([false; MAX_CLIENTS], Vec::new());
+        let apply = |g: &mut GameState, m: &mut Solo| {
+            m.mirror.apply(g, &mut m.world, &squad, &SvcEvent::PlayerInfo(playerinfo(1, 0)), &[]);
+        };
+
+        // A playerinfo arrived, so it's in our PVS this frame: fresh, and a real target.
+        apply(&mut g, &mut m);
+        let seen = g.entities[enemy].net_seen;
+        assert!(!g.net_shadow_stale(enemy, seen + 0.1), "in PVS this frame — a live target");
+        // A fifth of a second on with no new update: it left our view, and the shadow is a ghost.
+        assert!(g.net_shadow_stale(enemy, seen + 0.3), "no update — left PVS, don't fire at the shadow");
+        // The guard is client-only; server-side there's no PVS gap and `is_client()` is false.
+        assert!(g.host().is_client(), "the test game is a client, so the stale guard is live");
+    }
+
+    /// A client learns an enemy is hurt the one honest way it can — off the blood, PVS-gated — and the
+    /// belief falls by the damage dealt, once, even when the hit reaches several of the squad's bots.
+    #[test]
+    fn witnessed_blood_docks_the_believed_health() {
+        // Build the host directly (like `game()`) so the health belief's gate can be toggled.
+        let host: &'static NetHost = Box::leak(Box::new(NetHost::new(PathBuf::from("/nonexistent"))));
+        host.set("maxclients", "8");
+        host.set("rtx_bot_model", "1");
+        let mut g = GameState::new_client(host);
+        // Our observing bot at slot 0 — embodied and alive, so it counts as a witness near the blood.
+        let mut m = Solo::at(0);
+        m.apply(&mut g, &SvcEvent::PlayerInfo(playerinfo(0, 0)));
+        m.apply(&mut g, &SvcEvent::UpdateStat { stat: stat::HEALTH, value: 100 });
+        g.entities[m.own()].v.origin = Vec3::ZERO;
+        // An enemy a little away — the blood lands on them.
+        let enemy = player(&mut g, slot_to_ent(1).0, Vec3::new(100.0, 0.0, 0.0));
+        let now = g.time();
+        assert_eq!(g.opponent_est(m.own(), enemy, now).unwrap().health, 100.0, "a fresh spawn");
+
+        // A super-shotgun blast: heard the fire, then blood with 10 pellets that hit → 40 damage.
+        m.world.recent_fire = Some((Items::SUPER_SHOTGUN, now));
+        let hit = TempEntity::Puff { kind: TempEntityKind::Blood, count: 10, origin: Vec3::new(100.0, 0.0, 0.0) };
+        m.world.note_blood(&mut g, &hit);
+        assert_eq!(g.opponent_est(m.own(), enemy, now).unwrap().health, 60.0, "40 damage: 10 pellets x 4");
+
+        // The same hit reaches a squadmate's connection this tick too — counted once, not twice.
+        m.world.note_blood(&mut g, &hit);
+        assert_eq!(g.opponent_est(m.own(), enemy, now).unwrap().health, 60.0, "deduped");
+
+        // Blood with nobody standing in it names no victim, so nothing moves.
+        let stray = TempEntity::Puff { kind: TempEntityKind::Blood, count: 10, origin: Vec3::new(5000.0, 0.0, 0.0) };
+        m.world.note_blood(&mut g, &stray);
+        assert_eq!(g.opponent_est(m.own(), enemy, now).unwrap().health, 60.0);
+
+        // A huge over-count while the enemy is still seen alive floors at 1 — a bad guess, not a death.
+        g.globals.time += 1.0; // a fresh tick, so the per-tick dedup doesn't swallow it
+        let now2 = g.time();
+        m.world.recent_fire = Some((Items::SUPER_SHOTGUN, now2));
+        let big = TempEntity::Puff { kind: TempEntityKind::Blood, count: 100, origin: Vec3::new(100.0, 0.0, 0.0) };
+        m.world.note_blood(&mut g, &big);
+        assert_eq!(g.opponent_est(m.own(), enemy, now2).unwrap().health, 1.0, "alive → floored at 1, not dead");
+
+        // Modeling off: no belief exists to move.
+        host.set("rtx_bot_model", "0");
+        assert!(g.opponent_est(m.own(), enemy, now2).is_none());
+    }
+
     /// A body with no health that isn't dead is a body the server never spawned — and `run_bot` will
     /// try to finish the job itself, which is the engine's work and a client's business never. The
     /// window is small (our first stat is moments away) and it reopens on every map change, so the
@@ -1684,6 +2298,37 @@ mod tests {
         assert!(matches!(classify("maps/b_bh25.bsp"), Kind::Ignore));
         assert!(matches!(classify("maps/b_rock0.bsp"), Kind::Ignore));
         assert!(matches!(classify(""), Kind::Ignore));
+    }
+
+    /// A rocket in flight becomes something the dodge logic can reason about — and its velocity is
+    /// A powerup on the floor is worth crossing the map for, and its model is how a client knows
+    /// which one — the classname it maps to is what makes it a high-value goal. The three are exactly
+    /// KTX's own `dropped_powerup_names`, so a dropped quad on a KTX server is read the way KTX's own
+    /// bots read it, and each classname is a goal the bot brain already knows how to want.
+    #[test]
+    fn a_dropped_powerups_model_names_its_goal() {
+        for (model, classname) in [
+            ("progs/quaddama.mdl", "item_artifact_super_damage"),
+            ("progs/invulner.mdl", "item_artifact_invulnerability"),
+            ("progs/invisibl.mdl", "item_artifact_invisibility"),
+        ] {
+            assert_eq!(dropped_powerup_classname(model), Some(classname));
+            assert!(crate::bot::goals::is_goal_classname(classname), "{classname} must be a goal the brain wants");
+        }
+        // Not every model on the floor is a powerup.
+        assert_eq!(dropped_powerup_classname("progs/backpack.mdl"), None);
+        assert_eq!(dropped_powerup_classname("progs/armor.mdl"), None);
+        assert_eq!(dropped_powerup_classname(""), None);
+    }
+
+    #[test]
+    fn dropped_powerup_shadow_uses_the_server_powerup_box() {
+        let origin = Vec3::new(10.0, 20.0, 30.0);
+        let ent = dropped_powerup_shadow("item_artifact_super_damage", origin);
+        assert_eq!(ent.v.origin, origin);
+        assert_eq!(ent.v.mins, Vec3::new(-16.0, -16.0, -24.0));
+        assert_eq!(ent.v.maxs, Vec3::new(16.0, 16.0, 32.0));
+        assert_eq!(ent.v.solid, Solid::Trigger);
     }
 
     /// A rocket in flight becomes something the dodge logic can reason about — and its velocity is
@@ -1947,6 +2592,56 @@ mod tests {
         assert_ne!(ent.v.solid, Solid::Trigger, "the goal scan requires Trigger — it must not qualify");
     }
 
+    /// A pack that lands near a remembered death inherits that death's hypothesised loadout and becomes
+    /// a real goal — the whole point of tracking who died where.
+    #[test]
+    fn a_backpack_near_a_death_inherits_the_hypothesised_loadout() {
+        let mut g = game();
+        g.globals.time = 50.0;
+        let mut m = Solo::at(0);
+
+        // We believed the player who just died here was carrying an RL.
+        let death = Vec3::new(100.0, 100.0, 0.0);
+        let (items, ammo) = hypothesized_pack((Items::ROCKET_LAUNCHER | Items::SHOTGUN | Items::AXE).as_f32());
+        m.world.remember_death_drop(death, items, ammo, 50.0);
+
+        // A pack appears a short bounce away: it takes the loadout and turns into a goal.
+        let near = death + Vec3::new(40.0, 0.0, 0.0);
+        m.apply_frame(&mut g, &[state(70, 4, near)], &models());
+        let ent = &g.entities[EntId(70)];
+        assert_eq!(ent.v.solid, Solid::Trigger, "a hypothesised pack is a valued goal");
+        assert!(ent.v.items.has(Items::ROCKET_LAUNCHER), "it carries the believed weapon");
+        assert!(ent.v.ammo_rockets > 0.0, "and a plausible rocket refill");
+    }
+
+    /// Death-drop attribution is by proximity and recency, and each death feeds at most one pack.
+    #[test]
+    fn death_drops_match_by_proximity_and_expire() {
+        let mut w = WorldMirror::default();
+        w.remember_death_drop(Vec3::new(100.0, 0.0, 0.0), 1.0, [0.0; 4], 50.0);
+        // Too far → no match, and the memory is left for a closer pack.
+        let far = Vec3::new(100.0 + DEATH_DROP_RADIUS + 1.0, 0.0, 0.0);
+        assert!(w.take_matching_death_drop(far, 51.0).is_none());
+        // Within reach → matched and consumed, so a second pack can't claim the same death.
+        assert!(w.take_matching_death_drop(Vec3::new(140.0, 0.0, 0.0), 51.0).is_some());
+        assert!(w.take_matching_death_drop(Vec3::new(100.0, 0.0, 0.0), 51.0).is_none(), "consumed");
+        // A memory past its window is gone.
+        w.remember_death_drop(Vec3::ZERO, 1.0, [0.0; 4], 50.0);
+        assert!(w.take_matching_death_drop(Vec3::ZERO, 50.0 + DEATH_DROP_WINDOW + 0.1).is_none());
+    }
+
+    /// The content hypothesis carries the witnessed weapon and a modest, weapon-appropriate refill.
+    #[test]
+    fn a_pack_hypothesis_carries_the_weapon_and_a_modest_refill() {
+        let (items, ammo) = hypothesized_pack((Items::ROCKET_LAUNCHER | Items::SHOTGUN).as_f32());
+        assert!(items.has(Items::ROCKET_LAUNCHER));
+        assert!(ammo[2] > 0.0, "rockets for the RL");
+        assert_eq!(ammo[3], 0.0, "no cells without an LG");
+        // A shotgun-only victim: a token of shells, nothing heavier.
+        let (_, ammo) = hypothesized_pack((Items::SHOTGUN | Items::AXE).as_f32());
+        assert!(ammo[0] > 0.0 && ammo[1] == 0.0 && ammo[2] == 0.0 && ammo[3] == 0.0);
+    }
+
     /// Put a real item into the world at `home`, the way the shadow world would.
     fn place_item(g: &mut GameState, at: Vec3, classname: &'static str) -> EntId {
         let e = EntId(1500);
@@ -2017,8 +2712,8 @@ mod tests {
 
     /// Nobody looks through a map we haven't got.
     ///
-    /// A trace with no BSP behind it reports solid ([`super::host::no_map`]), so `anyone_looked` says
-    /// no and every item keeps whatever we last knew about it. That's fail-closed, and the direction
+    /// A trace with no BSP behind it fails closed (`sv_trace` reports all-solid), so `anyone_looked`
+    /// says no and every item keeps whatever we last knew about it. That's fail-closed, and the direction
     /// worth failing in: a client that concluded "taken" from a trace it couldn't answer would empty
     /// the map of items on the strength of not having read it, and send its bots to stand hopefully
     /// over bare floor. It's also why the tests around this one are honest about asserting so little
@@ -2079,6 +2774,32 @@ mod tests {
 
         m.world.expect_respawn(&mut g, item, 100_000.0);
         assert_eq!(g.entities[item].v.solid, Solid::Not, "and it never comes back");
+    }
+
+    /// A megahealth (`item_health`, `healtype == 2`) rots back at an unknowable time, so — unlike an
+    /// ordinary `item_health` — taking it must not schedule a 20 s respawn the bot would queue for.
+    /// The evidence pass restores it when it's actually seen/heard back.
+    #[test]
+    fn mega_health_is_not_expected_back_on_a_timer() {
+        let mut g = game();
+        g.level.deathmatch = 1; // items respawn here — but a mega still doesn't tick
+        let mut m = Solo::at(0);
+
+        let mega = place_item(&mut g, Vec3::ZERO, "item_health");
+        g.entities[mega].item.healtype = 2.0; // the megahealth marker
+        m.world.take_item(&mut g, mega, 100.0);
+        assert_eq!(g.entities[mega].v.solid, Solid::Not);
+        assert_eq!(
+            g.entities[mega].think,
+            crate::entity::Think::None,
+            "a mega rots back unpredictably — no faked timer to cycle on"
+        );
+
+        // An ordinary +25 health box in the same mode is timed normally.
+        let box25 = place_item(&mut g, Vec3::new(64.0, 0.0, 0.0), "item_health");
+        m.world.take_item(&mut g, box25, 100.0);
+        assert_eq!(g.entities[box25].think, crate::entity::Think::SubRegen);
+        assert_eq!(g.entities[box25].v.nextthink, 120.0, "a normal health box is a 20-second item");
     }
 
     /// The respawn rule is the server's, and it's asked rather than copied — including the modes

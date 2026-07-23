@@ -266,20 +266,6 @@ impl NetHost {
     }
 }
 
-/// The answer when there's no map: everything is solid.
-///
-/// Fail closed, deliberately. A clear line would have the caller believe it can see through the
-/// world, and `droptofloor` believe every item in the map is floating in space — which deletes them.
-pub(crate) fn no_map(start: Vec3) -> rtx_nav::bsp::HullTrace {
-    rtx_nav::bsp::HullTrace {
-        all_solid: true,
-        start_solid: true,
-        fraction: 0.0,
-        endpos: start,
-        plane_normal: Vec3::ZERO,
-    }
-}
-
 /// The characters that are a token all by themselves, even with no space around them
 /// (`COM_Parse`). `{` and `}` are the ones that matter — they delimit every entity block.
 const PUNCTUATION: [char; 6] = ['{', '}', '(', ')', '\'', ':'];
@@ -381,32 +367,6 @@ impl ClientHost for NetHost {
         }
         let info = self.serverinfo.borrow();
         fill(buf, info.get(&key).unwrap_or(""))
-    }
-
-    fn pointcontents(&self, p: Vec3) -> f32 {
-        // The render hull, not the clip hull: liquids only exist in the former, and this trap's one
-        // job for the bots is telling lava from water from air.
-        match self.bsp.borrow().as_ref() {
-            Some(bsp) => bsp.pointcontents(p) as f32,
-            None => rtx_nav::bsp::CONTENTS_EMPTY as f32,
-        }
-    }
-
-    fn world_trace(&self, start: Vec3, end: Vec3) -> rtx_nav::bsp::HullTrace {
-        // Hull 1 is the standing-player hull, beveled by the player box at compile time — so a
-        // *point* traced through it answers "would a player fit".
-        match self.bsp.borrow().as_ref() {
-            Some(bsp) => bsp.hull1_trace(start, end),
-            None => no_map(start),
-        }
-    }
-
-    fn world_trace_point(&self, start: Vec3, end: Vec3) -> rtx_nav::bsp::HullTrace {
-        // Hull 0 is the real surfaces — what a bullet or a sightline meets.
-        match self.bsp.borrow().as_ref() {
-            Some(bsp) => bsp.hull0_trace(start, end),
-            None => no_map(start),
-        }
     }
 
     fn submodel_bounds(&self, n: usize) -> Option<(Vec3, Vec3)> {
@@ -566,12 +526,12 @@ mod tests {
         assert!(h.take_cmds().is_empty(), "taking drains");
     }
 
-    /// With no map bound, `pointcontents` must answer "empty" rather than panic — the brain asks
-    /// before a map is loaded, and a crash there would be a crash on connect.
+    /// A missing map must report failure rather than panic — the brain may ask to rebind before a
+    /// map exists, and a crash there would be a crash on connect. (Point contents itself is no longer
+    /// a host trap: `GameState::pointcontents` answers "empty" with no BSP bound.)
     #[test]
-    fn pointcontents_without_a_map_is_empty() {
+    fn rebind_missing_map_reports_failure() {
         let h = host();
-        assert_eq!(h.pointcontents(Vec3::ZERO), rtx_nav::bsp::CONTENTS_EMPTY as f32);
         assert!(!h.rebind("qw", "nosuchmap"), "a missing map must report failure");
     }
 

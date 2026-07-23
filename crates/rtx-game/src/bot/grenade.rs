@@ -373,13 +373,12 @@ fn player_center(game: &GameState, p: EntId) -> Vec3 {
 }
 
 /// The best hazard to shove enemy `en` into, if any — the shared detection both the grenade lob and
-/// the rocket shove use. Builds the solidity/liquid oracles over the live BSP + `pointcontents`.
+/// the rocket shove use. Builds the solidity/liquid oracles over our parsed BSP (`pointcontents`).
 fn enemy_hazard(game: &GameState, en: EntId) -> Option<Hazard> {
     let e_feet = game.entities[en].v.origin - Vec3::new(0.0, 0.0, 24.0);
-    let bsp = game.nav.bsp.as_ref();
-    let host = game.host();
+    let bsp = game.nav.bsp.as_deref();
     let is_solid = |p: Vec3| bsp.is_some_and(|b| b.is_solid(p));
-    let contents = |p: Vec3| host.pointcontents(p);
+    let contents = |p: Vec3| game.pointcontents(p);
     find_hazard(&is_solid, &contents, e_feet)
 }
 
@@ -912,8 +911,11 @@ mod tests {
                 fraction: 1.0,
                 endpos: b,
                 plane_normal: Vec3::ZERO,
+                plane_dist: 0.0,
                 start_solid: false,
                 all_solid: false,
+                in_open: true,
+                in_water: false,
             };
         }
         let f = if (a.z - b.z).abs() < 1e-6 {
@@ -925,8 +927,11 @@ mod tests {
             fraction: f,
             endpos: a + (b - a) * f,
             plane_normal: Vec3::new(0.0, 0.0, 1.0),
+            plane_dist: 0.0,
             start_solid: a.z < 0.0,
             all_solid: false,
+            in_open: true,
+            in_water: false,
         }
     }
 
@@ -937,8 +942,11 @@ mod tests {
             fraction: 1.0,
             endpos: b,
             plane_normal: Vec3::ZERO,
+            plane_dist: 0.0,
             start_solid: false,
             all_solid: false,
+            in_open: true,
+            in_water: false,
         };
         let far = |_: f32| Vec3::new(100000.0, 0.0, 0.0); // enemy elsewhere, never touched
         let p0 = Vec3::ZERO;
@@ -965,8 +973,11 @@ mod tests {
             fraction: 1.0,
             endpos: b,
             plane_normal: Vec3::ZERO,
+            plane_dist: 0.0,
             start_solid: false,
             all_solid: false,
+            in_open: true,
+            in_water: false,
         };
         let v0 = launch_velocity(Vec3::new(18.435, 0.0, 0.0)); // level launch (elevation 0) along +x
                                                                // Enemy ~120u ahead, at the height the level throw has fallen to there → the path passes

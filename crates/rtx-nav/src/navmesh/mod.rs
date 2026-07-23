@@ -21,13 +21,22 @@ use rayon::prelude::*;
 mod geom;
 mod hook;
 mod jumps;
+mod lod;
 mod physics;
 mod query;
+mod reach;
 mod rocketjump;
 mod sidetable;
 mod splice;
 
 pub use geom::arc_point;
+pub use jumps::{
+    ground_turn_air_aim, ground_turn_air_cmd, ground_turn_entry_adjust_cmd, ground_turn_entry_ok,
+    ground_turn_ground_aim, ground_turn_ground_cmd, ground_turn_ground_cmd_optimal, ground_turn_launch_cmd,
+    ground_turn_should_launch, ground_turn_should_launch_optimal, yaw360_of, GroundTurnLiveRollout,
+    GroundTurnSetupClock, GroundTurnSetupContinuation, GROUND_TURN_OPTIMAL_VERSION,
+    GROUND_TURN_SETUP_AIRBORNE_TICK_CAP, GROUND_TURN_VERSION, RUNWAY_TURN_VERSION,
+};
 use geom::*;
 pub use hook::arc_land;
 use hook::{hook_cost, march_to_solid, perturb_ok, HOOK_PITCHES};
@@ -35,13 +44,18 @@ use hook::{hook_cost, march_to_solid, perturb_ok, HOOK_PITCHES};
 use hook::{simulate_arc, ArcResult};
 pub use physics::{
     attainable_speed, band_of, bhop_k, prestrafe_delivered_from, BAND_EDGES, BAND_FLOOR, BAND_V_MAX, BHOP_EFF,
-    CURL_V_HOLD_TOL, DOUBLE_ARC_PEAK, JUMP_APEX, MAX_SPEED, NBANDS,
+    CURL_PSI_TOL, CURL_V_HOLD_TOL, DOUBLE_ARC_PEAK, JUMP_APEX, MAX_SPEED, NBANDS,
 };
+pub use lod::{CoarseCosts, Corridor};
+use lod::Lod;
 use physics::*;
+use reach::Reach;
 pub use rocketjump::RJ_CERT_AIM_DEG;
 use rocketjump::{rj_perturb_ok, rocket_jump_cost, simulate_rocket_jump, RJ_DELAYS, RJ_PITCHES};
 use sidetable::SideTable;
 pub use splice::{Gate, GateInfo, Plat, PlatInfo, TeleportInfo};
+
+use std::sync::Arc;
 
 use crate::bsp::Bsp;
 use crate::qphys::{ORIGIN_TO_FEET, STEP_HEIGHT};
@@ -117,7 +131,7 @@ const RJ_MAX_PER_CELL: usize = 2;
 pub const GRID: f32 = 32.0;
 /// Player hull half-width (the QW player box is ±16 in X/Y). Used to grow obstacles by the agent
 /// radius so a bot doesn't clip geometry its path's centre-line technically clears.
-const PLAYER_HALF_WIDTH: f32 = 16.0;
+pub(crate) const PLAYER_HALF_WIDTH: f32 = 16.0;
 /// Vertical sweep step when scanning a column for floors (refined by bisection after).
 const SCAN_DZ: f32 = 8.0;
 /// Spacing of the floor-continuity samples along a grounded link (see [`geom::ground_along`]).
@@ -207,9 +221,8 @@ pub struct NavGraph {
     removed: Vec<bool>,
     /// Per-cell "the standing origin is under water" flag (parallel to `cells`), so the planner can
     /// price swimming above walking and the runtime can tell a wet cell from a dry one. Empty until
-    /// [`surcharge_water_links`](Self::surcharge_water_links) runs at graph-swap (it needs the
-    /// engine's liquid-carrying `pointcontents`, unavailable on the pure worker build); an empty vec
-    /// reads as "all dry" via [`cell_in_water`](Self::cell_in_water).
+    /// [`flag_water`](Self::flag_water) runs on the worker build (from the render hull's liquid-carrying
+    /// `pointcontents`); an empty vec reads as "all dry" via [`cell_in_water`](Self::cell_in_water).
     water: Vec<bool>,
     /// Per-cell "a bot standing here can breathe" flag (parallel to `cells`): its eye point is out of
     /// the water, so it's a spot a drowning bot can path to for air. Filled alongside `water`; an
@@ -219,8 +232,8 @@ pub struct NavGraph {
     /// Per-cell "a bot standing here is *in* lava or slime" (parallel to `cells`): the engine's
     /// waterlevel-1 sample (feet+1) reads that liquid, so the game burns anyone standing on the cell —
     /// including interior cells of a shallow film the liquid-edge probe can't see. Never `Pit`. Filled
-    /// alongside `water` by [`surcharge_hazard_links`](Self::surcharge_hazard_links); an empty vec
-    /// reads as "no cell burns" via [`cell_hazard`](Self::cell_hazard).
+    /// alongside `water` by [`flag_hazards`](Self::flag_hazards); an empty vec reads as "no cell burns"
+    /// via [`cell_hazard`](Self::cell_hazard).
     hazard: Vec<Option<crate::hazard::HazardKind>>,
     /// Health a bot expects to lose *taking* each link (parallel to `links`), `0.0` on the
     /// overwhelming majority. Filled by [`flag_hazards`](Self::flag_hazards) from the map's real
@@ -238,10 +251,17 @@ pub struct NavGraph {
     /// lift's index in `plats`. A body resting here blocks the lift's descent *and* keeps resetting
     /// its inner trigger's lower-timer, so a raised plat never comes down — hence these cells are
     /// transit-only: a bot may cross one or grab an item on it, but must never park there. Unlike
-    /// `water`/`hazard` this is pure build-side geometry (no engine `pointcontents` needed), so
+    /// `water`/`hazard` this needs no `pointcontents` lookup at all (pure clip-hull geometry), and
     /// [`add_plats`](Self::add_plats) fills it on the worker build; an empty vec reads as "no cell is
     /// under a lift" via [`cell_under_plat`](Self::cell_under_plat).
     under_plat: Vec<Option<u16>>,
+    /// Per-cell "beside a fatal drop" flag (parallel to `cells`): the ground falls away by more than a
+    /// survivable step within a stride of the cell — a wall-hugging walkway over an open pit, a spiral
+    /// staircase's inner edge. Pure build-side geometry (no engine callback), filled by
+    /// [`flag_ledges`](Self::flag_ledges); lets the runtime bhop policy drop to a walk there (a fast bot
+    /// carries off the inner edge at a corner) without the near-field's airborne staleness. An empty vec
+    /// reads as "no ledge" via [`is_ledge`](Self::is_ledge) — the safe default for a bare graph.
+    ledge: Vec<bool>,
     grid: GridIndex,
     /// The closed door/movewall each link's segment passes through — the "navmesh aware of dynamic
     /// geometry" core, so pathfinding can price a link by its door's live state (see
@@ -261,6 +281,14 @@ pub struct NavGraph {
     /// speed jumps are spliced (or left at the stock default). The banded planner reads it to price
     /// speed carried between links; keeping it here avoids re-reading cvars at query time.
     sj_k: f32,
+    /// Static reachability (SCCs + forward closure), filled by [`build_reachability`](Self::build_reachability)
+    /// at the end of the build so [`reachable`](Self::reachable) answers "can A ever get to B?" in O(1)
+    /// instead of a failed whole-graph search. `None` on a bare (unbuilt) graph — see [`reach`].
+    reach: Option<Reach>,
+    /// Level-of-detail hierarchy (cluster assignment + abstract portal graph), filled by
+    /// [`build_lod`](Self::build_lod) at the end of the build. Coarse far-field navigation reads it;
+    /// `None` on a bare (unbuilt) graph — see [`lod`].
+    lod: Option<Lod>,
 }
 
 /// A solved speed jump: where the takeoff ledge is and the horizontal speed needed there, so the
@@ -272,6 +300,10 @@ pub struct SpeedJumpTraversal {
     /// Flight time of the leap (s), so the banded planner can price a hot entry (the runway term
     /// shrinks with carried speed while the airtime is fixed).
     pub airtime: f32,
+    /// Minimum certified horizontal landing speed. Populated by curl
+    /// traversals whose full cadence/contact envelope was rolled; zero means
+    /// that no landing-speed claim exists and the planner must use `v_req`.
+    pub landing_speed_lo: f32,
     /// A **chained** speed jump: it has no self-contained runway (the `from` cell *is* the ledge),
     /// so it is only traversable when the planner proves the entry band already carries `v_req`
     /// (see [`NavGraph::find_path_banded`]). Unbanded queries price it away via [`NavGraph::link_extra`].
@@ -281,13 +313,98 @@ pub struct SpeedJumpTraversal {
     /// runtime flies it with the hop slalom, unchanged. `> 0` = curl: once airborne the controller homes
     /// the velocity onto the landing with [`air_correct`](crate) at this rate — one smooth pursuit arc.
     pub curl_gain: f32,
+    /// Optional first pursuit point for a two-phase curl. `curl_switch_dist == 0` disables the
+    /// profile and preserves the original single-target curl. A signed distance permits a profile
+    /// to use the entry aim only for the launch frame and switch immediately once airborne. When enabled, the runtime pursues
+    /// this point until it has travelled `curl_switch_dist` units from `takeoff` along the
+    /// takeoff→entry-aim axis, then pursues `curl_landing_aim` for the remainder of the flight.
+    /// Keeping the solved points on the traversal makes the BSP certificate and live executor use
+    /// the same geometry without map-specific branches in the controller.
+    pub curl_entry_aim: Vec3,
+    pub curl_switch_dist: f32,
+    pub curl_landing_aim: Vec3,
+    /// A **chained ground-turn curl**: the leap cannot be flown from a local run-up at all — it
+    /// needs carried entry speed (the link is `chained`) *and* a grounded rotation before the jump
+    /// (the launch heading is not the corridor heading, and rotating in the air after a lip launch
+    /// provably cannot close the flight-time budget). `Some` carries the complete certified
+    /// controller contract; `None` = every other speed jump, unchanged. See [`GroundTurnCurl`].
+    pub ground_turn: Option<GroundTurnCurl>,
+}
+
+/// The self-contained, versioned contract for one chained ground-turn curl (see
+/// [`SpeedJumpTraversal::ground_turn`]). Both the build-time certifier and the live executor drive
+/// the same version-selected controller functions from exactly these numbers, so what was proven
+/// offline is what flies. Fail-closed: the executor
+/// checks the live entry state against the stored envelope and abandons the leg (replans) when
+/// outside it, instead of improvising over the lip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundTurnCurl {
+    /// Contract version; bump on any semantic change to the controller or envelope fields.
+    pub version: u16,
+    /// Ground steering waypoint held while farther than `turn_dist` from the takeoff point: keeps
+    /// the run (a stepped runway is fine — step-ups resolve as `stepped`, not wall contact) on the
+    /// certified corridor line.
+    pub runway_aim: Vec3,
+    /// Self-contained runway-turn policy. When true, ground steering blends
+    /// continuously from `runway_yaw` to `launch_yaw`, holds
+    /// `hold_speed`, and launches at `lip_reach`; false preserves the
+    /// original chained switch-at-distance controller.
+    pub blended_runway: bool,
+    pub runway_yaw: f32,
+    pub lip_reach: f32,
+    pub hold_speed: f32,
+    /// Distance from the takeoff point at which ground steering switches from `runway_aim` to
+    /// rotating the carried velocity toward `launch_yaw`.
+    pub turn_dist: f32,
+    /// Launch heading in degrees, [0,360) (atan2 convention, west = 180).
+    pub launch_yaw: f32,
+    /// Grounded velocity-yaw gate in degrees, [0,360): the jump fires on the first grounded tick
+    /// inside the takeoff box at/above this yaw and at/above `box_min.z`.
+    pub yaw_min: f32,
+    /// Takeoff box: the jump may fire anywhere inside this XY AABB once the yaw gate is met;
+    /// `box_min.z` doubles as the minimum launch height (must be on the takeoff platform).
+    pub box_min: Vec3,
+    pub box_max: Vec3,
+    /// Launch-frame air-steer gain toward `hold_aim`.
+    pub launch_gain: f32,
+    /// Air phase A pursues `hold_aim` until the flight crosses the gate plane
+    /// (`dot(origin - gate_point, gate_normal) < 0`), then pursues `landing_aim` at `air_gain`.
+    /// A gate plane placed at the takeoff makes the curl immediate (phase A never runs).
+    pub hold_aim: Vec3,
+    pub gate_point: Vec3,
+    pub gate_normal: Vec3,
+    pub air_gain: f32,
+    pub landing_aim: Vec3,
+    /// Certified entry envelope at the link source (grounded arrival): horizontal speed and
+    /// velocity yaw360 ranges. Outside ⇒ the executor must NOT commit the leg.
+    pub entry_speed_lo: f32,
+    pub entry_speed_hi: f32,
+    pub entry_yaw_lo: f32,
+    pub entry_yaw_hi: f32,
+    /// Minimum horizontal landing speed observed across the certified envelope — the carry the
+    /// banded planner may credit downstream of this link.
+    pub landing_speed_lo: f32,
+    /// Certified landing heading (degrees, [0,360), centre envelope corner) — the direction the
+    /// carried speed actually points after the curl, which the banded planner's corner cone must
+    /// use instead of the from→to chord (the flight rotates far off the chord by design).
+    pub landing_yaw: f32,
+}
+
+/// Is `yaw` (degrees, [0,360)) inside the wrap-aware envelope `[lo, hi]` (also [0,360); `lo > hi`
+/// means the envelope crosses 0)?
+pub fn yaw_in_envelope(yaw: f32, lo: f32, hi: f32) -> bool {
+    if lo <= hi {
+        yaw >= lo && yaw <= hi
+    } else {
+        yaw >= lo || yaw <= hi
+    }
 }
 
 /// Extra travel-time cost charged to a link whose gate is currently shut. Large enough that the
 /// planner routes around a closed door whenever any open way exists, but finite so it still
 /// crosses (and the bot then detours to the button) when there's no alternative — matching how a
 /// game engine prices a disabled-but-openable NavMesh link rather than deleting it outright.
-const CLOSED_GATE_PENALTY: f32 = 100_000.0;
+pub const CLOSED_GATE_PENALTY: f32 = 100_000.0;
 
 /// Extra travel-time charged to every [`LinkKind::RocketJump`] link when the querying bot is unfit
 /// to fly one (no rocket launcher, no rocket, too little health, or quad running — see
@@ -310,6 +427,17 @@ pub struct LinkCosts<'a> {
     /// `gate_closed[i]` marks gate `i`'s door currently shut; a link through it is charged
     /// [`CLOSED_GATE_PENALTY`]. Empty slice ⇒ every door treated as open.
     pub gate_closed: &'a [bool],
+    /// `openable_gates[i]` marks closed gate `i` as one this querying bot can open right now — its
+    /// button is reachable without crossing the gate — so a link through it is charged the modest
+    /// [`Self::open_gate_cost`] (a button-detour errand) instead of the full [`CLOSED_GATE_PENALTY`].
+    /// Empty (the default) ⇒ every closed gate keeps the full penalty, which is what *path* planning
+    /// always wants. This is the one term that differs between "how good is this goal" and "how do I
+    /// get there": a prize behind a door the bot knows how to open is a fine goal to *choose*, but the
+    /// route to it should still prefer an open way when one exists. Only goal *valuation* sets it.
+    pub openable_gates: &'a [bool],
+    /// Seconds charged for crossing an [`Self::openable_gates`] gate — the button-detour overhead the
+    /// gate errand actually pays, not the route-around penalty. Unread when `openable_gates` is empty.
+    pub open_gate_cost: f32,
     /// `(link idx, extra seconds)` surcharges — a bot's failed-link penalties. Tiny (≤8 entries),
     /// scanned linearly. Kept far below [`CLOSED_GATE_PENALTY`] so it diverts a route without ever
     /// forcing one through a shut door.
@@ -364,6 +492,45 @@ fn hash32(mut x: u32) -> u32 {
     x
 }
 
+/// Ledge probe ([`ledge_beside`]): how far off a cell centre to sample, how far the ground must fall
+/// there to count as a fatal edge, and the vertical sweep step. `REACH` catches a cell on a
+/// one-to-two-grid-cell walkway beside a pit; a step-down whose floor sits within `FATAL_DROP`, or a
+/// wall, leaves the cell unflagged. `√½` gives the diagonal samples a unit stride.
+const LEDGE_REACH: f32 = 44.0;
+const LEDGE_FATAL_DROP: f32 = 64.0;
+const LEDGE_SCAN_DZ: f32 = 8.0;
+const SQRT_HALF: f32 = 0.707_106_77;
+
+/// Whether a fatal drop sits within [`LEDGE_REACH`] of `origin` in any of eight directions — a
+/// wall-hugging walkway over an open pit, a spiral staircase's inner edge. In each direction the sampled
+/// column must be open air from a step above the floor down past [`LEDGE_FATAL_DROP`]: solid anywhere
+/// between is a wall (pillar / step-up) or a catch-floor (a mere step-down, survivable), so that
+/// direction is not an edge. Pure over `is_solid` (the hull-1 point test), so it is unit-testable and
+/// runs on the worker build; see [`NavGraph::flag_ledges`].
+fn ledge_beside(is_solid: &impl Fn(Vec3) -> bool, origin: Vec3) -> bool {
+    const DIRS: [(f32, f32); 8] = [
+        (1.0, 0.0),
+        (-1.0, 0.0),
+        (0.0, 1.0),
+        (0.0, -1.0),
+        (SQRT_HALF, SQRT_HALF),
+        (SQRT_HALF, -SQRT_HALF),
+        (-SQRT_HALF, SQRT_HALF),
+        (-SQRT_HALF, -SQRT_HALF),
+    ];
+    DIRS.iter().any(|&(dx, dy)| {
+        let (x, y) = (origin.x + dx * LEDGE_REACH, origin.y + dy * LEDGE_REACH);
+        let mut z = origin.z + STEP_HEIGHT;
+        while z > origin.z - LEDGE_FATAL_DROP {
+            if is_solid(Vec3::new(x, y, z)) {
+                return false;
+            }
+            z -= LEDGE_SCAN_DZ;
+        }
+        true
+    })
+}
+
 impl NavGraph {
     /// Build the graph from a parsed BSP's player hull. Pure; safe to run at load time.
     pub fn build(bsp: &Bsp) -> NavGraph {
@@ -373,12 +540,13 @@ impl NavGraph {
             cells: cells_grid.0,
             links: Vec::new(),
             removed: Vec::new(),
-            water: Vec::new(),       // filled at graph-swap by flag_water
-            breathable: Vec::new(),  // (needs the engine's liquid-carrying pointcontents)
+            water: Vec::new(),       // filled on the worker by flag_water
+            breathable: Vec::new(),  // (from the render hull's liquid-carrying pointcontents)
             water_extra: Vec::new(), // (same)
-            hazard: Vec::new(),      // filled at graph-swap by flag_hazards (same reason)
+            hazard: Vec::new(),      // filled on the worker by flag_hazards (same reason)
             hazard_hp: Vec::new(),   // (same)
-            under_plat: Vec::new(),  // filled by add_plats (pure geometry — no engine callback needed)
+            under_plat: Vec::new(),  // filled by add_plats (pure geometry — no pointcontents needed)
+            ledge: Vec::new(),       // filled by flag_ledges below (pure geometry too)
             grid: cells_grid.1,
             gates: SideTable::default(),
             hooks: SideTable::default(),
@@ -386,8 +554,11 @@ impl NavGraph {
             rocket_jumps: SideTable::default(),
             plats: SideTable::default(),
             sj_k: bhop_k(10.0, MAX_SPEED), // stock default until add_speed_jumps captures live cvars
+            reach: None,                   // filled by build_reachability once all links are spliced
+            lod: None,                     // filled by build_lod once all links are spliced
         };
         graph.link_cells(bsp);
+        graph.flag_ledges(bsp);
         graph
     }
 
@@ -417,6 +588,7 @@ impl NavGraph {
             hazard: Vec::new(),
             hazard_hp: Vec::new(),
             under_plat: Vec::new(),
+            ledge: Vec::new(),
             grid,
             gates: SideTable::default(),
             hooks: SideTable::default(),
@@ -424,7 +596,24 @@ impl NavGraph {
             rocket_jumps: SideTable::default(),
             plats: SideTable::default(),
             sj_k: bhop_k(10.0, MAX_SPEED),
+            reach: None,
+            lod: None,
         }
+    }
+
+    /// Flag every cell beside a fatal drop (see [`ledge_beside`]) — a wall-hugging walkway over an open
+    /// pit, a spiral staircase's inner edge. Pure geometry over the hull-1 point test, so it runs on the
+    /// worker build; a lava/slime-flanked cell is left to the `hazard` flag instead. The runtime bhop
+    /// policy reads [`is_ledge`](Self::is_ledge) to walk here rather than carry speed off the inner edge
+    /// at a corner (the near-field can't — it goes stale while the bot is airborne mid-hop).
+    fn flag_ledges(&mut self, bsp: &Bsp) {
+        self.ledge = self.cells.par_iter().map(|cell| ledge_beside(&|p| bsp.is_solid(p), cell.origin)).collect();
+    }
+
+    /// Whether a cell sits beside a fatal drop (see [`flag_ledges`](Self::flag_ledges)). Empty flags —
+    /// a bare graph, or one built without the pass — read as `false` (no ledge).
+    pub fn is_ledge(&self, c: CellId) -> bool {
+        self.ledge.get(c as usize).copied().unwrap_or(false)
     }
 
     /// Sweep every grid column for floors and emit one [`Cell`] at the bottom of each empty
@@ -504,8 +693,30 @@ impl NavGraph {
                 out
             })
             .collect();
+        // A short near-apex rise can have a very narrow *slow* speed window: geometrically
+        // reachable, but an ordinary runner reaches its front face before gaining the target
+        // height. Preserve such links when they are the only way onto a ledge (the runtime will
+        // eventually carry their solved speed envelope), but prune them when this same build has
+        // already found a max-speed-safe takeoff farther back to the exact target cell. This removes
+        // a wall-hit shortcut without disconnecting deliberate slow hop-ups such as DM3 MH.
+        let mut has_hot_jump_to = vec![false; self.cells.len()];
+        for link in per_cell.iter().flatten().filter(|l| l.kind == LinkKind::JumpGap) {
+            let a = self.cells[link.from as usize].origin;
+            let b = self.cells[link.to as usize].origin;
+            if b.z > a.z && ballistic_clear_at_speed(bsp, a, b, MAX_SPEED) {
+                has_hot_jump_to[link.to as usize] = true;
+            }
+        }
         for link in per_cell.into_iter().flatten() {
-            self.push_link(link);
+            let a = self.cells[link.from as usize].origin;
+            let b = self.cells[link.to as usize].origin;
+            let redundant_knife_edge = link.kind == LinkKind::JumpGap
+                && b.z > a.z
+                && has_hot_jump_to[link.to as usize]
+                && !ballistic_clear_at_speed(bsp, a, b, MAX_SPEED);
+            if !redundant_knife_edge {
+                self.push_link(link);
+            }
         }
     }
 
@@ -547,6 +758,18 @@ impl NavGraph {
         let (a, b) = (self.cells[from as usize], self.cells[to as usize]);
         let dz = b.origin.z - a.origin.z;
         if dz > STEP_HEIGHT && dz <= JUMP_APEX {
+            // A rise in the jump band that is really a **walkable staircase** — two shallow risers
+            // caught inside one 32u grid span — climbs by stepping, not jumping. Emit a `Step` (the same
+            // path the ≤STEP_HEIGHT case takes) so the bot walks it instead of pogoing each riser, and
+            // so a bhop/glide can treat the flight as a runway. A genuine knee-high ledge (one tall
+            // riser) fails `steppable_rise` and stays a JumpGap below.
+            if steppable_rise(&|p| bsp.is_solid(p), a.origin, b.origin)
+                && path_clear(bsp, a.origin, b.origin)
+                && ground_along(&|p| bsp.is_solid(p), a.origin, b.origin)
+            {
+                let horiz = (b.origin.xy() - a.origin.xy()).length();
+                return Some(Link { from, to, kind: LinkKind::Step, cost: link_cost(LinkKind::Step, horiz, dz) });
+            }
             // Hop up onto the adjacent higher footing; clear the standing-jump arc to it. Not from a
             // submerged cell, though — you can't jump when submerged (the jump input swims up).
             if bsp.is_liquid_at(a.origin) {
@@ -657,14 +880,14 @@ impl NavGraph {
     ///
     /// Pits are deliberately not flagged here (every balcony/ledge cell borders a drop — that would
     /// surcharge half the map); the runtime combat guard [`crate::hazard::hazard_ahead`] keeps bots
-    /// from stepping off edges in a fight. Only *liquids* get a routing bias, and the pure
-    /// worker-thread build can't see them — the clip hull it reads carries no liquid contents — so
-    /// this takes the engine's `pointcontents` as `contents` and runs at graph-swap time (from the
-    /// game's navmesh poll) rather than inside [`build_navmesh`].
-    pub fn flag_hazards(&mut self, is_solid: &impl Fn(Vec3) -> bool, contents: &impl Fn(Vec3) -> f32) {
+    /// from stepping off edges in a fight. Only *liquids* get a routing bias. `contents` is a
+    /// render-hull `pointcontents` (the parsed BSP's [`crate::bsp::Bsp::pointcontents`], which carries
+    /// liquid contents the clip hull does not); [`build_navmesh`] runs this on the worker with the BSP
+    /// in hand, before the reachability/LOD passes so their tables price the liquid at birth.
+    pub fn flag_hazards(&mut self, is_solid: &impl Fn(Vec3) -> bool, contents: &impl Fn(Vec3) -> i32) {
         let liquid = |p: Vec3| match contents(p) {
-            x if x == crate::bsp::CONTENTS_LAVA as f32 => Some(crate::hazard::HazardKind::Lava),
-            x if x == crate::bsp::CONTENTS_SLIME as f32 => Some(crate::hazard::HazardKind::Slime),
+            crate::bsp::CONTENTS_LAVA => Some(crate::hazard::HazardKind::Lava),
+            crate::bsp::CONTENTS_SLIME => Some(crate::hazard::HazardKind::Slime),
             _ => None,
         };
         // Each cell's liquid footing and how deep a bot standing there wades. The engine deals
@@ -715,6 +938,41 @@ impl NavGraph {
                 tick_hp * depth[link.to as usize].1 * ticks
             })
             .collect();
+
+        // Jump-over-lava surcharge. The pricing above reads only the *target* cell's footing — for a
+        // jump that's the safe far platform, so a leap over a lava pool reads as free and the router
+        // sends bots sailing over the coals. But an undershoot (arriving a hair slow at the takeoff)
+        // drops into the pool, not onto the platform — a near-certain kill. Price the span itself: if
+        // any point of the fall-short zone between the two footings sits over lava/slime, charge the
+        // fatal [`JUMP_LAVA_HP`] so the router prefers the walk-around. A sole-route lava jump still
+        // costs finite (the [`HAZARD_COST_MAX`] cap), so a bot with no other way across still attempts
+        // it. Computed as a separate pass (a fresh immutable borrow of the links/cells) after the map.
+        let over_lava: Vec<bool> = self
+            .links
+            .iter()
+            .map(|link| {
+                matches!(
+                    link.kind,
+                    LinkKind::JumpGap | LinkKind::DoubleJump | LinkKind::SpeedJump | LinkKind::RocketJump
+                ) && {
+                    let a = self.cells[link.from as usize].origin;
+                    let b = self.cells[link.to as usize].origin;
+                    // Sample the interior of the platform-to-platform span (endpoints are safe footing).
+                    (1..=3).any(|i| {
+                        let p = a.lerp(b, i as f32 / 4.0);
+                        matches!(
+                            crate::hazard::hazard_below(is_solid, contents, p),
+                            Some(crate::hazard::HazardKind::Lava | crate::hazard::HazardKind::Slime)
+                        )
+                    })
+                }
+            })
+            .collect();
+        for (hp, &over) in self.hazard_hp.iter_mut().zip(over_lava.iter()) {
+            if over {
+                *hp = hp.max(JUMP_LAVA_HP);
+            }
+        }
     }
 
     /// Whether cell `id` sits on the edge of a lava or slime pool: for each compass direction with
@@ -724,7 +982,7 @@ impl NavGraph {
         &self,
         id: CellId,
         is_solid: &impl Fn(Vec3) -> bool,
-        contents: &impl Fn(Vec3) -> f32,
+        contents: &impl Fn(Vec3) -> i32,
     ) -> bool {
         let c = self.cells[id as usize];
         // Standing player feet sit 24u below the origin (player `mins.z`); probe from there.
@@ -754,11 +1012,11 @@ impl NavGraph {
     /// Expressed as the equivalent additive delta, `(mult − 1) · cost`: identical to the old multiply
     /// for the searches that do read `link.cost`, and conservative for the banded one.
     ///
-    /// Also like [`flag_hazards`](Self::flag_hazards) this reads liquid contents, which only the
-    /// engine's render-hull `pointcontents` carries (the worker build's clip hull is liquid-blind), so
-    /// it runs at graph-swap from the game's navmesh poll — not inside [`build`].
-    pub fn flag_water(&mut self, contents: &impl Fn(Vec3) -> f32) {
-        let is_water = |p: Vec3| contents(p) == crate::bsp::CONTENTS_WATER as f32;
+    /// Also like [`flag_hazards`](Self::flag_hazards) this reads liquid contents from a render-hull
+    /// `pointcontents` (the clip hull is liquid-blind), and [`build_navmesh`] runs it on the worker
+    /// before the reachability/LOD passes so the pool tax is baked into the abstract graph.
+    pub fn flag_water(&mut self, contents: &impl Fn(Vec3) -> i32) {
+        let is_water = |p: Vec3| contents(p) == crate::bsp::CONTENTS_WATER;
         self.water = self.cells.iter().map(|c| is_water(c.origin)).collect();
         // Eye height for the breathe test: the standing view offset (pmove samples waterlevel 3 here).
         let eye = Vec3::new(0.0, 0.0, 22.0);
@@ -791,7 +1049,16 @@ impl NavGraph {
     #[inline]
     fn link_extra(&self, li: u32, costs: &LinkCosts) -> f32 {
         let mut extra = match self.gate_of_link(li) {
-            Some(g) if costs.gate_closed.get(g).copied().unwrap_or(false) => CLOSED_GATE_PENALTY,
+            Some(g) if costs.gate_closed.get(g).copied().unwrap_or(false) => {
+                // A closed gate this caller flagged openable (its button is reachable on our side) is
+                // an errand, not a wall — price it so, but only for the query that asked. Every other
+                // caller leaves `openable_gates` empty and pays the full route-around penalty.
+                if costs.openable_gates.get(g).copied().unwrap_or(false) {
+                    costs.open_gate_cost
+                } else {
+                    CLOSED_GATE_PENALTY
+                }
+            }
             _ => 0.0,
         };
         for &(l, sec) in costs.penalties {
@@ -876,6 +1143,17 @@ impl NavGraph {
                     .speed_jump_of_link(li)
                     .map(|t| (t.v_req, t.airtime, t.chained, t.curl_gain))
                     .unwrap_or((MAX_SPEED, 0.0, false, 0.0));
+                // A chained ground-turn curl carries its own certified entry envelope — the proof
+                // the generic `SJ_MARGIN` exists to approximate — and its stored cost covers the
+                // whole leg (run-up, rotation, flight) end-to-end. Gate on the envelope floor and
+                // exit at the certified minimum landing speed; the runtime executor re-checks the
+                // same envelope fail-closed before committing.
+                if let Some(gt) = self.speed_jump_of_link(li).and_then(|t| t.ground_turn) {
+                    if v_in < gt.entry_speed_lo {
+                        return None;
+                    }
+                    return Some((link.cost.max(floor_cost), band_of(gt.landing_speed_lo)));
+                }
                 // A curl speed jump was certified end-to-end at build time — the rollout solver measured
                 // a run-up that the ground circle-strafe genuinely delivers (which the conservative
                 // air-strafe recompute below has no term for and badly under-credits). So trust its
@@ -884,7 +1162,12 @@ impl NavGraph {
                 // equilibrium regardless of how fast the bot arrived — crediting `v_in` would plan a
                 // downstream chained jump off a band the runtime can't actually carry through the curl.
                 if curl_gain > 0.0 && !chained {
-                    return Some((link.cost.max(floor_cost), band_of(v_req)));
+                    let landing = self
+                        .speed_jump_of_link(li)
+                        .map(|t| t.landing_speed_lo)
+                        .filter(|&v| v.is_finite() && v > 0.0)
+                        .unwrap_or(v_req);
+                    return Some((link.cost.max(floor_cost), band_of(landing)));
                 }
                 // A chained jump has no runway: traversable only if the entry band already carries it.
                 if chained && v_in < v_req * SJ_MARGIN {
@@ -1195,6 +1478,19 @@ impl NavGraph {
         Some((id, links_created))
     }
 
+    /// Rebuild the derived tables — the reachability closure and the LOD hierarchy — after a post-build
+    /// topology mutation such as [`plant_speed_jump`](Self::plant_speed_jump). The automatic build runs
+    /// these once at the end over the final link set; a hand-planted link (harness bring-up) must
+    /// refresh them, or the O(1) [`reachable`](Self::reachable) gate and the coarse router keep
+    /// answering for the *pre-plant* graph — e.g. a `goto` to a ledge reachable only across the planted
+    /// jump would see `reachable` return false and redirect to the nearest old-reachable cell instead
+    /// of pathing over it. The live graph's liquid columns are already filled, so `build_lod` folds
+    /// them in directly (no separate liquid patch needed).
+    pub fn rebuild_derived(&mut self) {
+        self.build_reachability();
+        self.build_lod();
+    }
+
     /// Push a speed-jump link with its traversal, tagging the new link in the side table.
     fn push_speed_jump(&mut self, link: Link, traversal: SpeedJumpTraversal) {
         let s = self.speed_jumps.push(traversal);
@@ -1212,6 +1508,160 @@ impl NavGraph {
         let r = self.rocket_jumps.push(traversal);
         self.push_link(link);
         self.rocket_jumps.tag(self.links.len() - 1, r);
+    }
+
+    /// Hand-plant a rocket-jump link post-build (harness / bring-up): run the real two-phase RJ
+    /// ballistics from the cell nearest `from` onto a landing cell near `tgt`, unconstrained by the
+    /// automatic generator's search caps — `RJ_RANGE_XY` / `RJ_MIN_RISE..=RJ_MAX_RISE` and the
+    /// useful-apex rule bound the map-wide candidate *spray*, not physics, and a curated plant has
+    /// already decided the jump is wanted. Certification is NOT relaxed: the shot must simulate
+    /// clean on both hulls, resolve to a standable landing cell within the standard tolerance
+    /// (`RJ_LAND_XY`/`RJ_LAND_Z`), apex past it by `RJ_APEX_MARGIN`, and survive the same
+    /// perturbation check as a generated link. The yaw sweeps ±20° around the straight-line
+    /// bearing so an off-axis opening (e.g. a window) the 8-octant search never aims at can still
+    /// be threaded. The cheapest surviving arc is inserted; the runtime flies a planted link
+    /// exactly like a generated one. Works on a graph built with rocket-jump generation off.
+    /// Not used by the automatic build.
+    pub fn plant_rocket_jump(
+        &mut self,
+        bsp: &Bsp,
+        from: Vec3,
+        tgt: Vec3,
+        params: RocketJumpParams,
+    ) -> Result<u32, String> {
+        /// How far the resolved landing cell may sit from the requested `tgt` and still count as
+        /// "the target": a few grid columns of slack, since the caller aims at a ledge, not a cell.
+        const TGT_XY: f32 = 96.0;
+        const TGT_Z: f32 = 64.0;
+        let from_cell = self.nearest(from).ok_or("no cell near from")?;
+        let a = self.cells[from_cell as usize].origin;
+        if bsp.is_liquid_at(a) {
+            return Err("submerged takeoff: can't jump to start the rocket jump".into());
+        }
+        let is_solid = |p: Vec3| bsp.is_solid(p);
+        let rocket_solid = |p: Vec3| bsp.is_point_solid(p);
+        // Fire opposite the travel direction, like the generator.
+        let to_xy = tgt.xy() - a.xy();
+        if to_xy.length() < 1.0 {
+            return Err("tgt is directly above from; no bearing to fire against".into());
+        }
+        let base_yaw = to_xy.y.atan2(to_xy.x).to_degrees() + 180.0;
+        let mut best: Option<(f32, Link, RocketJumpTraversal)> = None;
+        let mut clean = 0u32;
+        let mut best_miss = f32::INFINITY;
+        // Full-circle yaw sweep, 15° steps: a curated plant is a one-shot solve, so unlike the
+        // map-wide generator we can afford to try every wall — the blast's push direction is set by
+        // which surface the rocket finds, and the geometry that reaches an off-axis target is often
+        // a wall far from the straight-line bearing.
+        for yaw_step in 0..24 {
+            let yaw_off = yaw_step as f32 * 15.0 - 180.0;
+            for pitch in RJ_PITCHES {
+                for delay in RJ_DELAYS {
+                    let angles = Vec3::new(pitch, base_yaw + yaw_off, 0.0);
+                    let Some(s) =
+                        simulate_rocket_jump(is_solid, rocket_solid, a, angles, delay, params)
+                    else {
+                        continue;
+                    };
+                    clean += 1;
+                    best_miss = best_miss.min((s.land - tgt).length());
+                    // Harness diagnostics for a failing plant: where does every clean arc land?
+                    if std::env::var_os("RTX_PLANT_RJ_DEBUG").is_some() {
+                        eprintln!(
+                            "planrj arc: yaw_off {yaw_off} pitch {pitch} delay {delay} -> land \
+                             {:.0} {:.0} {:.0} (miss {:.0}u, apex {:.0})",
+                            s.land.x,
+                            s.land.y,
+                            s.land.z,
+                            (s.land - tgt).length(),
+                            s.pos_blast.z + s.v0.z.max(0.0).powi(2) / (2.0 * params.gravity),
+                        );
+                    }
+                    let Some(to) = self.nearest_within(s.land, RJ_LAND_XY, RJ_LAND_Z) else {
+                        continue;
+                    };
+                    if to == from_cell {
+                        continue;
+                    }
+                    let b = self.cells[to as usize].origin;
+                    if (b.xy() - tgt.xy()).length() > TGT_XY || (b.z - tgt.z).abs() > TGT_Z {
+                        continue;
+                    }
+                    let apex = s.pos_blast.z + s.v0.z.max(0.0).powi(2) / (2.0 * params.gravity);
+                    if apex >= b.z + RJ_APEX_MARGIN
+                        && rj_perturb_ok(is_solid, rocket_solid, a, angles, delay, params, b)
+                    {
+                        let cost = rocket_jump_cost(s.t_blast, s.airtime, s.vz_land, s.self_damage);
+                        if best.as_ref().is_none_or(|(bc, _, _)| cost < *bc) {
+                            let link = Link { from: from_cell, to, kind: LinkKind::RocketJump, cost };
+                            let tr = RocketJumpTraversal {
+                                fire_angles: angles,
+                                fire_delay: delay,
+                                blast: s.blast,
+                                pos_blast: s.pos_blast,
+                                v0: s.v0,
+                                land: s.land,
+                                airtime: s.airtime,
+                                self_damage: s.self_damage,
+                            };
+                            best = Some((cost, link, tr));
+                        }
+                    }
+                }
+            }
+        }
+        let Some((_, link, tr)) = best else {
+            return Err(format!(
+                "no certifiable arc: {clean} clean simulations, best landing miss {best_miss:.0}u \
+                 from tgt {:.0} {:.0} {:.0}",
+                tgt.x, tgt.y, tgt.z
+            ));
+        };
+        self.push_rocket_jump(link, tr);
+        Ok((self.links.len() - 1) as u32)
+    }
+
+    /// Hand-plant a rocket-jump link with caller-supplied fire parameters and NO offline
+    /// certification — the bring-up primitive for lift-assisted rocket jumps, which the static
+    /// solver cannot certify: a rising `func_plat` adds launch velocity that exists only at
+    /// runtime (see the pentlift→window refutation in `tests/plant_rocket_jump_dm3.rs`). The
+    /// traversal is synthesized — the runtime flies jump+fire with exactly these angles and delay
+    /// and reports the real outcome through the standard rj telemetry, so certification happens
+    /// live, by trial. Harness-only; never emitted by the automatic build.
+    pub fn plant_rocket_jump_raw(
+        &mut self,
+        from: Vec3,
+        tgt: Vec3,
+        fire_angles: Vec3,
+        fire_delay: f32,
+        airtime: f32,
+        self_damage: f32,
+    ) -> Result<u32, String> {
+        let from_cell = self.nearest(from).ok_or("no cell near from")?;
+        let to_cell = self.nearest(tgt).ok_or("no cell near tgt")?;
+        if from_cell == to_cell {
+            return Err("from and tgt resolve to the same cell".into());
+        }
+        let a = self.cells[from_cell as usize].origin;
+        let b = self.cells[to_cell as usize].origin;
+        // Price the stated flight like a certified link (exact pricing is irrelevant for a
+        // puppet-flown drill leg; it just has to be finite and honest about the health cost).
+        let cost = rocket_jump_cost(fire_delay, airtime, 0.0, self_damage);
+        let tr = RocketJumpTraversal {
+            fire_angles,
+            fire_delay,
+            blast: a,
+            pos_blast: a,
+            v0: Vec3::ZERO,
+            land: b,
+            airtime,
+            self_damage,
+        };
+        self.push_rocket_jump(
+            Link { from: from_cell, to: to_cell, kind: LinkKind::RocketJump, cost },
+            tr,
+        );
+        Ok((self.links.len() - 1) as u32)
     }
 
     /// Append a free-standing cell (not from the column carve) and index it. Used for plat
@@ -1245,6 +1695,16 @@ impl NavGraph {
             .into_iter()
             .filter(|&c| (self.cells[c as usize].origin.xy() - xy).length() <= radius)
             .collect()
+    }
+
+    /// The nearest cell an item at `p` is actually **collectable from**: within a wide XY reach but only
+    /// `48` vertically — mirroring the game's `on_item` pickup Z gate — so a thin ledge or pedestal item
+    /// resolves to a cell *on* its shelf, never a floor cell a storey below it. Item goals resolve
+    /// through this (the caller falls back to [`nearest`](Self::nearest) if nothing is close enough), so
+    /// a bot never parks under an item it can't reach waiting for it — and the true route (a rocket jump
+    /// up, say) gets its real pricing.
+    pub fn nearest_collectable(&self, p: Vec3) -> Option<CellId> {
+        self.nearest_within(p, GRID * 5.0, 48.0)
     }
 
     /// Nearest cell to `p` within `horiz` XY and `vert` Z of it, by 3D distance.
@@ -1379,6 +1839,13 @@ const LAVA_TICK_SECS: f32 = 0.2;
 const SLIME_TICK_HP: f32 = 4.0;
 const SLIME_TICK_SECS: f32 = 1.0;
 
+/// Health charged to a jump link whose fall-short zone is a lava/slime pool (see [`flag_hazards`]).
+/// A jump/speed-jump over lava lands on a *safe* platform — so the per-cell pricing reads it free —
+/// but an undershoot (the bot arriving a hair slow at the takeoff) drops into the pool, and that is a
+/// near-certain kill. Priced past a bare bot's health so [`hazard_cost`] treats it as fatal (~the cost
+/// cap): the router takes any walk-around, and only a sole-route lava jump is still attempted.
+const JUMP_LAVA_HP: f32 = 200.0;
+
 /// Seconds of detour a bot accepts per unit of "fraction of its surviving strength" a hazard eats
 /// (see [`hazard_cost`]). Calibrated so a bare 100-health bot prices a waterlevel-1 lava cell at
 /// ~1.7s — within a hair of the hand-tuned 2.0s this replaced. The median bot therefore behaves as
@@ -1479,37 +1946,35 @@ fn link_cost(kind: LinkKind, horiz: f32, dz: f32) -> f32 {
 }
 
 /// Per-map navigation state, reset each map load. Lives on `GameState`.
-/// The product of a background navmesh build handed back to the main thread: the parsed BSP and
-/// the finished graph, or `None` if the BSP couldn't be parsed. `Send` (plain data), so it crosses
-/// the worker→main channel.
-pub type NavBuild = Option<(Bsp, NavGraph)>;
-
 #[derive(Default)]
 pub struct NavState {
-    /// The parsed clip-hull geometry the navmesh is derived from. `None` until a map's BSP
-    /// has been successfully read and parsed.
-    pub bsp: Option<Bsp>,
+    /// The parsed BSP the navmesh is derived from, shared (`Arc`) with the background build worker
+    /// and every `pointcontents`/trace query. `None` until a map's BSP has been read and parsed
+    /// (`GameState::load_map_bsp`, at entity load); populated even on a bot-free server so world
+    /// queries (sky/liquid tests, world traces) have geometry to read.
+    pub bsp: Option<Arc<Bsp>>,
     /// The built navigation graph. `None` until [`NavGraph::build`] runs (bots stay disabled).
     pub graph: Option<NavGraph>,
     /// Whether a build has been kicked off for this map (so a failed BSP read doesn't retry every
     /// frame). Reset when a new map loads.
     pub attempted: bool,
     /// A background build in flight: the channel the worker thread delivers its finished graph on.
-    /// The main thread polls it each frame and swaps the result into `graph`/`bsp` when ready
-    /// (`None` when no build is running). Dropping it (on map change) discards a stale build.
-    pub pending: Option<std::sync::mpsc::Receiver<NavBuild>>,
+    /// The main thread polls it each frame and swaps the result into `graph` when ready (`None` when
+    /// no build is running). Dropping it (on map change) discards a stale build.
+    pub pending: Option<std::sync::mpsc::Receiver<NavGraph>>,
     /// Static catalog of item-goal pickups: `(entity index, nearest cell)`. Built once with the
     /// graph; items don't move, so their cell is fixed. Live availability and desire are read
     /// fresh at selection time (by the game's `bot::goals`).
     pub goals: Vec<(u32, CellId)>,
 }
 
-/// Build a navmesh off the main thread from pre-gathered, `Send` inputs: the raw BSP bytes plus the
-/// entity-derived plat/teleport/gate info. Pure — no engine or game-state access — so it runs
-/// safely on a worker thread whose result the main thread swaps in when ready.
+/// Build a navmesh off the main thread from the parsed BSP plus the entity-derived
+/// plat/teleport/gate info. Pure — no engine or game-state access — so it runs safely on a worker
+/// thread whose finished graph the main thread swaps in when ready. The BSP is parsed once at map
+/// load (see `GameState::load_map_bsp`) and shared here by reference.
 #[allow(clippy::too_many_arguments)] // the per-map build knobs; a params struct would just relocate them
 pub fn build_navmesh(
-    bytes: Vec<u8>,
+    bsp: &Bsp,
     plats: Vec<PlatInfo>,
     teleports: Vec<TeleportInfo>,
     gates: Vec<GateInfo>,
@@ -1517,37 +1982,46 @@ pub fn build_navmesh(
     double_jump: bool,
     speed_jump: Option<SpeedJumpParams>,
     rocket_jump: Option<RocketJumpParams>,
-) -> NavBuild {
-    let run = move || -> NavBuild {
-        let bsp = Bsp::parse(&bytes)?;
-        let mut graph = NavGraph::build(&bsp);
+) -> NavGraph {
+    let run = || -> NavGraph {
+        let mut graph = NavGraph::build(bsp);
         // Static-geometry jump/hook splices first (before the plat/gate splices): keeps plat surfaces
         // off their endpoints and lets `add_gates` tag any of these links that cross a door.
         if double_jump {
-            graph.add_double_jumps(&bsp);
+            graph.add_double_jumps(bsp);
         }
         // Speed jumps after double jumps, so they only fill the gaps double jumps can't (they see the DJ
         // links via `has_direct_link`).
         if let Some(params) = speed_jump {
-            graph.add_speed_jumps(&bsp, params, double_jump);
+            graph.add_speed_jumps(bsp, params, double_jump);
         }
         // Hooks first: they derive from the static hull, and going before the plat/gate splices keeps
         // plat surfaces off hook endpoints and lets `add_gates` tag any hook link crossing a door.
         if let Some(params) = hooks {
-            graph.add_hooks(&bsp, params);
+            graph.add_hooks(bsp, params);
         }
         // Rocket jumps after hooks: `has_direct_link` then skips any ledge a (free, cheaper) hook already
         // reaches, so an RJ link is only spent where nothing else gets there.
         if let Some(params) = rocket_jump {
-            graph.add_rocket_jumps(&bsp, params, double_jump);
+            graph.add_rocket_jumps(bsp, params, double_jump);
         }
-        graph.add_plats(&bsp, &plats);
-        graph.add_teleports(&bsp, &teleports);
+        graph.add_plats(bsp, &plats);
+        graph.add_teleports(bsp, &teleports);
         graph.add_gates(&gates);
         // Last: prices links entering a lift shaft, so it must see every link the splices above added
         // (a teleport that lands under a plat, a jump-aboard from the shaft floor).
         graph.surcharge_under_plat_links();
-        Some((bsp, graph))
+        // Liquid flags run here, on the worker: with the whole BSP in hand we read the render hull's
+        // contents directly (`bsp.pointcontents`), so there's no longer a main-thread graph-swap pass.
+        // They must precede `build_reachability`/`build_lod` so the LOD tables price water/hazard at
+        // birth (the tables read `link.cost + water_extra` and carry `hazard_hp` — see
+        // `build_lod_tables`/`intra_reach`; that's why there is no post-swap `patch_lod_liquids`).
+        graph.flag_hazards(&|p| bsp.is_solid(p), &|p| bsp.pointcontents(p));
+        graph.flag_water(&|p| bsp.pointcontents(p));
+        // Now that every link is in place and priced, precompute static reachability and the LOD hierarchy.
+        graph.build_reachability();
+        graph.build_lod();
+        graph
     };
     // Run the (rayon-parallel) build on a transient pool sized to leave one core for the caller.
     // A transient pool rather than rayon's process-global one because this crate ships inside a
@@ -1574,6 +2048,31 @@ impl NavState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ledge_beside` flags a cell only when the floor genuinely falls away past a survivable step
+    /// within a stride — an open pit, not flat ground, a wall, or a small step-down.
+    #[test]
+    fn ledge_beside_flags_a_pit_edge_not_flat_ground_or_a_step() {
+        // Flat floor everywhere (solid below z=0): nowhere is a ledge.
+        let flat = |p: Vec3| p.z < 0.0;
+        assert!(!ledge_beside(&flat, Vec3::ZERO), "flat ground must not flag");
+
+        // A walkway that ends at x=20 with open air (a deep pit) beyond it.
+        let cliff = |p: Vec3| p.x < 20.0 && p.z < 0.0;
+        // A cell on the lip (its +x probe at x=44 lands in the pit) is a ledge.
+        assert!(ledge_beside(&cliff, Vec3::ZERO), "cell beside the pit must flag");
+        // A cell well back from the lip (every probe still over floor) is not.
+        assert!(!ledge_beside(&cliff, Vec3::new(-100.0, 0.0, 0.0)), "cell away from the pit must not flag");
+
+        // A mere step-down (a catch-floor within FATAL_DROP past the lip) is survivable, not a ledge:
+        // floor at z=0 for x<20, a lower floor at z=-40 beyond it.
+        let step_down = |p: Vec3| if p.x < 20.0 { p.z < 0.0 } else { p.z < -40.0 };
+        assert!(!ledge_beside(&step_down, Vec3::ZERO), "a survivable step-down must not flag");
+
+        // But a drop past FATAL_DROP with no catch-floor within reach is a ledge (catch-floor at -100).
+        let deep = |p: Vec3| if p.x < 20.0 { p.z < 0.0 } else { p.z < -100.0 };
+        assert!(ledge_beside(&deep, Vec3::ZERO), "a drop past the fatal threshold must flag");
+    }
 
     /// The parabola integrator matches the closed-form ballistic solution over a flat floor.
     #[test]
@@ -1668,6 +2167,42 @@ mod tests {
         let mut g = NavGraph::build(&bsp);
         assert!(!g.cells.is_empty(), "no cells carved");
         assert!(!g.links.is_empty(), "no links built");
+
+        // DM3 regression: the two adjacent +40u hop-ups at the lower-RA lip are geometrically
+        // reachable only in unusually narrow slow-speed windows. Because the same target has a
+        // max-speed-safe takeoff farther back, those redundant wall-hit choices are pruned. A slow
+        // hop-up that is the only route to MH must remain, as must the final jump onto RA.
+        if std::path::Path::new(&path).file_stem().is_some_and(|s| s.eq_ignore_ascii_case("dm3")) {
+            let direct_jump = |from: Vec3, to: Vec3| {
+                let Some(a) = g.nearest(from) else { return false };
+                let Some(b) = g.nearest(to) else { return false };
+                (g.cell_origin(a) - from).length() < 0.1
+                    && (g.cell_origin(b) - to).length() < 0.1
+                    && g.adjacency[a as usize]
+                        .iter()
+                        .any(|&li| g.link_target(li) == b && g.link_kind(li) == LinkKind::JumpGap)
+            };
+            assert!(
+                !direct_jump(Vec3::new(192.0, -800.0, -16.0), Vec3::new(224.0, -832.0, 24.0)),
+                "unsafe diagonal lower-RA hop-up survived hot-entry certification"
+            );
+            assert!(
+                !direct_jump(Vec3::new(224.0, -800.0, -16.0), Vec3::new(224.0, -832.0, 24.0)),
+                "unsafe straight lower-RA hop-up survived hot-entry certification"
+            );
+            assert!(
+                direct_jump(Vec3::new(192.0, -704.0, -16.0), Vec3::new(224.0, -832.0, 24.0)),
+                "safe lower-RA run-jump was removed"
+            );
+            assert!(
+                direct_jump(Vec3::new(96.0, -576.0, 296.0), Vec3::new(128.0, -672.0, 328.0)),
+                "final jump onto RA was removed"
+            );
+            assert!(
+                direct_jump(Vec3::new(-512.0, 288.0, 144.0), Vec3::new(-576.0, 256.0, 176.0)),
+                "non-redundant slow MH ascent was removed"
+            );
+        }
 
         // Largest connected component via union-find over (undirected) links.
         let mut parent: Vec<u32> = (0..g.cells.len() as u32).collect();
@@ -2032,6 +2567,7 @@ mod tests {
             return;
         };
         let bytes = std::fs::read(&path).expect("read bsp");
+        let bsp = Bsp::parse(&bytes).expect("parse bsp");
         let hooks = Some(HookParams {
             gravity: 800.0,
             pull: HOOK_PULL_BASE,
@@ -2047,11 +2583,7 @@ mod tests {
         });
         let rj = Some(RocketJumpParams { gravity: 800.0, rj_extra: 0.0 });
         // All solvers on, no entity splices (they're serial and not the subject here).
-        let build = || {
-            build_navmesh(bytes.clone(), vec![], vec![], vec![], hooks, true, speed, rj)
-                .expect("build produced no graph")
-                .1
-        };
+        let build = || build_navmesh(&bsp, vec![], vec![], vec![], hooks, true, speed, rj);
         let a = build();
         let b = build();
 
@@ -2103,6 +2635,9 @@ mod tests {
                 mix(&mut h, t.airtime.to_bits() as u64);
                 mix(&mut h, t.chained as u64);
                 mix(&mut h, t.curl_gain.to_bits() as u64);
+                mix_vec3(&mut h, t.curl_entry_aim);
+                mix(&mut h, t.curl_switch_dist.to_bits() as u64);
+                mix_vec3(&mut h, t.curl_landing_aim);
             }
             for &x in g.rocket_jumps.idx_raw() {
                 mix(&mut h, x as u32 as u64);
@@ -2116,6 +2651,10 @@ mod tests {
                 mix(&mut h, t.airtime.to_bits() as u64);
                 mix(&mut h, t.self_damage.to_bits() as u64);
             }
+            // Reachability (SCC + closure) and the LOD tables (clusters, portals, edges, reach) —
+            // a nondeterministic cluster/portal build would otherwise slip past the fingerprint.
+            mix(&mut h, g.reach_fingerprint());
+            mix(&mut h, g.lod_fingerprint());
             h
         }
 
@@ -2320,8 +2859,8 @@ mod tests {
         assert_eq!(g.link_extra(0, &LinkCosts::default()), 0.0);
     }
 
-    /// `surcharge_hazard_links` flags a cell on a lava edge and bumps the cost of links *into* it,
-    /// while leaving an interior link untouched — over synthetic solid/liquid oracles, no BSP.
+    /// `flag_hazards` flags a cell on a lava edge and bumps the cost of links *into* it, while
+    /// leaving an interior link untouched — over synthetic solid/liquid oracles, no BSP.
     #[test]
     fn surcharge_flags_lava_edge_only() {
         // Two adjacent floor cells in a row; open lava sits past the +x cell (grid column 2 has no
@@ -2346,9 +2885,9 @@ mod tests {
         let is_solid = |p: Vec3| p.x <= 60.0 && p.z <= -40.0;
         let contents = |p: Vec3| {
             if p.x > 60.0 && p.z < 0.0 {
-                crate::bsp::CONTENTS_LAVA as f32
+                crate::bsp::CONTENTS_LAVA
             } else {
-                crate::bsp::CONTENTS_EMPTY as f32
+                crate::bsp::CONTENTS_EMPTY
             }
         };
         g.flag_hazards(&is_solid, &contents);
@@ -2385,9 +2924,9 @@ mod tests {
         // Deep water under and around cell 1 (x = 32), up past its eye point; cell 0 (x = 0) is dry.
         let contents = |p: Vec3| {
             if p.x > 16.0 {
-                crate::bsp::CONTENTS_WATER as f32
+                crate::bsp::CONTENTS_WATER
             } else {
-                crate::bsp::CONTENTS_EMPTY as f32
+                crate::bsp::CONTENTS_EMPTY
             }
         };
         g.flag_water(&contents);
@@ -2420,9 +2959,9 @@ mod tests {
         // Water fills z < 10 only, so cell origins (z = 0) are wet but their eye points (z = 22) are dry.
         let contents = |p: Vec3| {
             if p.z < 10.0 {
-                crate::bsp::CONTENTS_WATER as f32
+                crate::bsp::CONTENTS_WATER
             } else {
-                crate::bsp::CONTENTS_EMPTY as f32
+                crate::bsp::CONTENTS_EMPTY
             }
         };
         g.flag_water(&contents);
@@ -2440,9 +2979,9 @@ mod tests {
         let lava_at = |cx: f32, cy: f32| {
             move |p: Vec3| {
                 if (p.x - cx).abs() < 40.0 && (p.y - cy).abs() < 40.0 && p.z < 0.0 {
-                    crate::bsp::CONTENTS_LAVA as f32
+                    crate::bsp::CONTENTS_LAVA
                 } else {
-                    crate::bsp::CONTENTS_EMPTY as f32
+                    crate::bsp::CONTENTS_EMPTY
                 }
             }
         };
@@ -2470,9 +3009,9 @@ mod tests {
         let is_solid = |_: Vec3| false;
         let lava_everywhere = |p: Vec3| {
             if p.z < 0.0 {
-                crate::bsp::CONTENTS_LAVA as f32
+                crate::bsp::CONTENTS_LAVA
             } else {
-                crate::bsp::CONTENTS_EMPTY as f32
+                crate::bsp::CONTENTS_EMPTY
             }
         };
         g.flag_hazards(&is_solid, &lava_everywhere);
@@ -2515,9 +3054,9 @@ mod tests {
         let is_solid = |_: Vec3| false;
         let lava = |p: Vec3| {
             if (p.x - 100.0).abs() < 40.0 && p.y.abs() < 40.0 && p.z < 0.0 {
-                crate::bsp::CONTENTS_LAVA as f32
+                crate::bsp::CONTENTS_LAVA
             } else {
-                crate::bsp::CONTENTS_EMPTY as f32
+                crate::bsp::CONTENTS_EMPTY
             }
         };
         g.flag_hazards(&is_solid, &lava);
@@ -2644,9 +3183,9 @@ mod tests {
         let is_solid = |p: Vec3| p.z <= -40.0;
         let contents = |p: Vec3| {
             if (p.x - 32.0).abs() < 8.0 && p.y.abs() < 8.0 && (-40.0..0.0).contains(&p.z) {
-                crate::bsp::CONTENTS_LAVA as f32
+                crate::bsp::CONTENTS_LAVA
             } else {
-                crate::bsp::CONTENTS_EMPTY as f32
+                crate::bsp::CONTENTS_EMPTY
             }
         };
         g.flag_hazards(&is_solid, &contents);
@@ -2695,9 +3234,9 @@ mod tests {
         let is_solid = |p: Vec3| p.z <= 0.0;
         let contents = |p: Vec3| {
             if (-24.0..-20.0).contains(&p.z) {
-                crate::bsp::CONTENTS_SLIME as f32
+                crate::bsp::CONTENTS_SLIME
             } else {
-                crate::bsp::CONTENTS_EMPTY as f32
+                crate::bsp::CONTENTS_EMPTY
             }
         };
         g.flag_hazards(&is_solid, &contents);
@@ -2721,7 +3260,7 @@ mod tests {
     fn banded_graph(
         origins: &[Vec3],
         links: &[(CellId, CellId, LinkKind, f32)],
-        sjs: &[(usize, f32, f32, bool, f32)],
+        sjs: &[(usize, f32, f32, bool, f32, f32)],
     ) -> NavGraph {
         let cells = origins
             .iter()
@@ -2737,8 +3276,19 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let mut speed_jumps = SideTable::default();
-        for &(li, v_req, airtime, chained, curl_gain) in sjs {
-            let s = speed_jumps.push(SpeedJumpTraversal { takeoff: origins[links[li].from as usize], v_req, airtime, chained, curl_gain });
+        for &(li, v_req, airtime, chained, curl_gain, landing_speed_lo) in sjs {
+            let s = speed_jumps.push(SpeedJumpTraversal {
+                takeoff: origins[links[li].from as usize],
+                v_req,
+                airtime,
+                landing_speed_lo,
+                chained,
+                curl_gain,
+                curl_entry_aim: Vec3::ZERO,
+                curl_switch_dist: 0.0,
+                curl_landing_aim: Vec3::ZERO,
+                ground_turn: None,
+            });
             speed_jumps.tag(li, s);
         }
         let mut g = NavGraph::test_graph(cells, links);
@@ -2770,7 +3320,7 @@ mod tests {
             let g = banded_graph(
                 &origins,
                 &[(0, 1, kind, 3.0)],
-                if kind == LinkKind::SpeedJump { &[(0, 350.0, 0.7, false, 0.0)] } else { &[] },
+                if kind == LinkKind::SpeedJump { &[(0, 350.0, 0.7, false, 0.0, 0.0)] } else { &[] },
             );
             let horiz = (origins[1].xy() - origins[0].xy()).length();
             for band in 0..NBANDS as u8 {
@@ -2820,7 +3370,7 @@ mod tests {
                 (2, 3, LinkKind::Walk, 0.625),
                 (3, 4, LinkKind::SpeedJump, 1.7),
             ],
-            &[(1, 350.0, 0.7, true, 0.0), (3, 350.0, 0.7, true, 0.0)],
+            &[(1, 350.0, 0.7, true, 0.0, 0.0), (3, 350.0, 0.7, true, 0.0, 0.0)],
         );
         // Speed-unaware: the chained legs are priced away, so C is effectively unreachable.
         let flood = g.costs_from(0, &LinkCosts::default());
@@ -2848,12 +3398,26 @@ mod tests {
             (0, 2, LinkKind::JumpGap, 1.3),   // detour leg 1
             (2, 1, LinkKind::JumpGap, 1.3),   // detour leg 2
         ];
-        let curl = banded_graph(&origins, &links, &[(0, 391.0, 0.68, false, 12.0)]);
+        let curl = banded_graph(&origins, &links, &[(0, 391.0, 0.68, false, 12.0, 0.0)]);
         let route = curl.find_path_banded(0, 1, MAX_SPEED, &LinkCosts::default()).expect("route exists");
         assert_eq!(route.links, vec![0], "the certified curl must be taken over the detour");
-        let straight = banded_graph(&origins, &links, &[(0, 391.0, 0.68, false, 0.0)]);
+        let straight = banded_graph(&origins, &links, &[(0, 391.0, 0.68, false, 0.0, 0.0)]);
         let route2 = straight.find_path_banded(0, 1, MAX_SPEED, &LinkCosts::default()).expect("route exists");
         assert_eq!(route2.links, vec![1, 2], "a straight speed jump is repriced high; the detour wins");
+    }
+
+    #[test]
+    fn banded_plain_curl_credits_only_certified_landing_floor() {
+        let origins = [Vec3::ZERO, Vec3::new(416.0, -192.0, 48.0)];
+        let links = [(0, 1, LinkKind::SpeedJump, 1.5)];
+        let certified = banded_graph(&origins, &links, &[(0, 391.0, 0.68, false, 8.0, 479.4)]);
+        let (_, certified_exit) = certified.banded_step(0, 0).expect("certified curl");
+        assert_eq!(certified_exit, band_of(479.4));
+
+        let unproven = banded_graph(&origins, &links, &[(0, 391.0, 0.68, false, 8.0, 0.0)]);
+        let (_, fallback_exit) = unproven.banded_step(0, 0).expect("legacy curl fallback");
+        assert_eq!(fallback_exit, band_of(391.0));
+        assert!(certified_exit > fallback_exit, "unproven carry must not be credited");
     }
 
     /// Carried speed only survives a corner within the heading cone: a straight approach reaches a
@@ -2864,7 +3428,7 @@ mod tests {
             [Vec3::ZERO, Vec3::new(2000.0, 0.0, 0.0), Vec3::new(to_x, to_y, 0.0)]
         };
         let links = [(0, 1, LinkKind::Walk, 6.25), (1, 2, LinkKind::SpeedJump, 1.7)];
-        let sj = [(1usize, 350.0, 0.7, true, 0.0)];
+        let sj = [(1usize, 350.0, 0.7, true, 0.0, 0.0)];
         // Straight: R→M→C all along +x — the carried band satisfies the chained jump.
         let straight = banded_graph(&long_walk(2300.0, 0.0), &links, &sj);
         assert!(
@@ -2877,5 +3441,428 @@ mod tests {
             corner.find_path_banded(0, 2, 0.0, &LinkCosts::default()).is_none(),
             "a sharp corner should demote the carried band below the jump's requirement"
         );
+    }
+
+    // --- static reachability (see `reach`) ---
+
+    fn reach_cell(x: f32) -> Cell {
+        Cell { origin: Vec3::new(x, 0.0, 0.0), gx: 0, gy: 0 }
+    }
+    fn reach_link(from: CellId, to: CellId) -> Link {
+        Link { from, to, kind: LinkKind::Walk, cost: 1.0 }
+    }
+
+    /// A one-way drop severs backward reachability but not forward: after a two-way pair a bot drops
+    /// into a pocket it can't climb back out of. The SCC closure must reflect that asymmetry.
+    #[test]
+    fn reachability_respects_one_way_links() {
+        // 0 <-> 1 (two-way), then a one-way chain 1 → 2 → 3 (a drop into a pocket, no way back up).
+        let mut g = NavGraph::test_graph(
+            vec![reach_cell(0.0), reach_cell(32.0), reach_cell(64.0), reach_cell(96.0)],
+            vec![reach_link(0, 1), reach_link(1, 0), reach_link(1, 2), reach_link(2, 3)],
+        );
+        g.build_reachability();
+        // Forward across the drop: everything downstream is reachable.
+        assert!(g.reachable(0, 3), "0 should reach the pocket bottom");
+        assert!(g.reachable(1, 2));
+        // Backward across the drop: severed.
+        assert!(!g.reachable(2, 1), "no way back up the drop");
+        assert!(!g.reachable(3, 0), "the pocket bottom can't return");
+        // The two-way pair is mutually reachable, and every cell reaches itself.
+        assert!(g.reachable(0, 1) && g.reachable(1, 0));
+        assert!(g.reachable(2, 2) && g.reachable(3, 3));
+    }
+
+    /// The goal-selection fan-out (`bot::par::flood_batch`) runs `costs_from` for many sources on a
+    /// worker pool. That is only sound if `costs_from` is a pure function of `(graph, source, costs)` —
+    /// no shared mutable state — so a batch computed on a rayon pool is **bit-identical** to the serial
+    /// one. Guard that here (the pool-side determinism proof for Step 5), comparing raw f32 bits.
+    #[test]
+    fn costs_from_batch_is_thread_invariant() {
+        use rayon::prelude::*;
+        // A ring plus spokes: several distinct sources, each with a non-trivial flood.
+        let cells: Vec<Cell> = (0..12).map(|i| reach_cell(i as f32 * 40.0)).collect();
+        let mut links = Vec::new();
+        for i in 0..12u32 {
+            let j = (i + 1) % 12;
+            links.push(reach_link(i, j));
+            links.push(reach_link(j, i));
+        }
+        let g = NavGraph::test_graph(cells, links);
+        let sources: Vec<CellId> = (0..12).collect();
+        let costs = LinkCosts::default();
+
+        let serial: Vec<Vec<f32>> = sources.iter().map(|&s| g.costs_from(s, &costs)).collect();
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let parallel: Vec<Vec<f32>> =
+            pool.install(|| sources.par_iter().map(|&s| g.costs_from(s, &costs)).collect());
+
+        assert_eq!(serial.len(), parallel.len());
+        for (s, (a, b)) in sources.iter().zip(serial.iter().zip(&parallel)) {
+            let ab: Vec<u32> = a.iter().map(|x| x.to_bits()).collect();
+            let bb: Vec<u32> = b.iter().map(|x| x.to_bits()).collect();
+            assert_eq!(ab, bb, "source {s}: parallel flood differs from serial bit-for-bit");
+        }
+    }
+
+    /// `costs_from_within(t_max)` is the whole-graph flood restricted to the ≤ `t_max` ball: every
+    /// cell within the bound reads its exact full-flood cost, and `settled` is exactly those cells in
+    /// nondecreasing-cost order. This is the exactness guarantee the local escape/pickup floods lean on.
+    #[test]
+    fn costs_from_within_matches_bounded_full_flood() {
+        // Chain 0↔1↔…↔9, unit walk links, so cell k settles at cost k from cell 0.
+        let cells: Vec<Cell> = (0..10).map(|i| reach_cell(i as f32 * 40.0)).collect();
+        let mut links = Vec::new();
+        for i in 0..9u32 {
+            links.push(reach_link(i, i + 1));
+            links.push(reach_link(i + 1, i));
+        }
+        let g = NavGraph::test_graph(cells, links);
+        let costs = LinkCosts::default();
+        let full = g.costs_from(0, &costs);
+        for &t_max in &[0.0_f32, 2.5, 4.0, 100.0] {
+            let (bounded, settled) = g.costs_from_within(0, &costs, t_max);
+            for c in 0..10usize {
+                if full[c] <= t_max {
+                    assert_eq!(bounded[c].to_bits(), full[c].to_bits(), "cell {c} within {t_max} must be exact");
+                }
+            }
+            let expected: Vec<u32> = (0..10u32).filter(|&c| full[c as usize] <= t_max).collect();
+            let mut got = settled.clone();
+            got.sort_unstable();
+            assert_eq!(got, expected, "settled set at t_max={t_max}");
+            for w in settled.windows(2) {
+                assert!(bounded[w[0] as usize] <= bounded[w[1] as usize], "settled out of cost order at {t_max}");
+            }
+        }
+    }
+
+    /// `nearest_reachable_to` picks the reachable cell physically closest to an unreachable goal, and
+    /// the O(1)-table path agrees cell-for-cell with the Dijkstra-flood fallback (bare graph).
+    #[test]
+    fn nearest_reachable_matches_flood() {
+        // A connected run 0→1→2 (x = 0, 100, 200) plus an isolated goal cell 3 at x = 250 with no
+        // links. From 0 the reachable set is {0,1,2}; the closest of those to the goal is cell 2.
+        let cells = vec![reach_cell(0.0), reach_cell(100.0), reach_cell(200.0), reach_cell(250.0)];
+        let links = vec![reach_link(0, 1), reach_link(1, 0), reach_link(1, 2), reach_link(2, 1)];
+
+        // Flood path: no reachability table built (reach == None), so it falls back to costs_from.
+        let bare = NavGraph::test_graph(cells.clone(), links.clone());
+        assert_eq!(bare.nearest_reachable_to(0, 3), Some(2), "flood fallback picks the closest reachable cell");
+
+        // Table path: identical graph with the table built — must give the same answer.
+        let mut built = NavGraph::test_graph(cells, links);
+        built.build_reachability();
+        assert_eq!(built.nearest_reachable_to(0, 3), Some(2), "table path must agree with the flood");
+    }
+
+    // --- LOD hierarchy (see `lod`) ---
+
+    /// Clustering groups cells that share a spatial block *and* a link path inside it; an unconnected
+    /// same-block cell and a cell in another block each get their own cluster. `LOD_SHIFT=3` → blocks
+    /// are 8 grid columns wide, so gx 0..7 share a block and gx 8 starts the next.
+    #[test]
+    fn clusters_split_disconnected_blocks() {
+        let cell = |gx: i32| Cell { origin: Vec3::new(gx as f32 * 32.0, 0.0, 0.0), gx, gy: 0 };
+        // cells 0,1,2 in block 0 (gx 0/1/2); cell 3 in block 1 (gx 8). 0↔1 linked; 2 isolated.
+        let mut g = NavGraph::test_graph(
+            vec![cell(0), cell(1), cell(2), cell(8)],
+            vec![reach_link(0, 1), reach_link(1, 0)],
+        );
+        g.build_lod();
+        let cl = |c: u32| g.cluster_of(c).unwrap();
+        assert_eq!(cl(0), cl(1), "connected same-block cells share a cluster");
+        assert_ne!(cl(0), cl(2), "an unconnected same-block cell is its own cluster");
+        assert_ne!(cl(0), cl(3), "a cell in another block is a different cluster");
+        assert_ne!(cl(2), cl(3), "distinct singletons stay distinct");
+        assert_eq!(g.cluster_count(), 3, "0/1, 2, and 3 → three clusters");
+        // A one-way link still groups its endpoints (undirected clustering).
+        let mut one_way = NavGraph::test_graph(vec![cell(0), cell(1)], vec![reach_link(0, 1)]);
+        one_way.build_lod();
+        assert_eq!(one_way.cluster_of(0), one_way.cluster_of(1), "a one-way drop still clusters together");
+    }
+
+    /// On a straight corridor spanning several cluster blocks the abstract portal path *is* the only
+    /// path, so the coarse estimate equals the exact flood at every cell — near cells from the fine
+    /// flood, far cells reconstructed through portals and intra-cluster transit.
+    #[test]
+    fn coarse_costs_match_exact_on_a_chain() {
+        let cell = |gx: i32| Cell { origin: Vec3::new(gx as f32 * 32.0, 0.0, 0.0), gx, gy: 0 };
+        let cells: Vec<Cell> = (0..25).map(|i| cell(i)).collect();
+        let mut links = Vec::new();
+        for i in 0..24u32 {
+            links.push(reach_link(i, i + 1));
+            links.push(reach_link(i + 1, i));
+        }
+        let mut g = NavGraph::test_graph(cells, links);
+        g.build_lod();
+        assert!(g.cluster_count() >= 4, "a 25-cell chain spans four 8-column blocks, got {}", g.cluster_count());
+
+        let costs = LinkCosts::default();
+        let exact = g.costs_from(0, &costs);
+        let coarse = g.coarse_costs(0, &costs, true);
+        for c in 0..25u32 {
+            assert_eq!(
+                coarse.cost_to(c).to_bits(),
+                exact[c as usize].to_bits(),
+                "cell {c}: coarse {} must equal exact {} on a linear chain",
+                coarse.cost_to(c),
+                exact[c as usize],
+            );
+        }
+
+        // Bare graph (no LOD built): coarse falls back to the exact full flood.
+        let bare = NavGraph::test_graph((0..3).map(cell).collect(), vec![reach_link(0, 1), reach_link(1, 2)]);
+        let bare_exact = bare.costs_from(0, &costs);
+        let bare_coarse = bare.coarse_costs(0, &costs, true);
+        for c in 0..3u32 {
+            assert_eq!(bare_coarse.cost_to(c).to_bits(), bare_exact[c as usize].to_bits(), "bare-graph fallback cell {c}");
+        }
+    }
+
+    /// The safety property goal scoring relies on: over a 2-D grid spanning several clusters, the
+    /// coarse estimate never *underestimates* the exact cost (an abstract path is a real path, so its
+    /// cost ≥ the shortest) and agrees on reachability. Underestimating would let a bot think an item
+    /// is closer than it is.
+    #[test]
+    fn coarse_never_underestimates_on_a_grid() {
+        let (w, h) = (18i32, 6i32);
+        let idx = |gx: i32, gy: i32| (gy * w + gx) as u32;
+        let mut cells = Vec::new();
+        for gy in 0..h {
+            for gx in 0..w {
+                cells.push(Cell { origin: Vec3::new(gx as f32 * 32.0, gy as f32 * 32.0, 0.0), gx, gy });
+            }
+        }
+        let mut links = Vec::new();
+        for gy in 0..h {
+            for gx in 0..w {
+                if gx + 1 < w {
+                    links.push(reach_link(idx(gx, gy), idx(gx + 1, gy)));
+                    links.push(reach_link(idx(gx + 1, gy), idx(gx, gy)));
+                }
+                if gy + 1 < h {
+                    links.push(reach_link(idx(gx, gy), idx(gx, gy + 1)));
+                    links.push(reach_link(idx(gx, gy + 1), idx(gx, gy)));
+                }
+            }
+        }
+        let mut g = NavGraph::test_graph(cells, links);
+        g.build_lod();
+        assert!(g.cluster_count() >= 3, "18-wide grid spans three gx-blocks, got {}", g.cluster_count());
+
+        let costs = LinkCosts::default();
+        let exact = g.costs_from(0, &costs);
+        let coarse = g.coarse_costs(0, &costs, true);
+        for c in 0..(w * h) as u32 {
+            let (e, co) = (exact[c as usize], coarse.cost_to(c));
+            assert_eq!(e.is_finite(), co.is_finite(), "cell {c}: reachability must agree");
+            if e.is_finite() {
+                assert!(co >= e - 1e-3, "cell {c}: coarse {co} underestimates exact {e}");
+            }
+        }
+    }
+
+    /// The coverage-pass guardrail: a cell reachable only through a crossing that the cheapest-per-pair
+    /// rep dropped must still get a finite coarse cost (it silently read INFINITY before). Cluster A =
+    /// {0,1}, cluster B = {2,3}; two A→B crossings (cheap Walk 1→2 = rep, pricier Drop 1→3), and inside
+    /// B only one-way 3→2 — so the rep's landing (2) can't reach 3.
+    #[test]
+    fn coarse_covers_cells_reachable_only_via_a_dropped_crossing() {
+        let cell = |gx: i32| Cell { origin: Vec3::new(gx as f32 * 32.0, 0.0, 0.0), gx, gy: 0 };
+        let cells = vec![cell(0), cell(1), cell(8), cell(9)];
+        let links = vec![
+            reach_link(0, 1),
+            reach_link(1, 0),
+            reach_link(1, 2), // cheap Walk cross → rep
+            Link { from: 1, to: 3, kind: LinkKind::Drop, cost: 2.0 }, // pricier cross to cell 3
+            reach_link(3, 2), // one-way inside B
+        ];
+        let mut g = NavGraph::test_graph(cells, links);
+        g.build_reachability();
+        g.build_lod();
+        let costs = LinkCosts::default();
+        let coarse = g.coarse_costs(0, &costs, false);
+        assert!(g.reachable(0, 3), "cell 3 is reachable via the drop");
+        assert!(coarse.cost_to(3).is_finite(), "coverage pass must give reachable cell 3 a finite coarse cost");
+        for c in 0..4u32 {
+            assert_eq!(g.reachable(0, c), coarse.cost_to(c).is_finite(), "reachability/finiteness must agree at cell {c}");
+        }
+    }
+
+    /// Storey-banded clustering: a platform and the pit directly beneath it (same 256u XY block, joined
+    /// only by a one-way drop) must land in *different* clusters, so the cheap drop into the pit can't
+    /// evict the climb onto the platform as the block pair's single representative crossing. Z-blind,
+    /// the two merged into one cluster spanning both heights; the cheap drop won the rep slot, the
+    /// abstract route into the block landed in the pit (which can't climb back up), and the platform
+    /// read `cost_to = INFINITY` while the fine graph reached it — the bravado quad, unreachable under
+    /// LOD. Block A (gx&lt;8) is a launch walkway at platform height; block B (gx≥8) is the platform
+    /// (z 256) over a pit (z 0). The platform's outbound jump makes it a self-covering portal, so the
+    /// coverage pass can't paper over the eviction — exactly the bravado shape.
+    #[test]
+    fn coarse_reaches_a_platform_over_the_pit_below_it() {
+        let at = |x: f32, y: f32, z: f32, gx: i32, gy: i32| Cell { origin: Vec3::new(x, y, z), gx, gy };
+        let cells = vec![
+            at(224.0, 0.0, 256.0, 7, 0),  // 0 W  — launch walkway (block A, storey 2)
+            at(224.0, 32.0, 256.0, 7, 1), // 1 W2 — walkway neighbour (gives the platform an outbound portal)
+            at(256.0, 0.0, 256.0, 8, 0),  // 2 P0 — platform edge (block B, storey 2)
+            at(288.0, 0.0, 256.0, 9, 0),  // 3 P1 — platform interior — the "quad"
+            at(256.0, 0.0, 0.0, 8, 0),    // 4 D0 — pit below the platform (block B, storey 0)
+            at(288.0, 0.0, 0.0, 9, 0),    // 5 D1 — pit
+        ];
+        let jump = |from, to| Link { from, to, kind: LinkKind::JumpGap, cost: 1.0 };
+        let drop = |from, to| Link { from, to, kind: LinkKind::Drop, cost: 0.3 };
+        let links = vec![
+            reach_link(0, 1),
+            reach_link(1, 0), // walkway intra (block A)
+            reach_link(2, 3),
+            reach_link(3, 2), // platform intra (block B, storey 2)
+            reach_link(4, 5),
+            reach_link(5, 4), // pit intra (block B, storey 0)
+            jump(0, 2),       // climb: walkway → platform edge (the crossing that must survive)
+            drop(0, 4),       // cheaper drop: walkway → pit (the evictor — same block B pre-banding)
+            drop(2, 4),       // one-way drop platform → pit (merges the two pre-banding)
+            jump(3, 1),       // platform → walkway: makes the platform a self-covering takeoff portal
+        ];
+        let mut g = NavGraph::test_graph(cells, links);
+        g.build_reachability();
+        g.build_lod();
+
+        // The storey band keeps the platform (cell 3, z 256) out of the pit's cluster (cell 4, z 0).
+        assert_ne!(g.cluster_of(3), g.cluster_of(4), "platform and the pit beneath it must not share a cluster");
+
+        let costs = LinkCosts::default();
+        let coarse = g.coarse_costs(0, &costs, false);
+        let exact = g.costs_from(0, &costs);
+        assert!(g.reachable(0, 3), "the platform is reachable via the climb");
+        assert!(coarse.cost_to(3).is_finite(), "coarse must reach the platform — the climb wasn't evicted into the pit");
+        for c in 0..6u32 {
+            assert_eq!(g.reachable(0, c), coarse.cost_to(c).is_finite(), "reachability/finiteness must agree at cell {c}");
+            if exact[c as usize].is_finite() {
+                assert!(coarse.cost_to(c) >= exact[c as usize] - 1e-3, "cell {c}: coarse {} underestimates exact {}", coarse.cost_to(c), exact[c as usize]);
+            }
+        }
+    }
+
+    /// A directed cluster pair whose *cheapest* crossing is a shut gate but which also has a pricier
+    /// gate-free crossing: keeping a gate-free representative lets the coarse cost route around the shut
+    /// door, so a prize past the gate-free crossing reads reachable (below the closed-gate wall) exactly
+    /// as the exact flood does — the very input the openable-gate valuation reads. Without the second
+    /// rep the strictly-cheaper gated crossing evicts the gate-free one and the prize reads sealed.
+    #[test]
+    fn coarse_routes_around_a_shut_gate_via_a_gate_free_crossing() {
+        let at = |gx: i32, gy: i32| Cell { origin: Vec3::new(gx as f32 * 32.0, gy as f32 * 32.0, 0.0), gx, gy };
+        // Cluster A = block (0,0): cells 0,1. Cluster B = block (1,0): cells 2,3.
+        let cells = vec![at(0, 0), at(1, 0), at(8, 0), at(15, 7)];
+        let links = vec![
+            reach_link(0, 1),
+            reach_link(1, 0),
+            reach_link(2, 3), // B intra
+            reach_link(3, 2),
+            Link { from: 1, to: 2, kind: LinkKind::Walk, cost: 1.0 }, // cheap crossing (gated below)
+            Link { from: 1, to: 3, kind: LinkKind::Walk, cost: 3.0 }, // pricier gate-free crossing
+        ];
+        let mut g = NavGraph::test_graph(cells, links);
+        // Tag the cheap 1→2 crossing (link 4) as gated directly — `add_gates` needs a grid index the
+        // bare test graph lacks, and this test exercises the coarse router, not the geometry splice.
+        let gate = g.gates.push(Gate {
+            obstruction: 0,
+            closed_origin: g.cells[2].origin,
+            closed_min: Vec3::ZERO,
+            closed_max: Vec3::ZERO,
+            activator: 0,
+            button_cell: 0,
+            aim: g.cells[0].origin,
+            shoot: false,
+        });
+        g.gates.tag(4, gate);
+        assert_eq!(g.gate_count(), 1, "gate registered");
+        assert_eq!(g.gate_of_link(4), Some(0), "the cheap 1→2 crossing is gated");
+        assert_eq!(g.gate_of_link(5), None, "the pricier 1→3 crossing is gate-free");
+        g.build_reachability();
+        g.build_lod();
+
+        let shut = LinkCosts { gate_closed: &[true], ..Default::default() };
+        // Cell 3 is reachable gate-free (0→1→3, cost 1+3): coarse must price it below the closed wall,
+        // not seal it at ~100k behind the cheaper gated crossing.
+        let c3 = g.coarse_costs(0, &shut, true).cost_to(3);
+        assert!(c3 < CLOSED_GATE_PENALTY, "cell 3 must route around the shut gate, got {c3}");
+        assert!((c3 - 4.0).abs() < 1e-3, "cell 3's gate-free coarse cost should be 4, got {c3}");
+        // With the gate open the cheaper crossing (0→1→2→3 = 1+1+1) wins again — both reps are present,
+        // so the gate-free alternate never costs when the door is open.
+        let c3_open = g.coarse_costs(0, &LinkCosts::default(), true).cost_to(3);
+        assert!((c3_open - 3.0).abs() < 1e-3, "gate open: cheapest route to cell 3 is 3, got {c3_open}");
+    }
+
+    /// The LOD steer corridor plants its interim short of a far goal (bounding the fine search) but
+    /// steers a near goal directly; its window contains a route the restricted search actually finds.
+    #[test]
+    fn corridor_bounds_a_far_goal() {
+        let cell = |gx: i32| Cell { origin: Vec3::new(gx as f32 * 32.0, 0.0, 0.0), gx, gy: 0 };
+        let cells: Vec<Cell> = (0..25).map(|i| cell(i)).collect();
+        let mut links = Vec::new();
+        for i in 0..24u32 {
+            links.push(reach_link(i, i + 1));
+            links.push(reach_link(i + 1, i));
+        }
+        let mut g = NavGraph::test_graph(cells, links);
+        g.build_lod();
+        let costs = LinkCosts::default();
+
+        // Far goal (cell 24): the interim is short of it, at/past the horizon, in the window.
+        let c = g.corridor(0, 24, &costs, 4.0).expect("a far goal has a corridor");
+        assert!(c.interim < 24, "interim {} should fall short of the far goal", c.interim);
+        assert!(g.coarse_costs(0, &costs, false).cost_to(c.interim) >= 4.0, "interim at/past the horizon");
+        assert!(c.allowed[g.cluster_of(0).unwrap() as usize], "the home cluster is in the window");
+        assert!(c.allowed[g.cluster_of(c.interim).unwrap() as usize], "the interim's cluster is in the window");
+        // The restricted search finds a route to the interim (the corridor is a real in-window path)…
+        assert!(
+            !g.find_path_within(0, c.interim, &costs, &c.allowed).unwrap_or_default().is_empty(),
+            "restricted search must find the corridor route"
+        );
+        // …and it truly bounds: a cell outside the window is unreachable to the restricted search.
+        let outside = (0..g.cluster_count() as u32).find(|&cl| !c.allowed[cl as usize]);
+        if let Some(cl) = outside {
+            let far = (0..25u32).find(|&x| g.cluster_of(x) == Some(cl)).unwrap();
+            assert!(g.find_path_within(0, far, &costs, &c.allowed).is_none(), "window must exclude cell {far}");
+        }
+        // Same-cluster goal, and a goal within the horizon: steer directly (no corridor).
+        assert!(g.corridor(0, 5, &costs, 4.0).is_none(), "a same-cluster goal steers directly");
+        assert!(g.corridor(0, 10, &costs, 100.0).is_none(), "a goal within the horizon steers directly");
+    }
+
+    /// The LOD build folds the water tax (bot-independent) and hazard hp (priced per bot) of a far
+    /// intra-cluster liquid link into the coarse estimate — because the liquid columns are now flagged
+    /// on the worker *before* `build_lod`, which prices them at birth (no post-swap patch).
+    #[test]
+    fn lod_prices_water_and_hazard() {
+        let cell = |gx: i32| Cell { origin: Vec3::new(gx as f32 * 32.0, 0.0, 0.0), gx, gy: 0 };
+        let cells: Vec<Cell> = (0..15).map(|i| cell(i)).collect();
+        let mut links = Vec::new();
+        for i in 0..14u32 {
+            links.push(reach_link(i, i + 1)); // link 2i = (i,i+1)
+            links.push(reach_link(i + 1, i));
+        }
+        let mut g = NavGraph::test_graph(cells, links);
+        g.build_lod();
+        let costs = LinkCosts::default();
+        let dry = g.coarse_costs(0, &costs, false).cost_to(12);
+
+        // Flag link 10→11 (index 20) as a water + lava crossing and rebuild the LOD as the worker does
+        // (liquid columns filled before `build_lod`, which then prices them into the abstract graph).
+        let nlinks = g.links.len();
+        g.water_extra = vec![0.0; nlinks];
+        g.hazard_hp = vec![0.0; nlinks];
+        g.water_extra[20] = 3.0;
+        g.hazard_hp[20] = 25.0;
+        g.build_lod();
+
+        // Cell 12 is reached across 10→11, so its coarse cost grows by exactly the water tax.
+        let wet = g.coarse_costs(0, &costs, false).cost_to(12);
+        assert!((wet - (dry + 3.0)).abs() < 1e-3, "water tax: wet {wet} != dry+3 {}", dry + 3.0);
+        // With a hazard price set, the lava hp adds cost on top, scaled to the bot's nerve.
+        let hazcosts = LinkCosts { hazard: Some(HazardPrice::new(100.0)), ..LinkCosts::default() };
+        let hurt = g.coarse_costs(0, &hazcosts, false).cost_to(12);
+        assert!(hurt > wet, "hazard pricing should add cost: hurt {hurt} !> wet {wet}");
     }
 }

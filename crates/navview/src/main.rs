@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use glam::{Mat4, Vec3};
 use rtx_nav::bsp::Bsp;
-use rtx_nav::navmesh::{build_navmesh, NavBuild, NavGraph, RocketJumpParams, SpeedJumpParams};
+use rtx_nav::navmesh::{build_navmesh, NavGraph, RocketJumpParams, SpeedJumpParams};
 
 use geom::NUM_LINK_KINDS;
 use winit::application::ApplicationHandler;
@@ -27,9 +27,10 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use gpu::Gpu;
 
-/// Delivered from the background navmesh-build thread back to the event loop.
+/// Delivered from the background navmesh-build thread back to the event loop. The BSP is parsed on
+/// the main thread and shared into the worker, so it rides back alongside the finished graph.
 enum UserEvent {
-    NavBuilt { generation: u64, result: NavBuild },
+    NavBuilt { generation: u64, bsp: Arc<Bsp>, graph: NavGraph },
 }
 
 /// A noclip fly camera: a position plus yaw/pitch look angles (Quake Z-up, right-handed).
@@ -81,9 +82,11 @@ struct App {
     /// The most recently built navmesh, kept with its BSP so the overlay can be regenerated when a
     /// path-type toggle changes without rebuilding the graph (the BSP is needed to trim each cell's
     /// filled tile to its hull-1-supported footprint in [`geom::nav_surface`]).
-    nav: Option<(Bsp, NavGraph)>,
+    nav: Option<(Arc<Bsp>, NavGraph)>,
     /// Per-`LinkKind` visibility (indexed by `geom::kind_index`); `Walk` gates the filled surface.
     visible: [bool; NUM_LINK_KINDS],
+    /// Tint the walkable surface by LOD cluster instead of the flat walk color — the hierarchy overlay.
+    clusters: bool,
     egui_ctx: egui::Context,
     /// egui's winit input translator; created with the window in `resumed`.
     egui_state: Option<egui_winit::State>,
@@ -110,6 +113,7 @@ impl App {
             pending_path,
             nav: None,
             visible: [true; NUM_LINK_KINDS],
+            clusters: false,
             egui_ctx: egui::Context::default(),
             egui_state: None,
         }
@@ -119,10 +123,12 @@ impl App {
     /// the current graph and path-type visibility. Cheap enough to redo on every toggle change.
     fn rebuild_overlay(&mut self) {
         let (Some(gpu), Some((bsp, graph))) = (self.gpu.as_mut(), self.nav.as_ref()) else { return };
-        if self.visible[geom::kind_index(rtx_nav::navmesh::LinkKind::Walk)] {
-            gpu.set_surface(&geom::nav_surface(graph, bsp));
-        } else {
+        if !self.visible[geom::kind_index(rtx_nav::navmesh::LinkKind::Walk)] {
             gpu.set_surface(&[]);
+        } else if self.clusters {
+            gpu.set_surface(&geom::nav_clusters(graph, bsp));
+        } else {
+            gpu.set_surface(&geom::nav_surface(graph, bsp));
         }
         gpu.set_lines(&geom::nav_lines(graph, &self.visible));
         if let Some(w) = &self.window {
@@ -141,11 +147,13 @@ impl App {
         let raw_input = self.egui_state.as_mut().unwrap().take_egui_input(&window);
         let ctx = self.egui_ctx.clone();
         let mut visible = self.visible;
-        let full = ctx.run_ui(raw_input, |ui| build_panel(ui, &mut visible));
+        let mut clusters = self.clusters;
+        let full = ctx.run_ui(raw_input, |ui| build_panel(ui, &mut visible, &mut clusters));
         self.egui_state.as_mut().unwrap().handle_platform_output(&window, full.platform_output);
 
-        if visible != self.visible {
+        if visible != self.visible || clusters != self.clusters {
             self.visible = visible;
+            self.clusters = clusters;
             self.rebuild_overlay();
         }
 
@@ -188,6 +196,12 @@ impl App {
             w.request_redraw();
         }
 
+        // Parse the BSP once on the main thread; the worker shares it (`Arc`) to build, and it rides
+        // back with the graph for the overlay's liquid/hull queries.
+        let Some(bsp) = Bsp::parse(&bytes).map(Arc::new) else {
+            self.set_title(&format!("navview — {name}: BSP parse failed"));
+            return;
+        };
         // Build the navmesh off-thread (a big map takes seconds with all solvers enabled). Standard
         // DM loadout: double-jump + speed-jump (bhop) + rocket-jump at stock physics; hooks off, and
         // plats/teleports/gates need live entities we don't have offline (empty vecs).
@@ -195,8 +209,8 @@ impl App {
         let generation = self.generation;
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            let result = build_navmesh(
-                bytes,
+            let graph = build_navmesh(
+                &bsp,
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -212,7 +226,7 @@ impl App {
                 }),
                 Some(RocketJumpParams { gravity: 800.0, rj_extra: 0.0 }),
             );
-            let _ = proxy.send_event(UserEvent::NavBuilt { generation, result });
+            let _ = proxy.send_event(UserEvent::NavBuilt { generation, bsp, graph });
         });
     }
 
@@ -333,22 +347,17 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn user_event(&mut self, _el: &ActiveEventLoop, event: UserEvent) {
-        let UserEvent::NavBuilt { generation, result } = event;
+        let UserEvent::NavBuilt { generation, bsp, graph } = event;
         if generation != self.generation {
             return; // a newer map was dropped while this build ran — discard the stale result
         }
-        match result {
-            Some((bsp, graph)) => {
-                self.set_title(&format!(
-                    "navview — {} cells, {} links",
-                    graph.cells.len(),
-                    graph.links.len()
-                ));
-                self.nav = Some((bsp, graph));
-                self.rebuild_overlay();
-            }
-            None => self.set_title("navview — navmesh build failed"),
-        }
+        self.set_title(&format!(
+            "navview — {} cells, {} links",
+            graph.cells.len(),
+            graph.links.len()
+        ));
+        self.nav = Some((bsp, graph));
+        self.rebuild_overlay();
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -371,7 +380,7 @@ impl ApplicationHandler<UserEvent> for App {
 
 /// The path-type toggle panel: a checkbox per `LinkKind`, labelled and swatched in that kind's
 /// overlay color. `Walk` toggles the filled walkable surface; the rest toggle their colored lines.
-fn build_panel(ui: &mut egui::Ui, visible: &mut [bool; NUM_LINK_KINDS]) {
+fn build_panel(ui: &mut egui::Ui, visible: &mut [bool; NUM_LINK_KINDS], clusters: &mut bool) {
     egui::Window::new("Path types")
         .default_pos([12.0, 12.0])
         .resizable(false)
@@ -384,6 +393,8 @@ fn build_panel(ui: &mut egui::Ui, visible: &mut [bool; NUM_LINK_KINDS]) {
                     ui.colored_label(swatch, geom::kind_label(kind));
                 });
             }
+            ui.separator();
+            ui.checkbox(clusters, "LOD clusters");
         });
 }
 
