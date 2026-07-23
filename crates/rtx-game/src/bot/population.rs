@@ -45,12 +45,14 @@ pub fn manage_population(game: &mut GameState) {
         None => return, // structured match live — don't add or trim (would bench noise / drop a rostered bot)
     };
 
-    // Build the navmesh on demand the first time bots are actually wanted.
-    if want > 0 {
+    // Build the navmesh on demand the first time bots are actually wanted — or unconditionally on
+    // a lab server (control port configured): control verbs (cell/route/graph dump) and the
+    // movement-lab live bridge need the mesh even on a bot-less server monitoring a human.
+    if want > 0 || host.cvar(c"rtx_control_port") > 0.0 {
         game.ensure_navmesh();
-        if !game.nav.is_loaded() {
-            return;
-        }
+    }
+    if want > 0 && !game.nav.is_loaded() {
+        return;
     }
 
     // Queue at most one population change per frame; `vmMain` applies it via `drain_roster` once

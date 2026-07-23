@@ -28,6 +28,7 @@
 mod nav_edit;
 mod ra_trial;
 
+use std::fmt::Write as FmtWrite;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::mpsc::{Receiver, Sender};
@@ -64,6 +65,15 @@ const STALL_EPS: f32 = 16.0;
 const STALL_SECS: f32 = 4.0;
 /// A FlyLink attempt gives up after this long with no touchdown (see `poll_fly`).
 const FLY_TIMEOUT: f32 = 8.0;
+
+#[derive(Clone, Copy)]
+struct PmoveSample {
+    ent: u32,
+    origin: Vec3,
+    velocity: Vec3,
+    on_ground: bool,
+    ground_ent: i32,
+}
 
 /// The control channel's live state, carried on [`GameState`]. Persists across map loads (the socket
 /// binds once); `started` guards against re-binding. All fields stay untouched — the whole harness is
@@ -106,6 +116,33 @@ pub(crate) fn frame_end(game: &mut GameState) {
     }
     let now = game.time();
     let maxclients = game.host.cvar(c"maxclients").max(0.0) as u32;
+    if game.host.cvar(c"rtx_telemetry") > 0.0 {
+        let players = (1..=maxclients).filter_map(|i| {
+            let ent = &game.entities[EntId(i)];
+            if !ent.in_use || !ent.is_player() || ent.bot.is_bot {
+                return None;
+            }
+            let ground_ent = if ent.v.groundentity < 0 {
+                -1
+            } else {
+                let ground = EntId::from_prog(ent.v.groundentity);
+                if ground.index() < MAX_EDICTS && ground.to_prog() == ent.v.groundentity {
+                    ground.0 as i32
+                } else {
+                    -1
+                }
+            };
+            Some(PmoveSample {
+                ent: i,
+                origin: ent.v.origin,
+                velocity: ent.v.velocity,
+                on_ground: ent.v.flags.has(Flags::ONGROUND),
+                ground_ent,
+            })
+        });
+        let event = pmove_event_json(now, players);
+        send(game, event);
+    }
     for i in 1..=maxclients {
         let e = EntId(i);
         if !game.entities[e].bot.is_bot || !game.entities[e].in_use {
@@ -790,8 +827,29 @@ fn status_json(game: &GameState) -> String {
             jnum(ent.bot.bhop.peak),
         ));
     }
+    // Human clients (movement-lab live monitoring). Separate array so every
+    // existing consumer that iterates `bots` keeps its bots-only contract.
+    let mut players = String::new();
+    for i in 1..=maxclients {
+        let ent = &game.entities[EntId(i)];
+        if ent.bot.is_bot || !ent.in_use || !ent.is_player() {
+            continue;
+        }
+        if !players.is_empty() {
+            players.push(',');
+        }
+        players.push_str(&format!(
+            "{{\"ent\":{i},\"name\":{},\"origin\":{},\"health\":{},\"on_ground\":{},\"alive\":{},\"speed\":{}}}",
+            jstr(&game.netname_of(EntId(i))),
+            jvec3(ent.v.origin),
+            jnum(ent.v.health),
+            ent.v.flags.has(Flags::ONGROUND),
+            ent.is_alive(),
+            jnum(ent.v.velocity.xy().length()),
+        ));
+    }
     format!(
-        "{{\"map\":{},\"time\":{},\"navmesh\":{},\"cells\":{cells},\"links\":{links},\"rj_links\":{rj_links},\"bots\":[{bots}]}}",
+        "{{\"map\":{},\"time\":{},\"navmesh\":{},\"cells\":{cells},\"links\":{links},\"rj_links\":{rj_links},\"bots\":[{bots}],\"players\":[{players}]}}",
         jstr(&game.level.mapname),
         jnum(now),
         jstr(navmesh),
@@ -1468,6 +1526,35 @@ fn rj_result_json(
 
 // --- tiny JSON emitters (no serde: the game crate stays dependency-free) ---
 
+/// Serialize one movement-lab event without staging the player samples in a collection.
+///
+/// Emits even with zero players: the empty event is the bridge's heartbeat — proof the build
+/// supports telemetry — so a bridge started before the human connects never falls back to polling.
+fn pmove_event_json(now: f32, players: impl IntoIterator<Item = PmoveSample>) -> String {
+    let mut out = String::new();
+    out.push_str("{\"ev\":\"pmove\",\"t\":");
+    out.push_str(&jnum(now));
+    out.push_str(",\"players\":[");
+    let mut first = true;
+    for player in players {
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        let _ = write!(
+            out,
+            "{{\"ent\":{},\"origin\":{},\"vel\":{},\"on_ground\":{},\"ground_ent\":{}}}",
+            player.ent,
+            jvec3(player.origin),
+            jvec3(player.velocity),
+            player.on_ground,
+            player.ground_ent,
+        );
+    }
+    out.push_str("]}");
+    out
+}
+
 /// A finite `f32` as a JSON number (shortest round-trip form); non-finite → `null`.
 fn jnum(x: f32) -> String {
     if x.is_finite() {
@@ -1692,5 +1779,36 @@ mod tests {
         assert_eq!(jnum(f32::NAN), "null");
         assert_eq!(jvec3(Vec3::new(1.0, 2.0, 3.0)), "[1,2,3]");
         assert_eq!(jstr("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    }
+
+    #[test]
+    fn pmove_event_json_has_authoritative_ground_and_full_velocity() {
+        let players = [
+            PmoveSample {
+                ent: 1,
+                origin: Vec3::new(10.0, -20.5, 30.0),
+                velocity: Vec3::new(320.0, 40.0, -12.0),
+                on_ground: true,
+                ground_ent: 0,
+            },
+            PmoveSample {
+                ent: 3,
+                origin: Vec3::new(1.0, 2.0, 3.0),
+                velocity: Vec3::new(-4.0, 5.0, 6.0),
+                on_ground: false,
+                ground_ent: -1,
+            },
+        ];
+        assert_eq!(
+            pmove_event_json(12.5, players),
+            "{\"ev\":\"pmove\",\"t\":12.5,\"players\":[\
+             {\"ent\":1,\"origin\":[10,-20.5,30],\"vel\":[320,40,-12],\"on_ground\":true,\"ground_ent\":0},\
+             {\"ent\":3,\"origin\":[1,2,3],\"vel\":[-4,5,6],\"on_ground\":false,\"ground_ent\":-1}]}"
+        );
+        // Zero players still emits — the heartbeat that keeps a pre-connect bridge in push mode.
+        assert_eq!(
+            pmove_event_json(12.5, std::iter::empty()),
+            "{\"ev\":\"pmove\",\"t\":12.5,\"players\":[]}"
+        );
     }
 }
