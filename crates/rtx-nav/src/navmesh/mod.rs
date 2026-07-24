@@ -44,13 +44,18 @@ pub use physics::{
 };
 use reach::Reach;
 pub use rocketjump::RJ_CERT_AIM_DEG;
-use rocketjump::{rj_perturb_ok, rocket_jump_cost, simulate_rocket_jump, RJ_DELAYS, RJ_PITCHES};
+use rocketjump::{
+    air_arc_to, air_rj_lands, air_rj_perturb_ok, rj_perturb_ok, rocket_blast, rocket_jump_cost, simulate_rocket_jump,
+    RJ_DELAYS, RJ_PITCHES,
+};
 use sidetable::SideTable;
 pub use splice::{Gate, GateInfo, Plat, PlatInfo, TeleportInfo};
 
 use std::sync::Arc;
 
 use crate::bsp::Bsp;
+use crate::math::yaw_of;
+use crate::pmove::PmParams;
 use crate::qphys::STEP_HEIGHT;
 
 // --- grappling-hook traversal (see `add_hooks`) ---
@@ -96,6 +101,12 @@ const HOOK_MAX_PER_CELL: usize = 4;
 const RJ_RANGE_XY: f32 = 400.0;
 /// Highest rise a rocket-jump link may climb — the realistic apex (~280u) plus landing slack.
 const RJ_MAX_RISE: f32 = 320.0;
+/// Horizontal reach of the **air-steered** rocket-jump pass — tighter than the ballistic
+/// [`RJ_RANGE_XY`]. The air pass enumerates candidate targets per source cell, so its reach bounds
+/// that scan; the near-vertical high jumps it exists to recover (launch offset from a raised ledge by
+/// a column or two) sit well inside this, and a wider net would cost build time for the rarer,
+/// riskier long-range air jumps. Straight rocket-boosts for horizontal speed are out of scope.
+const RJ_AIR_RANGE_XY: f32 = 192.0;
 /// Lowest a target may sit above the source and still be worth a rocket jump (below this a jump or
 /// double jump already reaches — see the useful-gate).
 const RJ_MIN_RISE: f32 = 40.0;
@@ -1164,7 +1175,7 @@ impl NavGraph {
     /// Splice rocket-jump links: for each cell, fire a rocket at a solved delay/angle during a jump
     /// and keep the launches that land on a higher ledge no cheaper move reaches. `double_jump` gates
     /// the useful height. See [`super::rocketjump`] for the two-phase ballistics.
-    pub fn add_rocket_jumps(&mut self, bsp: &Bsp, params: RocketJumpParams, double_jump: bool) {
+    pub fn add_rocket_jumps(&mut self, bsp: &Bsp, params: RocketJumpParams, pm: PmParams, double_jump: bool) {
         // Solve per source cell in parallel (immutable borrow), then splice serially (push needs
         // `&mut`). Indexed `collect` preserves cell order, so link indices match a sequential build.
         let this = &*self;
@@ -1172,7 +1183,7 @@ impl NavGraph {
             .into_par_iter()
             .map(|from| {
                 let mut out = Vec::new();
-                this.solve_rocket_jumps_from(bsp, from, params, double_jump, &mut out);
+                this.solve_rocket_jumps_from(bsp, from, params, pm, double_jump, &mut out);
                 out
             })
             .collect();
@@ -1189,6 +1200,7 @@ impl NavGraph {
         bsp: &Bsp,
         from: CellId,
         params: RocketJumpParams,
+        pm: PmParams,
         double_jump: bool,
         out: &mut Vec<(Link, RocketJumpTraversal)>,
     ) {
@@ -1263,6 +1275,12 @@ impl NavGraph {
             }
         }
 
+        // Air-steered pass: recover the offset high jumps the ballistic solve can't — a near-vertical
+        // launch whose uncontrolled parabola drops back into the gap, but which the runtime reaches by
+        // air-strafing onto the ledge. Merges into the same per-cell `best`, so the cap and dedup below
+        // treat ballistic and air candidates uniformly.
+        self.air_rocket_jumps_from(bsp, from, params, &pm, useful_apex, &mut best);
+
         // Keep the cheapest few per cell. Break cost ties by target cell then dedup key, so the
         // survivors don't depend on `HashMap` iteration order (randomized per instance — and under
         // parallel building a tie would otherwise resolve differently run to run).
@@ -1271,6 +1289,112 @@ impl NavGraph {
             .sort_by(|(ak, (ac, al, _)), (bk, (bc, bl, _))| ac.total_cmp(bc).then(al.to.cmp(&bl.to)).then(ak.cmp(bk)));
         chosen.truncate(RJ_MAX_PER_CELL);
         out.extend(chosen.into_iter().map(|(_, (_, link, tr))| (link, tr)));
+    }
+
+    /// The air-steered rocket-jump candidates leaving `from`, merged into `best` (keyed like the
+    /// ballistic pass, by compass octant × 128u band). Unlike the ballistic solver — which flies a
+    /// direction and snaps wherever the parabola lands — this is *target-directed*: it enumerates the
+    /// higher cells within [`RJ_AIR_RANGE_XY`], fires opposite each, and rolls the runtime's
+    /// air-strafe ([`air_arc_to`]) onto it. A cheap scout gates the full pitch×delay sweep so rejected
+    /// targets cost ~one rollout. Only jumps whose landing survives [`air_rj_perturb_ok`] are kept.
+    fn air_rocket_jumps_from(
+        &self,
+        bsp: &Bsp,
+        from: CellId,
+        params: RocketJumpParams,
+        pm: &PmParams,
+        useful_apex: f32,
+        best: &mut HashMap<(usize, i32), (f32, Link, RocketJumpTraversal)>,
+    ) {
+        let a = self.cells[from as usize].origin;
+        let (fgx, fgy) = (self.cells[from as usize].gx, self.cells[from as usize].gy);
+        let radius = (RJ_AIR_RANGE_XY / GRID).ceil() as i32;
+        for to in self.neighbors_within(fgx, fgy, radius) {
+            if to == from {
+                continue;
+            }
+            let b = self.cells[to as usize].origin;
+            let dz = b.z - a.z;
+            let horiz = (b.xy() - a.xy()).length();
+            if dz <= useful_apex || !(RJ_MIN_RISE..=RJ_MAX_RISE).contains(&dz) || horiz > RJ_AIR_RANGE_XY {
+                continue;
+            }
+            if self.has_direct_link(from, to) {
+                continue;
+            }
+            // Fire opposite the target so the blast shoves the bot up and toward it; the air-strafe
+            // then homes the arc onto the ledge.
+            let fire_yaw = yaw_of(a.xy() - b.xy());
+            // Scout: at least one pitch must land the steered arc roughly on target before the full sweep.
+            let scout = RJ_PITCHES.iter().any(|&pitch| {
+                air_rj_lands(
+                    bsp,
+                    a,
+                    Vec3::new(pitch, fire_yaw, 0.0),
+                    RJ_DELAYS[1],
+                    params,
+                    pm,
+                    b,
+                    2.0,
+                )
+            });
+            if !scout {
+                continue;
+            }
+            // Full sweep for the cheapest robust shot onto this target.
+            let mut chosen: Option<(f32, Link, RocketJumpTraversal)> = None;
+            for &pitch in &RJ_PITCHES {
+                for &delay in &RJ_DELAYS {
+                    let angles = Vec3::new(pitch, fire_yaw, 0.0);
+                    let Some(bl) =
+                        rocket_blast(|p| bsp.is_solid(p), |p| bsp.is_point_solid(p), a, angles, delay, params)
+                    else {
+                        continue;
+                    };
+                    let Some((land, airtime, vz)) = air_arc_to(bsp, bl.pos_b, bl.v0, b, pm) else {
+                        continue;
+                    };
+                    if (land.xy() - b.xy()).length() > RJ_LAND_XY || (land.z - b.z).abs() > RJ_LAND_Z {
+                        continue;
+                    }
+                    if !air_rj_perturb_ok(bsp, a, angles, delay, params, pm, b) {
+                        continue;
+                    }
+                    let cost = rocket_jump_cost(bl.t_blast, airtime, vz, bl.self_damage);
+                    if chosen.as_ref().is_none_or(|(c, _, _)| cost < *c) {
+                        let link = Link {
+                            from,
+                            to,
+                            kind: LinkKind::RocketJump,
+                            cost,
+                        };
+                        let tr = RocketJumpTraversal {
+                            fire_angles: angles,
+                            fire_delay: delay,
+                            blast: bl.blast,
+                            pos_blast: bl.pos_b,
+                            v0: bl.v0,
+                            land,
+                            airtime,
+                            self_damage: bl.self_damage,
+                        };
+                        chosen = Some((cost, link, tr));
+                    }
+                }
+            }
+            if let Some((cost, link, tr)) = chosen {
+                let (dgx, dgy) = (self.cells[to as usize].gx - fgx, self.cells[to as usize].gy - fgy);
+                let key = (dir_bucket(dgx, dgy), (dz / 128.0).floor() as i32);
+                // Tie-break by target cell so the survivor doesn't depend on `neighbors_within`'s
+                // (HashMap-order) enumeration — the build must be deterministic.
+                let replace = best
+                    .get(&key)
+                    .is_none_or(|(bc, bl, _)| cost < *bc || (cost == *bc && link.to < bl.to));
+                if replace {
+                    best.insert(key, (cost, link, tr));
+                }
+            }
+        }
     }
 
     /// Whether `from` already has a direct (non-hook) link to `to` — such a target needs no hook.
@@ -1671,9 +1795,24 @@ pub fn build_navmesh(
             graph.add_hooks(bsp, params);
         }
         // Rocket jumps after hooks: `has_direct_link` then skips any ledge a (free, cheaper) hook already
-        // reaches, so an RJ link is only spent where nothing else gets there.
+        // reaches, so an RJ link is only spent where nothing else gets there. The air-steered pass needs
+        // the bhop movement params (air accel) to roll the runtime's in-flight strafe; take them from the
+        // speed-jump loadout, or stock defaults when bhop is off (rocket jumps air-strafe regardless).
         if let Some(params) = rocket_jump {
-            graph.add_rocket_jumps(bsp, params, double_jump);
+            let pm = speed_jump.map_or(
+                PmParams {
+                    gravity: params.gravity,
+                    ..PmParams::default()
+                },
+                |s| PmParams {
+                    gravity: s.gravity,
+                    accel: s.accel,
+                    friction: s.friction,
+                    stopspeed: s.stopspeed,
+                    maxspeed: s.maxspeed,
+                },
+            );
+            graph.add_rocket_jumps(bsp, params, pm, double_jump);
         }
         graph.add_plats(bsp, &plats);
         graph.add_teleports(bsp, &teleports);
@@ -2154,7 +2293,7 @@ mod tests {
                 .max()
                 .unwrap_or(0)
         };
-        gr.add_rocket_jumps(&bsp, rjp, false);
+        gr.add_rocket_jumps(&bsp, rjp, PmParams::default(), false);
         let rjumps = gr.summary().rocket_jump;
         for li in 0..gr.links.len() as u32 {
             if gr.link_kind(li) != LinkKind::RocketJump {
@@ -2173,18 +2312,20 @@ mod tests {
             );
             assert!(dz > JUMP_APEX, "rocket-jump link a single jump could make: dz={dz}");
             assert!(tr.self_damage > 0.0, "rocket-jump link with no self-blast");
-            // Re-fly the stored continuation arc onto the target corridor.
-            match simulate_arc(|p| bsp.is_solid(p), tr.pos_blast, tr.v0, rjp.gravity) {
-                ArcResult::Land { pos, .. } => {
+            // Re-fly the stored continuation arc onto the target with the runtime's in-flight air-strafe
+            // (the RJ Ballistic phase steers every rocket jump, ballistic- or air-solved, toward its
+            // target — so this is how the bot actually flies the stored `v0`).
+            match air_arc_to(&bsp, tr.pos_blast, tr.v0, b, &PmParams::default()) {
+                Some((pos, _, _)) => {
                     let d = (pos.xy() - b.xy()).length();
                     assert!(d <= RJ_LAND_XY * 2.0, "stored RJ arc lands {d} from target (li {li})");
                 }
-                _ => panic!("stored rocket-jump arc no longer lands (li {li})"),
+                None => panic!("stored rocket-jump arc no longer lands (li {li})"),
             }
         }
         // Determinism.
         let mut gr2 = NavGraph::build(&bsp);
-        gr2.add_rocket_jumps(&bsp, rjp, false);
+        gr2.add_rocket_jumps(&bsp, rjp, PmParams::default(), false);
         assert_eq!(gr2.summary().rocket_jump, rjumps, "rocket-jump build not deterministic");
         let reach_after = {
             let step = (gr.cells.len() / 32).max(1);

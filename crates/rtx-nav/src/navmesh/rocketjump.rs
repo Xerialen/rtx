@@ -19,8 +19,17 @@
 use glam::{Vec3, Vec3Swizzles};
 
 use super::hook::{march_to_solid, simulate_arc, ArcResult};
+use super::physics::CURL_DT;
 use super::{RocketJumpParams, FALL_DAMAGE_SPEED, HOOK_SIM_DT, RJ_LAND_XY, RJ_LAND_Z};
+use crate::bsp::Bsp;
+use crate::math::yaw_of;
+use crate::pmove::{pm_step, PmParams, PmState};
 use crate::qphys::JUMP_VZ;
+use crate::strafe::{air_accel_max, air_correct, Cmd, AIR_CORRECT_GAIN_DEFAULT};
+
+/// Ticks the air-steered continuation rolls before giving up (≈ 2.1 s at [`CURL_DT`]) — past any real
+/// rocket-jump airtime.
+const RJ_AIR_MAX_TICKS: usize = 160;
 
 /// View pitches (degrees below horizontal) tried for the shot; a steeper pitch blasts the bot more
 /// vertically. 80 ≈ the engine's view-pitch clamp — steeper than that isn't reachable in-game.
@@ -85,23 +94,37 @@ pub(super) struct RjSolution {
     pub self_damage: f32,
 }
 
-/// Two-phase integration of a rocket jump from standing origin `a`, firing `fire_angles` at
-/// `fire_delay` seconds into the jump. Returns the flight outcome, or `None` if the shot finds no
-/// surface, the ascent hits a ceiling, the blast is out of self-splash range, or the arc never lands.
+/// The bot state at the moment the rocket detonates: everything a continuation (ballistic or
+/// air-steered) needs, minus the flight itself.
+pub(super) struct Blast {
+    /// Bot position at the blast.
+    pub pos_b: Vec3,
+    /// Velocity just after the blast (jump velocity + knockback) — the continuation `v0`.
+    pub v0: Vec3,
+    pub blast: Vec3,
+    pub t_blast: f32,
+    /// Pre-armor self-damage points from the blast.
+    pub self_damage: f32,
+}
+
+/// Two-phase integration up to the blast: jump, march the rocket to the surface it detonates on,
+/// check the ascent doesn't clip a ceiling, and apply the knockback impulse. Returns the state at the
+/// blast, or `None` if the shot finds no surface, the rise hits a ceiling, or the blast is out of
+/// self-splash range. The continuation — a ballistic parabola for [`simulate_rocket_jump`], or an
+/// air-steered arc for [`air_arc_to`] — is the caller's.
 ///
 /// Two solidity oracles, because a rocket and a player collide on different hulls: `player_solid` is
-/// the player box (hull 1, used for the ascent-ceiling check and the post-blast landing arc), while
-/// `rocket_solid` is a point (hull 0) — the rocket is a zero-size missile, so it detonates on the
-/// *true* surface, ~24u below (16u nearer) the inflated player-hull floor. Marching the rocket on the
-/// player hull would stop it too high, overestimating the blast (this was the undershoot bug).
-pub(super) fn simulate_rocket_jump(
+/// the player box (hull 1, for the ascent-ceiling check), while `rocket_solid` is a point (hull 0) —
+/// the rocket is a zero-size missile, so it detonates on the *true* surface, ~24u below the inflated
+/// player-hull floor. Marching the rocket on the player hull would stop it too high (the undershoot bug).
+pub(super) fn rocket_blast(
     player_solid: impl Fn(Vec3) -> bool + Copy,
     rocket_solid: impl Fn(Vec3) -> bool + Copy,
     a: Vec3,
     fire_angles: Vec3,
     fire_delay: f32,
     params: RocketJumpParams,
-) -> Option<RjSolution> {
+) -> Option<Blast> {
     let g = params.gravity;
     let dir = fire_dir(fire_angles);
 
@@ -137,21 +160,127 @@ pub(super) fn simulate_rocket_jump(
     if params.rj_extra > 1.0 {
         dv += kdir * (points * params.rj_extra);
     }
-    let v0 = vel_b + dv;
+    Some(Blast {
+        pos_b,
+        v0: vel_b + dv,
+        blast,
+        t_blast,
+        self_damage: points,
+    })
+}
 
-    match simulate_arc(player_solid, pos_b, v0, g) {
+pub(super) fn simulate_rocket_jump(
+    player_solid: impl Fn(Vec3) -> bool + Copy,
+    rocket_solid: impl Fn(Vec3) -> bool + Copy,
+    a: Vec3,
+    fire_angles: Vec3,
+    fire_delay: f32,
+    params: RocketJumpParams,
+) -> Option<RjSolution> {
+    let b = rocket_blast(player_solid, rocket_solid, a, fire_angles, fire_delay, params)?;
+    match simulate_arc(player_solid, b.pos_b, b.v0, params.gravity) {
         ArcResult::Land { pos, airtime, vz } => Some(RjSolution {
             land: pos,
             airtime,
             vz_land: vz,
-            blast,
-            t_blast,
-            pos_blast: pos_b,
-            v0,
-            self_damage: points,
+            blast: b.blast,
+            t_blast: b.t_blast,
+            pos_blast: b.pos_b,
+            v0: b.v0,
+            self_damage: b.self_damage,
         }),
         _ => None,
     }
+}
+
+/// Fly the post-blast arc with the runtime's in-flight air-strafe toward `target` — the same
+/// `air_correct` at [`AIR_CORRECT_GAIN_DEFAULT`] the RJ Ballistic phase drives (see `bot::rj` /
+/// `bot::steer`). Returns the landing position, airtime, and landing vertical speed, or `None` if it
+/// never lands within the airtime cap. Mirrors the curl certifier's rollout but starts airborne with
+/// the blast velocity instead of a ground leap, so the builder certifies the offset high jumps the
+/// runtime reaches by steering — which a pure ballistic parabola ([`simulate_arc`]) cannot.
+pub(super) fn air_arc_to(bsp: &Bsp, pos_b: Vec3, v0: Vec3, target: Vec3, pm: &PmParams) -> Option<(Vec3, f32, f32)> {
+    let dt = CURL_DT;
+    let amax = air_accel_max(pm.accel, pm.maxspeed, dt);
+    let mut s = PmState {
+        origin: pos_b,
+        vel: v0,
+        on_ground: false,
+        jump_held: true, // the launch jump is still held; don't re-jump on a graze
+    };
+    for tick in 0..RJ_AIR_MAX_TICKS {
+        let st = air_correct(
+            s.vel.xy(),
+            yaw_of(target.xy() - s.origin.xy()),
+            amax,
+            dt,
+            AIR_CORRECT_GAIN_DEFAULT,
+        );
+        let cmd = Cmd {
+            view_yaw: st.view_yaw,
+            forward: st.forward,
+            side: st.side,
+            jump: false,
+        };
+        pm_step(bsp, &mut s, &cmd, pm, dt);
+        if tick > 2 && s.on_ground {
+            return Some((s.origin, (tick + 1) as f32 * dt, s.vel.z));
+        }
+    }
+    None
+}
+
+/// Fire toward `target` and air-steer: does the arc land within `tol` landing-windows of it (`tol=1`
+/// = the [`RJ_LAND_XY`]/[`RJ_LAND_Z`] acceptance box)? The scout and perturbation primitive for the
+/// air-steered rocket-jump pass.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn air_rj_lands(
+    bsp: &Bsp,
+    a: Vec3,
+    fire_angles: Vec3,
+    delay: f32,
+    params: RocketJumpParams,
+    pm: &PmParams,
+    target: Vec3,
+    tol: f32,
+) -> bool {
+    let Some(b) = rocket_blast(
+        |p| bsp.is_solid(p),
+        |p| bsp.is_point_solid(p),
+        a,
+        fire_angles,
+        delay,
+        params,
+    ) else {
+        return false;
+    };
+    matches!(air_arc_to(bsp, b.pos_b, b.v0, target, pm),
+        Some((land, _, _)) if (land.xy() - target.xy()).length() <= RJ_LAND_XY * tol && (land.z - target.z).abs() <= RJ_LAND_Z * tol)
+}
+
+/// Robustness of an air-steered rocket jump: the arc still resolves onto `target` (within 2× the
+/// landing window) under ±25 ms fire timing, ±[`RJ_CERT_AIM_DEG`] pitch, and ±16 u launch-stance
+/// error. Lighter than [`rj_perturb_ok`] — the air correction self-stabilizes, so it needs fewer
+/// perturbations — but enough to reject an arc that only lands from a knife-edge input.
+pub(super) fn air_rj_perturb_ok(
+    bsp: &Bsp,
+    a: Vec3,
+    angles: Vec3,
+    delay: f32,
+    params: RocketJumpParams,
+    pm: &PmParams,
+    target: Vec3,
+) -> bool {
+    // 1.5× the landing window (not 2×): the offline roll diverges from the live flight by a hull or
+    // so (msec quantization, trace epsilon), so a jump that only just clears 2× under perturbation
+    // lands off-target in-game. 1.5× keeps the certified set to jumps the runtime reliably makes.
+    let lands = |aa: Vec3, ang: Vec3, del: f32| air_rj_lands(bsp, aa, ang, del, params, pm, target, 1.5);
+    lands(a, angles, (delay - 0.025).max(0.0))
+        && lands(a, angles, delay + 0.025)
+        && lands(a, angles + Vec3::new(RJ_CERT_AIM_DEG, 0.0, 0.0), delay)
+        && lands(a, angles + Vec3::new(-RJ_CERT_AIM_DEG, 0.0, 0.0), delay)
+        && lands(a + Vec3::new(16.0, 0.0, 0.0), angles, delay)
+        && lands(a + Vec3::new(-16.0, 0.0, 0.0), angles, delay)
 }
 
 /// Aim error (degrees, each fire axis) the robustness sweep below proves a candidate arc survives.
