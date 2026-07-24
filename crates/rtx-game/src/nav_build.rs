@@ -20,6 +20,7 @@ use crate::navmesh;
 pub(crate) struct PlatStatus {
     pub down: bool,
     pub surface_z: f32,
+    pub velocity_z: f32,
 }
 
 impl GameState {
@@ -85,6 +86,7 @@ impl GameState {
                 PlatStatus {
                     down: !p.in_use || p.mover.state == crate::entity::MoverPhase::Bottom,
                     surface_z: p.v.origin.z + p.v.maxs.z,
+                    velocity_z: p.v.velocity.z,
                 }
             })
             .collect()
@@ -201,6 +203,11 @@ impl GameState {
         let rocket_jump = (!stock && self.rtx_cvar_bool("rtx_bot_rocketjump")).then(|| navmesh::RocketJumpParams {
             gravity: self.host.cvar(c"sv_gravity").max(1.0),
             rj_extra: self.host.cvar(c"rj"),
+            accel: self.host.cvar(c"sv_accelerate").max(1.0),
+            maxspeed: self.host.cvar(c"sv_maxspeed").max(1.0),
+            friction: self.host.cvar(c"sv_friction").max(0.0),
+            stopspeed: self.host.cvar(c"sv_stopspeed").max(0.0),
+            cost_scale: self.rtx_cvar_f32("rtx_rj_cost_scale").max(0.0),
         });
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -324,6 +331,7 @@ impl GameState {
                 navmesh::PlatInfo {
                     board: Vec3::new(cx, cy, pos2.z + maxs.z + 24.0),
                     exit: Vec3::new(cx, cy, pos1.z + maxs.z + 24.0),
+                    speed: ent.mover.speed.max(1.0),
                     entity: e.0,
                     // World-XY footprint of the brush (XY is the same at pos1/pos2 — travel is Z-only).
                     fp_min: glam::Vec2::new(pos1.x + mins.x, pos1.y + mins.y),

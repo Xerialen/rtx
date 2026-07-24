@@ -759,7 +759,9 @@ fn links_resp(game: &GameState) -> Result<Vec<proto::RjLink>, String> {
         links.push(proto::RjLink {
             link: li,
             src: a3(g.cell_origin(g.link_source(li))),
+            launch: a3(tr.launch),
             tgt: a3(g.cell_origin(g.link_target(li))),
+            run_velocity: a3(tr.run_velocity),
             fire_pitch: tr.fire_angles.x,
             fire_yaw: tr.fire_angles.y,
             fire_delay: tr.fire_delay,
@@ -1384,7 +1386,7 @@ fn rj_result(
         origin: a3(p.origin),
         view: [p.view.x, p.view.y],
         aim_err: p.aim_err,
-        stance_off_xy: (p.origin.xy() - t.src.xy()).length(),
+        stance_off_xy: (p.origin.xy() - t.launch.xy()).length(),
     });
     let fire = t.fire.map(|f| proto::RjFire {
         t: f.t,
@@ -1405,6 +1407,7 @@ fn rj_result(
         link,
         outcome: name.to_string(),
         src: a3(t.src),
+        launch: a3(t.launch),
         tgt: a3(t.tgt),
         solved: proto::RjSolved {
             pitch: t.solved_angles.x,
@@ -1412,6 +1415,7 @@ fn rj_result(
             delay: t.solved_delay,
             airtime: t.airtime,
             self_damage: t.self_damage,
+            run_velocity: a3(t.run_velocity),
             v0: a3(v0),
             blast: a3(blast),
             pos_blast: a3(pos_blast),

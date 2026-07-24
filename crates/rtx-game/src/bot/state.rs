@@ -715,6 +715,9 @@ pub struct RjState {
     pub started: f32,
     /// The moment the jump was pressed (the fire-delay clock).
     pub jump_time: f32,
+    /// A running traversal first stages at its physical runway start, then commits through launch.
+    /// This is distinct from the graph source for runs contained within a moving platform.
+    pub run_staged: bool,
     /// Consecutive-failure count (two aborts avoid the goal, like the hook).
     pub fails: u8,
     /// Per-attempt telemetry for the test harness — written by the driver / `emit` as the attempt
@@ -732,8 +735,9 @@ pub struct RjState {
 pub struct RjTelemetry {
     /// The rocket-jump link this attempt is flying.
     pub link: u32,
-    /// The launch cell origin (source) and the target ledge cell origin, from the graph.
+    /// The committed run-up source, actual jump-press point, and target ledge, from the graph.
     pub src: Vec3,
+    pub launch: Vec3,
     pub tgt: Vec3,
     /// The offline solve for this link: fire angles (pitch,yaw), fire delay after the jump, post-blast
     /// airtime, and pre-armor self-damage.
@@ -741,6 +745,8 @@ pub struct RjTelemetry {
     pub solved_delay: f32,
     pub airtime: f32,
     pub self_damage: f32,
+    /// Horizontal velocity the offline solve expects at the jump press (`ZERO` for a stationary RJ).
+    pub run_velocity: Vec3,
     /// The knob biases in force at Stance entry (added to the solved delay/pitch), snapshotted so the
     /// result reports what was actually flown even if a knob changes mid-attempt.
     pub delay_bias: f32,

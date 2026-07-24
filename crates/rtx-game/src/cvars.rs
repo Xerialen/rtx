@@ -204,6 +204,10 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // Costs health, so a bot only plans one when it clearly beats the walk and it's fit to fly it
         // (has the RL, a rocket, and the health). On by default.
         ("rtx_bot_rocketjump", Bool(true)),
+        // Build-time multiplier for certified RJ travel cost. `1` preserves the conservative
+        // health-priced policy; route labs can opt into aggressive traversal without weakening
+        // fitness, damage, or robustness gates. Requires a map rebuild.
+        ("rtx_rj_cost_scale", Float(1.0)),
         // Rocket-jump test harness: a TCP control channel (localhost) an external driver connects to
         // for scripted bot puppetry (go to a spot, fly a specific RJ link, read back telemetry). `0`
         // (default) = disabled — no socket is bound. See [`crate::control`].
