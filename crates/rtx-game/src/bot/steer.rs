@@ -1541,7 +1541,13 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // Final-approach brake: landing within ~0.45 s of travel from the goal, take no further hops —
     // the remaining distance is what the ground turn-in needs to absorb the speed. Without this a
     // planned carry hops right past a tight goal. Braking distance is physics, not plan intent.
-    let approach_brake = goal_dist < (speed * 0.45).max(150.0);
+    // Exception: a certified planted speed-jump approach is a committed run-up whose takeoff must be
+    // entered hot — braking here strands the bot slow at the takeoff lip and it wedges into the wall
+    // just short of the jump (RA and SNG-mega wall_push on the merged runtime; both went 5/5 on
+    // ad26ccc before 92a164f added this brake). The `certified_jump_approach` contract already owns
+    // the contiguous ordinary legs that deliver the bot to a certified jump source, so scope the
+    // exemption to exactly that case and leave the ordinary tight-goal brake intact.
+    let approach_brake = goal_dist < (speed * 0.45).max(150.0) && !certified_jump_approach;
     let carry = (planned_band >= 1 || planned_next_band >= 1)
         && !ascent_ahead
         && !approach_brake
