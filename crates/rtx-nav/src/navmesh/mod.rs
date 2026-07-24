@@ -2007,6 +2007,9 @@ pub fn build_navmesh(
         }
         graph.add_plats(bsp, &plats);
         graph.add_teleports(bsp, &teleports);
+        if let Some(params) = speed_jump {
+            graph.add_teleport_curls(bsp, params);
+        }
         graph.add_gates(&gates);
         // Last: prices links entering a lift shaft, so it must see every link the splices above added
         // (a teleport that lands under a plat, a jump-aboard from the shaft floor).

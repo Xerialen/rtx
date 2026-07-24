@@ -152,6 +152,12 @@ pub(super) const CURL_LIP_REACH: f32 = 28.0;
 /// Rollout tick step (the quantized ~77 Hz bot tick) and a hard tick cap per rollout.
 pub(super) const CURL_DT: f32 = 1.0 / 77.0;
 pub(super) const CURL_MAX_TICKS: usize = 120;
+/// A teleport exit may feed a short off-axis ground run directly into a curl. Bound that second-pass
+/// search to the local exit platform: one adjacent walk step into a 320u approach, then a moderate
+/// flat/near-flat gap. Every emitted link still passes the ordinary pmove envelope certifier.
+pub(super) const TELE_CURL_APPROACH_MAX: f32 = 320.0;
+pub(super) const TELE_CURL_TARGET_MAX: f32 = 384.0;
+pub(super) const TELE_CURL_MAX_PER_EXIT: usize = 4;
 
 /// The takeoff speed the ground circle-strafe delivers over a `runway` from a run start, rolled with
 /// the shared ground oracles at the ground-optimal wish angle. Saturates at the friction equilibrium

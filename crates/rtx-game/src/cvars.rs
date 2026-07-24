@@ -87,6 +87,11 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // parity_readback fails a deploy closed otherwise, and the RA certification era ran with 0.
         // Opt in per server cfg where the cap is wanted.
         ("rtx_bot_ledgecap", Float(0.0)),
+        // Seconds of speed-scaled route corridor used as the bhop steering look-ahead. Longer values
+        // expose broad bends earlier; the distance remains capped in the steering core.
+        ("rtx_bot_bhop_lookahead", Float(0.9)),
+        // Maximum corridor distance exposed by the speed-scaled bhop look-ahead.
+        ("rtx_bot_bhop_lookahead_cap", Float(448.0)),
         // A bot's health weights how willing it is to shortcut through lava/slime: hurt bots detour,
         // healthy (or armored, or biosuited) ones clip the corner. `0` prices every bot as a bare
         // spawn — hazards still cost, but the same to everyone. See `bot::bot_hazard_strength`.
@@ -162,6 +167,9 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // Navmesh bots: how many to keep on the server (0 = none), and their skill. Bots only spawn
         // once a map's navmesh is built.
         ("rtx_bot_count", Float(0.0)),
+        // Optional scoreboard label for the first server-side bot. Additional bots receive a
+        // deterministic numeric suffix; empty keeps the rotating stock labels.
+        ("rtx_bot_name", Str("")),
         ("rtx_bot_skill", Float(3.0)),
         // Keep bots on the server even with no humans connected (default off).
         ("rtx_bot_alone", Bool(false)),

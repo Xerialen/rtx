@@ -1544,6 +1544,7 @@ fn prearm_traversal(game: &mut GameState, e: EntId, now: f32, on_ground: bool) {
                     target,
                     since: now,
                     airborne: !on_ground,
+                    coast: false,
                 });
             } else if !on_ground {
                 b.air.as_mut().unwrap().airborne = true;
@@ -2218,8 +2219,10 @@ fn button_reachable(graph: &NavGraph, from: CellId, gi: usize, costs: &LinkCosts
 }
 
 /// The target points of the leading `Walk`/`Step` legs from `route_pos` (the ground corridor a
-/// bunnyhop can run), stopping at the first non-ground leg. Shared by [`runway`] and
-/// [`corridor_point`] so both trace the exact same corridor.
+/// bunnyhop can run), followed by the takeoff of an immediately adjoining `SpeedJump`. The lip is
+/// part of the run-up corridor: exposing it to look-ahead lets a carried-speed approach start the
+/// final turn before reaching the nominal source cell. Any other traversal ends the iterator.
+/// Shared by [`runway`] and [`corridor_point`] so both trace the exact same corridor.
 fn ground_leg_targets<'a>(
     graph: &'a NavGraph,
     route: &'a [u32],
@@ -2229,8 +2232,22 @@ fn ground_leg_targets<'a>(
         .get(route_pos..)
         .unwrap_or_default()
         .iter()
-        .take_while(move |&&leg| matches!(graph.link_kind(leg), LinkKind::Walk | LinkKind::Step))
-        .map(move |&leg| graph.cell_origin(graph.link_target(leg)))
+        .scan(false, move |stopped, &leg| {
+            if *stopped {
+                return None;
+            }
+            match graph.link_kind(leg) {
+                LinkKind::Walk | LinkKind::Step => Some(graph.cell_origin(graph.link_target(leg))),
+                LinkKind::SpeedJump => {
+                    *stopped = true;
+                    graph.speed_jump_of_link(leg).map(|tr| tr.takeoff)
+                }
+                _ => {
+                    *stopped = true;
+                    None
+                }
+            }
+        })
 }
 
 /// Straight-and-level runway from `origin` along a corridor of successive leg-target points: sum XY

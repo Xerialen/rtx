@@ -302,6 +302,10 @@ pub struct Bhop {
     /// flipped when the heading curves a deadband past the bearing; on the ground
     /// ([`prestrafe`]/zigzag) it is the weave sign.
     sigma: f32,
+    /// Preferred sign for the first lobe of a new ordinary engagement. The live BSP corridor probe
+    /// may seed this away from an upcoming one-sided wall; zero preserves the bearing-derived
+    /// default. It is consumed by [`Self::engage`] and never changes an active hop chain.
+    entry_sigma: f32,
     /// When the entry conditions started holding (0 = not holding) — the engage hysteresis clock.
     eligible_since: f32,
     /// When the current phase began.
@@ -347,6 +351,23 @@ impl Bhop {
     /// witness advances a local copy so checking future seam ticks cannot mutate live bhop state.
     pub(super) fn ground_turn_sigma(&self) -> f32 {
         self.sigma
+    }
+
+    /// Prefer a side for the first lobe of the next engagement (`-1`/`+1`; zero = controller
+    /// default). Calls made while a chain is active are deliberately ignored, so a live corridor
+    /// probe cannot jerk an airborne bot from side to side.
+    pub fn prefer_entry_sigma(&mut self, sigma: f32) {
+        if self.phase == Phase::Off {
+            self.entry_sigma = if sigma.abs() > 0.5 { sigma.signum() } else { 0.0 };
+        }
+    }
+
+    /// Forget the preceding route leg's weave side before a certified traversal takes ownership.
+    /// The phase stays intact (and therefore never drops a landing-frame jump); only the arbitrary
+    /// ordinary-hop lobe is discarded so a SpeedJump starts from its own bearing.
+    pub fn clear_strafe_side(&mut self) {
+        self.sigma = 0.0;
+        self.entry_sigma = 0.0;
     }
 
     /// Drive one frame. `Some(cmd)` = the controller owns the view and move this frame;
@@ -551,10 +572,11 @@ impl Bhop {
             self.sigma = -self.sigma;
             self.flips += 1;
         }
-        // Base rate + a gentle within-hop correction, plus a steep ramp once the error runs past the
-        // lobe band (a bend or a wall to carve) — up to what the tick can deliver (`omega_max` falls
-        // with speed). Inside the band the extra term is zero, so the smooth slalom is unchanged.
-        let omega = (OMEGA_BASE + err.abs() / T_HOP + (err.abs() - LOBE_DEADBAND).max(0.0) * ERR_GAIN)
+        // Base rate + a within-hop correction that closes the present bearing error in a quarter hop,
+        // plus a steep ramp once the error runs past the lobe band (a bend or wall to carve) — up to
+        // what the tick can deliver (`omega_max` falls with speed). On a straight corridor `err` is
+        // zero, so the human-like 140 °/s slalom stays unchanged; only an actual bend turns harder.
+        let omega = (OMEGA_BASE + 4.0 * err.abs() / T_HOP + (err.abs() - LOBE_DEADBAND).max(0.0) * ERR_GAIN)
             .min(omega_max(speed, a_max, dt));
         strafe_rate(i.v_xy, self.sigma, omega, a_max, dt)
     }
@@ -625,7 +647,8 @@ impl Bhop {
             Phase::Hop
         };
         self.phase_start = i.now;
-        self.sigma = 0.0;
+        self.sigma = self.entry_sigma;
+        self.entry_sigma = 0.0;
         self.jump_prev = false;
         self.reset_step_defer();
         self.hops = 0;
@@ -640,7 +663,8 @@ impl Bhop {
     fn enter_zigzag(&mut self, i: &Input) {
         self.phase = Phase::Zigzag;
         self.phase_start = i.now;
-        self.sigma = 0.0;
+        self.sigma = self.entry_sigma;
+        self.entry_sigma = 0.0;
         self.jump_prev = false;
         self.reset_step_defer();
         self.hops = 0;
@@ -652,6 +676,7 @@ impl Bhop {
     fn disengage(&mut self, reason: &'static str) {
         self.phase = Phase::Off;
         self.sigma = 0.0;
+        self.entry_sigma = 0.0;
         self.jump_prev = false;
         self.reset_step_defer();
         self.eligible_since = 0.0;

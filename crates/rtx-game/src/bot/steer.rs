@@ -532,6 +532,52 @@ fn bsp_ground_z_span(bsp: &Bsp, origin: Vec3, xy: Vec2, trace_up: f32, trace_dow
         .then_some(trace.endpos.z - ORIGIN_TO_FEET)
 }
 
+/// A teleport displacement landing this close to the link target is an ordinary exit, not a
+/// launch across a gap. Such exits often leave the player a few units airborne; their carried
+/// velocity is useful and must not be cancelled by steering back toward the cell just crossed.
+const TELEPORT_EXIT_COAST_RADIUS: f32 = 96.0;
+
+fn coast_teleport_exit(origin: Vec3, target: Vec3) -> bool {
+    (target.xy() - origin.xy()).length() <= TELEPORT_EXIT_COAST_RADIUS
+}
+
+/// Pick the safe first slalom side from a short corridor scan. `left`/`right` are the minimum hull
+/// clearances seen beside several points *ahead* of the bot, not merely beside its current origin:
+/// that catches a wall which begins halfway through the coming hop. Positive sigma turns the first
+/// lobe left; negative turns it right. Ambiguous/two-sided corridors keep the controller default.
+fn first_lobe_side(left: f32, right: f32) -> f32 {
+    const CRAMPED: f32 = 48.0;
+    const DECISIVE: f32 = 12.0;
+    if right < CRAMPED && left - right >= DECISIVE {
+        1.0
+    } else if left < CRAMPED && right - left >= DECISIVE {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
+fn corridor_entry_sigma(bsp: &Bsp, origin: Vec3, velocity: Vec2) -> f32 {
+    let speed = velocity.length();
+    if speed <= 1.0 {
+        return 0.0;
+    }
+    let dir = velocity / speed;
+    let side = Vec2::new(-dir.y, dir.x);
+    let lateral_probe = 64.0;
+    // The first broad lobe develops over roughly half a hop. Four stations are enough to catch a
+    // wall beginning beyond the takeoff without turning this into a per-frame physics simulation.
+    let forward_probe = (speed * bhop::T_HOP * 0.6).clamp(96.0, 224.0);
+    let mut left: f32 = lateral_probe;
+    let mut right: f32 = lateral_probe;
+    for station in 1..=4 {
+        let at = origin + (dir * (forward_probe * station as f32 / 4.0)).extend(0.0);
+        left = left.min(bsp.hull1_trace(at, at + (side * lateral_probe).extend(0.0)).fraction * lateral_probe);
+        right = right.min(bsp.hull1_trace(at, at - (side * lateral_probe).extend(0.0)).fraction * lateral_probe);
+    }
+    first_lobe_side(left, right)
+}
+
 /// The all-`Copy` frame snapshot `steer` reads: the [`Sense`] and [`Objective`] this frame, the
 /// per-bot A* costs, and the live gate/plat state gathered before the borrow (see `run_bot`).
 pub(super) struct SteerCtx<'a> {
@@ -886,7 +932,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             .filter(|&&l| graph.link_kind(l) == LinkKind::Teleport && !on_ground)
             .map(|&l| (l, graph.link_target(l)));
         if let Some((leg, target)) = launch {
-            bot.air = Some(AirCommit { leg, target, since: now, airborne: true });
+            let coast = coast_teleport_exit(origin, graph.cell_origin(target));
+            bot.air = Some(AirCommit { leg, target, since: now, airborne: true, coast });
             bot.drop_speed_jump(); // any speed-jump latch predates the relocation
         } else {
             // A grounded teleport exit clears the route here. Stamp the just-ridden pad (and the reverse
@@ -1560,6 +1607,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     let mut sj_active =
         matches!(kind, Some(LinkKind::SpeedJump)) && host.cvar_bool(c"rtx_bot_bhop") && !hook_active && !rj_active;
     if sj_active {
+        if bot.sj.map(|c| c.leg) != cur_leg {
+            // A certified traversal must not inherit an ordinary corridor's arbitrary first lobe.
+            bot.bhop.clear_strafe_side();
+        }
         bot.commit_speed_jump(cur_leg.unwrap(), now);
         if bot.sj_runway.as_ref().map(|r| r.leg) != cur_leg {
             bot.sj_runway = cur_leg.map(|leg| SpeedJumpRunway {
@@ -1619,6 +1670,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             target: graph.link_target(leg),
             since: now,
             airborne: !on_ground,
+            coast: false,
         });
     }
     if let Some(committed) = bot.air {
@@ -2050,7 +2102,17 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // (race mode, when a line exists) or a *speed-scaled* corridor look-ahead — ~0.6 s of travel
         // ahead (clamped 96–448u) so a fast bot's bearing anticipates the corridor far enough to
         // start curving, rather than chasing the fixed ~2-legs `look_point` it has already overrun.
-        let lookahead = (speed * 0.6).clamp(96.0, 448.0);
+        // The live cvars preserve the SNG branch's longer anticipatory look while retaining the
+        // integration branch's certified runway corridor and two-phase curl aim.
+        let look_secs = {
+            let v = host.cvar(c"rtx_bot_bhop_lookahead");
+            if v > 0.0 { v } else { 0.9 }
+        };
+        let look_cap = {
+            let v = host.cvar(c"rtx_bot_bhop_lookahead_cap");
+            if v > 0.0 { v } else { 448.0 }
+        };
+        let lookahead = (speed * look_secs).clamp(96.0, look_cap.max(96.0));
         let bhop_look = corridor_point(graph, &bot.route, bot.route_pos, origin, lookahead);
         let sj_runway_look = bot
             .sj_runway
@@ -2069,9 +2131,6 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             .map(|tr| {
                 let axis = (tr.curl_entry_aim.xy() - tr.takeoff.xy()).normalize_or_zero();
                 let travelled = (origin.xy() - tr.takeoff.xy()).dot(axis);
-                // The launch command always uses the solved entry aim. A negative gate then means
-                // "switch on the first airborne frame", while a positive gate retains it farther
-                // into the arc.
                 if on_ground || travelled < tr.curl_switch_dist {
                     (tr.curl_entry_aim, "curl-entry")
                 } else {
@@ -2184,6 +2243,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             None => dir,
         };
         let bearing = yaw_of(dir);
+        // Scan ahead before an ordinary engagement and seed the first lobe away from a one-sided
+        // wall. Certified speed jumps retain ownership of their own strafe state.
+        let entry_sigma = match bsp {
+            Some(bsp) if !sj_active && bot.bhop.phase == bhop::Phase::Off => {
+                corridor_entry_sigma(bsp, origin, v_xy)
+            }
+            _ => 0.0,
+        };
+        bot.bhop.prefer_entry_sigma(entry_sigma);
         let sj_should_launch = sj_gt.map(|gt| {
             if gt.version == crate::navmesh::GROUND_TURN_OPTIMAL_VERSION {
                 crate::navmesh::ground_turn_should_launch_optimal(origin, v_xy, on_ground, &gt)
@@ -2924,6 +2992,12 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // `curl_hold` fraction of the gap, hold the takeoff heading (steer along our own velocity — an
     // inert coast) so the near wall is cleared, then curl onto the target at `curl_gain`.
     if on_air && !on_ground {
+        // A normal teleport exit has already reached its graph target. With no input QW preserves
+        // the exit velocity; aiming at that now-behind target instead spends the 30-ups air-accel
+        // cap braking every tick. Keep a neutral wish until the physical landing releases the latch.
+        if bot.air.is_some_and(|c| c.coast) {
+            move_world = Vec3::ZERO;
+        }
         let held = curl_hold > 0.0
             && cur_leg.is_some_and(|leg| {
                 let src = graph.cell_origin(graph.link_source(leg)).xy();
@@ -2936,8 +3010,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         } else {
             air_wish(waypoint, curl_gain)
         };
-        if let Some(w) = wish {
-            move_world = w;
+        if !bot.air.is_some_and(|c| c.coast) {
+            if let Some(w) = wish {
+                move_world = w;
+            }
         }
     }
 
@@ -3924,6 +4000,21 @@ mod tests {
             jump: true,
         };
         assert!(gap_owned_bhop(Some(LinkKind::Walk), Some(ordinary)).is_some());
+    }
+
+    #[test]
+    fn only_near_teleport_landings_coast() {
+        let exit = Vec3::new(224.0, -320.0, 60.0);
+        assert!(coast_teleport_exit(Vec3::new(226.0, -317.0, 75.0), exit));
+        assert!(!coast_teleport_exit(Vec3::new(226.0, -317.0, 75.0), Vec3::new(480.0, -64.0, 80.0)));
+    }
+
+    #[test]
+    fn first_lobe_turns_away_from_only_cramped_side() {
+        assert_eq!(first_lobe_side(64.0, 20.0), 1.0);
+        assert_eq!(first_lobe_side(18.0, 64.0), -1.0);
+        assert_eq!(first_lobe_side(30.0, 34.0), 0.0);
+        assert_eq!(first_lobe_side(64.0, 64.0), 0.0);
     }
 
     #[test]

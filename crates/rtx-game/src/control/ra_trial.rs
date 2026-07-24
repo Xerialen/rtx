@@ -1162,6 +1162,7 @@ mod tests {
             target: n + 10,
             since: 9.0,
             airborne: true,
+            coast: false,
         });
         bot.bhop.hops = n + 11;
         bot.bhop.flips = n + 12;
