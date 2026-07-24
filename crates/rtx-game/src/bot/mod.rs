@@ -1400,7 +1400,13 @@ fn emit(
         b.aim.angles = Vec3::new(pitch, yaw, 0.0);
         b.aim.vel = Vec3::new(pv, yv, 0.0);
         let view = b.aim.angles;
-        let (vf, vr, _) = angle_vectors(view);
+        // QW's PM_AirMove flattens and normalizes the view basis before turning
+        // forwardmove/sidemove back into a horizontal wish. Projecting onto the pitched
+        // AngleVectors forward here would therefore apply cos(pitch) twice and rotate a
+        // world-space wish toward the side axis. That is especially destructive for a running
+        // rocket jump, whose eyes are pitched steeply down and backwards while its feet must keep
+        // the independently solved run heading.
+        let (vf, vr, _) = angle_vectors(Vec3::new(0.0, view.y, 0.0));
         (
             view,
             vf.dot(move_world).round() as i32,

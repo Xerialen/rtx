@@ -455,6 +455,22 @@ impl NavGraph {
         self.cells[cell as usize].origin
     }
 
+    /// Whether two cells are the same standable patch: identical, or joined directly by a grounded
+    /// walk/step link in either direction. Traversal landing checks use this to accept a neighboring
+    /// grid sample on one continuous ledge without confusing it with a drop, jump, or floor below.
+    pub fn same_ground_patch(&self, a: CellId, b: CellId) -> bool {
+        if a == b {
+            return true;
+        }
+        let joined = |from: CellId, to: CellId| {
+            self.adjacency[from as usize].iter().any(|&li| {
+                let link = self.links[li as usize];
+                link.to == to && matches!(link.kind, LinkKind::Walk | LinkKind::Step)
+            })
+        };
+        joined(a, b) || joined(b, a)
+    }
+
     /// Whether a bot standing on this cell is under water (its origin is submerged, so pmove swims).
     /// Set by [`flag_water`](Self::flag_water); an unmarked graph reads as dry.
     pub fn cell_in_water(&self, cell: CellId) -> bool {

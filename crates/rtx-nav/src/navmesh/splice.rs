@@ -20,6 +20,8 @@ use crate::qphys::ORIGIN_TO_FEET;
 pub struct PlatInfo {
     pub board: Vec3,
     pub exit: Vec3,
+    /// Upward mover speed in world units per second.
+    pub speed: f32,
     /// The `func_plat` edict, to read its live mover state at runtime.
     pub entity: u32,
     /// World-XY footprint of the plat brush (XY is travel-invariant), for the standoff box.
@@ -63,10 +65,21 @@ pub struct Gate {
 /// travel height, so a live player standing on the ground *under* a raised plat is inside it and
 /// keeps resetting its lower-timer — hence the bot must hold a standoff outside this box until the
 /// lift is down (see the plat-hold logic in `bot::run_bot`).
+#[derive(Clone, Copy)]
 pub struct Plat {
     pub entity: u32,
+    pub speed: f32,
     pub fp_min: Vec2,
     pub fp_max: Vec2,
+    /// Player-origin positions at the mover's bottom and top, plus their graph endpoints.
+    pub board: Vec3,
+    pub board_cell: CellId,
+    /// Player-origin position at the centre of the raised platform surface. Unlike the static
+    /// delivery cell, this remains on the mover and can therefore seed a platform rocket jump.
+    pub exit: Vec3,
+    /// Static graph cell the ride link delivers to. A platform RJ starts from this cell in graph
+    /// topology while its traversal uses [`exit`](Self::exit) as the physical run-up origin.
+    pub exit_cell: CellId,
 }
 
 /// Inputs for [`NavGraph::add_gates`], gathered from spawned obstruction/activator entities: the
@@ -120,14 +133,19 @@ impl NavGraph {
             let Some(top) = self.nearest_within(p.exit, GRID * 3.0, STEP_HEIGHT * 2.0) else {
                 continue;
             };
+            let board = self.add_cell(p.board);
             // Register the plat only once its top wired in (skipped plats never register — same as
             // gates), so `plat_of_link` indices stay dense and match `plats`.
             let pi = self.plats.push(Plat {
                 entity: p.entity,
+                speed: p.speed.max(1.0),
                 fp_min: p.fp_min,
                 fp_max: p.fp_max,
+                board: p.board,
+                board_cell: board,
+                exit: p.exit,
+                exit_cell: top,
             });
-            let board = self.add_cell(p.board);
             let ride = (p.exit.z - p.board.z).max(0.0);
             self.push_plat_link(
                 Link {
@@ -162,6 +180,44 @@ impl NavGraph {
         }
     }
 
+    /// Retarget an already-certified static rocket jump whose predicted touchdown lies on a lift at
+    /// rest to that lift's synthetic board cell. Static BSP sampling can leave the link attached to
+    /// the adjacent floor cell even though its solved player origin is physically supported by the
+    /// mover. Keeping that stale topology forces a second, uncertified `JumpGap` across the shaft
+    /// after the rocket has already landed aboard. The traversal and its cost stay untouched; only
+    /// the graph endpoint is made to match the certified physical touchdown.
+    pub(super) fn splice_rocket_jump_landings_onto_plats(&mut self) {
+        let plats: Vec<Plat> = (0..self.plat_count()).map(|i| *self.plat(i)).collect();
+        for li in 0..self.links.len() {
+            if self.links[li].kind != LinkKind::RocketJump {
+                continue;
+            }
+            let Some(traversal) = self.rocket_jump_of_link(li as u32).copied() else {
+                continue;
+            };
+            let landing = traversal.land;
+            let board = plats
+                .iter()
+                .copied()
+                .filter(|p| {
+                    landing.x >= p.fp_min.x
+                        && landing.x <= p.fp_max.x
+                        && landing.y >= p.fp_min.y
+                        && landing.y <= p.fp_max.y
+                        && (landing.z - p.board.z).abs() <= STEP_HEIGHT
+                })
+                .min_by(|a, b| {
+                    landing
+                        .xy()
+                        .distance_squared(a.board.xy())
+                        .total_cmp(&landing.xy().distance_squared(b.board.xy()))
+                });
+            if let Some(p) = board {
+                self.links[li].to = p.board_cell;
+            }
+        }
+    }
+
     /// Mark every cell inside plat `p`'s swept volume with its index, so the planner can price the shaft
     /// as transit-only and the runtime can tell a bot it is standing where the lift wants to land (see
     /// the `under_plat` column). The box is the footprint grown by the player half-width — a body that
@@ -183,18 +239,22 @@ impl NavGraph {
     }
 
     /// Charge [`UNDER_PLAT_EXTRA`] on every link *entering* an under-plat cell, so routes prefer any
-    /// comparable way around a lift shaft. Plat-tagged links — the ride and the jump-aboards — keep their
-    /// solved cost: reaching those cells is the whole point of boarding. Pure (the stamp is build-side
-    /// geometry), so unlike the water/hazard passes this runs inside the worker build.
+    /// comparable way around a lift shaft. Plat-tagged links — the ride and the jump-aboards — and a
+    /// certified rocket jump retargeted directly to a board keep their solved cost: reaching those
+    /// cells is the whole point of boarding. Pure (the stamp is build-side geometry), so unlike the
+    /// water/hazard passes this runs inside the worker build.
     pub fn surcharge_under_plat_links(&mut self) {
         if self.under_plat.is_empty() {
             return; // no plats spliced — nothing to price
         }
+        let board_cells: Vec<CellId> = (0..self.plat_count()).map(|i| self.plat(i).board_cell).collect();
         for li in 0..self.links.len() {
-            if self.plats.index_of_link(li as u32).is_some() {
+            let link = self.links[li];
+            let certified_boarding_rj = link.kind == LinkKind::RocketJump && board_cells.contains(&link.to);
+            if self.plats.index_of_link(li as u32).is_some() || certified_boarding_rj {
                 continue;
             }
-            let to = self.links[li].to as usize;
+            let to = link.to as usize;
             if self.under_plat.get(to).copied().flatten().is_some() {
                 self.links[li].cost += UNDER_PLAT_EXTRA;
             }
@@ -422,6 +482,7 @@ mod tests {
         PlatInfo {
             board: Vec3::new(0.0, 0.0, 0.0),
             exit: Vec3::new(0.0, 0.0, 200.0),
+            speed: 150.0,
             entity: 7,
             fp_min: Vec2::splat(-32.0),
             fp_max: Vec2::splat(32.0),
@@ -478,8 +539,13 @@ mod tests {
         g.push_link(walk(shaft, away)); // 1: back out — free, so the way out is never taxed
         let pi = g.plats.push(Plat {
             entity: 7,
+            speed: 150.0,
             fp_min: Vec2::splat(-32.0),
             fp_max: Vec2::splat(32.0),
+            board: Vec3::ZERO,
+            board_cell: shaft,
+            exit: Vec3::new(0.0, 0.0, 128.0),
+            exit_cell: shaft,
         });
         g.push_plat_link(walk(away, shaft), pi); // 2: a jump-aboard onto the same cell — exempt
         g.stamp_under_plat(&plat(), pi);
@@ -508,6 +574,56 @@ mod tests {
         assert_eq!(g.links[0].cost, 1.0);
         assert_eq!(g.cell_under_plat(a), None);
         assert_eq!(g.cell_under_plat(b), None);
+    }
+
+    #[test]
+    fn certified_rocket_landing_on_resting_lift_targets_its_board_cell() {
+        let mut g = bare_graph();
+        let source = g.add_cell(Vec3::new(128.0, 0.0, 0.0));
+        let stale_lip = g.add_cell(Vec3::new(32.0, 0.0, 0.0));
+        let board = g.add_cell(Vec3::ZERO);
+        g.push_rocket_jump(
+            Link {
+                from: source,
+                to: stale_lip,
+                kind: LinkKind::RocketJump,
+                cost: 2.5,
+            },
+            RocketJumpTraversal {
+                run_start: Vec3::new(128.0, 0.0, 0.0),
+                launch: Vec3::new(128.0, 0.0, 0.0),
+                run_velocity: Vec3::ZERO,
+                run_time: 0.0,
+                fire_angles: Vec3::new(75.0, 0.0, 0.0),
+                fire_delay: 0.05,
+                blast: Vec3::ZERO,
+                pos_blast: Vec3::ZERO,
+                v0: Vec3::ZERO,
+                land: Vec3::new(28.0, 0.0, 4.0),
+                airtime: 1.0,
+                self_damage: 45.0,
+            },
+        );
+        g.plats.push(Plat {
+            entity: 7,
+            speed: 150.0,
+            fp_min: Vec2::splat(-32.0),
+            fp_max: Vec2::splat(32.0),
+            board: Vec3::ZERO,
+            board_cell: board,
+            exit: Vec3::new(0.0, 0.0, 128.0),
+            exit_cell: board,
+        });
+
+        g.splice_rocket_jump_landings_onto_plats();
+        g.stamp_under_plat(&plat(), 0);
+        g.surcharge_under_plat_links();
+
+        assert_eq!(g.links[0].to, board);
+        assert_eq!(
+            g.links[0].cost, 2.5,
+            "certified direct boarding must keep its traversal cost"
+        );
     }
 
     /// A player touches a trigger with their **body**, not their origin — so the question "which

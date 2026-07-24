@@ -1327,6 +1327,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             now,
             weapon,
             origin,
+            velocity: Vec3::new(v_xy.x, v_xy.y, 0.0),
+            platform_origin_z: cur_leg
+                .and_then(|l| graph.plat_of_link(l))
+                .and_then(|pi| plat_status.get(pi))
+                .map(|st| st.surface_z + 24.0),
+            platform_velocity_z: cur_leg
+                .and_then(|l| graph.plat_of_link(l))
+                .and_then(|pi| plat_status.get(pi))
+                .map(|st| st.velocity_z),
             on_ground,
             attack_finished,
             weapons_hot,
@@ -1684,9 +1693,9 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // correction as a plain jump leg, curving the blast arc onto the target). The jump itself is
     // pressed post-spring in `emit` (via `rj.jump_ready`); the rocket fires on the driver's `rj.fire`.
     if rj_engaged {
-        move_world = match rj.approach {
+        move_world = match rj.move_world {
             _ if rj.stand => Vec3::ZERO,
-            Some(src) => Vec3::new(src.x - origin.x, src.y - origin.y, 0.0).normalize_or_zero() * MOVE_SPEED,
+            Some(wish) => wish,
             None => rj
                 .air_correct
                 .and_then(|t| air_wish(t, bhop::AIR_CORRECT_GAIN_DEFAULT))

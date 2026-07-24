@@ -21,6 +21,7 @@ use glam::{Vec3, Vec3Swizzles};
 use super::hook::{march_to_solid, simulate_arc, ArcResult};
 use super::{RocketJumpParams, FALL_DAMAGE_SPEED, HOOK_SIM_DT, RJ_LAND_XY, RJ_LAND_Z};
 use crate::qphys::JUMP_VZ;
+use crate::strafe::{apply_friction, apply_groundaccel};
 
 /// View pitches (degrees below horizontal) tried for the shot; a steeper pitch blasts the bot more
 /// vertically. 80 ≈ the engine's view-pitch clamp — steeper than that isn't reachable in-game.
@@ -47,14 +48,40 @@ const RJ_OVERHEAD: f32 = 1.5;
 /// only beats a genuinely long detour (≈ two 25-health pickups of walking) or an unreachable target
 /// — the "high-value reason" gate, implemented by A* itself.
 const RJ_HEALTH_SECS_PER_HP: f32 = 0.07;
+/// Quantized bot cadence used to estimate the speed a straight ground run delivers to the launch.
+const RJ_RUN_DT: f32 = 1.0 / 77.0;
 
-/// Bot position/velocity `t` seconds into a stationary vertical jump from standing origin `a` — the
-/// engine pmove sets `vz = JUMP_VZ` on the jump press; the bot stands still in Stance, so the ascent
-/// is purely vertical (any horizontal drift is left to the in-flight air-strafe correction).
-fn jump_state(a: Vec3, t: f32, gravity: f32) -> (Vec3, Vec3) {
+/// Roll a straight, grounded acceleration over `runway` units and return `(speed, time)` at the
+/// launch. This is deliberately the ordinary run primitive, not the speed-jump prestrafe model:
+/// short rocket-jump platforms need only stock maxspeed, and the live driver sends the same straight
+/// world-space wish while keeping its eyes on the solved rocket angle.
+pub(super) fn ground_run(runway: f32, params: RocketJumpParams) -> (f32, f32) {
+    let mut velocity = glam::Vec2::ZERO;
+    let mut covered = 0.0;
+    let mut elapsed = 0.0;
+    for _ in 0..64 {
+        if covered >= runway {
+            break;
+        }
+        velocity = apply_friction(velocity, params.friction, params.stopspeed, RJ_RUN_DT);
+        velocity = apply_groundaccel(velocity, glam::Vec2::X, params.maxspeed, params.accel, RJ_RUN_DT);
+        covered += velocity.length() * RJ_RUN_DT;
+        elapsed += RJ_RUN_DT;
+    }
+    (velocity.length(), elapsed)
+}
+
+/// Bot position/velocity `t` seconds into a jump from standing origin `a`, carrying the ground
+/// run-up's horizontal velocity. The engine pmove sets `vz = JUMP_VZ` on the jump press without
+/// discarding XY velocity, which is what lets a running rocket jump cross much farther than the
+/// stationary blast-only envelope.
+fn jump_state(a: Vec3, run_velocity: Vec3, t: f32, gravity: f32) -> (Vec3, Vec3) {
     let vz = JUMP_VZ - gravity * t;
     let dz = JUMP_VZ * t - 0.5 * gravity * t * t;
-    (a + Vec3::new(0.0, 0.0, dz), Vec3::new(0.0, 0.0, vz))
+    (
+        a + Vec3::new(run_velocity.x * t, run_velocity.y * t, dz),
+        Vec3::new(run_velocity.x, run_velocity.y, vz),
+    )
 }
 
 /// The view-forward unit vector for QW view `angles` (pitch positive-*down*, roll ignored) — the
@@ -98,23 +125,54 @@ pub(super) fn simulate_rocket_jump(
     player_solid: impl Fn(Vec3) -> bool + Copy,
     rocket_solid: impl Fn(Vec3) -> bool + Copy,
     a: Vec3,
+    run_velocity: Vec3,
     fire_angles: Vec3,
     fire_delay: f32,
+    params: RocketJumpParams,
+) -> Option<RjSolution> {
+    simulate_rocket_jump_timed(
+        player_solid,
+        |p, _t| rocket_solid(p),
+        a,
+        run_velocity,
+        fire_angles,
+        fire_delay,
+        0.0,
+        params,
+    )
+}
+
+/// Moving-surface form of [`simulate_rocket_jump`]. `rocket_solid` receives seconds since jump
+/// press, allowing a platform solve to test the lift where it will be when the rocket reaches it
+/// rather than where it was when the bot jumped.
+pub(super) fn simulate_rocket_jump_timed(
+    player_solid: impl Fn(Vec3) -> bool + Copy,
+    rocket_solid: impl Fn(Vec3, f32) -> bool + Copy,
+    a: Vec3,
+    run_velocity: Vec3,
+    fire_angles: Vec3,
+    fire_delay: f32,
+    rocket_latency: f32,
     params: RocketJumpParams,
 ) -> Option<RjSolution> {
     let g = params.gravity;
     let dir = fire_dir(fire_angles);
 
     // Muzzle at the fire moment, then march the rocket (a point, on hull 0) to the surface it detonates on.
-    let (pos_fire, _) = jump_state(a, fire_delay, g);
+    let (pos_fire, _) = jump_state(a, run_velocity, fire_delay, g);
     let muzzle = pos_fire + dir * MUZZLE_FWD + Vec3::new(0.0, 0.0, MUZZLE_Z);
-    let blast = march_to_solid(rocket_solid, muzzle, dir, RJ_ROCKET_RANGE)?;
-    let t_blast = fire_delay + (blast - muzzle).length() / ROCKET_SPEED;
+    let blast = march_to_solid(
+        |p| rocket_solid(p, fire_delay + rocket_latency + (p - muzzle).length() / ROCKET_SPEED),
+        muzzle,
+        dir,
+        RJ_ROCKET_RANGE,
+    )?;
+    let t_blast = fire_delay + rocket_latency + (blast - muzzle).length() / ROCKET_SPEED;
 
     // The rising bot must not clip a ceiling before the blast (its head at `PLAYER_TOP_Z`, hull 1).
     let mut t = 0.0;
     while t < t_blast {
-        let (p, _) = jump_state(a, t, g);
+        let (p, _) = jump_state(a, run_velocity, t, g);
         if player_solid(p + Vec3::new(0.0, 0.0, PLAYER_TOP_Z)) {
             return None;
         }
@@ -122,7 +180,7 @@ pub(super) fn simulate_rocket_jump(
     }
 
     // Bot state at the blast; self-splash falloff from the player-box centre (per t_radius_damage).
-    let (pos_b, vel_b) = jump_state(a, t_blast, g);
+    let (pos_b, vel_b) = jump_state(a, run_velocity, t_blast, g);
     let center = pos_b + Vec3::new(0.0, 0.0, PLAYER_CENTER_Z);
     let d = (blast - center).length();
     let points = (120.0 - 0.5 * d).max(0.0) * 0.5; // radius damage 120, self splash halved
@@ -170,28 +228,134 @@ pub(super) fn rj_perturb_ok(
     player_solid: impl Fn(Vec3) -> bool + Copy,
     rocket_solid: impl Fn(Vec3) -> bool + Copy,
     a: Vec3,
+    run_velocity: Vec3,
     angles: Vec3,
     delay: f32,
     params: RocketJumpParams,
     b: Vec3,
 ) -> bool {
-    let lands = |la: Vec3, ang: Vec3, del: f32| {
+    rj_perturb_ok_with_launch(
+        player_solid,
+        rocket_solid,
+        a,
+        run_velocity,
+        angles,
+        delay,
+        params,
+        b,
+        16.0,
+    )
+}
+
+/// [`rj_perturb_ok`] with an explicit launch-position error. A staged run across a small mover has a
+/// tighter physical release corridor than an open-floor stance; the ordinary timing envelope stays
+/// at ±25 ms.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn rj_perturb_ok_with_launch(
+    player_solid: impl Fn(Vec3) -> bool + Copy,
+    rocket_solid: impl Fn(Vec3) -> bool + Copy,
+    a: Vec3,
+    run_velocity: Vec3,
+    angles: Vec3,
+    delay: f32,
+    params: RocketJumpParams,
+    b: Vec3,
+    launch_error: f32,
+) -> bool {
+    rj_perturb_mask(
+        player_solid,
+        rocket_solid,
+        a,
+        run_velocity,
+        angles,
+        delay,
+        params,
+        b,
+        launch_error,
+        0.025,
+    ) == 0x03ff
+}
+
+/// Bitmask of ten explicit perturbation probes, in order: timing −/+, pitch +/−, yaw +/−, launch
+/// +/−, speed −/+. A zero-delay mover release uses one 77 Hz scheduling frame (15 ms); ordinary
+/// stances pass 25 ms through [`rj_perturb_ok_with_launch`].
+#[allow(clippy::too_many_arguments)]
+pub(super) fn rj_perturb_mask(
+    player_solid: impl Fn(Vec3) -> bool + Copy,
+    rocket_solid: impl Fn(Vec3) -> bool + Copy,
+    a: Vec3,
+    run_velocity: Vec3,
+    angles: Vec3,
+    delay: f32,
+    params: RocketJumpParams,
+    b: Vec3,
+    launch_error: f32,
+    timing_error: f32,
+) -> u16 {
+    rj_perturb_mask_timed(
+        player_solid,
+        |p, _t| rocket_solid(p),
+        a,
+        run_velocity,
+        angles,
+        delay,
+        0.0,
+        params,
+        b,
+        launch_error,
+        timing_error,
+    )
+}
+
+/// Time-aware form of [`rj_perturb_mask`] for a rocket colliding with a rising platform.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn rj_perturb_mask_timed(
+    player_solid: impl Fn(Vec3) -> bool + Copy,
+    rocket_solid: impl Fn(Vec3, f32) -> bool + Copy,
+    a: Vec3,
+    run_velocity: Vec3,
+    angles: Vec3,
+    delay: f32,
+    rocket_latency: f32,
+    params: RocketJumpParams,
+    b: Vec3,
+    launch_error: f32,
+    timing_error: f32,
+) -> u16 {
+    let lands = |la: Vec3, run: Vec3, ang: Vec3, del: f32| {
         matches!(
-            simulate_rocket_jump(player_solid, rocket_solid, la, ang, del, params),
+            simulate_rocket_jump_timed(
+                player_solid,
+                rocket_solid,
+                la,
+                run,
+                ang,
+                del,
+                rocket_latency,
+                params
+            ),
             Some(s)
                 if (s.land.xy() - b.xy()).length() <= RJ_LAND_XY * 2.0
                     && (s.land.z - b.z).abs() <= RJ_LAND_Z * 2.0
         )
     };
     let aim = RJ_CERT_AIM_DEG;
-    lands(a, angles, (delay - 0.025).max(0.0))
-        && lands(a, angles, delay + 0.025)
-        && lands(a, angles + Vec3::new(aim, 0.0, 0.0), delay)
-        && lands(a, angles + Vec3::new(-aim, 0.0, 0.0), delay)
-        && lands(a, angles + Vec3::new(0.0, aim, 0.0), delay)
-        && lands(a, angles + Vec3::new(0.0, -aim, 0.0), delay)
-        && lands(a + Vec3::new(16.0, 0.0, 0.0), angles, delay)
-        && lands(a + Vec3::new(-16.0, 0.0, 0.0), angles, delay)
+    let probes = [
+        lands(a, run_velocity, angles, (delay - timing_error).max(0.0)),
+        lands(a, run_velocity, angles, delay + timing_error),
+        lands(a, run_velocity, angles + Vec3::new(aim, 0.0, 0.0), delay),
+        lands(a, run_velocity, angles + Vec3::new(-aim, 0.0, 0.0), delay),
+        lands(a, run_velocity, angles + Vec3::new(0.0, aim, 0.0), delay),
+        lands(a, run_velocity, angles + Vec3::new(0.0, -aim, 0.0), delay),
+        lands(a + Vec3::new(launch_error, 0.0, 0.0), run_velocity, angles, delay),
+        lands(a + Vec3::new(-launch_error, 0.0, 0.0), run_velocity, angles, delay),
+        run_velocity.length_squared() <= f32::EPSILON || lands(a, run_velocity * 0.95, angles, delay),
+        run_velocity.length_squared() <= f32::EPSILON || lands(a, run_velocity * 1.05, angles, delay),
+    ];
+    probes
+        .into_iter()
+        .enumerate()
+        .fold(0u16, |mask, (bit, pass)| mask | ((pass as u16) << bit))
 }
 
 /// Travel-time cost of a rocket-jump link: the real flight (rise-to-blast + arc airtime), the fixed
@@ -222,9 +386,18 @@ mod tests {
         let params = RocketJumpParams {
             gravity: 800.0,
             rj_extra: 0.0,
+            ..Default::default()
         };
-        let s = simulate_rocket_jump(player_floor, rocket_floor, a, Vec3::new(80.0, 0.0, 0.0), 0.05, params)
-            .expect("vertical rocket jump should solve over a flat floor");
+        let s = simulate_rocket_jump(
+            player_floor,
+            rocket_floor,
+            a,
+            Vec3::ZERO,
+            Vec3::new(80.0, 0.0, 0.0),
+            0.05,
+            params,
+        )
+        .expect("vertical rocket jump should solve over a flat floor");
         assert!((s.t_blast - 0.12).abs() < 0.04, "t_blast {} not ~0.12", s.t_blast);
         // Blast on the real floor (24u lower) sits further from the player box, so self-damage is a
         // touch below the old hull-1 figure (~50): the honest health cost.
@@ -239,6 +412,37 @@ mod tests {
         assert!(apex > 100.0, "apex {apex} no better than a double jump");
     }
 
+    /// A ground run carried into the jump must extend the horizontal envelope beyond the stationary
+    /// blast-only solve. This is the movement primitive used by long, human-style rocket jumps:
+    /// ordinary ground acceleration supplies most of the lateral speed and the rocket supplies the
+    /// climb plus a directional shove.
+    #[test]
+    fn running_rocket_jump_reaches_past_the_stationary_envelope() {
+        let player_floor = |p: Vec3| p.z <= 0.0;
+        let rocket_floor = |p: Vec3| p.z <= -24.0;
+        let a = Vec3::new(0.0, 0.0, 24.0);
+        let params = RocketJumpParams {
+            gravity: 800.0,
+            rj_extra: 0.0,
+            ..Default::default()
+        };
+        let s = simulate_rocket_jump(
+            player_floor,
+            rocket_floor,
+            a,
+            Vec3::new(320.0, 0.0, 0.0),
+            Vec3::new(65.0, 180.0, 0.0),
+            0.05,
+            params,
+        )
+        .expect("floor-fired rocket jump should solve");
+        assert!(
+            s.land.x - a.x > 400.0,
+            "running RJ needs >400u reach, stationary solver produced {}u",
+            s.land.x - a.x
+        );
+    }
+
     /// The self-damage the solver reports equals the game's rocket radius damage recomputed from the
     /// blast geometry: `t_radius_damage` deals 120 with a 0.5/unit falloff from the player-box centre
     /// (weapons.rs fires it at 120; combat.rs's falloff `points = 120 − 0.5·dist`), self splash ×0.5.
@@ -250,11 +454,13 @@ mod tests {
         let params = RocketJumpParams {
             gravity: 800.0,
             rj_extra: 0.0,
+            ..Default::default()
         };
         for delay in [0.05f32, 0.15, 0.25] {
             // The falloff→self_damage identity holds for any blast geometry, so a single floor for both
             // oracles suffices here (the hull distinction is exercised by rocket_jump_two_phase_solution).
-            if let Some(s) = simulate_rocket_jump(floor, floor, a, Vec3::new(80.0, 0.0, 0.0), delay, params) {
+            if let Some(s) = simulate_rocket_jump(floor, floor, a, Vec3::ZERO, Vec3::new(80.0, 0.0, 0.0), delay, params)
+            {
                 let d = (s.blast - (s.pos_blast + Vec3::new(0.0, 0.0, PLAYER_CENTER_Z))).length();
                 let game = (120.0 - 0.5 * d).max(0.0) * 0.5;
                 assert!(
@@ -277,12 +483,22 @@ mod tests {
         let params = RocketJumpParams {
             gravity: 800.0,
             rj_extra: 0.0,
+            ..Default::default()
         };
         // Find any nominal solve, then confirm perturb is stricter than a bare solve near a pit edge.
-        if let Some(s) = simulate_rocket_jump(world, world, a, Vec3::new(60.0, 0.0, 0.0), 0.15, params) {
+        if let Some(s) = simulate_rocket_jump(world, world, a, Vec3::ZERO, Vec3::new(60.0, 0.0, 0.0), 0.15, params) {
             if (170.0..280.0).contains(&s.land.x) {
                 assert!(
-                    !rj_perturb_ok(world, world, a, Vec3::new(60.0, 0.0, 0.0), 0.15, params, s.land),
+                    !rj_perturb_ok(
+                        world,
+                        world,
+                        a,
+                        Vec3::ZERO,
+                        Vec3::new(60.0, 0.0, 0.0),
+                        0.15,
+                        params,
+                        s.land
+                    ),
                     "perturb accepted an arc landing at a pit edge"
                 );
             }

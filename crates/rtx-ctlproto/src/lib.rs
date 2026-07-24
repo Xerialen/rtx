@@ -402,7 +402,9 @@ pub struct OracleInfo {
 pub struct RjLink {
     pub link: u32,
     pub src: Vec3,
+    pub launch: Vec3,
     pub tgt: Vec3,
+    pub run_velocity: Vec3,
     pub fire_pitch: f32,
     pub fire_yaw: f32,
     pub fire_delay: f32,
@@ -576,6 +578,7 @@ pub struct RjSolved {
     pub delay: f32,
     pub airtime: f32,
     pub self_damage: f32,
+    pub run_velocity: Vec3,
     pub v0: Vec3,
     pub blast: Vec3,
     pub pos_blast: Vec3,
@@ -621,6 +624,7 @@ pub struct RjResult {
     /// Terminal outcome label (`landed`, `landed_off`, `overran`, `stance_timeout`, …).
     pub outcome: String,
     pub src: Vec3,
+    pub launch: Vec3,
     pub tgt: Vec3,
     pub solved: RjSolved,
     pub bias: RjBias,

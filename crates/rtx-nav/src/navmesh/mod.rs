@@ -44,14 +44,17 @@ pub use physics::{
 };
 use reach::Reach;
 pub use rocketjump::RJ_CERT_AIM_DEG;
-use rocketjump::{rj_perturb_ok, rocket_jump_cost, simulate_rocket_jump, RJ_DELAYS, RJ_PITCHES};
+use rocketjump::{
+    ground_run, rj_perturb_mask_timed, rj_perturb_ok, rocket_jump_cost, simulate_rocket_jump,
+    simulate_rocket_jump_timed, RJ_DELAYS, RJ_PITCHES,
+};
 use sidetable::SideTable;
 pub use splice::{Gate, GateInfo, Plat, PlatInfo, TeleportInfo};
 
 use std::sync::Arc;
 
 use crate::bsp::Bsp;
-use crate::qphys::STEP_HEIGHT;
+use crate::qphys::{ORIGIN_TO_FEET, STEP_HEIGHT};
 
 // --- grappling-hook traversal (see `add_hooks`) ---
 
@@ -94,6 +97,9 @@ const HOOK_MAX_PER_CELL: usize = 4;
 /// Max horizontal reach of a rocket-jump link. A floor-fired RJ is mostly vertical, so the reach is
 /// tighter than a hook's — an RJ that also travels far is rare and fragile.
 const RJ_RANGE_XY: f32 = 400.0;
+/// A running RJ keeps stock ground speed through the blast, extending the honest horizontal
+/// envelope. Bounded separately so stationary links retain their conservative 400u cap.
+const RJ_RUNNING_RANGE_XY: f32 = 700.0;
 /// Highest rise a rocket-jump link may climb — the realistic apex (~280u) plus landing slack.
 const RJ_MAX_RISE: f32 = 320.0;
 /// Lowest a target may sit above the source and still be worth a rocket jump (below this a jump or
@@ -115,6 +121,56 @@ const RJ_APEX_MARGIN: f32 = 32.0;
 /// At most this many rocket-jump links per source cell — kept small (each costs the bot ~50HP to
 /// fly, so a map wants a handful of genuinely-useful ones, not a spray).
 const RJ_MAX_PER_CELL: usize = 2;
+/// Short, straight run-up committed by a moving rocket-jump link. Stock ground acceleration reaches
+/// almost maxspeed inside this distance; keeping it short lets narrow ledges participate.
+const RJ_RUNUP_CAP: f32 = 64.0;
+const RJ_RUNUP_MIN: f32 = GRID;
+/// A mover may expose less than one grid pitch from its centre to an edge. Twenty-four units still
+/// reaches stock run speed under default QW ground acceleration and matches the shortest useful,
+/// one-body-wide platform run-up.
+const RJ_PLAT_RUNUP_MIN: f32 = 24.0;
+/// Keep the jump press one half-body inside a typical 64u mover instead of running the player's
+/// origin to the brush edge. A full body-length still reaches stock speed and leaves room for the
+/// pre-blast carry before the hull meets the platform lip.
+const RJ_PLAT_RUNUP_CAP: f32 = GRID;
+/// A newly spawned rocket advances on the following server movement frame. Continuous ray marching
+/// otherwise collides one frame too early with a rising brush, making the predicted splash too
+/// vertical. The live DM3 telemetry shows the same ~20 ms cadence as the trajectory recorder.
+const RJ_PLAT_ROCKET_FRAME: f32 = 0.020;
+/// Ignore a run-up that cannot deliver a useful lateral component.
+const RJ_RUN_MIN_SPEED: f32 = 240.0;
+/// Running shots only need the low floor-shot pitches and earliest fire used by human-style long RJs.
+const RJ_RUN_PITCHES: [f32; 2] = [55.0, 65.0];
+const RJ_RUN_DELAY: f32 = 0.05;
+/// Blast shove headings around the ground-run heading. The run supplies the main translation while
+/// an angled floor shot adds climb and the lateral correction needed to meet an offset ledge.
+const RJ_RUN_SHOVE_OFFSETS: [f32; 5] = [-45.0, -22.5, 0.0, 22.5, 45.0];
+/// A small mover gives only one shot at the line: use half-octant ground headings and quarter-octant
+/// blast corrections there, plus the midpoint pitch between the coarse static samples.
+const RJ_PLAT_PITCHES: [f32; 5] = [55.0, 57.5, 60.0, 62.5, 65.0];
+const RJ_PLAT_SHOVE_OFFSETS: [f32; 17] = [
+    -45.0, -39.375, -33.75, -28.125, -22.5, -16.875, -11.25, -5.625, 0.0, 5.625, 11.25, 16.875, 22.5, 28.125, 33.75,
+    39.375, 45.0,
+];
+const RJ_PLAT_DELAYS: [f32; 2] = [0.0, 0.05];
+
+/// Distance a player's origin can run from `start` along `dir` before reaching a rectangular
+/// mover's edge. The body may overhang a lift; Quake only needs the origin to remain over the solid
+/// top when the jump is pressed.
+fn platform_runway(start: Vec2, fp_min: Vec2, fp_max: Vec2, dir: Vec2) -> f32 {
+    let axis_limit = |p: f32, lo: f32, hi: f32, d: f32| {
+        if d > f32::EPSILON {
+            (hi - p) / d
+        } else if d < -f32::EPSILON {
+            (lo - p) / d
+        } else {
+            f32::INFINITY
+        }
+    };
+    axis_limit(start.x, fp_min.x, fp_max.x, dir.x)
+        .min(axis_limit(start.y, fp_min.y, fp_max.y, dir.y))
+        .max(0.0)
+}
 
 // --- grid ---
 
@@ -1181,6 +1237,251 @@ impl NavGraph {
         }
     }
 
+    /// Add running rocket jumps launched from the raised surface of each `func_plat`.
+    ///
+    /// Static BSP collision cannot see inline-model movers, and the ordinary RJ pass intentionally
+    /// runs before entity splices. This second pass supplies just the missing dynamic geometry: the
+    /// raised platform is a floor for the player and the downward-fired rocket, and its footprint is
+    /// the available ground run. Graph topology starts at the plat ride's delivery cell, while the
+    /// traversal records the actual mover-relative jump-press point.
+    pub fn add_platform_rocket_jumps(&mut self, bsp: &Bsp, params: RocketJumpParams, double_jump: bool) {
+        let plats: Vec<(usize, Plat)> = (0..self.plat_count()).map(|i| (i, *self.plat(i))).collect();
+        for (pi, plat) in plats {
+            self.solve_platform_rocket_jumps_from(bsp, pi, plat, params, double_jump);
+        }
+    }
+
+    fn solve_platform_rocket_jumps_from(
+        &mut self,
+        bsp: &Bsp,
+        pi: usize,
+        plat: Plat,
+        params: RocketJumpParams,
+        double_jump: bool,
+    ) {
+        // This is a compound ride-and-launch edge. Topology begins on the board cell; the runtime
+        // stages there while the mover rises, then releases at the solved intermediate Z.
+        let source = plat.board_cell;
+        let useful_apex = if double_jump { DOUBLE_JUMP_APEX } else { JUMP_APEX };
+        let mut best: HashMap<(usize, i32), (f32, Link, RocketJumpTraversal)> = HashMap::new();
+        let mut sim_ok = 0usize;
+        let mut snap_ok = 0usize;
+        let mut structural_ok = 0usize;
+        let mut cert_ok = 0usize;
+        let mut runways = 0usize;
+        let mut highest: Option<(f32, Vec3, Vec3, Vec3)> = None;
+        let mut farthest: Option<(f32, Vec3, Vec3, Vec3)> = None;
+        let mut best_cert: Option<(u32, u16, Vec3, Vec3, Vec3, f32)> = None;
+
+        // Avoid the endpoints: bottom duplicates the shaft floor solve, while top is commonly
+        // occluded by the delivery ledge. Include three-quarter travel for chained arrivals that
+        // touch the mover after it has already started rising; the same BSP/perturb gates reject it
+        // when a map's top lip actually occludes the shot.
+        for phase in [0.375, 0.5, 0.625, 0.75] {
+            let start = plat.board.lerp(plat.exit, phase);
+            let surface_z = start.z - ORIGIN_TO_FEET;
+            let player_solid = |p: Vec3| {
+                let on_mover = p.x >= plat.fp_min.x - PLAYER_HALF_WIDTH
+                    && p.x <= plat.fp_max.x + PLAYER_HALF_WIDTH
+                    && p.y >= plat.fp_min.y - PLAYER_HALF_WIDTH
+                    && p.y <= plat.fp_max.y + PLAYER_HALF_WIDTH
+                    && p.z <= start.z
+                    && p.z >= surface_z - 96.0;
+                bsp.is_solid(p) || on_mover
+            };
+            let rocket_solid = |p: Vec3, t: f32| {
+                let moving_surface_z = surface_z + plat.speed * t;
+                let in_mover = p.x >= plat.fp_min.x
+                    && p.x <= plat.fp_max.x
+                    && p.y >= plat.fp_min.y
+                    && p.y <= plat.fp_max.y
+                    && p.z <= moving_surface_z
+                    && p.z >= moving_surface_z - 96.0;
+                bsp.is_point_solid(p) || in_mover
+            };
+
+            for heading_step in 0..32 {
+                let run_yaw = heading_step as f32 * 11.25;
+                let (sy, cy) = run_yaw.to_radians().sin_cos();
+                let run_dir = Vec3::new(cy, sy, 0.0);
+                let behind = platform_runway(start.xy(), plat.fp_min, plat.fp_max, -run_dir.xy());
+                let ahead = platform_runway(start.xy(), plat.fp_min, plat.fp_max, run_dir.xy());
+                let full_runway = behind + ahead;
+                let scale = (RJ_PLAT_RUNUP_CAP / full_runway).min(1.0);
+                let (behind, ahead) = (behind * scale, ahead * scale);
+                let runway = behind + ahead;
+                if runway < RJ_PLAT_RUNUP_MIN {
+                    continue;
+                }
+                runways += 1;
+                let run_start = start - run_dir * behind;
+                let launch = start + run_dir * ahead;
+                let (run_speed, run_time) = ground_run(runway, params);
+                if run_speed < RJ_RUN_MIN_SPEED {
+                    continue;
+                }
+                let run_velocity = run_dir * run_speed;
+                for shove_offset in RJ_PLAT_SHOVE_OFFSETS {
+                    let fire_yaw = run_yaw + shove_offset + 180.0;
+                    for pitch in RJ_PLAT_PITCHES {
+                        for delay in RJ_PLAT_DELAYS {
+                            let angles = Vec3::new(pitch, fire_yaw, 0.0);
+                            let Some(s) = simulate_rocket_jump_timed(
+                                player_solid,
+                                rocket_solid,
+                                launch,
+                                run_velocity,
+                                angles,
+                                delay,
+                                RJ_PLAT_ROCKET_FRAME,
+                                params,
+                            ) else {
+                                continue;
+                            };
+                            sim_ok += 1;
+                            let Some(to) = self.nearest_within(s.land, RJ_LAND_XY, RJ_LAND_Z) else {
+                                continue;
+                            };
+                            snap_ok += 1;
+                            if to == source {
+                                continue;
+                            }
+                            let b = self.cells[to as usize].origin;
+                            let dz = b.z - launch.z;
+                            let horiz = (b.xy() - launch.xy()).length();
+                            if highest.as_ref().is_none_or(|(v, _, _, _)| dz > *v) {
+                                highest = Some((dz, launch, b, angles));
+                            }
+                            if farthest.as_ref().is_none_or(|(v, _, _, _)| horiz > *v) {
+                                farthest = Some((horiz, launch, b, angles));
+                            }
+                            let apex = s.pos_blast.z + s.v0.z.max(0.0).powi(2) / (2.0 * params.gravity);
+                            let structural = dz > useful_apex
+                                && (RJ_MIN_RISE..=RJ_MAX_RISE).contains(&dz)
+                                && horiz <= RJ_RUNNING_RANGE_XY
+                                && apex >= b.z + RJ_APEX_MARGIN
+                                && !self.has_direct_link(source, to);
+                            if structural {
+                                structural_ok += 1;
+                            }
+                            let mask = if structural {
+                                rj_perturb_mask_timed(
+                                    player_solid,
+                                    rocket_solid,
+                                    launch,
+                                    run_velocity,
+                                    angles,
+                                    delay,
+                                    RJ_PLAT_ROCKET_FRAME,
+                                    params,
+                                    b,
+                                    8.0,
+                                    0.015,
+                                )
+                            } else {
+                                0
+                            };
+                            if structural {
+                                let passes = mask.count_ones();
+                                if best_cert.as_ref().is_none_or(|(n, _, _, _, _, _)| passes > *n) {
+                                    best_cert = Some((passes, mask, launch, b, angles, delay));
+                                }
+                            }
+                            let certified = structural && mask == 0x03ff;
+                            if certified {
+                                cert_ok += 1;
+                                let lift_time = (start.z - plat.board.z).max(0.0) / plat.speed;
+                                // On a moving platform, immediate jump+fire has one scheduling edge
+                                // and more phase runway. Price delayed releases for reliability so a
+                                // marginally cheaper blast cannot evict the zero-delay certified arc.
+                                let release_risk = delay * 20.0;
+                                // A later mover phase leaves the runtime time to reach the back of
+                                // the tiny runway and settle reverse arrival speed after boarding.
+                                // This is a reliability cost, not simulated travel time.
+                                let staging_risk = (1.0 - phase) * 20.0;
+                                // The snap radius proves only that the nominal arc reaches this nav
+                                // cell. Prefer its centre among otherwise viable mover shots: a
+                                // touchdown near the radius edge has little real lip/wall margin
+                                // after server-frame projectile quantization.
+                                let landing_margin_risk = (s.land.xy() - b.xy()).length() * 0.1;
+                                let cost = lift_time
+                                    + run_time
+                                    + release_risk
+                                    + staging_risk
+                                    + landing_margin_risk
+                                    + rocket_jump_cost(s.t_blast, s.airtime, s.vz_land, s.self_damage)
+                                        * params.cost_scale;
+                                let (tdx, tdy) = (
+                                    self.cells[to as usize].gx - self.cells[source as usize].gx,
+                                    self.cells[to as usize].gy - self.cells[source as usize].gy,
+                                );
+                                let key = (dir_bucket(tdx, tdy), (dz / 128.0).floor() as i32);
+                                if best.get(&key).is_none_or(|(bc, _, _)| cost < *bc) {
+                                    best.insert(
+                                        key,
+                                        (
+                                            cost,
+                                            Link {
+                                                from: source,
+                                                to,
+                                                kind: LinkKind::RocketJump,
+                                                cost,
+                                            },
+                                            RocketJumpTraversal {
+                                                run_start,
+                                                launch,
+                                                run_velocity,
+                                                run_time,
+                                                fire_angles: angles,
+                                                fire_delay: delay,
+                                                blast: s.blast,
+                                                pos_blast: s.pos_blast,
+                                                v0: s.v0,
+                                                land: s.land,
+                                                airtime: s.airtime,
+                                                self_damage: s.self_damage,
+                                            },
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        eprintln!(
+            "rtx: navmesh: plat-rj ent={} fp=({:.0},{:.0})..({:.0},{:.0}) exit=({:.0},{:.0},{:.0}) \
+             runways={} sim={} snap={} structural={} cert={} chosen={} highest={:?} farthest={:?} best_cert={:?}",
+            plat.entity,
+            plat.fp_min.x,
+            plat.fp_min.y,
+            plat.fp_max.x,
+            plat.fp_max.y,
+            plat.board.x,
+            plat.board.y,
+            plat.exit.z,
+            runways,
+            sim_ok,
+            snap_ok,
+            structural_ok,
+            cert_ok,
+            best.len(),
+            highest,
+            farthest,
+            best_cert
+        );
+        let mut chosen: Vec<_> = best.into_iter().collect();
+        chosen
+            .sort_by(|(ak, (ac, al, _)), (bk, (bc, bl, _))| ac.total_cmp(bc).then(al.to.cmp(&bl.to)).then(ak.cmp(bk)));
+        chosen.truncate(RJ_MAX_PER_CELL);
+        for (_, (_, link, tr)) in chosen {
+            self.push_rocket_jump(link, tr);
+            self.plats.tag(self.links.len() - 1, pi);
+        }
+    }
+
     /// Solve the rocket-jump links leaving cell `from`, appending accepted `(Link, RocketJumpTraversal)`
     /// to `out`. Unlike hooks there's no ledge-edge skip — the classic RJ launches from flat ground up
     /// a wall face — so all eight travel octants are tried, firing opposite the travel direction.
@@ -1205,6 +1506,7 @@ impl NavGraph {
         let useful_apex = if double_jump { DOUBLE_JUMP_APEX } else { JUMP_APEX };
         // best per (compass octant, 128u elevation band): (cost, link, traversal)
         let mut best: HashMap<(usize, i32), (f32, Link, RocketJumpTraversal)> = HashMap::new();
+        let mut running_best: HashMap<(usize, i32), (f32, Link, RocketJumpTraversal)> = HashMap::new();
 
         for (dgx, dgy) in COMPASS {
             // Fire opposite the travel direction: the blast lands behind-and-below, shoving the bot
@@ -1213,7 +1515,8 @@ impl NavGraph {
             for pitch in RJ_PITCHES {
                 for delay in RJ_DELAYS {
                     let angles = Vec3::new(pitch, fire_yaw, 0.0);
-                    let Some(s) = simulate_rocket_jump(is_solid, rocket_solid, a, angles, delay, params) else {
+                    let Some(s) = simulate_rocket_jump(is_solid, rocket_solid, a, Vec3::ZERO, angles, delay, params)
+                    else {
                         continue;
                     };
                     let Some(to) = self.nearest_within(s.land, RJ_LAND_XY, RJ_LAND_Z) else {
@@ -1235,9 +1538,9 @@ impl NavGraph {
                         && in_range
                         && apex >= b.z + RJ_APEX_MARGIN
                         && !self.has_direct_link(from, to)
-                        && rj_perturb_ok(is_solid, rocket_solid, a, angles, delay, params, b)
+                        && rj_perturb_ok(is_solid, rocket_solid, a, Vec3::ZERO, angles, delay, params, b)
                     {
-                        let cost = rocket_jump_cost(s.t_blast, s.airtime, s.vz_land, s.self_damage);
+                        let cost = rocket_jump_cost(s.t_blast, s.airtime, s.vz_land, s.self_damage) * params.cost_scale;
                         let key = (dir_bucket(dgx, dgy), (dz / 128.0).floor() as i32);
                         if best.get(&key).is_none_or(|(bc, _, _)| cost < *bc) {
                             let link = Link {
@@ -1247,6 +1550,10 @@ impl NavGraph {
                                 cost,
                             };
                             let tr = RocketJumpTraversal {
+                                run_start: a,
+                                launch: a,
+                                run_velocity: Vec3::ZERO,
+                                run_time: 0.0,
                                 fire_angles: angles,
                                 fire_delay: delay,
                                 blast: s.blast,
@@ -1263,14 +1570,130 @@ impl NavGraph {
             }
         }
 
-        // Keep the cheapest few per cell. Break cost ties by target cell then dedup key, so the
-        // survivors don't depend on `HashMap` iteration order (randomized per instance — and under
-        // parallel building a tie would otherwise resolve differently run to run).
-        let mut chosen: Vec<_> = best.into_iter().collect();
-        chosen
-            .sort_by(|(ak, (ac, al, _)), (bk, (bc, bl, _))| ac.total_cmp(bc).then(al.to.cmp(&bl.to)).then(ak.cmp(bk)));
-        chosen.truncate(RJ_MAX_PER_CELL);
-        out.extend(chosen.into_iter().map(|(_, (_, link, tr))| (link, tr)));
+        // Running rocket jumps: commit a short straight runway into the link, carry its measured
+        // ground speed into the same blast solve, and try a small fan of blast shoves around the run
+        // heading. The link starts at the runway's beginning; `tr.launch` remains the point where the
+        // jump is pressed, so runtime and solver share the same contract.
+        let launch_cell = self.cells[from as usize];
+        for (dgx, dgy) in COMPASS {
+            let run_dir = Vec3::new(dgx as f32, dgy as f32, 0.0).normalize_or_zero();
+            let runway = self.measure_rj_runway(bsp, &launch_cell, dgx, dgy).min(RJ_RUNUP_CAP);
+            if runway < RJ_RUNUP_MIN {
+                continue;
+            }
+            let start_point = a - run_dir * runway;
+            let Some(start) = self.nearest_within(start_point, GRID * 0.75, STEP_HEIGHT * 2.0) else {
+                continue;
+            };
+            if start == from {
+                continue;
+            }
+            let (run_speed, run_time) = ground_run(runway, params);
+            if run_speed < RJ_RUN_MIN_SPEED {
+                continue;
+            }
+            let run_velocity = run_dir * run_speed;
+            let run_yaw = (dgy as f32).atan2(dgx as f32).to_degrees();
+            for shove_offset in RJ_RUN_SHOVE_OFFSETS {
+                // The explosion shoves opposite the shot direction.
+                let fire_yaw = run_yaw + shove_offset + 180.0;
+                for pitch in RJ_RUN_PITCHES {
+                    let angles = Vec3::new(pitch, fire_yaw, 0.0);
+                    let Some(s) =
+                        simulate_rocket_jump(is_solid, rocket_solid, a, run_velocity, angles, RJ_RUN_DELAY, params)
+                    else {
+                        continue;
+                    };
+                    let Some(to) = self.nearest_within(s.land, RJ_LAND_XY, RJ_LAND_Z) else {
+                        continue;
+                    };
+                    if to == from || to == start {
+                        continue;
+                    }
+                    let b = self.cells[to as usize].origin;
+                    let dz = b.z - a.z;
+                    let horiz = (b.xy() - a.xy()).length();
+                    let useful = dz > useful_apex;
+                    let in_range = (RJ_MIN_RISE..=RJ_MAX_RISE).contains(&dz) && horiz <= RJ_RUNNING_RANGE_XY;
+                    let apex = s.pos_blast.z + s.v0.z.max(0.0).powi(2) / (2.0 * params.gravity);
+                    if useful
+                        && in_range
+                        && apex >= b.z + RJ_APEX_MARGIN
+                        && !self.has_direct_link(start, to)
+                        && rj_perturb_ok(is_solid, rocket_solid, a, run_velocity, angles, RJ_RUN_DELAY, params, b)
+                    {
+                        let cost = run_time
+                            + rocket_jump_cost(s.t_blast, s.airtime, s.vz_land, s.self_damage) * params.cost_scale;
+                        let (tdx, tdy) = (
+                            self.cells[to as usize].gx - self.cells[start as usize].gx,
+                            self.cells[to as usize].gy - self.cells[start as usize].gy,
+                        );
+                        let key = (dir_bucket(tdx, tdy), (dz / 128.0).floor() as i32);
+                        if running_best.get(&key).is_none_or(|(bc, _, _)| cost < *bc) {
+                            let link = Link {
+                                from: start,
+                                to,
+                                kind: LinkKind::RocketJump,
+                                cost,
+                            };
+                            let tr = RocketJumpTraversal {
+                                run_start: self.cells[start as usize].origin,
+                                launch: a,
+                                run_velocity,
+                                run_time,
+                                fire_angles: angles,
+                                fire_delay: RJ_RUN_DELAY,
+                                blast: s.blast,
+                                pos_blast: s.pos_blast,
+                                v0: s.v0,
+                                land: s.land,
+                                airtime: s.airtime,
+                                self_damage: s.self_damage,
+                            };
+                            running_best.insert(key, (cost, link, tr));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Keep separate stationary and running budgets, so short vertical shots cannot evict the
+        // long run-up primitive. Break ties deterministically by target cell and dedup key.
+        let mut keep = |best: HashMap<(usize, i32), (f32, Link, RocketJumpTraversal)>| {
+            let mut chosen: Vec<_> = best.into_iter().collect();
+            chosen.sort_by(|(ak, (ac, al, _)), (bk, (bc, bl, _))| {
+                ac.total_cmp(bc).then(al.to.cmp(&bl.to)).then(ak.cmp(bk))
+            });
+            chosen.truncate(RJ_MAX_PER_CELL);
+            out.extend(chosen.into_iter().map(|(_, (_, link, tr))| (link, tr)));
+        };
+        keep(best);
+        keep(running_best);
+    }
+
+    /// Straight, one-body-wide runway feeding a running rocket jump. Unlike the bhop speed-jump
+    /// runway this needs no side-to-side weave, so narrow lift tops are valid; it only requires
+    /// continuous walkable cells and headroom along the run direction.
+    fn measure_rj_runway(&self, bsp: &Bsp, launch: &Cell, dgx: i32, dgy: i32) -> f32 {
+        let (bx, by) = (-dgx.signum(), -dgy.signum());
+        if bx == 0 && by == 0 {
+            return 0.0;
+        }
+        let step_len = GRID * (((bx * bx + by * by) as f32).sqrt());
+        let (mut gx, mut gy, mut z, mut len) = (launch.gx, launch.gy, launch.origin.z, 0.0);
+        while len < RJ_RUNUP_CAP {
+            let (ngx, ngy) = (gx + bx, gy + by);
+            let Some(cid) = self.cell_near(ngx, ngy, z) else {
+                break;
+            };
+            let c = self.cells[cid as usize].origin;
+            if bsp.is_solid(c + Vec3::new(0.0, 0.0, JUMP_APEX)) {
+                break;
+            }
+            len += step_len;
+            (gx, gy, z) = (ngx, ngy, c.z);
+        }
+        len
     }
 
     /// Whether `from` already has a direct (non-hook) link to `to` — such a target needs no hook.
@@ -1442,6 +1865,27 @@ pub struct HookTraversal {
 pub struct RocketJumpParams {
     pub gravity: f32,
     pub rj_extra: f32,
+    pub accel: f32,
+    pub maxspeed: f32,
+    pub friction: f32,
+    pub stopspeed: f32,
+    /// Multiplier for the solved blast/health traversal cost. Geometry and certification are
+    /// unaffected; servers may opt into more aggressive route selection.
+    pub cost_scale: f32,
+}
+
+impl Default for RocketJumpParams {
+    fn default() -> Self {
+        Self {
+            gravity: 800.0,
+            rj_extra: 0.0,
+            accel: 10.0,
+            maxspeed: 320.0,
+            friction: 4.0,
+            stopspeed: 100.0,
+            cost_scale: 1.0,
+        }
+    }
 }
 
 /// A solved rocket jump, stored per rocket-jump link in a side table (parallel to `links`, like
@@ -1452,6 +1896,19 @@ pub struct RocketJumpParams {
 /// `blast`/`pos_blast`/`v0` are build/test-only re-flight data.
 #[derive(Clone, Copy)]
 pub struct RocketJumpTraversal {
+    /// Physical beginning of the committed ground run. For a stationary RJ this equals `launch`.
+    /// Platform traversals can stage on the mover even when the graph source is a nearby static
+    /// delivery cell.
+    pub run_start: Vec3,
+    /// Actual jump-press point. For a stationary RJ this equals the link source; for a running RJ
+    /// the link source is the beginning of the committed run-up.
+    pub launch: Vec3,
+    /// Horizontal velocity carried into the jump (`ZERO` for the original stationary primitive).
+    pub run_velocity: Vec3,
+    /// Seconds the certified ground run takes. A compound mover jump uses this to begin its run
+    /// before the platform reaches `launch.z`, so the jump press — not the first footstep — occurs
+    /// at the solved vertical phase.
+    pub run_time: f32,
     /// View angles to fire at (QW pitch positive-down); the shot goes straight along `v_forward`.
     pub fire_angles: Vec3,
     /// Seconds from the jump press to the `+attack` that fires the rocket.
@@ -1670,12 +2127,21 @@ pub fn build_navmesh(
         if let Some(params) = hooks {
             graph.add_hooks(bsp, params);
         }
-        // Rocket jumps after hooks: `has_direct_link` then skips any ledge a (free, cheaper) hook already
-        // reaches, so an RJ link is only spent where nothing else gets there.
+        // Static rocket jumps after hooks: `has_direct_link` then skips any ledge a (free, cheaper)
+        // hook already reaches, so an RJ link is only spent where nothing else gets there.
         if let Some(params) = rocket_jump {
             graph.add_rocket_jumps(bsp, params, double_jump);
         }
         graph.add_plats(bsp, &plats);
+        // Static BSP geometry can snap an RJ to the lip beside a resting mover even when the solved
+        // touchdown is physically on its surface. Wire those certified landings straight to the board
+        // before adding mover-launched RJs, so routing does not invent an extra shaft jump.
+        graph.splice_rocket_jump_landings_onto_plats();
+        // Inline-model lifts are absent from the BSP solidity oracle. Once their ride links exist,
+        // add the complementary RJ pass whose source is each raised platform surface.
+        if let Some(params) = rocket_jump {
+            graph.add_platform_rocket_jumps(bsp, params, double_jump);
+        }
         graph.add_teleports(bsp, &teleports);
         graph.add_gates(&gates);
         // Last: prices links entering a lift shaft, so it must see every link the splices above added
@@ -1718,6 +2184,16 @@ impl NavState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_runway_reaches_each_rectangular_edge() {
+        let lo = Vec2::new(-32.0, -48.0);
+        let hi = Vec2::new(32.0, 48.0);
+        assert_eq!(platform_runway(Vec2::ZERO, lo, hi, Vec2::X), 32.0);
+        assert_eq!(platform_runway(Vec2::ZERO, lo, hi, -Vec2::Y), 48.0);
+        let diagonal = Vec2::ONE.normalize();
+        assert!((platform_runway(Vec2::ZERO, lo, hi, diagonal) - 32.0 * 2.0_f32.sqrt()).abs() < 0.001);
+    }
 
     /// `ledge_beside` flags a cell only when the floor genuinely falls away past a survivable step
     /// within a stride — an open pit, not flat ground, a wall, or a small step-down.
@@ -1939,6 +2415,7 @@ mod tests {
             &[PlatInfo {
                 board,
                 exit,
+                speed: 150.0,
                 entity: 7,
                 fp_min: board.xy() - Vec2::splat(32.0),
                 fp_max: board.xy() + Vec2::splat(32.0),
@@ -2144,6 +2621,7 @@ mod tests {
         let rjp = RocketJumpParams {
             gravity: 800.0,
             rj_extra: 0.0,
+            ..Default::default()
         };
         let mut gr = NavGraph::build(&bsp);
         let reach_before = {
@@ -2163,13 +2641,23 @@ mod tests {
             let tr = *gr
                 .rocket_jump_of_link(li)
                 .expect("rocket-jump link missing its traversal");
-            let a = gr.cell_origin(gr.link_source(li));
+            let source = gr.cell_origin(gr.link_source(li));
+            let a = tr.launch;
             let b = gr.cell_origin(gr.link_target(li));
             let dz = b.z - a.z;
             let horiz = (b.xy() - a.xy()).length();
+            let range = if tr.run_velocity.length_squared() > 0.0 {
+                RJ_RUNNING_RANGE_XY
+            } else {
+                RJ_RANGE_XY
+            };
             assert!(
-                (RJ_MIN_RISE..=RJ_MAX_RISE).contains(&dz) && horiz <= RJ_RANGE_XY,
+                (RJ_MIN_RISE..=RJ_MAX_RISE).contains(&dz) && horiz <= range,
                 "rocket-jump link out of envelope: dz={dz} horiz={horiz}"
+            );
+            assert!(
+                tr.run_velocity == Vec3::ZERO || (source.xy() - a.xy()).length() >= RJ_RUNUP_MIN,
+                "running rocket-jump link has no committed runway"
             );
             assert!(dz > JUMP_APEX, "rocket-jump link a single jump could make: dz={dz}");
             assert!(tr.self_damage > 0.0, "rocket-jump link with no self-blast");
@@ -2226,6 +2714,7 @@ mod tests {
         let rj = Some(RocketJumpParams {
             gravity: 800.0,
             rj_extra: 0.0,
+            ..Default::default()
         });
         // All solvers on, no entity splices (they're serial and not the subject here).
         let build = || build_navmesh(&bsp, vec![], vec![], vec![], hooks, true, speed, rj);
@@ -2285,6 +2774,10 @@ mod tests {
                 mix(&mut h, x as u32 as u64);
             }
             for t in g.rocket_jumps.items_raw() {
+                mix_vec3(&mut h, t.run_start);
+                mix_vec3(&mut h, t.launch);
+                mix_vec3(&mut h, t.run_velocity);
+                mix(&mut h, t.run_time.to_bits() as u64);
                 mix_vec3(&mut h, t.fire_angles);
                 mix(&mut h, t.fire_delay.to_bits() as u64);
                 mix_vec3(&mut h, t.blast);

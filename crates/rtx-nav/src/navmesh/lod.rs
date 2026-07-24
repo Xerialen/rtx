@@ -958,6 +958,7 @@ mod tests {
             Some(RocketJumpParams {
                 gravity: 800.0,
                 rj_extra: 0.0,
+                ..Default::default()
             }),
         );
         Some(graph)
