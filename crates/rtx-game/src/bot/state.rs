@@ -367,6 +367,9 @@ impl GroundTurnPhase {
 pub struct Commit {
     pub leg: u32,
     pub since: f32,
+    /// The traversal has physically left the ground at least once. The first later ground contact is
+    /// its landing and must end the single-leap controller before ordinary bhop policy can re-arm.
+    pub airborne: bool,
     /// Number of launch-yaw vetoes observed for this link, retained across parallel-profile
     /// selection so operator telemetry is per traversal rather than per controller frame.
     pub launch_vetoes: u32,
@@ -383,6 +386,7 @@ impl Commit {
         Self {
             leg,
             since,
+            airborne: false,
             launch_vetoes: 0,
             entry_checked,
             ground_turn_phase: GroundTurnPhase::setup(),
@@ -483,11 +487,14 @@ mod speed_jump_tests {
         let mut bot = BotState::default();
 
         bot.commit_speed_jump(7, 1.0);
+        bot.sj.as_mut().unwrap().airborne = true;
         bot.sj_trace.push_back(SpeedJumpTraceFrame::default());
         bot.commit_speed_jump(7, 2.0);
+        assert!(bot.sj.unwrap().airborne, "the same leg must remember that it launched");
         assert_eq!(bot.sj_trace.len(), 1, "the same committed leg keeps its trace");
 
         bot.commit_speed_jump(8, 3.0);
+        assert!(!bot.sj.unwrap().airborne, "a new leg starts before its own launch");
         assert!(bot.sj_trace.is_empty(), "a newly latched leg starts a fresh trace");
     }
 

@@ -29,6 +29,8 @@
 //!
 //! [msgpack]: https://msgpack.org/
 
+mod item_trial;
+
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
@@ -45,6 +47,8 @@ use crate::entity::EntId;
 use crate::game::{cstring, GameState, MAX_EDICTS};
 use crate::math::wrap180;
 use crate::navmesh::LinkKind;
+
+use self::item_trial::{poll_sng_mega, start_sng_mega};
 
 /// A goto is "arrived" once within this XY radius of the target (matches the bot's own arrival gate)
 /// or after a bounded finish-plane crossing, and within [`GOTO_ARRIVE_Z`] in Z. This stays independent
@@ -157,6 +161,9 @@ pub(crate) fn frame_end(game: &mut GameState) {
                 }
                 poll_fly(game, e, i, link, now);
             }
+        }
+        if game.entities[e].bot.puppet.item_trial.is_some() {
+            poll_sng_mega(game, e, i, now);
         }
     }
 }
@@ -303,6 +310,14 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
         Cmd::Fly { bot, link } => do_fly(game, bot, link),
         Cmd::Hold { bot } => do_order(game, bot, ControlOrder::Hold),
         Cmd::Stop { bot } => do_stop(game, bot),
+        Cmd::SngMega {
+            bot,
+            scenario,
+            start,
+            mega,
+            rockets,
+            max_secs,
+        } => start_sng_mega(game, id, bot, scenario, v3(start), v3(mega), v3(rockets), max_secs).map(Resp::SngMega),
         Cmd::Set { name, value } => do_set(game, &name, &value),
         Cmd::Get { name } => do_get(game, &name),
         Cmd::RunCmd { raw } => {
@@ -327,6 +342,7 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
             tgt,
             v_req,
         } => plant_link_resp(game, v3(from), v3(takeoff), v3(tgt), v_req).map(Resp::PlanLink),
+        Cmd::Unlink { link } => unlink_resp(game, link),
     };
     reply(game, conn, id, result);
 }
@@ -883,6 +899,23 @@ fn route_resp(game: &GameState, bot: u32) -> Result<proto::RouteResp, String> {
         route_pos: b.route_pos as u32,
         origin: a3(game.entities[e].v.origin),
         legs,
+    })
+}
+
+fn unlink_resp(game: &mut GameState, link: u32) -> Result<Resp, String> {
+    let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+    let graph = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+    if link as usize >= graph.links.len() {
+        return Err(format!("link {link} out of range (0..{})", graph.links.len()));
+    }
+    let src = a3(graph.cell_origin(graph.link_source(link)));
+    let tgt = a3(graph.cell_origin(graph.link_target(link)));
+    let removed = graph.unlink(link);
+    Ok(Resp::Unlink {
+        link,
+        removed,
+        src,
+        tgt,
     })
 }
 

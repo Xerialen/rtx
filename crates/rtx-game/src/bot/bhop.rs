@@ -400,6 +400,14 @@ impl Bhop {
         self.entry_sigma = 0.0;
     }
 
+    /// End a certified single-leap traversal on its physical landing. The next ordinary frame may
+    /// engage again, but the landing frame itself must not inherit `Hop` and immediately re-jump.
+    pub(super) fn finish_committed_jump(&mut self) {
+        if self.phase != Phase::Off {
+            self.disengage("landed");
+        }
+    }
+
     /// Drive one frame. `Some(cmd)` = the controller owns the view and move this frame;
     /// `None` = not engaged — the caller steers through the normal aim-spring path.
     pub fn step(&mut self, i: &Input, env: &Env) -> Option<Cmd> {
@@ -2121,5 +2129,16 @@ mod sim {
             assert_eq!(b.phase, Phase::Zigzag, "disengaged on an air frame");
             assert!(!cmd.jump && cmd.side == 0.0, "air frame should be a plain bearing-run");
         }
+    }
+
+    #[test]
+    fn committed_jump_landing_ends_the_hop_cycle() {
+        let mut b = Bhop {
+            phase: Phase::Hop,
+            ..Bhop::default()
+        };
+        b.finish_committed_jump();
+        assert_eq!(b.phase, Phase::Off);
+        assert_eq!(b.off_reason, "landed");
     }
 }
