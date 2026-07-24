@@ -2,11 +2,11 @@
 
 //! Building the navmesh offline and classifying each KTX rocket-jump / curl-jump path against it.
 //!
-//! The build recipe is the viewer's ([`rtx_nav_view`-equivalent](crate)): stock DM physics with
-//! double-jump, bunnyhop speed-jumps (curl on), and rocket-jumps enabled. The one addition is
-//! wiring teleporters from the entity lump ([`crate::ent::teleports`]) so teleport-riding routes
-//! resolve; plats and button-gated doors still aren't spliced offline (their traversal needs the
-//! live movers), which the report flags per map.
+//! The build recipe mirrors the game's **default** DM cvars (see [`build`]): stock physics, bunnyhop
+//! speed-jumps (curl on) and rocket-jumps enabled, but **double jump off** (`rtx_doublejump` ships
+//! disabled). Teleporters are wired from the entity lump ([`crate::ent::teleports`]) so
+//! teleport-riding routes resolve; plats and button-gated doors still aren't spliced offline (their
+//! traversal needs the live movers), which the report flags per map.
 //!
 //! For each authored path A→B we ask how well our mesh reproduces it, in descending strength:
 //!
@@ -69,7 +69,14 @@ pub enum Verdict {
     },
 }
 
-/// Build the navmesh the checker compares against — the viewer's stock-DM recipe plus teleports.
+/// Build the navmesh the checker compares against — the game's **default-DM** loadout, so coverage
+/// reflects what real bots use, not the viewer's. That means double jump OFF (`rtx_doublejump`
+/// defaults to 0; see `rtx-game`'s `nav_build.rs`), bhop + curl ON, rocket jump ON at stock physics
+/// with no `rj` self-boost. Teleporters are wired from the entity lump; plats/gates aren't (offline).
+///
+/// Double jump being off is the load-bearing choice: with it disabled the generator mints rocket
+/// jumps to reach ledges a mid-air jump would otherwise cover, which is exactly the RJ coverage the
+/// KTX files were authored against. Turning it on (the viewer's default) suppresses those RJ links.
 pub fn build(bsp: &Bsp) -> NavGraph {
     build_navmesh(
         bsp,
@@ -77,7 +84,7 @@ pub fn build(bsp: &Bsp) -> NavGraph {
         crate::ent::teleports(bsp),
         Vec::new(),
         None,
-        true,
+        false,
         Some(SpeedJumpParams {
             gravity: 800.0,
             accel: 10.0,
@@ -402,6 +409,13 @@ mod tests {
 
         let graph = build(&bsp);
         let checker = Checker::new(&graph, 96.0);
+        // Pin the game-default recipe: double jump OFF mints ~110 rj links for dm4; the viewer's
+        // double-jump-ON recipe would collapse it to ~27. Guards against the recipe regressing.
+        assert!(
+            checker.rj_link_count() > 60,
+            "expected the double-jump-off rj count (~110), got {}",
+            checker.rj_link_count()
+        );
         for p in paths.iter().filter(|p| p.is_rj()) {
             assert!(
                 !matches!(checker.classify(p, Family::RocketJump), Verdict::Unsnapped { .. }),
