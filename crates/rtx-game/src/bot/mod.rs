@@ -42,15 +42,13 @@ use population::bot_target;
 #[cfg(feature = "netclient")]
 pub(crate) use population::{bot_display_name, bot_name};
 
-use crate::bot::state::{
-    AirCommit, BotState, CombatPosture, GoalCommit, GrenadePhase, HookPhase, RjPhase, Wander,
-};
+use crate::bot::state::{AirCommit, BotState, CombatPosture, GoalCommit, GrenadePhase, HookPhase, RjPhase, Wander};
 use crate::defs::{
-    Bits, DeadFlag, Flags, Items, Solid, TakeDamage, Weapon, BUTTON_ATTACK, BUTTON_JUMP, VEC_HULL_MAX,
-    VEC_HULL_MIN, VEC_VIEW_OFS,
+    Bits, DeadFlag, Flags, Items, Solid, TakeDamage, Weapon, BUTTON_ATTACK, BUTTON_JUMP, VEC_HULL_MAX, VEC_HULL_MIN,
+    VEC_VIEW_OFS,
 };
 use crate::entity::{EntId, Entity, Touch};
-use crate::game::GameState;
+use crate::game::{cstring, GameState};
 use crate::math::{angle_vectors, wrap180, yaw_of};
 use crate::mode::BotIntent;
 use crate::navmesh::{CellId, HazardPrice, LinkCosts, LinkKind, NavGraph};
@@ -343,24 +341,19 @@ impl BotFrameClock {
     fn observe(claim: BotFrameScheduleClaim, maxfps: f32, frametime: f32) -> Self {
         let scheduled_dt = prof::scheduled_dt(maxfps);
         let matches_schedule = frametime.to_bits() == scheduled_dt.to_bits();
-        Self { claim, scheduled_dt, matches_schedule }
+        Self {
+            claim,
+            scheduled_dt,
+            matches_schedule,
+        }
     }
 
-    fn fixed_setup_clock(
-        self,
-        controller_dt: f32,
-        move_dt: f32,
-    ) -> Option<crate::navmesh::GroundTurnSetupClock> {
+    fn fixed_setup_clock(self, controller_dt: f32, move_dt: f32) -> Option<crate::navmesh::GroundTurnSetupClock> {
         (self.claim == BotFrameScheduleClaim::ClaimedFixed
             && self.matches_schedule
             && controller_dt.to_bits() == self.scheduled_dt.to_bits())
-            .then(|| {
-                crate::navmesh::GroundTurnSetupClock::from_verified_schedule(
-                    self.scheduled_dt,
-                    move_dt,
-                )
-            })
-            .flatten()
+        .then(|| crate::navmesh::GroundTurnSetupClock::from_verified_schedule(self.scheduled_dt, move_dt))
+        .flatten()
     }
 }
 
@@ -639,7 +632,7 @@ fn capture_frame(
             .graph
             .as_ref()
             .map_or(0.0, |g| g.cell_origin(b.goal.item_cell).z - it.v.origin.z);
-        let oi = it.v.solid == Solid::Trigger && on_item(origin, it.v.origin);
+        let oi = it.v.solid == Solid::Trigger && item_terminal_touches(origin, it);
         ((it.v.origin - origin).length(), dz, oi)
     } else {
         (0.0, 0.0, false)
@@ -903,15 +896,8 @@ fn spawn_exit_complete(armor_value: f32, items: f32) -> bool {
 
 /// Whether safety must release a fresh-spawn item lock. Kept pure so the deadline, mirrored damage
 /// signal, and perceived-contact threshold stay deterministic and directly testable.
-fn spawn_exit_should_abort(
-    now: f32,
-    until: f32,
-    took_damage: bool,
-    perceived_enemy_distance: Option<f32>,
-) -> bool {
-    took_damage
-        || now >= until
-        || perceived_enemy_distance.is_some_and(|distance| distance <= SPAWN_EXIT_COMBAT_RANGE)
+fn spawn_exit_should_abort(now: f32, until: f32, took_damage: bool, perceived_enemy_distance: Option<f32>) -> bool {
+    took_damage || now >= until || perceived_enemy_distance.is_some_and(|distance| distance <= SPAWN_EXIT_COMBAT_RANGE)
 }
 
 /// Release every part of the spawn-exit completion lock so ordinary intent and combat movement can
@@ -1204,8 +1190,11 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3) -> 
             if may_preempt {
                 if let Some((item, cell)) = recovery {
                     let b = &mut game.entities[e].bot;
-                    let preserve = (b.goal.commit == GoalCommit::Powerup && b.goal.item != 0)
-                        .then_some((b.goal.item, b.goal.item_cell, GoalCommit::Powerup));
+                    let preserve = (b.goal.commit == GoalCommit::Powerup && b.goal.item != 0).then_some((
+                        b.goal.item,
+                        b.goal.item_cell,
+                        GoalCommit::Powerup,
+                    ));
                     if b.goal.set_item(item.0) {
                         b.goal.since = now;
                     }
@@ -1242,8 +1231,7 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3) -> 
             b.goal.since = now;
             b.goal.set_item(item.0);
             (b.goal.item_cell, b.goal.commit) = (cell, GoalCommit::Pickup);
-            (b.goal.next_item, b.goal.next_cell, b.goal.next_commit) =
-                (powerup.0, powerup_cell, GoalCommit::Powerup);
+            (b.goal.next_item, b.goal.next_cell, b.goal.next_commit) = (powerup.0, powerup_cell, GoalCommit::Powerup);
             b.goal.next_pick = now + GOAL_SELECT_INTERVAL;
         }
     }
@@ -1303,12 +1291,7 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3) -> 
                     let (commit, next_commit) = if stack_exit {
                         (GoalCommit::Pickup, GoalCommit::None)
                     } else {
-                        planned_goal_commits(
-                            plan.contains_powerup,
-                            plan.contains_major,
-                            next_powerup,
-                            next_major,
-                        )
+                        planned_goal_commits(plan.contains_powerup, plan.contains_major, next_powerup, next_major)
                     };
                     (first.0, first_cell, next, next_cell, commit, next_commit)
                 }
@@ -1399,13 +1382,21 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3) -> 
         // (`on_item` gates |dz| ≤ 48), so the bot parks/waits for something it can't reach.
         let (gcell, gdz) = if gi != 0 {
             let ic = b.goal.item_cell;
-            let dz = game.nav.graph.as_ref().map_or(0.0, |g| g.cell_origin(ic).z - game.entities[EntId(gi)].v.origin.z);
+            let dz = game
+                .nav
+                .graph
+                .as_ref()
+                .map_or(0.0, |g| g.cell_origin(ic).z - game.entities[EntId(gi)].v.origin.z);
             (ic as i64, dz)
         } else {
             (-1, 0.0)
         };
         // Arena spectating: which fighter (edict) this bot is watching, `0` = none.
-        let wat = if let Some(BotIntent::Spectate { watch, .. }) = intent { watch.0 } else { 0 };
+        let wat = if let Some(BotIntent::Spectate { watch, .. }) = intent {
+            watch.0
+        } else {
+            0
+        };
         let commit = b.goal.commit;
         let posture = b.posture;
         let mag = b.goal.magnet_item;
@@ -1807,13 +1798,11 @@ fn prearm_traversal(game: &mut GameState, e: EntId, now: f32, on_ground: bool) {
             return;
         };
         let b = &game.entities[e].bot;
-        let current = b.route.get(b.route_pos).copied().map(|leg| {
-            (
-                leg,
-                graph.link_kind(leg),
-                graph.link_target(leg),
-            )
-        });
+        let current = b
+            .route
+            .get(b.route_pos)
+            .copied()
+            .map(|leg| (leg, graph.link_kind(leg), graph.link_target(leg)));
         // Arm an immediately incoming SpeedJump before the periodic repath gate runs.  At speed the
         // bot can enter the shared source cell and hit the 0.4 s repath boundary in the same frame;
         // without this look-ahead, A* may replace the solved traversal with an ordinary floor edge
@@ -1886,17 +1875,14 @@ fn run_bot(game: &mut GameState, e: EntId, frame_clock: BotFrameClock) {
     // Detect the living edge rather than a server-only spawn callback: a network-client body is
     // spawned by the remote server, but its mirrored health produces the same false→true edge. In
     // ordinary DM with stack discipline, reserve the first life objective for one armor/weapon.
-    let spawn_exit_done =
-        spawn_exit_complete(game.entities[e].v.armorvalue, game.entities[e].v.items);
+    let spawn_exit_done = spawn_exit_complete(game.entities[e].v.armorvalue, game.entities[e].v.items);
     let fresh_spawn = alive && !game.entities[e].bot.was_alive;
     let health = game.entities[e].v.health;
     let armor_value = game.entities[e].v.armorvalue;
     {
         let enable = game.mode.name() == "dm" && host.cvar_bool(c"rtx_bot_stack");
         let b = &mut game.entities[e].bot;
-        let took_damage = b.spawn_exit
-            && !fresh_spawn
-            && (health < b.last_health || armor_value < b.last_armor_value);
+        let took_damage = b.spawn_exit && !fresh_spawn && (health < b.last_health || armor_value < b.last_armor_value);
         b.was_alive = alive;
         if fresh_spawn {
             b.spawn_exit = enable && !spawn_exit_done;
@@ -1907,8 +1893,7 @@ fn run_bot(game: &mut GameState, e: EntId, frame_clock: BotFrameClock) {
             b.goal.next_commit = GoalCommit::None;
             b.goal.next_pick = now;
         } else if b.spawn_exit
-            && (spawn_exit_done
-                || spawn_exit_should_abort(now, b.spawn_exit_until, took_damage, None))
+            && (spawn_exit_done || spawn_exit_should_abort(now, b.spawn_exit_until, took_damage, None))
         {
             end_spawn_exit(b, now);
         }
@@ -2566,11 +2551,7 @@ fn button_reachable(graph: &NavGraph, from: CellId, gi: usize, costs: &LinkCosts
 /// part of the run-up corridor: exposing it to look-ahead lets a carried-speed approach start the
 /// final turn before reaching the nominal source cell. Any other traversal ends the iterator.
 /// Shared by [`runway`] and [`corridor_point`] so both trace the exact same corridor.
-fn ground_leg_targets<'a>(
-    graph: &'a NavGraph,
-    route: &'a [u32],
-    route_pos: usize,
-) -> impl Iterator<Item = Vec3> + 'a {
+fn ground_leg_targets<'a>(graph: &'a NavGraph, route: &'a [u32], route_pos: usize) -> impl Iterator<Item = Vec3> + 'a {
     route
         .get(route_pos..)
         .unwrap_or_default()
@@ -2898,12 +2879,7 @@ mod tests {
         assert!(!spawn_exit_should_abort(7.99, 8.0, false, None));
         assert!(spawn_exit_should_abort(8.0, 8.0, false, None));
         assert!(spawn_exit_should_abort(1.0, 8.0, true, None));
-        assert!(spawn_exit_should_abort(
-            1.0,
-            8.0,
-            false,
-            Some(SPAWN_EXIT_COMBAT_RANGE),
-        ));
+        assert!(spawn_exit_should_abort(1.0, 8.0, false, Some(SPAWN_EXIT_COMBAT_RANGE),));
         assert!(!spawn_exit_should_abort(
             1.0,
             8.0,
@@ -3248,7 +3224,10 @@ mod tests {
         assert_eq!(goal.terminal_retried_item, None);
 
         goal.terminal_retried_item = Some(EntId(11));
-        assert!(goal.set_item(10), "a later fresh chase of the original item is new again");
+        assert!(
+            goal.set_item(10),
+            "a later fresh chase of the original item is new again"
+        );
         assert_eq!(goal.terminal_retried_item, None);
     }
 

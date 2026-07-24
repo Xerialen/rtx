@@ -524,5 +524,4 @@ mod tests {
         let c = clip_velocity(v, n, OVERBOUNCE);
         assert!(c.x.abs() < 1e-4 && (c.y - 150.0).abs() < 1e-4, "wall clip wrong: {c:?}");
     }
-
 }

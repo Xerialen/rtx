@@ -19,9 +19,8 @@
 - Home-hub registration: `pentlift-window-rj-codex`
 - Bot label: `pentlift-window-rj`
 
-Route-specific movement enables `rtx_bot_rocketjump 1`. Non-route movement
-extensions remain disabled: `rtx_doublejump 0`, `rtx_walljump 0`,
-`rtx_bot_ledgecap 0`, and `rtx_grapple 0`.
+Route-specific movement enables rocket jumping. Non-route movement extensions
+remain disabled.
 
 ## Final result
 

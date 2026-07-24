@@ -1053,8 +1053,13 @@ fn plant_link_resp(
         takeoff,
         v_req,
         airtime,
+        landing_speed_lo: 0.0,
         chained: false,
         curl_gain,
+        curl_entry_aim: Vec3::ZERO,
+        curl_switch_dist: 0.0,
+        curl_landing_aim: Vec3::ZERO,
+        ground_turn: None,
     };
     let li = g.plant_speed_jump(from_cell, to_cell, cost, tr);
     // Refresh the reachability + LOD tables so the new link is visible to steer's O(1) reachable()
@@ -1106,7 +1111,9 @@ fn probe_resp(game: &GameState, takeoff: Vec3, tgt: Vec3, psi0: f32, runway: f32
             miss_z: (land.z - tgt.z).abs(),
         })
         .collect();
-    let certified = probe.certified.map(|(v_req, gain)| proto::Cert { v_req, gain });
+    let certified = probe
+        .certified
+        .map(|(v_req, gain, _landing_speed_lo)| proto::Cert { v_req, gain });
     Ok(proto::ProbeResp {
         v_deliver: probe.v_deliver,
         certified,

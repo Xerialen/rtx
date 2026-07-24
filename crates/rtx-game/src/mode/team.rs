@@ -228,13 +228,10 @@ pub(crate) fn mode_serverinfo(mode: &str, cfg: MatchConfig) -> String {
 /// `structured` gate short-circuits before the netname lookup allocates). Server-side only: a
 /// network client mirrors the remote server's phase but does not own its roster or bench.
 pub(crate) fn benched(g: &GameState, e: EntId) -> bool {
-    !g.host().is_client()
-        && structured(g)
-        && !matches!(g.team_match.phase, MatchPhase::Warmup)
-        && {
-            let name = g.netname_of(e);
-            !g.team_match.roster.iter().any(|(rn, _)| *rn == name)
-        }
+    !g.host().is_client() && structured(g) && !matches!(g.team_match.phase, MatchPhase::Warmup) && {
+        let name = g.netname_of(e);
+        !g.team_match.roster.iter().any(|(rn, _)| *rn == name)
+    }
 }
 
 /// Seat the warmup membership into exactly `teams × size` slots for a structured `start`. Humans are
@@ -849,6 +846,9 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(!benched(&game, bot), "the remote server, not its client-side mirror, owns the roster");
+        assert!(
+            !benched(&game, bot),
+            "the remote server, not its client-side mirror, owns the roster"
+        );
     }
 }

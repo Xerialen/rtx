@@ -30,6 +30,11 @@ mod sidetable;
 mod splice;
 
 pub use geom::arc_point;
+use geom::*;
+pub use hook::arc_land;
+use hook::{hook_cost, march_to_solid, perturb_ok, HOOK_PITCHES};
+#[cfg(test)]
+use hook::{simulate_arc, ArcResult};
 pub use jumps::{
     ground_turn_air_aim, ground_turn_air_cmd, ground_turn_entry_adjust_cmd, ground_turn_entry_ok,
     ground_turn_ground_aim, ground_turn_ground_cmd, ground_turn_ground_cmd_optimal, ground_turn_launch_cmd,
@@ -37,11 +42,6 @@ pub use jumps::{
     GroundTurnSetupClock, GroundTurnSetupContinuation, GROUND_TURN_OPTIMAL_VERSION,
     GROUND_TURN_SETUP_AIRBORNE_TICK_CAP, GROUND_TURN_VERSION, RUNWAY_TURN_VERSION,
 };
-use geom::*;
-pub use hook::arc_land;
-use hook::{hook_cost, march_to_solid, perturb_ok, HOOK_PITCHES};
-#[cfg(test)]
-use hook::{simulate_arc, ArcResult};
 use lod::Lod;
 pub use lod::{CoarseCosts, Corridor};
 use physics::*;
@@ -2020,8 +2020,7 @@ impl NavGraph {
             for pitch in RJ_PITCHES {
                 for delay in RJ_DELAYS {
                     let angles = Vec3::new(pitch, base_yaw + yaw_off, 0.0);
-                    let Some(s) =
-                        simulate_rocket_jump(is_solid, rocket_solid, a, angles, delay, params)
+                    let Some(s) = simulate_rocket_jump(is_solid, rocket_solid, a, Vec3::ZERO, angles, delay, params)
                     else {
                         continue;
                     };
@@ -2051,12 +2050,21 @@ impl NavGraph {
                     }
                     let apex = s.pos_blast.z + s.v0.z.max(0.0).powi(2) / (2.0 * params.gravity);
                     if apex >= b.z + RJ_APEX_MARGIN
-                        && rj_perturb_ok(is_solid, rocket_solid, a, angles, delay, params, b)
+                        && rj_perturb_ok(is_solid, rocket_solid, a, Vec3::ZERO, angles, delay, params, b)
                     {
                         let cost = rocket_jump_cost(s.t_blast, s.airtime, s.vz_land, s.self_damage);
                         if best.as_ref().is_none_or(|(bc, _, _)| cost < *bc) {
-                            let link = Link { from: from_cell, to, kind: LinkKind::RocketJump, cost };
+                            let link = Link {
+                                from: from_cell,
+                                to,
+                                kind: LinkKind::RocketJump,
+                                cost,
+                            };
                             let tr = RocketJumpTraversal {
+                                run_start: a,
+                                launch: a,
+                                run_velocity: Vec3::ZERO,
+                                run_time: 0.0,
                                 fire_angles: angles,
                                 fire_delay: delay,
                                 blast: s.blast,
@@ -2110,6 +2118,10 @@ impl NavGraph {
         // puppet-flown drill leg; it just has to be finite and honest about the health cost).
         let cost = rocket_jump_cost(fire_delay, airtime, 0.0, self_damage);
         let tr = RocketJumpTraversal {
+            run_start: a,
+            launch: a,
+            run_velocity: Vec3::ZERO,
+            run_time: 0.0,
             fire_angles,
             fire_delay,
             blast: a,
@@ -2120,7 +2132,12 @@ impl NavGraph {
             self_damage,
         };
         self.push_rocket_jump(
-            Link { from: from_cell, to: to_cell, kind: LinkKind::RocketJump, cost },
+            Link {
+                from: from_cell,
+                to: to_cell,
+                kind: LinkKind::RocketJump,
+                cost,
+            },
             tr,
         );
         Ok((self.links.len() - 1) as u32)
@@ -2679,8 +2696,16 @@ mod tests {
     fn planted_cell_is_indexed_linked_both_ways_and_routable() {
         let bsp = Bsp::test_floor(24.0);
         let cells = vec![
-            Cell { origin: Vec3::new(0.0, 0.0, 24.0), gx: 0, gy: 0 },
-            Cell { origin: Vec3::new(64.0, 0.0, 24.0), gx: 2, gy: 0 },
+            Cell {
+                origin: Vec3::new(0.0, 0.0, 24.0),
+                gx: 0,
+                gy: 0,
+            },
+            Cell {
+                origin: Vec3::new(64.0, 0.0, 24.0),
+                gx: 2,
+                gy: 0,
+            },
         ];
         let mut graph = NavGraph::test_graph(cells, Vec::new());
 
@@ -2695,7 +2720,9 @@ mod tests {
         assert_eq!(graph.links.iter().filter(|link| link.to == planted).count(), 2);
         assert!(graph.links.iter().all(|link| link.kind == LinkKind::Walk));
 
-        let path = graph.find_path(0, 1, &LinkCosts::default()).expect("planted bridge should route");
+        let path = graph
+            .find_path(0, 1, &LinkCosts::default())
+            .expect("planted bridge should route");
         assert_eq!(path.len(), 2);
         assert_eq!(graph.link_target(path[0]), planted);
         assert_eq!(graph.link_target(path[1]), 1);
@@ -2719,7 +2746,10 @@ mod tests {
         // reachable only in unusually narrow slow-speed windows. Because the same target has a
         // max-speed-safe takeoff farther back, those redundant wall-hit choices are pruned. A slow
         // hop-up that is the only route to MH must remain, as must the final jump onto RA.
-        if std::path::Path::new(&path).file_stem().is_some_and(|s| s.eq_ignore_ascii_case("dm3")) {
+        if std::path::Path::new(&path)
+            .file_stem()
+            .is_some_and(|s| s.eq_ignore_ascii_case("dm3"))
+        {
             let direct_jump = |from: Vec3, to: Vec3| {
                 let Some(a) = g.nearest(from) else { return false };
                 let Some(b) = g.nearest(to) else { return false };
@@ -3405,11 +3435,19 @@ mod tests {
         assert!(!g.unlink(0), "unlink should be idempotent");
 
         assert_eq!(g.find_path(0, 3, &LinkCosts::default()).unwrap(), vec![2, 3]);
-        assert_eq!(g.find_path_banded(0, 3, 0.0, &LinkCosts::default()).unwrap().links, vec![2, 3]);
+        assert_eq!(
+            g.find_path_banded(0, 3, 0.0, &LinkCosts::default()).unwrap().links,
+            vec![2, 3]
+        );
         assert!(!g.costs_from(0, &LinkCosts::default())[1].is_finite());
 
         let appended = g.links.len() as u32;
-        g.push_link(Link { from: 0, to: 1, kind: LinkKind::Walk, cost: 5.0 });
+        g.push_link(Link {
+            from: 0,
+            to: 1,
+            kind: LinkKind::Walk,
+            cost: 5.0,
+        });
         assert_eq!(appended, 4, "append must not renumber existing links");
         assert!(g.link_removed(0), "the tombstone must survive a replant append");
         assert!(!g.link_removed(appended), "new links start live");
@@ -3955,7 +3993,11 @@ mod tests {
             let g = banded_graph(
                 &origins,
                 &[(0, 1, kind, 3.0)],
-                if kind == LinkKind::SpeedJump { &[(0, 350.0, 0.7, false, 0.0, 0.0)] } else { &[] },
+                if kind == LinkKind::SpeedJump {
+                    &[(0, 350.0, 0.7, false, 0.0, 0.0)]
+                } else {
+                    &[]
+                },
             );
             let horiz = (origins[1].xy() - origins[0].xy()).length();
             for band in 0..NBANDS as u8 {
@@ -4042,11 +4084,19 @@ mod tests {
             (2, 1, LinkKind::JumpGap, 1.3),   // detour leg 2
         ];
         let curl = banded_graph(&origins, &links, &[(0, 391.0, 0.68, false, 12.0, 0.0)]);
-        let route = curl.find_path_banded(0, 1, MAX_SPEED, &LinkCosts::default()).expect("route exists");
+        let route = curl
+            .find_path_banded(0, 1, MAX_SPEED, &LinkCosts::default())
+            .expect("route exists");
         assert_eq!(route.links, vec![0], "the certified curl must be taken over the detour");
         let straight = banded_graph(&origins, &links, &[(0, 391.0, 0.68, false, 0.0, 0.0)]);
-        let route2 = straight.find_path_banded(0, 1, MAX_SPEED, &LinkCosts::default()).expect("route exists");
-        assert_eq!(route2.links, vec![1, 2], "a straight speed jump is repriced high; the detour wins");
+        let route2 = straight
+            .find_path_banded(0, 1, MAX_SPEED, &LinkCosts::default())
+            .expect("route exists");
+        assert_eq!(
+            route2.links,
+            vec![1, 2],
+            "a straight speed jump is repriced high; the detour wins"
+        );
     }
 
     #[test]

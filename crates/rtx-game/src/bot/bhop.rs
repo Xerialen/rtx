@@ -23,9 +23,9 @@ use super::human_profile::HumanMovementProfile;
 use crate::math::{wrap180, yaw_of};
 // The band the takeoff regime holds a curl's solved speed within — single-sourced from the certifier,
 // which proves the landing across exactly this band.
-use crate::navmesh::CURL_V_HOLD_TOL;
 #[cfg(test)]
 use crate::navmesh::CURL_PSI_TOL;
+use crate::navmesh::CURL_V_HOLD_TOL;
 use rtx_nav::qphys::AIR_CAP;
 // The pure movement oracles + `Cmd`/`Strafe`/`MOVE_SPEED` now live in `rtx_nav::strafe`, so the
 // navmesh build can run the exact physics the controller flies (curl-jump certification). Glob
@@ -528,7 +528,11 @@ impl Bhop {
         let runway_fits = i.runway >= speed * T_HOP + profile.hop_margin;
         let keep_hopping = i.committed || ((i.sustain || i.carry) && runway_fits);
         if !keep_hopping {
-            self.disengage(if (i.sustain || i.carry) && !runway_fits { "runway" } else { "leg" });
+            self.disengage(if (i.sustain || i.carry) && !runway_fits {
+                "runway"
+            } else {
+                "leg"
+            });
             return None;
         }
         // Run up before the leap: keep circle-strafing on the ground rather than take off slow.
@@ -579,9 +583,8 @@ impl Bhop {
             return Some(self.ground_cmd(i, a_g, env, f32::INFINITY));
         }
         self.reset_step_defer();
-        let profile_yaw_miss = sj_takeoff
-            && i.launch_yaw_tol > 0.0
-            && wrap180(i.bearing - yaw_of(i.v_xy)).abs() > i.launch_yaw_tol;
+        let profile_yaw_miss =
+            sj_takeoff && i.launch_yaw_tol > 0.0 && wrap180(i.bearing - yaw_of(i.v_xy)).abs() > i.launch_yaw_tol;
         if profile_yaw_miss {
             if !self.launch_vetoing {
                 self.launch_vetoes += 1;
@@ -1297,7 +1300,10 @@ mod sim {
     #[test]
     fn stair_edge_defer_is_hard_capped_at_four_ground_frames() {
         let w = World::grounded(450.0);
-        let mut b = Bhop { phase: Phase::Hop, ..Bhop::default() };
+        let mut b = Bhop {
+            phase: Phase::Hop,
+            ..Bhop::default()
+        };
         let mut i = input(&w, 0.0, 4096.0, 0.0);
         i.committed = true;
         i.defer_jump = true;
@@ -1308,9 +1314,15 @@ mod sim {
             assert!(!cmd.jump, "defer frame {frame} jumped early");
         }
         i.now = 4.0 * DT;
-        assert!(b.step(&i, &ENV).unwrap().jump, "a persistent sample must not ground a fifth frame");
+        assert!(
+            b.step(&i, &ENV).unwrap().jump,
+            "a persistent sample must not ground a fifth frame"
+        );
 
-        let mut planned = Bhop { phase: Phase::Hop, ..Bhop::default() };
+        let mut planned = Bhop {
+            phase: Phase::Hop,
+            ..Bhop::default()
+        };
         i.defer_jump = false;
         i.phase_defer_frames = Some(6);
         for frame in 0..6 {
@@ -1320,7 +1332,10 @@ mod sim {
         }
         i.now = 6.0 * DT;
         i.phase_defer_frames = Some(0); // a live re-plan cannot shorten the cap latched at landing
-        assert!(planned.step(&i, &ENV).unwrap().jump, "the selected six-frame plan must leap exactly on cap");
+        assert!(
+            planned.step(&i, &ENV).unwrap().jump,
+            "the selected six-frame plan must leap exactly on cap"
+        );
     }
 
     #[test]
@@ -1408,12 +1423,17 @@ mod sim {
     fn committed_takeoff_only_leaps_from_the_certified_speed_band() {
         for (speed, should_jump) in [(380.0, false), (435.0, true)] {
             let w = World::grounded(speed);
-            let mut b = Bhop { phase: Phase::Hop, ..Bhop::default() };
+            let mut b = Bhop {
+                phase: Phase::Hop,
+                ..Bhop::default()
+            };
             let mut takeoff = input(&w, 0.0, LIP_REACH - 1.0, 0.0);
             takeoff.committed = true;
             takeoff.takeoff_speed = 440.0;
 
-            let cmd = b.step(&takeoff, &ENV).expect("committed takeoff owns the landing frame");
+            let cmd = b
+                .step(&takeoff, &ENV)
+                .expect("committed takeoff owns the landing frame");
             assert_eq!(
                 cmd.jump, should_jump,
                 "takeoff at {speed} ups with a 440 ups requirement"
@@ -1547,7 +1567,10 @@ mod sim {
                 launch_speed >= V_REQ * (1.0 - CURL_V_HOLD_TOL),
                 "profile {profile_yaw}: launch slowed below its certified band: {launch_speed}"
             );
-            assert!(runway < LIP_REACH + 8.0, "profile {profile_yaw}: launched {runway}u before lip");
+            assert!(
+                runway < LIP_REACH + 8.0,
+                "profile {profile_yaw}: launched {runway}u before lip"
+            );
         }
     }
 
@@ -1748,7 +1771,10 @@ mod sim {
         let mut inp = input(&w, 0.0, 60.0, 30.0 * DT); // runway 60u << 460·T_HOP + margin
         inp.sustain = false;
         inp.carry = true;
-        assert!(b.step(&inp, &ENV).is_none(), "carry hopped into a bend (runway 60u at 460 ups)");
+        assert!(
+            b.step(&inp, &ENV).is_none(),
+            "carry hopped into a bend (runway 60u at 460 ups)"
+        );
         assert_eq!(b.off_reason, "runway");
     }
 
@@ -1772,7 +1798,10 @@ mod sim {
         let mut inp = input(&w, 0.0, 4096.0, 30.0 * DT);
         inp.sustain = false;
         inp.carry = true;
-        assert!(b.step(&inp, &ENV).is_some(), "carry with open runway must keep the chain");
+        assert!(
+            b.step(&inp, &ENV).is_some(),
+            "carry with open runway must keep the chain"
+        );
     }
 
     #[test]
@@ -2017,8 +2046,15 @@ mod sim {
             pm_frame(&mut w, &cmd, false);
             max_lat = max_lat.max(w.pos.y.abs());
         }
-        assert!(w.v.length() >= 430.0, "zigzag only reached {} ups in 1.5s", w.v.length());
-        assert!(max_lat <= 10.5, "zigzag swept {max_lat}u off the corridor centerline (band cap failed)");
+        assert!(
+            w.v.length() >= 430.0,
+            "zigzag only reached {} ups in 1.5s",
+            w.v.length()
+        );
+        assert!(
+            max_lat <= 10.5,
+            "zigzag swept {max_lat}u off the corridor centerline (band cap failed)"
+        );
     }
 
     #[test]

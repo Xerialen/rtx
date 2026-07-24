@@ -356,7 +356,10 @@ pub enum GroundTurnPhase {
 
 impl GroundTurnPhase {
     pub const fn setup() -> Self {
-        Self::Setup { airborne_streak: 0, clock: None }
+        Self::Setup {
+            airborne_streak: 0,
+            clock: None,
+        }
     }
 }
 
@@ -404,7 +407,9 @@ impl Commit {
     ) -> bool {
         match self.ground_turn_phase {
             GroundTurnPhase::Setup { .. } if on_ground => true,
-            GroundTurnPhase::Setup { clock: Some(admitted), .. } => observed == Some(admitted),
+            GroundTurnPhase::Setup {
+                clock: Some(admitted), ..
+            } => observed == Some(admitted),
             GroundTurnPhase::Setup { clock: None, .. } => false,
             GroundTurnPhase::Launched => false,
         }
@@ -504,10 +509,18 @@ mod speed_jump_tests {
         assert_eq!(bot.sj.map(|c| c.leg), Some(8));
         assert!(bot.sj_runway.is_none(), "a new leg must discard the old runway");
 
-        bot.sj_runway = Some(SpeedJumpRunway { leg: 8, path: None, path_pos: 0, step_series_end: None });
+        bot.sj_runway = Some(SpeedJumpRunway {
+            leg: 8,
+            path: None,
+            path_pos: 0,
+            step_series_end: None,
+        });
         bot.drop_speed_jump();
         assert!(bot.sj.is_none());
-        assert!(bot.sj_runway.is_none(), "dropping a leg must discard even a cached A* miss");
+        assert!(
+            bot.sj_runway.is_none(),
+            "dropping a leg must discard even a cached A* miss"
+        );
     }
 }
 

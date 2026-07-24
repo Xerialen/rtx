@@ -259,8 +259,15 @@ impl Bsp {
     #[cfg(test)]
     pub(crate) fn test_floor(origin_z: f32) -> Bsp {
         Bsp {
-            planes: vec![Plane { normal: Vec3::Z, dist: origin_z, kind: 2 }],
-            clipnodes: vec![ClipNode { plane: 0, children: [CONTENTS_EMPTY, CONTENTS_SOLID] }],
+            planes: vec![Plane {
+                normal: Vec3::Z,
+                dist: origin_z,
+                kind: 2,
+            }],
+            clipnodes: vec![ClipNode {
+                plane: 0,
+                children: [CONTENTS_EMPTY, CONTENTS_SOLID],
+            }],
             hull1_headnode: 0,
             mins: Vec3::splat(-256.0),
             maxs: Vec3::splat(256.0),

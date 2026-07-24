@@ -346,9 +346,7 @@ impl NavGraph {
                     let delta = b.origin.xy() - takeoff.origin.xy();
                     let horiz = delta.length();
                     let dz = b.origin.z - takeoff.origin.z;
-                    if !(JUMP_REACH..=TELE_CURL_TARGET_MAX).contains(&horiz)
-                        || !(-64.0..=JUMP_APEX).contains(&dz)
-                    {
+                    if !(JUMP_REACH..=TELE_CURL_TARGET_MAX).contains(&horiz) || !(-64.0..=JUMP_APEX).contains(&dz) {
                         continue;
                     }
                     let step_x = (b.gx - takeoff.gx).signum();
@@ -376,18 +374,27 @@ impl NavGraph {
                     let (sp, cp) = psi.to_radians().sin_cos();
                     let entry_aim = takeoff.origin + Vec3::new(cp, sp, 0.0) * CURL_RUNUP_CAP;
                     let cost = runway / ((MAX_SPEED + v_req) * 0.5) + airtime + CURL_COMMIT;
-                    cands.push((cost, Link { from: start, to, kind: LinkKind::SpeedJump, cost }, SpeedJumpTraversal {
-                        takeoff: takeoff.origin,
-                        v_req,
-                        airtime,
-                        landing_speed_lo,
-                        chained: false,
-                        curl_gain: gain,
-                        curl_entry_aim: entry_aim,
-                        curl_switch_dist: -CURL_LIP_REACH,
-                        curl_landing_aim: b.origin,
-                        ground_turn: None,
-                    }));
+                    cands.push((
+                        cost,
+                        Link {
+                            from: start,
+                            to,
+                            kind: LinkKind::SpeedJump,
+                            cost,
+                        },
+                        SpeedJumpTraversal {
+                            takeoff: takeoff.origin,
+                            v_req,
+                            airtime,
+                            landing_speed_lo,
+                            chained: false,
+                            curl_gain: gain,
+                            curl_entry_aim: entry_aim,
+                            curl_switch_dist: -CURL_LIP_REACH,
+                            curl_landing_aim: b.origin,
+                            ground_turn: None,
+                        },
+                    ));
                 }
             }
             cands.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.to.cmp(&b.1.to)));
@@ -482,9 +489,9 @@ impl NavGraph {
             );
             let v_max_straight = SPEED_JUMP_V_CAP.min(BHOP_EFF * attainable_speed(MAX_SPEED, runway, k));
             let psi0 = yaw_of(Vec2::new(dgx as f32, dgy as f32)); // corridor / takeoff heading
-            // A rollout can only certify a landing it reaches inside the tick cap, so bound the target
-            // scan (and the per-target airtime) by that flight time — not the full SJ_MAX_DROP fall, which
-            // on low-gravity servers is many seconds of futile scan-and-rollout.
+                                                                  // A rollout can only certify a landing it reaches inside the tick cap, so bound the target
+                                                                  // scan (and the per-target airtime) by that flight time — not the full SJ_MAX_DROP fall, which
+                                                                  // on low-gravity servers is many seconds of futile scan-and-rollout.
             let fly_cap = CURL_MAX_TICKS as f32 * CURL_DT;
             let reach = v_deliver * fly_cap;
             let scan = ((reach / GRID).ceil() as i32).max(1);
@@ -636,15 +643,15 @@ impl NavGraph {
         }
         let mut cands: Vec<(f32, Link, SpeedJumpTraversal)> = Vec::new(); // stand-start (v_req, link, tr)
         let mut cands_chained: Vec<(f32, Link, SpeedJumpTraversal)> = Vec::new(); // chained
-        // The most speed a chained entry can ever carry into a jump (the top band's floor); a jump
-        // needing more than this is unroutable even chained, so it bounds the chained target scan.
-        // KNOWN double margin: dividing by SJ_MARGIN margins twice and silently drops native jumps
-        // in the v_req 408..470 band (dm3's walkway→SNG platform jump, v_req ≈ 437, is one) — the
-        // aligned bound is `BAND_FLOOR[NBANDS - 1]` (focus-controller 43a471c). Kept at the historic
-        // value in the merge trial: widening the emission set changed the native dm3 RA-tunnel climb
-        // route out from under its certification (12.7 s plat-wait line instead of the certified
-        // jump). Re-align together with an RA re-certification; the focus route itself rides a
-        // PLANTED link and does not need the wider bound.
+                                                                                  // The most speed a chained entry can ever carry into a jump (the top band's floor); a jump
+                                                                                  // needing more than this is unroutable even chained, so it bounds the chained target scan.
+                                                                                  // KNOWN double margin: dividing by SJ_MARGIN margins twice and silently drops native jumps
+                                                                                  // in the v_req 408..470 band (dm3's walkway→SNG platform jump, v_req ≈ 437, is one) — the
+                                                                                  // aligned bound is `BAND_FLOOR[NBANDS - 1]` (focus-controller 43a471c). Kept at the historic
+                                                                                  // value in the merge trial: widening the emission set changed the native dm3 RA-tunnel climb
+                                                                                  // route out from under its certification (12.7 s plat-wait line instead of the certified
+                                                                                  // jump). Re-align together with an RA re-certification; the focus route itself rides a
+                                                                                  // PLANTED link and does not need the wider bound.
         let v_chain_max = BAND_FLOOR[NBANDS - 1] / SJ_MARGIN;
         for (dgx, dgy) in COMPASS {
             // Take off from a ledge edge (a runway only *helps* — a chained jump needs none).
@@ -1414,18 +1421,8 @@ fn ground_turn_rolls_tol_report(
     accept_near: f32,
 ) -> GroundTurnRolloutTrace {
     let mut pmove_steps = 0usize;
-    let result = ground_turn_rolls_tol_counted(
-        graph,
-        bsp,
-        entry,
-        dt,
-        takeoff,
-        gt,
-        to,
-        p,
-        accept_near,
-        &mut pmove_steps,
-    );
+    let result =
+        ground_turn_rolls_tol_counted(graph, bsp, entry, dt, takeoff, gt, to, p, accept_near, &mut pmove_steps);
     GroundTurnRolloutTrace { result, pmove_steps }
 }
 
@@ -2217,8 +2214,10 @@ impl NavGraph {
                                         on_ground: true,
                                         jump_held: false,
                                     };
-                                    if ground_turn_rolls_optimal_tol(self, bsp, entry, 0.020, a.origin, &gt, to, &p, 0.0)
-                                        .is_none()
+                                    if ground_turn_rolls_optimal_tol(
+                                        self, bsp, entry, 0.020, a.origin, &gt, to, &p, 0.0,
+                                    )
+                                    .is_none()
                                     {
                                         continue;
                                     }
@@ -2346,7 +2345,11 @@ pub fn ground_turn_ground_cmd_optimal(vel_xy: Vec2, gt: &GroundTurnCurl, accel: 
     let vel_yaw = yaw_of(vel_xy);
     // Fixed-per-tick side toward launch_yaw (no recentre onto a runway bearing):
     // monotonic rotation onto the launch heading, then a tight hold about it.
-    let side_sign = if wrap180(gt.launch_yaw - vel_yaw) >= 0.0 { 1.0 } else { -1.0 };
+    let side_sign = if wrap180(gt.launch_yaw - vel_yaw) >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
     let theta = (u_star / speed).clamp(0.0, 1.0).acos();
     let (s, c) = theta.sin_cos();
     // Emit with the view riding the velocity and the angle in forward/side
@@ -2423,18 +2426,8 @@ fn ground_turn_rolls_optimal_tol_report(
     accept_near: f32,
 ) -> GroundTurnRolloutTrace {
     let mut pmove_steps = 0usize;
-    let result = ground_turn_rolls_optimal_tol_counted(
-        graph,
-        bsp,
-        entry,
-        dt,
-        takeoff,
-        gt,
-        to,
-        p,
-        accept_near,
-        &mut pmove_steps,
-    );
+    let result =
+        ground_turn_rolls_optimal_tol_counted(graph, bsp, entry, dt, takeoff, gt, to, p, accept_near, &mut pmove_steps);
     GroundTurnRolloutTrace { result, pmove_steps }
 }
 
@@ -2462,7 +2455,11 @@ fn ground_turn_rolls_optimal_tol_counted(
     let floor_z = entry.origin.z.min(takeoff.z) - GT_FLOOR_DROP;
     // Sweep side fixed from the entry heading; the launch gate measures signed
     // progress toward launch_yaw on that side (fires from first reaching it).
-    let sweep_side = if wrap180(gt.launch_yaw - yaw_of(entry.vel.xy())) >= 0.0 { 1.0 } else { -1.0 };
+    let sweep_side = if wrap180(gt.launch_yaw - yaw_of(entry.vel.xy())) >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
     let in_box = |o: Vec3| {
         o.x >= gt.box_min.x && o.x <= gt.box_max.x && o.y >= gt.box_min.y && o.y <= gt.box_max.y && o.z >= gt.box_min.z
     };
@@ -2570,9 +2567,11 @@ impl GroundTurnSetupClock {
     /// schedule. This does not prove the future: the executor must compare the pair again on every
     /// airborne setup frame and withhold the witness when it changes or disappears.
     pub fn from_verified_schedule(controller_dt: f32, move_dt: f32) -> Option<Self> {
-        let usable =
-            controller_dt.is_finite() && controller_dt > 0.0 && move_dt.is_finite() && move_dt > 0.0;
-        debug_assert!(usable, "a verified setup schedule must contain finite positive durations");
+        let usable = controller_dt.is_finite() && controller_dt > 0.0 && move_dt.is_finite() && move_dt > 0.0;
+        debug_assert!(
+            usable,
+            "a verified setup schedule must contain finite positive durations"
+        );
         usable.then_some(Self { controller_dt, move_dt })
     }
 
@@ -2651,9 +2650,7 @@ impl NavGraph {
         if report.wall_contact || solid(state.origin) || state.origin.z < floor_z || state.jump_held {
             return GroundTurnSetupContinuation::Abort;
         }
-        let Some(airborne_streak) =
-            next_ground_turn_setup_airborne_streak(observed_streak, state.on_ground)
-        else {
+        let Some(airborne_streak) = next_ground_turn_setup_airborne_streak(observed_streak, state.on_ground) else {
             return GroundTurnSetupContinuation::Abort;
         };
         let first_state = state;
@@ -2689,15 +2686,10 @@ impl NavGraph {
                     return GroundTurnSetupContinuation::Abort;
                 }
                 let report = pm_step_report(bsp, &mut witness, &witness_cmd, p, future_clock.move_dt());
-                if report.wall_contact
-                    || solid(witness.origin)
-                    || witness.origin.z < floor_z
-                    || witness.jump_held
-                {
+                if report.wall_contact || solid(witness.origin) || witness.origin.z < floor_z || witness.jump_held {
                     return GroundTurnSetupContinuation::Abort;
                 }
-                let Some(next_streak) =
-                    next_ground_turn_setup_airborne_streak(witness_streak, witness.on_ground)
+                let Some(next_streak) = next_ground_turn_setup_airborne_streak(witness_streak, witness.on_ground)
                 else {
                     return GroundTurnSetupContinuation::Abort;
                 };
@@ -2707,7 +2699,10 @@ impl NavGraph {
                 }
             }
         }
-        GroundTurnSetupContinuation::Continue { state: first_state, airborne_streak }
+        GroundTurnSetupContinuation::Continue {
+            state: first_state,
+            airborne_streak,
+        }
     }
 
     /// Re-run a ground-turn SpeedJump's own versioned certificate controller from a live entry
@@ -2736,42 +2731,38 @@ impl NavGraph {
                 tr.start_solid || tr.all_solid
             };
             if solid(entry.origin) {
-                return Some(GroundTurnLiveRollout { outcome: None, pmove_steps: prefix_steps });
+                return Some(GroundTurnLiveRollout {
+                    outcome: None,
+                    pmove_steps: prefix_steps,
+                });
             }
             prefix_steps += 1;
             let rep = pm_step_report(bsp, &mut entry, &cmd, p, dt);
             if rep.wall_contact || solid(entry.origin) || !entry.on_ground || entry.jump_held {
-                return Some(GroundTurnLiveRollout { outcome: None, pmove_steps: prefix_steps });
+                return Some(GroundTurnLiveRollout {
+                    outcome: None,
+                    pmove_steps: prefix_steps,
+                });
             }
         }
         if !ground_turn_entry_ok(entry.vel.xy().length(), entry.vel.xy(), entry.on_ground, &gt) {
-            return Some(GroundTurnLiveRollout { outcome: None, pmove_steps: prefix_steps });
+            return Some(GroundTurnLiveRollout {
+                outcome: None,
+                pmove_steps: prefix_steps,
+            });
         }
         let target = self.link_target(link);
         let trace = match gt.version {
-            GROUND_TURN_OPTIMAL_VERSION => ground_turn_rolls_optimal_tol_report(
-                self,
-                bsp,
-                entry,
-                dt,
-                traversal.takeoff,
-                &gt,
-                target,
-                p,
-                0.0,
-            ),
-            GROUND_TURN_VERSION | RUNWAY_TURN_VERSION => ground_turn_rolls_tol_report(
-                self,
-                bsp,
-                entry,
-                dt,
-                traversal.takeoff,
-                &gt,
-                target,
-                p,
-                0.0,
-            ),
-            _ => GroundTurnRolloutTrace { result: None, pmove_steps: 0 },
+            GROUND_TURN_OPTIMAL_VERSION => {
+                ground_turn_rolls_optimal_tol_report(self, bsp, entry, dt, traversal.takeoff, &gt, target, p, 0.0)
+            }
+            GROUND_TURN_VERSION | RUNWAY_TURN_VERSION => {
+                ground_turn_rolls_tol_report(self, bsp, entry, dt, traversal.takeoff, &gt, target, p, 0.0)
+            }
+            _ => GroundTurnRolloutTrace {
+                result: None,
+                pmove_steps: 0,
+            },
         };
         Some(GroundTurnLiveRollout {
             outcome: trace.result.map(|(_, landing)| landing),
@@ -2816,12 +2807,7 @@ mod ground_turn_tests {
     }
     use crate::bsp::{ClipNode, Plane, CONTENTS_EMPTY, CONTENTS_SOLID};
 
-    fn dm3_legacy_curl(
-        graph: &NavGraph,
-        bsp: &Bsp,
-        from_origin: Vec3,
-        to_origin: Vec3,
-    ) -> (Link, SpeedJumpTraversal) {
+    fn dm3_legacy_curl(graph: &NavGraph, bsp: &Bsp, from_origin: Vec3, to_origin: Vec3) -> (Link, SpeedJumpTraversal) {
         let params = SpeedJumpParams {
             gravity: 800.0,
             accel: 10.0,
@@ -2877,16 +2863,8 @@ mod ground_turn_tests {
         };
         let graph = build_navmesh(&bsp, vec![], vec![], vec![], None, false, Some(params), None);
         let cases = [
-            (
-                Vec3::new(288.0, 288.0, 56.0),
-                Vec3::new(704.0, 160.0, 56.0),
-                279.3,
-            ),
-            (
-                Vec3::new(288.0, -352.0, 56.0),
-                Vec3::new(704.0, -224.0, 56.0),
-                96.0,
-            ),
+            (Vec3::new(288.0, 288.0, 56.0), Vec3::new(704.0, 160.0, 56.0), 279.3),
+            (Vec3::new(288.0, -352.0, 56.0), Vec3::new(704.0, -224.0, 56.0), 96.0),
         ];
         let mut missing_profile = false;
         for (from, to, live_bad_yaw) in cases {
@@ -2927,13 +2905,22 @@ mod ground_turn_tests {
             assert_eq!(link.kind, LinkKind::SpeedJump);
             assert!(traversal.ground_turn.is_none(), "pin the legacy curl family");
             assert!(traversal.curl_gain > 0.0);
-            assert!(profile_lands, "the preserved certified line must land at live-class speed");
-            assert!(!live_line_lands, "the observed off-profile launch line must remain a red witness");
+            assert!(
+                profile_lands,
+                "the preserved certified line must land at live-class speed"
+            );
+            assert!(
+                !live_line_lands,
+                "the observed off-profile launch line must remain a red witness"
+            );
             missing_profile |= traversal.curl_entry_aim == Vec3::ZERO
                 || traversal.curl_switch_dist == 0.0
                 || traversal.curl_landing_aim == Vec3::ZERO;
         }
-        assert!(!missing_profile, "legacy emission discarded its certified lateral profiles");
+        assert!(
+            !missing_profile,
+            "legacy emission discarded its certified lateral profiles"
+        );
     }
 
     #[test]
@@ -2950,7 +2937,11 @@ mod ground_turn_tests {
         let target = Vec3::new(96.0, -864.0, 184.0);
         let cells = [source, target]
             .into_iter()
-            .map(|origin| Cell { origin, gx: floor_grid(origin.x), gy: floor_grid(origin.y) })
+            .map(|origin| Cell {
+                origin,
+                gx: floor_grid(origin.x),
+                gy: floor_grid(origin.y),
+            })
             .collect();
         let mut graph = NavGraph::test_graph(cells, Vec::new());
         let gt = GroundTurnCurl {
@@ -3053,11 +3044,7 @@ mod ground_turn_tests {
                     params.maxspeed,
                     producer_dt,
                 );
-                let guard_wish = crate::strafe::wishdir_fs(
-                    guard_cmd.view_yaw,
-                    guard_cmd.forward,
-                    guard_cmd.side,
-                );
+                let guard_wish = crate::strafe::wishdir_fs(guard_cmd.view_yaw, guard_cmd.forward, guard_cmd.side);
                 let wish_error = guard_wish.distance(wish.normalize_or_zero());
                 assert!(
                     wish_error < 2.0e-3
@@ -3068,21 +3055,9 @@ mod ground_turn_tests {
                 );
                 let pre_tick = state;
                 let mut guard_post = pre_tick;
-                let guard_report = crate::pmove::pm_step_report(
-                    &bsp,
-                    &mut guard_post,
-                    &guard_cmd,
-                    &params,
-                    wire_dt,
-                );
+                let guard_report = crate::pmove::pm_step_report(&bsp, &mut guard_post, &guard_cmd, &params, wire_dt);
                 let mut captured_post = pre_tick;
-                let captured_report = crate::pmove::pm_step_report(
-                    &bsp,
-                    &mut captured_post,
-                    &cmd,
-                    &params,
-                    wire_dt,
-                );
+                let captured_report = crate::pmove::pm_step_report(&bsp, &mut captured_post, &cmd, &params, wire_dt);
                 let pmove_pos_error = guard_post.origin.distance(captured_post.origin);
                 let pmove_vel_error = guard_post.vel.distance(captured_post.vel);
                 assert!(
@@ -3173,15 +3148,36 @@ mod ground_turn_tests {
     fn runway_gap(runway_edge: f32, landing_edge: f32) -> Bsp {
         Bsp::synthetic(
             vec![
-                Plane { normal: Vec3::Z, dist: 0.0, kind: 2 },
-                Plane { normal: Vec3::X, dist: runway_edge, kind: 0 },
-                Plane { normal: Vec3::X, dist: landing_edge, kind: 0 },
+                Plane {
+                    normal: Vec3::Z,
+                    dist: 0.0,
+                    kind: 2,
+                },
+                Plane {
+                    normal: Vec3::X,
+                    dist: runway_edge,
+                    kind: 0,
+                },
+                Plane {
+                    normal: Vec3::X,
+                    dist: landing_edge,
+                    kind: 0,
+                },
             ],
             vec![
                 // z >= 0 is open.  Below the floor plane, split the runway/gap/landing slabs.
-                ClipNode { plane: 0, children: [CONTENTS_EMPTY, 1] },
-                ClipNode { plane: 1, children: [2, CONTENTS_SOLID] },
-                ClipNode { plane: 2, children: [CONTENTS_SOLID, CONTENTS_EMPTY] },
+                ClipNode {
+                    plane: 0,
+                    children: [CONTENTS_EMPTY, 1],
+                },
+                ClipNode {
+                    plane: 1,
+                    children: [2, CONTENTS_SOLID],
+                },
+                ClipNode {
+                    plane: 2,
+                    children: [CONTENTS_SOLID, CONTENTS_EMPTY],
+                },
             ],
             0,
             Vec::new(),
@@ -3191,28 +3187,65 @@ mod ground_turn_tests {
     /// The same launch gap with a shallow floor seam early in the setup runway. One grounded setup
     /// tick crosses the 1.1u dip (just beyond the 1u ground probe), the following nonjump setup tick
     /// re-categorizes on its lower floor, and the ordinary step solver climbs back onto the runway.
-    fn runway_gap_with_setup_seam(
-        seam_start: f32,
-        seam_end: f32,
-        runway_edge: f32,
-        landing_edge: f32,
-    ) -> Bsp {
+    fn runway_gap_with_setup_seam(seam_start: f32, seam_end: f32, runway_edge: f32, landing_edge: f32) -> Bsp {
         Bsp::synthetic(
             vec![
-                Plane { normal: Vec3::X, dist: seam_start, kind: 0 },
-                Plane { normal: Vec3::X, dist: seam_end, kind: 0 },
-                Plane { normal: Vec3::Z, dist: 0.0, kind: 2 },
-                Plane { normal: Vec3::Z, dist: -1.1, kind: 2 },
-                Plane { normal: Vec3::X, dist: runway_edge, kind: 0 },
-                Plane { normal: Vec3::X, dist: landing_edge, kind: 0 },
+                Plane {
+                    normal: Vec3::X,
+                    dist: seam_start,
+                    kind: 0,
+                },
+                Plane {
+                    normal: Vec3::X,
+                    dist: seam_end,
+                    kind: 0,
+                },
+                Plane {
+                    normal: Vec3::Z,
+                    dist: 0.0,
+                    kind: 2,
+                },
+                Plane {
+                    normal: Vec3::Z,
+                    dist: -1.1,
+                    kind: 2,
+                },
+                Plane {
+                    normal: Vec3::X,
+                    dist: runway_edge,
+                    kind: 0,
+                },
+                Plane {
+                    normal: Vec3::X,
+                    dist: landing_edge,
+                    kind: 0,
+                },
             ],
             vec![
-                ClipNode { plane: 0, children: [1, 2] },
-                ClipNode { plane: 1, children: [4, 3] },
-                ClipNode { plane: 2, children: [CONTENTS_EMPTY, CONTENTS_SOLID] },
-                ClipNode { plane: 3, children: [CONTENTS_EMPTY, CONTENTS_SOLID] },
-                ClipNode { plane: 4, children: [5, 2] },
-                ClipNode { plane: 5, children: [2, CONTENTS_EMPTY] },
+                ClipNode {
+                    plane: 0,
+                    children: [1, 2],
+                },
+                ClipNode {
+                    plane: 1,
+                    children: [4, 3],
+                },
+                ClipNode {
+                    plane: 2,
+                    children: [CONTENTS_EMPTY, CONTENTS_SOLID],
+                },
+                ClipNode {
+                    plane: 3,
+                    children: [CONTENTS_EMPTY, CONTENTS_SOLID],
+                },
+                ClipNode {
+                    plane: 4,
+                    children: [5, 2],
+                },
+                ClipNode {
+                    plane: 5,
+                    children: [2, CONTENTS_EMPTY],
+                },
             ],
             0,
             Vec::new(),
@@ -3221,8 +3254,15 @@ mod ground_turn_tests {
 
     fn wall_at_x(x: f32) -> Bsp {
         Bsp::synthetic(
-            vec![Plane { normal: Vec3::X, dist: x, kind: 0 }],
-            vec![ClipNode { plane: 0, children: [CONTENTS_SOLID, CONTENTS_EMPTY] }],
+            vec![Plane {
+                normal: Vec3::X,
+                dist: x,
+                kind: 0,
+            }],
+            vec![ClipNode {
+                plane: 0,
+                children: [CONTENTS_SOLID, CONTENTS_EMPTY],
+            }],
             0,
             Vec::new(),
         )
@@ -3233,7 +3273,11 @@ mod ground_turn_tests {
         let landing = Vec3::new(215.0, 268.0, 0.03125);
         let cells = [Vec3::new(0.0, 0.0, 0.03125), takeoff, landing]
             .into_iter()
-            .map(|origin| Cell { origin, gx: floor_grid(origin.x), gy: floor_grid(origin.y) })
+            .map(|origin| Cell {
+                origin,
+                gx: floor_grid(origin.x),
+                gy: floor_grid(origin.y),
+            })
             .collect();
         let mut graph = NavGraph::test_graph(cells, Vec::new());
         for (id, cell) in graph.cells.iter().enumerate() {
@@ -3387,22 +3431,39 @@ mod ground_turn_tests {
         let certified_roll = graph
             .ground_turn_live_entry_rollout(&bsp, link, certified, None, 0.020, &params)
             .expect("ground-turn link");
-        assert!(certified_roll.outcome.is_some(), "fixture error: the source-centred state must be executable");
-        assert!(certified_roll.pmove_steps > 1, "the witness must include launch and flight");
+        assert!(
+            certified_roll.outcome.is_some(),
+            "fixture error: the source-centred state must be executable"
+        );
+        assert!(
+            certified_roll.pmove_steps > 1,
+            "the witness must include launch and flight"
+        );
         assert!(certified_roll.pmove_steps <= GT_SETUP_TICK_CAP + 1 + GT_FLIGHT_TICK_CAP);
 
-        let shifted = PmState { origin: certified.origin + Vec3::new(24.0, 0.0, 0.0), ..certified };
+        let shifted = PmState {
+            origin: certified.origin + Vec3::new(24.0, 0.0, 0.0),
+            ..certified
+        };
         let shifted_roll = graph
             .ground_turn_live_entry_rollout(&bsp, link, shifted, None, 0.020, &params)
             .expect("ground-turn link");
 
         // The scalar envelope deliberately cannot distinguish these states; the physical witness must.
-        assert!(ground_turn_entry_ok(certified.vel.xy().length(), certified.vel.xy(), true, &gt));
+        assert!(ground_turn_entry_ok(
+            certified.vel.xy().length(),
+            certified.vel.xy(),
+            true,
+            &gt
+        ));
         assert!(
             ground_turn_entry_ok(shifted.vel.xy().length(), shifted.vel.xy(), true, &gt),
             "fixture error: shifted entry must retain the same scalar envelope"
         );
-        assert!(shifted_roll.outcome.is_none(), "the full-state witness admitted a runway miss");
+        assert!(
+            shifted_roll.outcome.is_none(),
+            "the full-state witness admitted a runway miss"
+        );
     }
 
     #[test]
@@ -3421,8 +3482,7 @@ mod ground_turn_tests {
         );
 
         let first_dt = 0.019;
-        let first_cmd =
-            ground_turn_ground_cmd_optimal(entry.vel.xy(), &gt, params.accel, params.maxspeed, first_dt);
+        let first_cmd = ground_turn_ground_cmd_optimal(entry.vel.xy(), &gt, params.accel, params.maxspeed, first_dt);
         let (first, first_streak) = match graph.ground_turn_setup_continuation(
             &bsp,
             link,
@@ -3434,23 +3494,18 @@ mod ground_turn_tests {
             fixed_setup_clock(first_dt, first_dt),
             &params,
         ) {
-            GroundTurnSetupContinuation::Continue { state, airborne_streak } => {
-                (state, airborne_streak)
-            }
+            GroundTurnSetupContinuation::Continue { state, airborne_streak } => (state, airborne_streak),
             other => panic!("first safe setup step was rejected: {other:?}"),
         };
-        assert!(!first.on_ground, "first setup tick must be the transient airborne seam frame");
+        assert!(
+            !first.on_ground,
+            "first setup tick must be the transient airborne seam frame"
+        );
         assert_eq!(first_streak, 1);
         assert!(!first_cmd.jump, "the seam crossing is setup, not launch");
 
         let second_dt = 0.021;
-        let second_cmd = ground_turn_ground_cmd_optimal(
-            first.vel.xy(),
-            &gt,
-            params.accel,
-            params.maxspeed,
-            second_dt,
-        );
+        let second_cmd = ground_turn_ground_cmd_optimal(first.vel.xy(), &gt, params.accel, params.maxspeed, second_dt);
         let (second, second_streak) = match graph.ground_turn_setup_continuation(
             &bsp,
             link,
@@ -3462,9 +3517,7 @@ mod ground_turn_tests {
             fixed_setup_clock(second_dt, second_dt),
             &params,
         ) {
-            GroundTurnSetupContinuation::Continue { state, airborne_streak } => {
-                (state, airborne_streak)
-            }
+            GroundTurnSetupContinuation::Continue { state, airborne_streak } => (state, airborne_streak),
             other => panic!("second safe setup step was rejected: {other:?}"),
         };
         assert!(second.on_ground, "the setup controller must re-land beyond the seam");
@@ -3481,7 +3534,10 @@ mod ground_turn_tests {
             &params,
             0.0,
         );
-        assert!(finish.result.is_some(), "setup seam must still lead to launch and exact target touchdown");
+        assert!(
+            finish.result.is_some(),
+            "setup seam must still lead to launch and exact target touchdown"
+        );
     }
 
     #[test]
@@ -3495,30 +3551,22 @@ mod ground_turn_tests {
 
         // A grounded one-step path uses the wire duration even when no prospective schedule is
         // needed. This explicitly pins the clock correction outside the edge-witness branch.
-        let grounded = PmState { origin: Vec3::new(-10.0, 0.0, 0.03125), ..base_entry };
-        let grounded_cmd = ground_turn_ground_cmd_optimal(
-            grounded.vel.xy(),
-            &gt,
-            params.accel,
-            params.maxspeed,
-            controller_dt,
-        );
+        let grounded = PmState {
+            origin: Vec3::new(-10.0, 0.0, 0.03125),
+            ..base_entry
+        };
+        let grounded_cmd =
+            ground_turn_ground_cmd_optimal(grounded.vel.xy(), &gt, params.accel, params.maxspeed, controller_dt);
         let mut grounded_wire = grounded;
         crate::pmove::pm_step(&bsp, &mut grounded_wire, &grounded_cmd, &params, move_dt);
         let mut grounded_raw = grounded;
         crate::pmove::pm_step(&bsp, &mut grounded_raw, &grounded_cmd, &params, controller_dt);
-        let grounded_guard = graph.ground_turn_setup_continuation(
-            &bsp,
-            link,
-            grounded,
-            grounded_cmd,
-            0.0,
-            0,
-            move_dt,
-            None,
-            &params,
-        );
-        let GroundTurnSetupContinuation::Continue { state: grounded_state, .. } = grounded_guard else {
+        let grounded_guard =
+            graph.ground_turn_setup_continuation(&bsp, link, grounded, grounded_cmd, 0.0, 0, move_dt, None, &params);
+        let GroundTurnSetupContinuation::Continue {
+            state: grounded_state, ..
+        } = grounded_guard
+        else {
             panic!("grounded one-step path unexpectedly rejected: {grounded_guard:?}");
         };
         assert!(grounded_state.on_ground);
@@ -3533,35 +3581,16 @@ mod ground_turn_tests {
             jump_held: false,
             ..base_entry
         };
-        let airborne_cmd = ground_turn_ground_cmd_optimal(
-            airborne.vel.xy(),
-            &gt,
-            params.accel,
-            params.maxspeed,
-            controller_dt,
-        );
+        let airborne_cmd =
+            ground_turn_ground_cmd_optimal(airborne.vel.xy(), &gt, params.accel, params.maxspeed, controller_dt);
         let mut airborne_wire = airborne;
         let airborne_wire_report =
             crate::pmove::pm_step_report(&bsp, &mut airborne_wire, &airborne_cmd, &params, move_dt);
         let mut airborne_raw = airborne;
-        let airborne_raw_report = crate::pmove::pm_step_report(
-            &bsp,
-            &mut airborne_raw,
-            &airborne_cmd,
-            &params,
-            controller_dt,
-        );
-        let airborne_guard = graph.ground_turn_setup_continuation(
-            &bsp,
-            link,
-            airborne,
-            airborne_cmd,
-            0.0,
-            1,
-            move_dt,
-            None,
-            &params,
-        );
+        let airborne_raw_report =
+            crate::pmove::pm_step_report(&bsp, &mut airborne_raw, &airborne_cmd, &params, controller_dt);
+        let airborne_guard =
+            graph.ground_turn_setup_continuation(&bsp, link, airborne, airborne_cmd, 0.0, 1, move_dt, None, &params);
         let GroundTurnSetupContinuation::Continue {
             state: airborne_state,
             airborne_streak,
@@ -3579,46 +3608,31 @@ mod ground_turn_tests {
 
         // A grounded departure can re-land on the equal-height far floor only when the caller
         // supplies a fixed raw/wire schedule. Unknown future cadence must fail closed.
-        let edge = PmState { origin: Vec3::new(3.0, 0.0, 0.03125), ..base_entry };
-        let edge_cmd = ground_turn_ground_cmd_optimal(
-            edge.vel.xy(),
-            &gt,
-            params.accel,
-            params.maxspeed,
-            controller_dt,
-        );
+        let edge = PmState {
+            origin: Vec3::new(3.0, 0.0, 0.03125),
+            ..base_entry
+        };
+        let edge_cmd = ground_turn_ground_cmd_optimal(edge.vel.xy(), &gt, params.accel, params.maxspeed, controller_dt);
         // Zero gravity isolates the clock contract: the far floor is exactly the runway's height,
         // so only the fixed raw/wire schedule decides whether the bounded witness can re-land.
         let seam_params = PmParams { gravity: 0.0, ..params };
         assert!(matches!(
-            graph.ground_turn_setup_continuation(
-                &bsp,
-                link,
-                edge,
-                edge_cmd,
-                0.0,
-                0,
-                move_dt,
-                None,
-                &seam_params,
-            ),
+            graph.ground_turn_setup_continuation(&bsp, link, edge, edge_cmd, 0.0, 0, move_dt, None, &seam_params,),
             GroundTurnSetupContinuation::Abort
         ));
-        let safe = graph.ground_turn_setup_continuation(
-            &bsp,
-            link,
-            edge,
-            edge_cmd,
-            0.0,
-            0,
-            move_dt,
-            clock,
-            &seam_params,
-        );
-        let GroundTurnSetupContinuation::Continue { state: edge_state, airborne_streak } = safe else {
+        let safe =
+            graph.ground_turn_setup_continuation(&bsp, link, edge, edge_cmd, 0.0, 0, move_dt, clock, &seam_params);
+        let GroundTurnSetupContinuation::Continue {
+            state: edge_state,
+            airborne_streak,
+        } = safe
+        else {
             panic!("fixed raw/wire schedule rejected an equal-height re-landing: {safe:?}");
         };
-        assert!(!edge_state.on_ground, "first real tick must still expose the seam departure");
+        assert!(
+            !edge_state.on_ground,
+            "first real tick must still expose the seam departure"
+        );
         assert_eq!(airborne_streak, 1);
     }
 
@@ -3652,7 +3666,10 @@ mod ground_turn_tests {
             graph.ground_turn_setup_continuation(
                 &wall_at_x(100.0),
                 link,
-                PmState { origin: Vec3::new(101.0, 0.0, 10.0), ..entry },
+                PmState {
+                    origin: Vec3::new(101.0, 0.0, 10.0),
+                    ..entry
+                },
                 setup_cmd,
                 0.0,
                 0,
@@ -3705,9 +3722,11 @@ mod ground_turn_tests {
             GroundTurnSetupContinuation::Abort
         ));
 
-        let gap_entry = PmState { origin: Vec3::new(55.0, 0.0, 0.03125), ..entry };
-        let gap_cmd =
-            ground_turn_ground_cmd_optimal(gap_entry.vel.xy(), &gt, params.accel, params.maxspeed, dt);
+        let gap_entry = PmState {
+            origin: Vec3::new(55.0, 0.0, 0.03125),
+            ..entry
+        };
+        let gap_cmd = ground_turn_ground_cmd_optimal(gap_entry.vel.xy(), &gt, params.accel, params.maxspeed, dt);
         assert!(matches!(
             graph.ground_turn_setup_continuation(
                 &runway_gap(60.0, 1000.0),
@@ -3744,11 +3763,17 @@ mod ground_turn_tests {
     #[test]
     fn live_entry_accepts_a_safe_off_centre_state_without_a_radius_rule() {
         let (graph, bsp, certified, _, link) = optimal_spatial_contract();
-        let off_centre = PmState { origin: certified.origin - Vec3::new(24.0, 0.0, 0.0), ..certified };
+        let off_centre = PmState {
+            origin: certified.origin - Vec3::new(24.0, 0.0, 0.0),
+            ..certified
+        };
         let roll = graph
             .ground_turn_live_entry_rollout(&bsp, link, off_centre, None, 0.020, &PmParams::default())
             .expect("ground-turn link");
-        assert!(roll.outcome.is_some(), "an executable off-centre state must not be rejected by distance alone");
+        assert!(
+            roll.outcome.is_some(),
+            "an executable off-centre state must not be rejected by distance alone"
+        );
     }
 
     #[test]
@@ -3756,7 +3781,10 @@ mod ground_turn_tests {
         let (graph, bsp, certified, gt, link) = optimal_spatial_contract();
         let params = PmParams::default();
         let (entry_sin, entry_cos) = 10.0f32.to_radians().sin_cos();
-        let entry = PmState { vel: Vec3::new(320.0 * entry_cos, 320.0 * entry_sin, 0.0), ..certified };
+        let entry = PmState {
+            vel: Vec3::new(320.0 * entry_cos, 320.0 * entry_sin, 0.0),
+            ..certified
+        };
         let adjustment = ground_turn_entry_adjust_cmd(
             entry.vel.xy(),
             entry.on_ground,
@@ -3770,20 +3798,37 @@ mod ground_turn_tests {
         .expect("fixture must have a one-tick envelope adjustment");
         let mut post = entry;
         crate::pmove::pm_step(&bsp, &mut post, &adjustment, &params, 0.020);
-        assert!(ground_turn_entry_ok(post.vel.xy().length(), post.vel.xy(), post.on_ground, &gt));
+        assert!(ground_turn_entry_ok(
+            post.vel.xy().length(),
+            post.vel.xy(),
+            post.on_ground,
+            &gt
+        ));
 
         let safe = graph
             .ground_turn_live_entry_rollout(&bsp, link, entry, Some(adjustment), 0.020, &params)
             .expect("ground-turn link");
-        assert!(safe.outcome.is_some(), "adjustment plus full safe rollout must be accepted");
+        assert!(
+            safe.outcome.is_some(),
+            "adjustment plus full safe rollout must be accepted"
+        );
         assert!(safe.pmove_steps <= 1 + GT_SETUP_TICK_CAP + 1 + GT_FLIGHT_TICK_CAP);
 
-        let unsafe_entry = PmState { origin: entry.origin + Vec3::new(24.0, 0.0, 0.0), ..entry };
+        let unsafe_entry = PmState {
+            origin: entry.origin + Vec3::new(24.0, 0.0, 0.0),
+            ..entry
+        };
         let unsafe_roll = graph
             .ground_turn_live_entry_rollout(&bsp, link, unsafe_entry, Some(adjustment), 0.020, &params)
             .expect("ground-turn link");
-        assert!(unsafe_roll.pmove_steps > 1, "the adjustment must enter the envelope before geometry rejects");
-        assert!(unsafe_roll.outcome.is_none(), "velocity-only adjustment admitted an unsafe continuation");
+        assert!(
+            unsafe_roll.pmove_steps > 1,
+            "the adjustment must enter the envelope before geometry rejects"
+        );
+        assert!(
+            unsafe_roll.outcome.is_none(),
+            "velocity-only adjustment admitted an unsafe continuation"
+        );
     }
 
     #[test]
@@ -3791,8 +3836,7 @@ mod ground_turn_tests {
         let (mut graph, bsp, entry, gt, base) = optimal_spatial_contract();
         let params = PmParams::default();
         let base_traversal = *graph.speed_jump_of_link(base).unwrap();
-        let optimal_cmd =
-            ground_turn_ground_cmd_optimal(entry.vel.xy(), &gt, params.accel, params.maxspeed, 0.020);
+        let optimal_cmd = ground_turn_ground_cmd_optimal(entry.vel.xy(), &gt, params.accel, params.maxspeed, 0.020);
         assert!(matches!(
             graph.ground_turn_setup_continuation(
                 &bsp,
@@ -3832,12 +3876,22 @@ mod ground_turn_tests {
             let live = graph
                 .ground_turn_live_entry_rollout(&bsp, link, entry, None, 0.020, &params)
                 .expect("legacy ground-turn link");
-            assert!(direct.pmove_steps > 0, "legacy fixture must exercise version {version}'s controller");
+            assert!(
+                direct.pmove_steps > 0,
+                "legacy fixture must exercise version {version}'s controller"
+            );
             if version == GROUND_TURN_VERSION {
                 assert!(direct.result.is_some(), "v1 fixture must reach its exact target");
             }
-            assert_eq!(live.outcome.is_some(), direct.result.is_some(), "version {version} dispatch outcome");
-            assert_eq!(live.pmove_steps, direct.pmove_steps, "version {version} dispatch controller");
+            assert_eq!(
+                live.outcome.is_some(),
+                direct.result.is_some(),
+                "version {version} dispatch outcome"
+            );
+            assert_eq!(
+                live.pmove_steps, direct.pmove_steps,
+                "version {version} dispatch controller"
+            );
             let mut sigma = 0.0;
             let setup_cmd = ground_turn_ground_cmd(
                 entry.origin,
@@ -3906,7 +3960,12 @@ mod ground_turn_tests {
             GroundTurnSetupContinuation::NotGroundTurn
         ));
         for kind in [LinkKind::Walk, LinkKind::JumpGap] {
-            graph.push_link(Link { from: 0, to: 1, kind, cost: 1.0 });
+            graph.push_link(Link {
+                from: 0,
+                to: 1,
+                kind,
+                cost: 1.0,
+            });
             let link = (graph.links.len() - 1) as u32;
             assert!(graph
                 .ground_turn_live_entry_rollout(&bsp, link, entry, None, 0.020, &params)

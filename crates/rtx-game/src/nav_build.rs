@@ -490,12 +490,19 @@ mod tests {
         assert!(crate::bot::item_terminal_touches(terminal, &game.entities[armor]));
         game.run_touch(armor, player);
 
-        assert!(game.entities[player].v.armorvalue > 0.0, "terminal arrival must execute an armor take");
+        assert!(
+            game.entities[player].v.armorvalue > 0.0,
+            "terminal arrival must execute an armor take"
+        );
         assert!(
             game.entities[player].v.items.has(Items::ARMOR2 | Items::ARMOR3),
             "the take must change armor inventory, not merely satisfy a selector"
         );
-        assert_eq!(game.entities[armor].v.solid, Solid::Not, "the server-side pickup handler consumed it");
+        assert_eq!(
+            game.entities[armor].v.solid,
+            Solid::Not,
+            "the server-side pickup handler consumed it"
+        );
     }
 
     fn armor_take_from_terminal(classname: &str, item_origin: Vec3, bad_endpoint: Vec3) {
@@ -504,7 +511,11 @@ mod tests {
         let armor = armor_entity(classname, item_origin);
         let terminals = collect_touch_terminals(cells, &armor);
 
-        assert_eq!(terminals, vec![8], "the observed stall cell must not catalogue as a pickup terminal");
+        assert_eq!(
+            terminals,
+            vec![8],
+            "the observed stall cell must not catalogue as a pickup terminal"
+        );
         assert!(
             !crate::bot::item_terminal_touches(bad_endpoint, &armor),
             "the observed endpoint must fail the same hull-overlap gate that dispatches server touch"

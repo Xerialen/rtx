@@ -87,10 +87,12 @@ fn parse_args() -> Args {
                 let s = argv.next().unwrap_or_else(|| usage());
                 entry_ladder = s
                     .split(',')
-                    .map(|t| t.trim().parse::<f32>().unwrap_or_else(|_| {
-                        eprintln!("--entry-ladder: bad number {t:?}");
-                        std::process::exit(2);
-                    }))
+                    .map(|t| {
+                        t.trim().parse::<f32>().unwrap_or_else(|_| {
+                            eprintln!("--entry-ladder: bad number {t:?}");
+                            std::process::exit(2);
+                        })
+                    })
                     .collect();
             }
             "--calib" => calib = Some(PathBuf::from(argv.next().unwrap_or_else(|| usage()))),
@@ -99,10 +101,12 @@ fn parse_args() -> Args {
                 let s = argv.next().unwrap_or_else(|| usage());
                 let values: Vec<f32> = s
                     .split(',')
-                    .map(|t| t.trim().parse::<f32>().unwrap_or_else(|_| {
-                        eprintln!("--near: bad number {t:?}");
-                        std::process::exit(2);
-                    }))
+                    .map(|t| {
+                        t.trim().parse::<f32>().unwrap_or_else(|_| {
+                            eprintln!("--near: bad number {t:?}");
+                            std::process::exit(2);
+                        })
+                    })
                     .collect();
                 if values.len() != 4 || values.iter().any(|v| !v.is_finite()) || values[3] < 0.0 {
                     eprintln!("--near: expected x,y,z,r with r >= 0, got {s:?}");
@@ -197,7 +201,14 @@ fn main() {
     // Same physics knobs and double_jump=false (mirrors the live green config, rtx_doublejump 0)
     // as crates/rtx-nav/tests/dm3_ra_curl_coverage_probe.rs, and the same build_navmesh entry
     // point production/tests use — no bespoke loading path.
-    let params = SpeedJumpParams { gravity: 800.0, accel: 10.0, maxspeed: 320.0, friction: 4.0, stopspeed: 100.0, curl: true };
+    let params = SpeedJumpParams {
+        gravity: 800.0,
+        accel: 10.0,
+        maxspeed: 320.0,
+        friction: 4.0,
+        stopspeed: 100.0,
+        curl: true,
+    };
     let Some(bsp) = Bsp::parse(&bytes) else {
         eprintln!("failed to parse BSP {:?}", args.bsp);
         std::process::exit(1);
@@ -227,7 +238,12 @@ fn main() {
 
     // Deterministic final order independent of the certifier's internal traversal order: sort by
     // (to, from, cost) with f32::total_cmp so no NaN/partial-order surprise can affect the sort.
-    candidates.sort_by(|(la, _), (lb, _)| la.to.cmp(&lb.to).then(la.from.cmp(&lb.from)).then(la.cost.total_cmp(&lb.cost)));
+    candidates.sort_by(|(la, _), (lb, _)| {
+        la.to
+            .cmp(&lb.to)
+            .then(la.from.cmp(&lb.from))
+            .then(la.cost.total_cmp(&lb.cost))
+    });
 
     let seed = fnv1a(
         format!(
@@ -260,7 +276,13 @@ fn main() {
     );
 }
 
-fn render_json(args: &Args, candidates: &[(Link, SpeedJumpTraversal)], bsp_bytes: usize, params: &SpeedJumpParams, seed: u64) -> String {
+fn render_json(
+    args: &Args,
+    candidates: &[(Link, SpeedJumpTraversal)],
+    bsp_bytes: usize,
+    params: &SpeedJumpParams,
+    seed: u64,
+) -> String {
     let mut s = String::new();
     s.push_str("{\n");
     write!(s, "  \"version\": \"{}\",\n", GT_SEARCH_VERSION).unwrap();
@@ -279,14 +301,23 @@ fn render_json(args: &Args, candidates: &[(Link, SpeedJumpTraversal)], bsp_bytes
     write!(
         s,
         "  \"entry_ladder\": [{}],\n",
-        args.entry_ladder.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")
+        args.entry_ladder
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     )
     .unwrap();
     match args.near {
         Some((p, r)) => write!(s, "  \"near\": [{}, {}, {}, {}],\n", p.x, p.y, p.z, r).unwrap(),
         None => s.push_str("  \"near\": null,\n"),
     }
-    write!(s, "  \"bsp_path\": \"{}\",\n", json_escape(&args.bsp.display().to_string())).unwrap();
+    write!(
+        s,
+        "  \"bsp_path\": \"{}\",\n",
+        json_escape(&args.bsp.display().to_string())
+    )
+    .unwrap();
     write!(s, "  \"bsp_bytes\": {},\n", bsp_bytes).unwrap();
     match &args.calib {
         Some(p) => write!(s, "  \"calib_path\": \"{}\",\n", json_escape(&p.display().to_string())).unwrap(),
@@ -305,13 +336,23 @@ fn render_json(args: &Args, candidates: &[(Link, SpeedJumpTraversal)], bsp_bytes
         // again under its own name per the campaign plan's output contract.
         write!(s, "      \"worst_elapsed\": {},\n", link.cost).unwrap();
         s.push_str("      \"traversal\": {\n");
-        write!(s, "        \"takeoff\": [{}, {}, {}],\n", tr.takeoff.x, tr.takeoff.y, tr.takeoff.z).unwrap();
+        write!(
+            s,
+            "        \"takeoff\": [{}, {}, {}],\n",
+            tr.takeoff.x, tr.takeoff.y, tr.takeoff.z
+        )
+        .unwrap();
         write!(s, "        \"v_req\": {},\n", tr.v_req).unwrap();
         write!(s, "        \"airtime\": {},\n", tr.airtime).unwrap();
         write!(s, "        \"landing_speed_lo\": {},\n", tr.landing_speed_lo).unwrap();
         write!(s, "        \"chained\": {},\n", tr.chained).unwrap();
         write!(s, "        \"curl_gain\": {},\n", tr.curl_gain).unwrap();
-        write!(s, "        \"curl_entry_aim\": [{}, {}, {}],\n", tr.curl_entry_aim.x, tr.curl_entry_aim.y, tr.curl_entry_aim.z).unwrap();
+        write!(
+            s,
+            "        \"curl_entry_aim\": [{}, {}, {}],\n",
+            tr.curl_entry_aim.x, tr.curl_entry_aim.y, tr.curl_entry_aim.z
+        )
+        .unwrap();
         write!(s, "        \"curl_switch_dist\": {},\n", tr.curl_switch_dist).unwrap();
         write!(
             s,
@@ -324,7 +365,12 @@ fn render_json(args: &Args, candidates: &[(Link, SpeedJumpTraversal)], bsp_bytes
             Some(gt) => {
                 s.push_str("      \"ground_turn\": {\n");
                 write!(s, "        \"version\": {},\n", gt.version).unwrap();
-                write!(s, "        \"runway_aim\": [{}, {}, {}],\n", gt.runway_aim.x, gt.runway_aim.y, gt.runway_aim.z).unwrap();
+                write!(
+                    s,
+                    "        \"runway_aim\": [{}, {}, {}],\n",
+                    gt.runway_aim.x, gt.runway_aim.y, gt.runway_aim.z
+                )
+                .unwrap();
                 write!(s, "        \"blended_runway\": {},\n", gt.blended_runway).unwrap();
                 write!(s, "        \"runway_yaw\": {},\n", gt.runway_yaw).unwrap();
                 write!(s, "        \"lip_reach\": {},\n", gt.lip_reach).unwrap();
@@ -332,14 +378,44 @@ fn render_json(args: &Args, candidates: &[(Link, SpeedJumpTraversal)], bsp_bytes
                 write!(s, "        \"turn_dist\": {},\n", gt.turn_dist).unwrap();
                 write!(s, "        \"launch_yaw\": {},\n", gt.launch_yaw).unwrap();
                 write!(s, "        \"yaw_min\": {},\n", gt.yaw_min).unwrap();
-                write!(s, "        \"box_min\": [{}, {}, {}],\n", gt.box_min.x, gt.box_min.y, gt.box_min.z).unwrap();
-                write!(s, "        \"box_max\": [{}, {}, {}],\n", gt.box_max.x, gt.box_max.y, gt.box_max.z).unwrap();
+                write!(
+                    s,
+                    "        \"box_min\": [{}, {}, {}],\n",
+                    gt.box_min.x, gt.box_min.y, gt.box_min.z
+                )
+                .unwrap();
+                write!(
+                    s,
+                    "        \"box_max\": [{}, {}, {}],\n",
+                    gt.box_max.x, gt.box_max.y, gt.box_max.z
+                )
+                .unwrap();
                 write!(s, "        \"launch_gain\": {},\n", gt.launch_gain).unwrap();
-                write!(s, "        \"hold_aim\": [{}, {}, {}],\n", gt.hold_aim.x, gt.hold_aim.y, gt.hold_aim.z).unwrap();
-                write!(s, "        \"gate_point\": [{}, {}, {}],\n", gt.gate_point.x, gt.gate_point.y, gt.gate_point.z).unwrap();
-                write!(s, "        \"gate_normal\": [{}, {}, {}],\n", gt.gate_normal.x, gt.gate_normal.y, gt.gate_normal.z).unwrap();
+                write!(
+                    s,
+                    "        \"hold_aim\": [{}, {}, {}],\n",
+                    gt.hold_aim.x, gt.hold_aim.y, gt.hold_aim.z
+                )
+                .unwrap();
+                write!(
+                    s,
+                    "        \"gate_point\": [{}, {}, {}],\n",
+                    gt.gate_point.x, gt.gate_point.y, gt.gate_point.z
+                )
+                .unwrap();
+                write!(
+                    s,
+                    "        \"gate_normal\": [{}, {}, {}],\n",
+                    gt.gate_normal.x, gt.gate_normal.y, gt.gate_normal.z
+                )
+                .unwrap();
                 write!(s, "        \"air_gain\": {},\n", gt.air_gain).unwrap();
-                write!(s, "        \"landing_aim\": [{}, {}, {}],\n", gt.landing_aim.x, gt.landing_aim.y, gt.landing_aim.z).unwrap();
+                write!(
+                    s,
+                    "        \"landing_aim\": [{}, {}, {}],\n",
+                    gt.landing_aim.x, gt.landing_aim.y, gt.landing_aim.z
+                )
+                .unwrap();
                 write!(s, "        \"entry_speed_lo\": {},\n", gt.entry_speed_lo).unwrap();
                 write!(s, "        \"entry_speed_hi\": {},\n", gt.entry_speed_hi).unwrap();
                 write!(s, "        \"entry_yaw_lo\": {},\n", gt.entry_yaw_lo).unwrap();
@@ -350,7 +426,11 @@ fn render_json(args: &Args, candidates: &[(Link, SpeedJumpTraversal)], bsp_bytes
             }
             None => s.push_str("      \"ground_turn\": null\n"),
         }
-        s.push_str(if idx + 1 == candidates.len() { "    }\n" } else { "    },\n" });
+        s.push_str(if idx + 1 == candidates.len() {
+            "    }\n"
+        } else {
+            "    },\n"
+        });
     }
     s.push_str("  ]\n");
     s.push_str("}\n");

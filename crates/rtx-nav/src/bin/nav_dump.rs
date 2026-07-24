@@ -29,7 +29,11 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let rocket_jump = rjump.then_some(RocketJumpParams { gravity: 800.0, rj_extra: 0.0 });
+    let rocket_jump = rjump.then_some(RocketJumpParams {
+        gravity: 800.0,
+        rj_extra: 0.0,
+        ..Default::default()
+    });
     let Some(bsp) = Bsp::parse(&bytes) else {
         eprintln!("unsupported/malformed BSP: {path}");
         std::process::exit(1);

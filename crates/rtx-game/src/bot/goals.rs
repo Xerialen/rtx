@@ -105,9 +105,7 @@ fn local_pickup_in_budget(current_goal: bool, distance: f32, travel: f32) -> boo
     distance <= LOCAL_PICKUP_RADIUS
         && travel.is_finite()
         && (travel <= LOCAL_PICKUP_TRAVEL
-            || (current_goal
-                && distance <= TERMINAL_PICKUP_RADIUS
-                && travel <= TERMINAL_PICKUP_TRAVEL))
+            || (current_goal && distance <= TERMINAL_PICKUP_RADIUS && travel <= TERMINAL_PICKUP_TRAVEL))
 }
 
 /// Whether standing at `cell` is itself sufficient to overlap the item's pickup trigger. Catalog
@@ -135,9 +133,7 @@ struct SpawnStackCandidate {
 }
 
 /// Choose the nearest reachable spawn-stack pickup, with a bounded preference for gaining height.
-fn choose_spawn_stack(
-    candidates: impl IntoIterator<Item = SpawnStackCandidate>,
-) -> Option<SpawnStackCandidate> {
+fn choose_spawn_stack(candidates: impl IntoIterator<Item = SpawnStackCandidate>) -> Option<SpawnStackCandidate> {
     candidates
         .into_iter()
         .filter(|c| c.travel.is_finite() && c.travel <= SPAWN_STACK_TRAVEL_MAX)
@@ -1070,8 +1066,12 @@ impl GameState {
             .into_iter()
             .filter_map(|(item, cell, desire, commit, distance)| {
                 let t = travel[cell as usize];
-                local_pickup_in_budget(item.0 == self.entities[bot_e].bot.goal.item, distance, t)
-                    .then_some((item, cell, commit, desire / (t + 0.25)))
+                local_pickup_in_budget(item.0 == self.entities[bot_e].bot.goal.item, distance, t).then_some((
+                    item,
+                    cell,
+                    commit,
+                    desire / (t + 0.25),
+                ))
             })
             .max_by(|a, b| a.3.total_cmp(&b.3).then_with(|| b.0 .0.cmp(&a.0 .0)))
             .map(|(item, cell, commit, _)| (item, cell, commit))
@@ -1295,12 +1295,7 @@ impl GameState {
     /// Price a second terminal for the same item after steering reached the selected one without a
     /// take. This preserves pickup ownership while changing only the physical endpoint and uses the
     /// same live link pricing as normal item planning.
-    pub(crate) fn select_alternate_item_terminal(
-        &self,
-        bot_e: EntId,
-        item: EntId,
-        current: CellId,
-    ) -> Option<CellId> {
+    pub(crate) fn select_alternate_item_terminal(&self, bot_e: EntId, item: EntId, current: CellId) -> Option<CellId> {
         let graph = self.nav.graph.as_ref()?;
         let from = graph.nearest(self.entities[bot_e].v.origin)?;
         let pricing = self.bot_link_pricing(bot_e, self.time());

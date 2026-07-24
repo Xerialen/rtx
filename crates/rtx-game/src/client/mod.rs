@@ -15,8 +15,8 @@ use crate::bot;
 use crate::defs::*;
 use crate::entity::{CombatState, Die, EntId, Entity, Pain, SpawnState};
 use crate::game::GameState;
-use crate::obituary::DeathType;
 use crate::mode::ModePlayer;
+use crate::obituary::DeathType;
 
 pub(crate) mod movement;
 mod spawn_select;
@@ -408,12 +408,7 @@ impl GameState {
     /// Install the production player pose/model/hull at an already-selected exact origin. Spawn
     /// selection, telefragging and mode lifecycle deliberately stay with [`Self::place_at_spawn`];
     /// deterministic trials reuse this physical half without choosing a different source point.
-    pub(crate) fn place_fresh_player_body_at(
-        &mut self,
-        player: EntId,
-        origin: Vec3,
-        angles: Vec3,
-    ) {
+    pub(crate) fn place_fresh_player_body_at(&mut self, player: EntId, origin: Vec3, angles: Vec3) {
         set_fresh_player_pose(&mut self.entities[player], origin, angles);
 
         // Assign the player model and bounding box, then explicitly relink via setorigin (a raw
@@ -763,7 +758,10 @@ mod tests {
             assert_eq!(ent.v.groundentity, EntId::WORLD.to_prog());
             assert_eq!(ent.v.waterlevel, 0.0);
             assert_eq!(ent.v.watertype, 0.0);
-            assert_eq!((ent.v.button0, ent.v.button1, ent.v.button2, ent.v.impulse), (0.0, 0.0, 0.0, 0.0));
+            assert_eq!(
+                (ent.v.button0, ent.v.button1, ent.v.button2, ent.v.impulse),
+                (0.0, 0.0, 0.0, 0.0)
+            );
             assert_eq!(ent.mover.pausetime, 0.0);
             assert_eq!(ent.mover.speed, 0.0);
             assert_eq!(ent.mover.dmg, 2.0);
