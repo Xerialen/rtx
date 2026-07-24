@@ -11,11 +11,16 @@
 //! For each authored path A→B we ask how well our mesh reproduces it, in descending strength:
 //!
 //! - **Matched** — a link of the *same kind* (rocket jump for an RJ path, curl speed-jump for a curl
-//!   path) leaves near A and lands near B.
-//! - **JumpConnected** — some *other* airborne link bridges the same endpoints; the mesh crosses the
-//!   gap, just by different means.
-//! - **RouteConnected** — no single link matches, but A and B snap to the mesh and a route exists.
-//! - **Unreachable** — the blind spot: A and B snap, but the mesh can't get from one to the other.
+//!   path) leaves near A and lands near B (both endpoints within `radius`).
+//! - **TowardConnected** — the shortcut we really care about: a same-kind link launches from around A
+//!   and lands in B's *region* (its LoD-cluster neighbourhood). A rocket jump is a shortcut; if we can
+//!   RJ from the source toward the destination's area it counts, even if the exact landing cell isn't
+//!   B's. Matched + toward = the shortcut is reproduced.
+//! - **JumpConnected** — some *other* airborne link bridges the endpoints; the mesh crosses the gap by
+//!   different means.
+//! - **RouteConnected** — no jump matches: the endpoints connect only by a ground route. For a rocket
+//!   jump this is a *miss* — the bot must take the (often multi-second) detour the human shortcut skips.
+//! - **Unreachable** — A and B snap to the mesh but nothing connects them at all.
 //! - **Unsnapped** — an endpoint didn't land on any nav cell (a marker over a pedestal, water, or
 //!   void), so no honest verdict is possible.
 
@@ -52,6 +57,11 @@ pub struct Near {
 #[derive(Clone, Copy, Debug)]
 pub enum Verdict {
     Matched(Near),
+    /// A same-kind (RJ/curl) link launching from near the source that makes meaningful progress
+    /// toward the destination — the shortcut exists in roughly the right place and direction, even if
+    /// it lands on a different cell than the waypoint's exact target. `Near.d_tgt` is how far the
+    /// landing sits from the destination.
+    TowardConnected(Near),
     JumpConnected(Near),
     RouteConnected {
         cost: f32,
@@ -108,6 +118,11 @@ pub struct Checker<'a> {
     curl_links: Vec<u32>,
     /// Every airborne link (jump/double/speed/rocket) — the pool for the JumpConnected fallback.
     airborne: Vec<u32>,
+    /// Per-LoD-cluster set of spatially adjacent clusters (linked by *local* movement — walk/step/
+    /// drop/jump — not by rocket jumps or teleporters). A cluster's "neighborhood" is itself plus this
+    /// set, used for the region-level rocket-jump match: a KTX jump cluster(A)→cluster(B) is covered
+    /// when we have a jump from A's neighborhood to B's.
+    cluster_adj: Vec<std::collections::HashSet<u32>>,
 }
 
 impl<'a> Checker<'a> {
@@ -131,9 +146,27 @@ impl<'a> Checker<'a> {
                 _ => {}
             }
         }
+        // Cluster adjacency from local movement only, so a "neighbor" is a spatially adjacent region,
+        // not one reachable only by the very rocket jumps we're auditing.
+        let mut cluster_adj = vec![std::collections::HashSet::new(); graph.cluster_count()];
+        for li in 0..graph.links.len() as u32 {
+            if !is_local(graph.link_kind(li)) {
+                continue;
+            }
+            if let (Some(cf), Some(ct)) = (
+                graph.cluster_of(graph.link_source(li)),
+                graph.cluster_of(graph.link_target(li)),
+            ) {
+                if cf != ct {
+                    cluster_adj[cf as usize].insert(ct);
+                    cluster_adj[ct as usize].insert(cf);
+                }
+            }
+        }
         Checker {
             graph,
             radius,
+            cluster_adj,
             rj_links,
             curl_links,
             airborne,
@@ -159,17 +192,12 @@ impl<'a> Checker<'a> {
             Family::Curl => &self.curl_links,
         };
 
-        // Strongest: a same-kind link whose endpoints land within tolerance.
+        // Strongest: a same-kind link whose endpoints both land within radius — a confident exact match.
         let mut best: Option<(f32, Near)> = None;
         for &li in kindred {
             let ds = self.d_src_window(li, a);
             let dt = dist_window(g.cell_origin(g.link_target(li)), b);
-            if !ds.is_finite() || !dt.is_finite() {
-                continue;
-            }
-            let accepted =
-                ds <= r && (dt <= r || (dt <= 3.0 * r && nb.is_some_and(|nb| self.same_shelf(g.link_target(li), nb))));
-            if accepted {
+            if ds <= r && dt <= r {
                 let score = ds.max(dt);
                 let near = Near {
                     link: li,
@@ -184,6 +212,14 @@ impl<'a> Checker<'a> {
         }
         if let Some((_, near)) = best {
             return Verdict::Matched(near);
+        }
+
+        // The shortcut that matters: a same-kind jump from the source's *region* to the destination's.
+        // A rocket jump is a shortcut — KTX's jump goes cluster(A)→cluster(B), and we cover it when some
+        // link launches from A's LoD-cluster neighborhood and lands in B's, even if neither endpoint is
+        // exact. This is what a bare "route-connected" verdict hides: an authored RJ we *can* do.
+        if let Some(near) = self.toward(kindred, a, b) {
+            return Verdict::TowardConnected(near);
         }
 
         // Next: some other airborne link bridges the same gap.
@@ -243,6 +279,51 @@ impl<'a> Checker<'a> {
             Verdict::Unreachable {
                 nearest_kindred: self.nearest_kindred_3d(kindred, a, b),
             }
+        }
+    }
+
+    /// A same-kind link launching from around the source that lands in the destination's *region*.
+    /// You have to be at the launch spot to rocket-jump, so the source stays tight (within `radius` of
+    /// A). The landing is the forgiving end: it counts if it falls in B's LoD-cluster neighbourhood
+    /// (B's cluster or one adjacent to it) — KTX's exact target cell needn't be ours, only its region.
+    /// A "toward B" guard (the landing sits closer to B than the launch) rules out jumps heading away.
+    /// Returns the candidate landing closest to `b`; its `d_tgt` is the residual to `b`.
+    fn toward(&self, kindred: &[u32], a: Vec3, b: Vec3) -> Option<Near> {
+        let g = self.graph;
+        let r = self.radius;
+        let clb = g.nearest(b).and_then(|c| g.cluster_of(c))?;
+        let in_nbh_b = |cl: u32| cl == clb || self.cluster_adj[clb as usize].contains(&cl);
+        let mut best: Option<(f32, Near)> = None;
+        for &li in kindred {
+            let ds = self.d_src_window(li, a);
+            if ds > r {
+                continue; // must launch from around the origin
+            }
+            let land = g.cell_origin(g.link_target(li));
+            let in_region = g.cluster_of(g.link_target(li)).is_some_and(in_nbh_b) || dist_window(land, b) <= r;
+            let resid = (land - b).length();
+            let toward = resid < (self.launch_origin(li) - b).length();
+            if in_region && toward && best.as_ref().is_none_or(|(br, _)| resid < *br) {
+                best = Some((
+                    resid,
+                    Near {
+                        link: li,
+                        kind: g.link_kind(li),
+                        d_src: ds,
+                        d_tgt: resid,
+                    },
+                ));
+            }
+        }
+        best.map(|(_, n)| n)
+    }
+
+    /// The world origin a kindred link launches from — the source cell, or a speed jump's takeoff
+    /// ledge (its `from` cell is the runway start, not the launch point).
+    fn launch_origin(&self, li: u32) -> Vec3 {
+        match self.graph.speed_jump_of_link(li) {
+            Some(sj) => sj.takeoff,
+            None => self.graph.cell_origin(self.graph.link_source(li)),
         }
     }
 
@@ -365,6 +446,21 @@ fn is_airborne(k: LinkKind) -> bool {
     matches!(
         k,
         LinkKind::JumpGap | LinkKind::DoubleJump | LinkKind::SpeedJump | LinkKind::RocketJump | LinkKind::Hook
+    )
+}
+
+/// Local movement kinds that define spatial cluster adjacency — walking, stepping, dropping, and
+/// short jumps. Rocket jumps, teleporters, plats and hooks connect distant regions and would make
+/// far-apart clusters false "neighbors", so they're excluded.
+fn is_local(k: LinkKind) -> bool {
+    matches!(
+        k,
+        LinkKind::Walk
+            | LinkKind::Step
+            | LinkKind::Drop
+            | LinkKind::JumpGap
+            | LinkKind::DoubleJump
+            | LinkKind::SpeedJump
     )
 }
 

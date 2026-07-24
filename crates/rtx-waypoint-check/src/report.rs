@@ -12,6 +12,7 @@ use crate::check::{Family, Verdict};
 #[derive(Default, Clone, Copy)]
 pub struct Tally {
     pub matched: u32,
+    pub toward: u32,
     pub jump: u32,
     pub route: u32,
     pub unreach: u32,
@@ -22,6 +23,7 @@ impl Tally {
     pub fn add(&mut self, v: &Verdict) {
         match v {
             Verdict::Matched(_) => self.matched += 1,
+            Verdict::TowardConnected(_) => self.toward += 1,
             Verdict::JumpConnected(_) => self.jump += 1,
             Verdict::RouteConnected { .. } => self.route += 1,
             Verdict::Unreachable { .. } => self.unreach += 1,
@@ -30,7 +32,12 @@ impl Tally {
     }
 
     pub fn total(&self) -> u32 {
-        self.matched + self.jump + self.route + self.unreach + self.unsnap
+        self.matched + self.toward + self.jump + self.route + self.unreach + self.unsnap
+    }
+
+    /// Paths whose rocket-jump/curl shortcut we reproduce, exactly or in the right place+direction.
+    pub fn shortcut(&self) -> u32 {
+        self.matched + self.toward
     }
 
     /// Paths that are a genuine blind spot (no route at all, or an endpoint off the mesh).
@@ -40,6 +47,7 @@ impl Tally {
 
     pub fn merge(&mut self, o: &Tally) {
         self.matched += o.matched;
+        self.toward += o.toward;
         self.jump += o.jump;
         self.route += o.route;
         self.unreach += o.unreach;
@@ -51,6 +59,9 @@ impl Tally {
         let mut parts = Vec::new();
         if self.matched > 0 {
             parts.push(format!("{} matched", self.matched));
+        }
+        if self.toward > 0 {
+            parts.push(format!("{} toward", self.toward));
         }
         if self.jump > 0 {
             parts.push(format!("{} jump", self.jump));
@@ -130,6 +141,13 @@ fn verdict(v: &Verdict) -> String {
     match v {
         Verdict::Matched(n) => format!(
             "MATCHED  {} link {}  {:.0}/{:.0}",
+            kind_short(n.kind),
+            n.link,
+            n.d_src,
+            n.d_tgt
+        ),
+        Verdict::TowardConnected(n) => format!(
+            "TOWARD   {} link {}  src {:.0}, lands {:.0} from dest",
             kind_short(n.kind),
             n.link,
             n.d_src,

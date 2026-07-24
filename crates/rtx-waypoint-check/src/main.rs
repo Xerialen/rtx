@@ -151,6 +151,11 @@ fn run(config: &Config) -> ExitCode {
             grand_rj.line(),
             grand_curl.line()
         );
+        let (rj_sc, rj_n) = (grand_rj.shortcut(), grand_rj.total());
+        let rj_gap = rj_n - rj_sc;
+        println!(
+            "   rj shortcut coverage: {rj_sc}/{rj_n} reproduced ({rj_gap} are detour-only or unreachable — the real gaps)"
+        );
     }
 
     if fatal {
