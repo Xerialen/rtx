@@ -33,10 +33,12 @@ const RJ_AIR_MAX_TICKS: usize = 160;
 
 /// View pitches (degrees below horizontal) tried for the shot; a steeper pitch blasts the bot more
 /// vertically. 80 ≈ the engine's view-pitch clamp — steeper than that isn't reachable in-game.
-pub(super) const RJ_PITCHES: [f32; 4] = [55.0, 65.0, 75.0, 80.0];
-/// Fire delays (seconds after the jump press) tried: earlier fires while still rising fast (higher
-/// apex, blast closer to the floor); later fires flatter.
-pub(super) const RJ_DELAYS: [f32; 4] = [0.05, 0.15, 0.25, 0.35];
+pub(super) const RJ_PITCHES: [f32; 6] = [55.0, 60.0, 65.0, 70.0, 75.0, 80.0];
+/// Fire delays (seconds after the jump press) tried. KTX's hand-authored jumps fire fast — 0 to a few
+/// frames after the jump (delay fields are 0–4 frames ≈ 0–0.05 s), and an early shot gives the highest
+/// apex, which is what a height jump wants. So the grid is short: immediate, ~a few frames, and a
+/// small margin.
+pub(super) const RJ_DELAYS: [f32; 3] = [0.0, 0.05, 0.1];
 
 /// How far the rocket may travel to its impact surface (the shot aims at nearby floor/wall).
 const RJ_ROCKET_RANGE: f32 = 512.0;
