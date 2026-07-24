@@ -1049,6 +1049,20 @@ fn plant_link_resp(
     // +1.0 charged to a modeled speed jump). Run-up is the `from`→lip distance at the mean build speed.
     let runup = (takeoff.xy() - g.cell_origin(from_cell).xy()).length();
     let cost = runup / 400.0 + airtime + 0.3;
+    // The manifest sets these immediately before PlanLink. Preserve its two-stage execution
+    // contract in the typed-msgpack path just as the former text control path did; zero values keep
+    // an unprofiled hand plant on the legacy single-bearing pursuit.
+    let curl_switch_dist = game.host.cvar(c"rtx_jump_curl_switch_dist");
+    let curl_entry_aim = Vec3::new(
+        game.host.cvar(c"rtx_jump_curl_entry_x"),
+        game.host.cvar(c"rtx_jump_curl_entry_y"),
+        takeoff.z,
+    );
+    let curl_landing_aim = Vec3::new(
+        game.host.cvar(c"rtx_jump_curl_landing_x"),
+        game.host.cvar(c"rtx_jump_curl_landing_y"),
+        g.cell_origin(to_cell).z,
+    );
     let tr = SpeedJumpTraversal {
         takeoff,
         v_req,
@@ -1056,9 +1070,9 @@ fn plant_link_resp(
         landing_speed_lo: 0.0,
         chained: false,
         curl_gain,
-        curl_entry_aim: Vec3::ZERO,
-        curl_switch_dist: 0.0,
-        curl_landing_aim: Vec3::ZERO,
+        curl_entry_aim,
+        curl_switch_dist,
+        curl_landing_aim,
         ground_turn: None,
     };
     let li = g.plant_speed_jump(from_cell, to_cell, cost, tr);

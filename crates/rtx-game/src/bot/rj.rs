@@ -28,6 +28,10 @@ const RJ_HEALTH_MARGIN: f32 = 25.0;
 /// and gives mover-board landings clearance from the trigger-raised brush side.
 const RJ_STATIONARY_STAGE_OFFSET: f32 = 12.0;
 const RJ_PRECISE_STAGE_RADIUS: f32 = 3.0;
+/// Residual speed accepted as settled at a running RJ's runway start. The mover landing controller
+/// can leave one quantized 20.7-ups correction tick; rejecting it misses the only certified ascent
+/// window and strands the bot on the raised platform.
+const RJ_RUN_STAGE_SETTLE_SPEED: f32 = 24.0;
 
 /// Health actually lost to a `dmg`-point blast after armor absorbs its share, mirroring `t_damage`:
 /// `save = ceil(armortype·dmg)` clamped to `armorvalue`, and the knockback is *not* reduced.
@@ -43,6 +47,10 @@ fn stationary_stage(launch: Vec3, target: Vec3, stance: f32) -> (glam::Vec2, f32
     let offset = (stance - radius).clamp(0.0, RJ_STATIONARY_STAGE_OFFSET);
     let toward_target = (target - launch).xy().normalize_or_zero();
     (launch.xy() + toward_target * offset, radius)
+}
+
+fn running_stage_ready(start_distance: f32, ground_speed: f32, stance: f32) -> bool {
+    start_distance <= stance && ground_speed <= RJ_RUN_STAGE_SETTLE_SPEED
 }
 
 /// `0.0` when this bot can fly a rocket-jump leg right now, else [`RJ_UNFIT_PENALTY`]. Unfit when it
@@ -266,7 +274,7 @@ pub(crate) fn drive_rj(graph: &NavGraph, bot: &mut BotState, c: RjCtx) -> RjDriv
                         } else if running && weapon == Weapon::RocketLauncher && now >= attack_finished {
                             if !bot.rj.run_staged {
                                 let start_distance = start_offset.length();
-                                if start_distance <= run_start_stance && ground_speed <= 20.0 {
+                                if running_stage_ready(start_distance, ground_speed, run_start_stance) {
                                     // The offline ground run starts from rest. Settle the same state
                                     // before committing so arrival momentum cannot spend or extend a
                                     // one-body-wide runway.
@@ -490,5 +498,12 @@ mod tests {
         let (tight_point, tight_radius) = stationary_stage(launch, Vec3::X, 2.0);
         assert_eq!(tight_point, launch.xy(), "a narrow live stance leaves no offset budget");
         assert_eq!(tight_radius, 2.0);
+    }
+
+    #[test]
+    fn running_stage_accepts_one_small_quantized_correction_tick() {
+        assert!(running_stage_ready(2.9, 20.7, 3.0));
+        assert!(!running_stage_ready(3.1, 20.7, 3.0));
+        assert!(!running_stage_ready(2.9, 24.1, 3.0));
     }
 }
