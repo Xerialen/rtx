@@ -83,7 +83,13 @@ impl NavGraph {
     /// [`find_path`](Self::find_path) restricted to a cluster window: expansion rejects any cell whose
     /// LOD cluster isn't flagged in `allowed` (indexed by cluster id). Steer bounds a far-goal route to
     /// the coarse corridor's clusters with this, so the search stays a local neighbourhood.
-    pub fn find_path_within(&self, start: CellId, goal: CellId, costs: &LinkCosts, allowed: &[bool]) -> Option<Vec<u32>> {
+    pub fn find_path_within(
+        &self,
+        start: CellId,
+        goal: CellId,
+        costs: &LinkCosts,
+        allowed: &[bool],
+    ) -> Option<Vec<u32>> {
         self.find_path_filtered(start, goal, costs, Some(allowed))
     }
 
@@ -93,11 +99,19 @@ impl NavGraph {
     fn in_window(&self, cell: CellId, allowed: Option<&[bool]>) -> bool {
         match allowed {
             None => true,
-            Some(a) => self.cluster_of(cell).is_none_or(|cl| a.get(cl as usize).copied().unwrap_or(true)),
+            Some(a) => self
+                .cluster_of(cell)
+                .is_none_or(|cl| a.get(cl as usize).copied().unwrap_or(true)),
         }
     }
 
-    fn find_path_filtered(&self, start: CellId, goal: CellId, costs: &LinkCosts, allowed: Option<&[bool]>) -> Option<Vec<u32>> {
+    fn find_path_filtered(
+        &self,
+        start: CellId,
+        goal: CellId,
+        costs: &LinkCosts,
+        allowed: Option<&[bool]>,
+    ) -> Option<Vec<u32>> {
         use std::collections::BinaryHeap;
 
         if start == goal {
@@ -408,7 +422,10 @@ impl NavGraph {
         let mut settled = Vec::new();
         let mut heap = BinaryHeap::new();
         cost[start as usize] = 0.0;
-        heap.push(MinCost { key: 0.0, payload: start });
+        heap.push(MinCost {
+            key: 0.0,
+            payload: start,
+        });
         while let Some(MinCost { key: g, payload: cell }) = heap.pop() {
             if g > cost[cell as usize] {
                 continue; // a cheaper path already settled this cell
@@ -422,7 +439,10 @@ impl NavGraph {
                 let ng = g + link.cost + self.link_extra(li, costs) + self.chained_block(li);
                 if ng < cost[link.to as usize] {
                     cost[link.to as usize] = ng;
-                    heap.push(MinCost { key: ng, payload: link.to });
+                    heap.push(MinCost {
+                        key: ng,
+                        payload: link.to,
+                    });
                 }
             }
         }

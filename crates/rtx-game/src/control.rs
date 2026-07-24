@@ -10,70 +10,62 @@
 //!
 //! ## Threading
 //! The engine drives this module single-threaded from the frame calls, so every `GameState` mutation
-//! stays on that thread. The socket work is pushed to background threads that only shuttle raw
-//! `String` lines through `mpsc` channels — the exact shape as the navmesh build worker
+//! stays on that thread. The socket work is pushed to background threads that only shuttle raw wire
+//! frames through `mpsc` channels — the exact shape as the navmesh build worker
 //! ([`crate::nav_build`]): a listener thread accepts connections, a per-connection reader thread feeds
-//! inbound lines to [`ControlState::lines_rx`], and a writer thread drains outbound JSON to the
-//! current client. Commands are parsed and executed, and events emitted, entirely inside
+//! inbound request frames (tagged with a connection id) to [`ControlState::requests_rx`], and a writer
+//! thread drains outbound frames to their targets — a reply to the client that asked, an event to all
+//! connected clients (so the MCP bridge and the navview viewer can attach at once). Requests are
+//! decoded and executed, and events emitted, entirely inside
 //! [`frame_begin`]/[`frame_end`] under the frame's `&mut GameState`. No lock is ever held over game
 //! state; the only shared state between threads is the raw socket and the channels.
 //!
 //! ## Protocol
-//! Inbound: newline-delimited text, `<id> <verb> [args…]`, `id` a caller-chosen integer echoed back.
-//! Outbound: newline-delimited hand-emitted JSON (the game crate stays dependency-free). A reply is
-//! `{"id":N,"ok":true,"data":{…}}` / `{"id":N,"ok":false,"error":"…"}`; an unsolicited lifecycle
-//! event is `{"ev":"arrived"|"goto_stall"|"rj_result",…}`. A single outbound channel gives total
-//! ordering; the client demuxes on the presence of `id` vs `ev`.
+//! Framed [msgpack] of the typed [`rtx_ctlproto`] schema (`[u32 LE len][payload]`). Inbound is a
+//! [`Request`] (`id` + [`Cmd`]); outbound is a [`Msg`] — a `Reply { id, Result<Resp, String> }`
+//! correlated to the request, or an async [`Event`] (`arrived` / `goto_stall` / `rj_result` /
+//! `fly_result`). A single outbound channel gives total ordering; the client demuxes on the `Msg`
+//! variant. The MCP re-serialises the typed values as JSON for Claude.
+//!
+//! [msgpack]: https://msgpack.org/
 
-mod nav_edit;
-mod ra_trial;
-
-use std::fmt::Write as FmtWrite;
-use std::io::{BufRead, BufReader, Write};
+use std::collections::HashMap;
+use std::io::Write;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use glam::{Vec3, Vec3Swizzles};
+use rtx_ctlproto::{self as proto, Cmd, Event, Msg, Request, Resp};
 
-use self::nav_edit::{plant_rj_json, plant_rj_raw_json};
-use self::ra_trial::{
-    any_item_trial_active, do_ra_trial, ensure_global_item_trial_idle, ensure_item_trial_idle,
-    poll_ra_trial, RaTrialStart,
-};
-#[cfg(test)]
-use self::ra_trial::{
-    RA_TRIAL_LOCAL_DEFAULT_SECS, RA_TRIAL_RING_DEFAULT_SECS, RA_TRIAL_SPAWN_DEFAULT_SECS,
-};
-
+use crate::bot::goals::is_goal_classname;
 use crate::bot::state::{ControlOrder, HookState, RjOutcome, RjState, RjTelemetry};
-use crate::defs::{Bits, Flags, Items, Weapon};
+use crate::defs::{Bits, Flags, Items, Solid, Weapon};
 use crate::entity::EntId;
 use crate::game::{cstring, GameState, MAX_EDICTS};
 use crate::math::wrap180;
 use crate::navmesh::LinkKind;
 
 /// A goto is "arrived" once within this XY radius of the target (matches the bot's own arrival gate)
-/// and within [`GOTO_ARRIVE_Z`] in Z. A radius policy, not a cell match — cell borders flap.
+/// or after a bounded finish-plane crossing, and within [`GOTO_ARRIVE_Z`] in Z. This stays independent
+/// of navmesh cell borders, which flap at high speed.
 const GOTO_ARRIVE_XY: f32 = 24.0;
 const GOTO_ARRIVE_Z: f32 = 48.0;
+/// A fast directed run can cross the target plane between samples while one slalom lobe is outside
+/// the radial arrival ball. Accept that crossing inside the same bounded corridor used for fast
+/// route waypoints, so the control order stops at the finish instead of commanding a recovery turn.
+const GOTO_FINISH_CORRIDOR: f32 = 96.0;
 /// Goto stall: if the straight-line XY distance to the target hasn't improved by [`STALL_EPS`] for
 /// [`STALL_SECS`], the source is (currently) inaccessible. The window sits above the bot's own 2.5 s
 /// progress watchdog, so it gets one penalize-and-divert attempt first — a stall then means
 /// "unreachable even after diverting", the signal a rocket-jump *source* cell can't be stood on.
 const STALL_EPS: f32 = 16.0;
 const STALL_SECS: f32 = 4.0;
+/// Altitude gain that counts as goto progress (resets the stall clock) — a spiral climbs toward a
+/// target above while its XY distance plateaus. Mirrors the bot's own route watchdog `CLIMB_EPS`.
+const GOTO_CLIMB_EPS: f32 = 8.0;
 /// A FlyLink attempt gives up after this long with no touchdown (see `poll_fly`).
 const FLY_TIMEOUT: f32 = 8.0;
-
-#[derive(Clone, Copy)]
-struct PmoveSample {
-    ent: u32,
-    origin: Vec3,
-    velocity: Vec3,
-    on_ground: bool,
-    ground_ent: i32,
-}
 
 /// The control channel's live state, carried on [`GameState`]. Persists across map loads (the socket
 /// binds once); `started` guards against re-binding. All fields stay untouched — the whole harness is
@@ -82,10 +74,20 @@ struct PmoveSample {
 pub(crate) struct ControlState {
     /// Whether the listener has been (attempted to be) bound. Set once, so a bind is tried at most once.
     started: bool,
-    /// Inbound command lines from the current connection (drained each frame in [`frame_begin`]).
-    lines_rx: Option<Receiver<String>>,
-    /// Outbound JSON lines (replies + events). The writer thread owns the receiving half.
-    events_tx: Option<Sender<String>>,
+    /// Inbound raw request frames tagged with the connection id they arrived on (decoded and drained
+    /// each frame in [`frame_begin`]). Kept as bytes, not decoded [`Request`]s, so a malformed frame is
+    /// answered with an error reply on the engine thread rather than silently dropped by the reader
+    /// thread. The connection id routes the reply back to the client that asked.
+    requests_rx: Option<Receiver<(u64, Vec<u8>)>>,
+    /// Outbound encoded [`Msg`] frames plus their delivery target. The writer thread owns the receiving
+    /// half and the client table.
+    out_tx: Option<Sender<(Target, Vec<u8>)>>,
+}
+
+/// Where an outbound frame goes: a reply to the one client that asked, or an event broadcast to all.
+enum Target {
+    One(u64),
+    All,
 }
 
 /// Frame prologue: lazily bind the listener once the port cvar is set, then drain and execute every
@@ -98,12 +100,15 @@ pub(crate) fn frame_begin(game: &mut GameState) {
             start_listener(game, p as u16);
         }
     }
-    let lines: Vec<String> = match game.control.lines_rx.as_ref() {
+    let frames: Vec<(u64, Vec<u8>)> = match game.control.requests_rx.as_ref() {
         Some(rx) => rx.try_iter().collect(),
         None => return,
     };
-    for line in lines {
-        exec_line(game, &line);
+    for (conn, frame) in frames {
+        match proto::decode::<Request>(&frame) {
+            Ok(req) => exec_request(game, conn, req),
+            Err(e) => reply(game, conn, 0, Err(format!("bad request frame: {e}"))),
+        }
     }
 }
 
@@ -111,38 +116,11 @@ pub(crate) fn frame_begin(game: &mut GameState) {
 /// frame (arrival / stall for a goto, the terminal telemetry for a rocket jump). Runs after
 /// `run_bots` so it sees the post-frame bot state the driver just wrote.
 pub(crate) fn frame_end(game: &mut GameState) {
-    if game.control.events_tx.is_none() {
+    if game.control.out_tx.is_none() {
         return; // channel never came up — nothing to emit
     }
     let now = game.time();
     let maxclients = game.host.cvar(c"maxclients").max(0.0) as u32;
-    if game.host.cvar(c"rtx_telemetry") > 0.0 {
-        let players = (1..=maxclients).filter_map(|i| {
-            let ent = &game.entities[EntId(i)];
-            if !ent.in_use || !ent.is_player() || ent.bot.is_bot {
-                return None;
-            }
-            let ground_ent = if ent.v.groundentity < 0 {
-                -1
-            } else {
-                let ground = EntId::from_prog(ent.v.groundentity);
-                if ground.index() < MAX_EDICTS && ground.to_prog() == ent.v.groundentity {
-                    ground.0 as i32
-                } else {
-                    -1
-                }
-            };
-            Some(PmoveSample {
-                ent: i,
-                origin: ent.v.origin,
-                velocity: ent.v.velocity,
-                on_ground: ent.v.flags.has(Flags::ONGROUND),
-                ground_ent,
-            })
-        });
-        let event = pmove_event_json(now, players);
-        send(game, event);
-    }
     for i in 1..=maxclients {
         let e = EntId(i);
         if !game.entities[e].bot.is_bot || !game.entities[e].in_use {
@@ -153,7 +131,10 @@ pub(crate) fn frame_end(game: &mut GameState) {
             Some(ControlOrder::Goto { target }) => {
                 let (origin, vel) = (game.entities[e].v.origin, game.entities[e].v.velocity);
                 let traj = &mut game.entities[e].bot.puppet.traj;
-                if traj.len() < 400 {
+                // Long flat-corridor benchmarks need roughly 7–10 seconds to expose the 800+ ups
+                // regime. Keep their complete velocity trace; the old 400-row cap truncated the
+                // final acceleration and made the reported peak systematically too low.
+                if traj.len() < 1200 {
                     traj.push((now, origin, vel));
                 }
                 poll_goto(game, e, i, target, now);
@@ -177,9 +158,6 @@ pub(crate) fn frame_end(game: &mut GameState) {
                 poll_fly(game, e, i, link, now);
             }
         }
-        if game.entities[e].bot.puppet.item_trial.is_some() {
-            poll_ra_trial(game, e, i, now);
-        }
     }
 }
 
@@ -190,318 +168,103 @@ fn start_listener(game: &mut GameState, port: u16) {
     let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
         Ok(l) => l,
         Err(err) => {
-            game.host
-                .conprint(&cstring(&format!("rtx: control: bind 127.0.0.1:{port} failed: {err}\n")));
+            game.host.conprint(&cstring(&format!(
+                "rtx: control: bind 127.0.0.1:{port} failed: {err}\n"
+            )));
             return;
         }
     };
-    let (lines_tx, lines_rx) = std::sync::mpsc::channel::<String>();
-    let (events_tx, events_rx) = std::sync::mpsc::channel::<String>();
-    // The single write-half slot the writer thread drains and the listener thread replaces on each new
-    // connection. `Option` so a dropped client leaves it empty and outbound lines are simply discarded.
-    let slot: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
-    let wslot = slot.clone();
-    std::thread::spawn(move || writer_loop(events_rx, wslot));
-    std::thread::spawn(move || listener_loop(listener, lines_tx, slot));
-    game.control.lines_rx = Some(lines_rx);
-    game.control.events_tx = Some(events_tx);
+    let (requests_tx, requests_rx) = std::sync::mpsc::channel::<(u64, Vec<u8>)>();
+    let (out_tx, out_rx) = std::sync::mpsc::channel::<(Target, Vec<u8>)>();
+    // The live client table (write halves keyed by connection id), shared by the writer thread and the
+    // per-connection reader threads. Multiple clients attach at once — e.g. the MCP bridge and the
+    // navview viewer — with replies routed by id and events broadcast to all.
+    let clients: Arc<Mutex<HashMap<u64, TcpStream>>> = Arc::new(Mutex::new(HashMap::new()));
+    let wclients = clients.clone();
+    std::thread::spawn(move || writer_loop(out_rx, wclients));
+    std::thread::spawn(move || listener_loop(listener, requests_tx, clients));
+    game.control.requests_rx = Some(requests_rx);
+    game.control.out_tx = Some(out_tx);
     game.host
         .conprint(&cstring(&format!("rtx: control: listening on 127.0.0.1:{port}\n")));
 }
 
-/// Accept loop: each new connection replaces the write-half slot (one client at a time — a fresh
-/// connection supersedes a stale one) and gets its own reader thread feeding inbound lines.
-fn listener_loop(listener: TcpListener, lines_tx: Sender<String>, slot: Arc<Mutex<Option<TcpStream>>>) {
+/// Accept loop: each connection gets a unique id, a write half in the shared client table, and its own
+/// reader thread tagging inbound frames with that id. The reader removes the client on disconnect.
+fn listener_loop(
+    listener: TcpListener,
+    requests_tx: Sender<(u64, Vec<u8>)>,
+    clients: Arc<Mutex<HashMap<u64, TcpStream>>>,
+) {
+    let mut next_id: u64 = 0;
     for stream in listener.incoming().flatten() {
         let _ = stream.set_nodelay(true);
+        let id = next_id;
+        next_id += 1;
         if let Ok(wr) = stream.try_clone() {
-            if let Ok(mut g) = slot.lock() {
-                *g = Some(wr);
+            if let Ok(mut m) = clients.lock() {
+                m.insert(id, wr);
             }
         }
-        let tx = lines_tx.clone();
+        let tx = requests_tx.clone();
+        let clients = clients.clone();
         std::thread::spawn(move || {
-            for line in BufReader::new(stream).lines() {
-                match line {
-                    Ok(l) => {
-                        if tx.send(l).is_err() {
+            let mut stream = stream;
+            loop {
+                match proto::read_frame(&mut stream) {
+                    Ok(Some(frame)) => {
+                        if tx.send((id, frame)).is_err() {
                             break; // game side gone
                         }
                     }
-                    Err(_) => break, // connection dropped
+                    Ok(None) | Err(_) => break, // clean EOF or connection dropped
                 }
+            }
+            if let Ok(mut m) = clients.lock() {
+                m.remove(&id); // drop this client's write half
             }
         });
     }
 }
 
-/// Writer loop: drain outbound JSON lines to the current client. With no client connected the line is
-/// dropped (the backpressure policy — events are low-rate and a reconnecting client resyncs via
-/// `status`); a write error clears the slot until a new connection lands.
-fn writer_loop(events_rx: Receiver<String>, slot: Arc<Mutex<Option<TcpStream>>>) {
-    while let Ok(line) = events_rx.recv() {
-        let Ok(mut g) = slot.lock() else { continue };
-        if let Some(stream) = g.as_mut() {
-            if stream.write_all(line.as_bytes()).is_err() || stream.write_all(b"\n").is_err() {
-                *g = None;
-            } else {
-                let _ = stream.flush();
+/// Writer loop: drain outbound msgpack frames to their targets. A reply goes to the one client that
+/// asked; an event broadcasts to every connected client. A write error drops that client from the
+/// table (a reconnecting client resyncs via `status`).
+fn writer_loop(out_rx: Receiver<(Target, Vec<u8>)>, clients: Arc<Mutex<HashMap<u64, TcpStream>>>) {
+    while let Ok((target, frame)) = out_rx.recv() {
+        let Ok(mut m) = clients.lock() else { continue };
+        match target {
+            Target::One(id) => {
+                if let Some(stream) = m.get_mut(&id) {
+                    if stream.write_all(&frame).is_err() {
+                        m.remove(&id);
+                    } else {
+                        let _ = stream.flush();
+                    }
+                }
+            }
+            Target::All => {
+                m.retain(|_, stream| {
+                    stream
+                        .write_all(&frame)
+                        .map(|_| stream.flush().is_ok())
+                        .unwrap_or(false)
+                });
             }
         }
     }
 }
 
-/// Queue one outbound JSON line (reply or event). A no-op when the channel is down.
-fn send(game: &GameState, line: String) {
-    if let Some(tx) = game.control.events_tx.as_ref() {
-        let _ = tx.send(line);
+/// Queue one outbound [`Msg`] to a target, encoded to a wire frame. A no-op when the channel is down.
+fn send_to(game: &GameState, target: Target, msg: Msg) {
+    if let Some(tx) = game.control.out_tx.as_ref() {
+        let _ = tx.send((target, proto::to_frame(&msg)));
     }
 }
 
-// --- inbound command grammar (pure parse, unit-tested) ---
-
-/// One parsed control command (see the module protocol docs). The wire `id` is threaded separately.
-#[derive(Debug, PartialEq)]
-enum ControlCmd {
-    Status,
-    Links,
-    Prep { bot: u32, health: f32, rockets: f32 },
-    Teleport { bot: u32, pos: Vec3 },
-    Goto { bot: u32, pos: Vec3 },
-    Rj { bot: u32, link: u32 },
-    /// Fly a non-RJ link (e.g. a planted speed/curl jump) via the normal steer/bhop path. Reports a
-    /// `fly_result` with the takeoff speed and landing measurement.
-    Fly { bot: u32, link: u32 },
-    Hold { bot: u32 },
-    Stop { bot: u32 },
-    /// Run the real DM3 item-goal stack from a fixed Ring-side anchor to red armor and emit a hard
-    /// pass/fail event with movement telemetry. This is not coordinate `goto` puppet control.
-    RaTrial { bot: u32, start: RaTrialStart, max_secs: f32 },
-    Set { name: String, value: String },
-    Get { name: String },
-    Cmd { raw: String },
-    /// Inspect the navmesh cell nearest a world point: its origin and every link in/out, by kind.
-    Cell { pos: Vec3 },
-    /// Dump a bot's current A* route: each leg's index, kind, source and target.
-    Route { bot: u32 },
-    /// Dump the latest committed speed-jump leg's compact per-frame telemetry.
-    SjTrace { bot: u32 },
-    /// Dump this bot's currently active failed-link penalties.
-    Penalties { bot: u32 },
-    /// List every generated curl link (a SpeedJump with `curl_gain > 0`): index, from, takeoff, target,
-    /// v_req, gain — for verifying which gaps the build's curl certifier covered.
-    Curls,
-    /// Probe the build-time curl certifier from `takeoff` along `psi0`° with the speed `runway` delivers,
-    /// onto `tgt`: reports predicted takeoff speed, whether the envelope certifies, and per-gain landings.
-    Probe { takeoff: Vec3, tgt: Vec3, psi0: f32, runway: f32 },
-    /// Search (offline pmove sim, live BSP) for a speed-curl jump from a source to a target world
-    /// point — the M2 curl-jump solver, validated live. Returns the best (v0, launch heading, gain).
-    Curl { src: Vec3, tgt: Vec3 },
-    /// Hand-plant a `SpeedJump` link (harness bring-up): a self-contained speed jump from the cell
-    /// nearest `from` (the run-up start), taking off at `takeoff` (the lip), to the cell nearest `tgt`,
-    /// requiring `v_req` ups at the lip. Lets us fly the takeoff regime before the generator emits it.
-    PlanLink { from: Vec3, takeoff: Vec3, tgt: Vec3, v_req: f32 },
-    /// Hand-plant a standable cell at a gap-analysis coordinate, snapped onto the BSP floor and
-    /// joined to nearby Walk/Step neighbors in the live graph.
-    PlanCell { pos: Vec3 },
-    /// Hand-plant a `RocketJump` link (harness bring-up): certify a real two-phase RJ arc from the
-    /// cell nearest `from` onto a landing cell near `tgt` with the generator's physics but without
-    /// its range caps, and insert it into the live graph — works even when the graph was built with
-    /// `rtx_bot_rocketjump 0` (zero generated RJ links). `rj <bot> <link>` then flies it.
-    PlanRj { from: Vec3, tgt: Vec3 },
-    /// Hand-plant a `RocketJump` link with caller-supplied fire params and NO offline certification
-    /// — for lift-assisted jumps the static solver can't model (a rising plat's launch velocity
-    /// exists only at runtime). The runtime flies exactly these params and the rj telemetry reports
-    /// the real outcome: certification by live trial.
-    PlanRjRaw { from: Vec3, tgt: Vec3, pitch: f32, yaw: f32, delay: f32, airtime: f32 },
-    /// Hard-disable one link until the navmesh is rebuilt, without renumbering any link IDs — a
-    /// tombstone every router skips (a cost surcharge alone still gets routed; measured).
-    Unlink { link: u32 },
-}
-
-/// Split the first whitespace-delimited token off `s`, returning `(token, rest)` with `rest` trimmed
-/// of leading whitespace. `("", "")` for an all-whitespace input.
-fn split_first(s: &str) -> (&str, &str) {
-    let s = s.trim_start();
-    match s.find(char::is_whitespace) {
-        Some(i) => (&s[..i], s[i..].trim_start()),
-        None => (s, ""),
-    }
-}
-
-fn parse_u32(tok: Option<&str>, what: &str) -> Result<u32, String> {
-    tok.ok_or_else(|| format!("missing {what}"))?
-        .parse::<u32>()
-        .map_err(|_| format!("bad {what}"))
-}
-
-fn parse_f32(tok: Option<&str>, what: &str) -> Result<f32, String> {
-    tok.ok_or_else(|| format!("missing {what}"))?
-        .parse::<f32>()
-        .map_err(|_| format!("bad {what}"))
-}
-
-fn parse_bot_vec3(rest: &str) -> Result<(u32, Vec3), String> {
-    let mut t = rest.split_whitespace();
-    let bot = parse_u32(t.next(), "bot")?;
-    let x = parse_f32(t.next(), "x")?;
-    let y = parse_f32(t.next(), "y")?;
-    let z = parse_f32(t.next(), "z")?;
-    Ok((bot, Vec3::new(x, y, z)))
-}
-
-/// Parse one inbound line into `(id, command)`. Pure — no game state — so it unit-tests standalone.
-fn parse_line(line: &str) -> Result<(i64, ControlCmd), String> {
-    let (id_tok, r1) = split_first(line.trim());
-    if id_tok.is_empty() {
-        return Err("empty line".into());
-    }
-    let id: i64 = id_tok.parse().map_err(|_| format!("bad id '{id_tok}'"))?;
-    let (verb, rest) = split_first(r1);
-    let cmd = match verb {
-        "status" => ControlCmd::Status,
-        "links" => ControlCmd::Links,
-        "prep" => {
-            let mut t = rest.split_whitespace();
-            let bot = parse_u32(t.next(), "bot")?;
-            let health = t.next().map(|s| s.parse::<f32>()).transpose().map_err(|_| "bad health")?.unwrap_or(100.0);
-            let rockets = t.next().map(|s| s.parse::<f32>()).transpose().map_err(|_| "bad rockets")?.unwrap_or(10.0);
-            ControlCmd::Prep { bot, health, rockets }
-        }
-        "teleport" => {
-            let (bot, pos) = parse_bot_vec3(rest)?;
-            ControlCmd::Teleport { bot, pos }
-        }
-        "goto" => {
-            let (bot, pos) = parse_bot_vec3(rest)?;
-            ControlCmd::Goto { bot, pos }
-        }
-        "rj" => {
-            let mut t = rest.split_whitespace();
-            let bot = parse_u32(t.next(), "bot")?;
-            let link = parse_u32(t.next(), "link")?;
-            ControlCmd::Rj { bot, link }
-        }
-        "fly" => {
-            let mut t = rest.split_whitespace();
-            let bot = parse_u32(t.next(), "bot")?;
-            let link = parse_u32(t.next(), "link")?;
-            ControlCmd::Fly { bot, link }
-        }
-        "hold" => ControlCmd::Hold { bot: parse_u32(rest.split_whitespace().next(), "bot")? },
-        "stop" => ControlCmd::Stop { bot: parse_u32(rest.split_whitespace().next(), "bot")? },
-        "ra_trial" => {
-            let mut t = rest.split_whitespace();
-            let bot = parse_u32(t.next(), "bot")?;
-            let second = t.next();
-            let (start, max_tok) = match second {
-                None => (RaTrialStart::Ring, None),
-                Some("local") => (RaTrialStart::Local, t.next()),
-                Some("ra_spawn") => (RaTrialStart::RaSpawn, t.next()),
-                Some("ring") => (RaTrialStart::Ring, t.next()),
-                Some("sng_mega_w") => (RaTrialStart::SngMegaW, t.next()),
-                Some("sng_mega_s") => (RaTrialStart::SngMegaS, t.next()),
-                Some(secs) => (RaTrialStart::Ring, Some(secs)),
-            };
-            let max_secs = max_tok
-                .map(|s| s.parse::<f32>())
-                .transpose()
-                .map_err(|_| "bad max_secs")?
-                .unwrap_or_else(|| start.default_secs());
-            if !max_secs.is_finite() || !(1.0..=30.0).contains(&max_secs) {
-                return Err("max_secs must be finite and in [1,30]".into());
-            }
-            ControlCmd::RaTrial { bot, start, max_secs }
-        }
-        "set" => {
-            let (name, value) = split_first(rest);
-            if name.is_empty() {
-                return Err("set: missing cvar".into());
-            }
-            ControlCmd::Set { name: name.to_string(), value: value.to_string() }
-        }
-        "get" => {
-            let (name, _) = split_first(rest);
-            if name.is_empty() {
-                return Err("get: missing cvar".into());
-            }
-            ControlCmd::Get { name: name.to_string() }
-        }
-        "cmd" => {
-            if rest.is_empty() {
-                return Err("cmd: missing command".into());
-            }
-            ControlCmd::Cmd { raw: rest.to_string() }
-        }
-        "cell" => {
-            let mut t = rest.split_whitespace();
-            let x = parse_f32(t.next(), "x")?;
-            let y = parse_f32(t.next(), "y")?;
-            let z = parse_f32(t.next(), "z")?;
-            ControlCmd::Cell { pos: Vec3::new(x, y, z) }
-        }
-        "route" => ControlCmd::Route { bot: parse_u32(rest.split_whitespace().next(), "bot")? },
-        "sjtrace" => ControlCmd::SjTrace { bot: parse_u32(rest.split_whitespace().next(), "bot")? },
-        "penalties" => ControlCmd::Penalties { bot: parse_u32(rest.split_whitespace().next(), "bot")? },
-        "curls" => ControlCmd::Curls,
-        "probe" => {
-            let mut t = rest.split_whitespace();
-            let takeoff = Vec3::new(parse_f32(t.next(), "ox")?, parse_f32(t.next(), "oy")?, parse_f32(t.next(), "oz")?);
-            let tgt = Vec3::new(parse_f32(t.next(), "tx")?, parse_f32(t.next(), "ty")?, parse_f32(t.next(), "tz")?);
-            let psi0 = parse_f32(t.next(), "psi0")?;
-            let runway = parse_f32(t.next(), "runway")?;
-            ControlCmd::Probe { takeoff, tgt, psi0, runway }
-        }
-        "curl" => {
-            let mut t = rest.split_whitespace();
-            let src = Vec3::new(parse_f32(t.next(), "sx")?, parse_f32(t.next(), "sy")?, parse_f32(t.next(), "sz")?);
-            let tgt = Vec3::new(parse_f32(t.next(), "tx")?, parse_f32(t.next(), "ty")?, parse_f32(t.next(), "tz")?);
-            ControlCmd::Curl { src, tgt }
-        }
-        "planlink" => {
-            let mut t = rest.split_whitespace();
-            let from = Vec3::new(parse_f32(t.next(), "fx")?, parse_f32(t.next(), "fy")?, parse_f32(t.next(), "fz")?);
-            let takeoff = Vec3::new(parse_f32(t.next(), "ox")?, parse_f32(t.next(), "oy")?, parse_f32(t.next(), "oz")?);
-            let tgt = Vec3::new(parse_f32(t.next(), "tx")?, parse_f32(t.next(), "ty")?, parse_f32(t.next(), "tz")?);
-            let v_req = parse_f32(t.next(), "v_req")?;
-            ControlCmd::PlanLink { from, takeoff, tgt, v_req }
-        }
-        "plancell" => {
-            let mut t = rest.split_whitespace();
-            let x = parse_f32(t.next(), "x")?;
-            let y = parse_f32(t.next(), "y")?;
-            let z = parse_f32(t.next(), "z")?;
-            ControlCmd::PlanCell { pos: Vec3::new(x, y, z) }
-        }
-        "planrj" => {
-            let mut t = rest.split_whitespace();
-            let from = Vec3::new(parse_f32(t.next(), "fx")?, parse_f32(t.next(), "fy")?, parse_f32(t.next(), "fz")?);
-            let tgt = Vec3::new(parse_f32(t.next(), "tx")?, parse_f32(t.next(), "ty")?, parse_f32(t.next(), "tz")?);
-            ControlCmd::PlanRj { from, tgt }
-        }
-        "planrjraw" => {
-            let mut t = rest.split_whitespace();
-            let from = Vec3::new(parse_f32(t.next(), "fx")?, parse_f32(t.next(), "fy")?, parse_f32(t.next(), "fz")?);
-            let tgt = Vec3::new(parse_f32(t.next(), "tx")?, parse_f32(t.next(), "ty")?, parse_f32(t.next(), "tz")?);
-            let pitch = parse_f32(t.next(), "pitch")?;
-            let yaw = parse_f32(t.next(), "yaw")?;
-            let delay = parse_f32(t.next(), "delay")?;
-            let airtime = match t.next() {
-                Some(tok) => tok.parse::<f32>().map_err(|_| "bad airtime".to_string())?,
-                None => 1.5,
-            };
-            if !(0.0..=2.0).contains(&delay) {
-                return Err("delay out of range (0..=2 s)".into());
-            }
-            if !(0.1..=5.0).contains(&airtime) {
-                return Err("airtime out of range (0.1..=5 s)".into());
-            }
-            ControlCmd::PlanRjRaw { from, tgt, pitch, yaw, delay, airtime }
-        }
-        "unlink" => ControlCmd::Unlink { link: parse_u32(rest.split_whitespace().next(), "link")? },
-        other => return Err(format!("unknown verb '{other}'")),
-    };
-    Ok((id, cmd))
+/// Queue one async lifecycle [`Event`] to every connected client.
+fn send_event(game: &GameState, ev: Event) {
+    send_to(game, Target::All, Msg::Event(ev));
 }
 
 /// Whether a cvar name is safe to splice into a `set` localcmd (guards the console tokenizer): a
@@ -512,89 +275,68 @@ fn valid_cvar_name(name: &str) -> bool {
 
 // --- command execution (engine thread, &mut GameState) ---
 
-fn exec_line(game: &mut GameState, line: &str) {
-    match parse_line(line) {
-        Ok((id, cmd)) => exec_cmd(game, id, cmd),
-        Err(e) => reply_err(game, 0, &e),
-    }
+/// A wire position (`[x, y, z]`) as a `glam::Vec3`.
+fn v3(a: proto::Vec3) -> Vec3 {
+    Vec3::from_array(a)
 }
 
-fn exec_cmd(game: &mut GameState, id: i64, cmd: ControlCmd) {
-    let result: Result<String, String> = match cmd {
-        ControlCmd::Status => Ok(status_json(game)),
-        ControlCmd::Links => links_json(game),
-        ControlCmd::Prep { bot, health, rockets } => do_prep(game, bot, health, rockets),
-        ControlCmd::Teleport { bot, pos } => do_teleport(game, bot, pos),
-        ControlCmd::Goto { bot, pos } => do_goto(game, bot, pos),
-        ControlCmd::Rj { bot, link } => do_rj(game, bot, link),
-        ControlCmd::Fly { bot, link } => do_fly(game, bot, link),
-        ControlCmd::Hold { bot } => do_order(game, bot, ControlOrder::Hold),
-        ControlCmd::Stop { bot } => do_stop(game, bot),
-        ControlCmd::RaTrial { bot, start, max_secs } => do_ra_trial(game, id, bot, start, max_secs),
-        ControlCmd::Set { name, value } => do_set(game, &name, &value),
-        ControlCmd::Get { name } => do_get(game, &name),
-        ControlCmd::Cmd { raw } => {
-            if any_item_trial_active(game) {
-                Err("item trial busy; wait for ra_trial_result or timeout".into())
-            } else {
-                game.host.localcmd(&raw);
-                Ok("{\"queued\":true}".to_string())
-            }
+/// A `glam::Vec3` as a wire position (`[x, y, z]`).
+fn a3(v: Vec3) -> proto::Vec3 {
+    v.to_array()
+}
+
+/// Execute one decoded request on the engine thread and send its typed reply back to connection `conn`.
+fn exec_request(game: &mut GameState, conn: u64, req: Request) {
+    let Request { id, cmd } = req;
+    let result: Result<Resp, String> = match cmd {
+        Cmd::Status => Ok(Resp::Status(Box::new(status_resp(game)))),
+        Cmd::MatchStart => {
+            crate::mode::team::start_match(game);
+            Ok(Resp::Queued)
         }
-        ControlCmd::Cell { pos } => cell_json(game, pos),
-        ControlCmd::Route { bot } => route_json(game, bot),
-        ControlCmd::SjTrace { bot } => sjtrace_json(game, bot),
-        ControlCmd::Penalties { bot } => penalties_json(game, bot),
-        ControlCmd::Curls => curls_json(game),
-        ControlCmd::Probe { takeoff, tgt, psi0, runway } => probe_json(game, takeoff, tgt, psi0, runway),
-        ControlCmd::Curl { src, tgt } => curl_json(game, src, tgt),
-        ControlCmd::PlanLink { from, takeoff, tgt, v_req } => {
-            match ensure_global_item_trial_idle(game) {
-                Ok(()) => plant_link_json(game, from, takeoff, tgt, v_req),
-                Err(e) => Err(e),
-            }
+        Cmd::Links => links_resp(game).map(Resp::Links),
+        Cmd::Items => items_resp(game).map(Resp::Items),
+        Cmd::Prep { bot, health, rockets } => do_prep(game, bot, health, rockets),
+        Cmd::Teleport { bot, pos } => do_teleport(game, bot, v3(pos)),
+        Cmd::Goto { bot, pos } => do_goto(game, bot, v3(pos)),
+        Cmd::Rj { bot, link } => do_rj(game, bot, link),
+        Cmd::Fly { bot, link } => do_fly(game, bot, link),
+        Cmd::Hold { bot } => do_order(game, bot, ControlOrder::Hold),
+        Cmd::Stop { bot } => do_stop(game, bot),
+        Cmd::Set { name, value } => do_set(game, &name, &value),
+        Cmd::Get { name } => do_get(game, &name),
+        Cmd::RunCmd { raw } => {
+            game.host.localcmd(&raw);
+            Ok(Resp::Queued)
         }
-        ControlCmd::PlanCell { pos } => {
-            match ensure_global_item_trial_idle(game) {
-                Ok(()) => plant_cell_json(game, pos),
-                Err(e) => Err(e),
-            }
-        }
-        ControlCmd::PlanRj { from, tgt } => {
-            match ensure_global_item_trial_idle(game) {
-                Ok(()) => plant_rj_json(game, from, tgt),
-                Err(e) => Err(e),
-            }
-        }
-        ControlCmd::PlanRjRaw { from, tgt, pitch, yaw, delay, airtime } => {
-            match ensure_global_item_trial_idle(game) {
-                Ok(()) => plant_rj_raw_json(game, from, tgt, pitch, yaw, delay, airtime),
-                Err(e) => Err(e),
-            }
-        }
-        ControlCmd::Unlink { link } => {
-            match ensure_global_item_trial_idle(game) {
-                Ok(()) => unlink_json(game, link),
-                Err(e) => Err(e),
-            }
-        }
+        Cmd::Cell { pos } => cell_resp(game, v3(pos)).map(Resp::Cell),
+        Cmd::Route { bot } => route_resp(game, bot).map(Resp::Route),
+        Cmd::Audit { bot, lines } => audit_resp(game, bot, lines as usize).map(Resp::Audit),
+        Cmd::Curls => curls_resp(game).map(Resp::Curls),
+        Cmd::Bsp => bsp_resp(game).map(|b| Resp::Bsp(Box::new(b))),
+        Cmd::Probe {
+            takeoff,
+            tgt,
+            psi0,
+            runway,
+        } => probe_resp(game, v3(takeoff), v3(tgt), psi0, runway).map(Resp::Probe),
+        Cmd::Curl { src, tgt } => curl_resp(game, v3(src), v3(tgt)).map(Resp::Curl),
+        Cmd::PlanLink {
+            from,
+            takeoff,
+            tgt,
+            v_req,
+        } => plant_link_resp(game, v3(from), v3(takeoff), v3(tgt), v_req).map(Resp::PlanLink),
     };
-    match result {
-        Ok(data) => reply_ok(game, id, &data),
-        Err(e) => reply_err(game, id, &e),
-    }
+    reply(game, conn, id, result);
 }
 
-fn reply_ok(game: &GameState, id: i64, data: &str) {
-    send(game, format!("{{\"id\":{id},\"ok\":true,\"data\":{data}}}"));
+/// Send the typed reply for request `id` back to the connection that issued it.
+fn reply(game: &GameState, conn: u64, id: i64, result: Result<Resp, String>) {
+    send_to(game, Target::One(conn), Msg::Reply { id, result });
 }
 
-fn reply_err(game: &GameState, id: i64, msg: &str) {
-    send(game, format!("{{\"id\":{id},\"ok\":false,\"error\":{}}}", jstr(msg)));
-}
-
-/// Validate that `bot` names an allocated rtx bot client slot. The body may be dead: deterministic
-/// trials use the production fresh-body reset to revive it for unattended retries.
+/// Validate that `bot` names a live rtx bot's client slot.
 fn valid_bot(game: &GameState, bot: u32) -> Result<EntId, String> {
     if bot == 0 || bot as usize >= MAX_EDICTS {
         return Err(format!("bad bot {bot}"));
@@ -608,9 +350,8 @@ fn valid_bot(game: &GameState, bot: u32) -> Result<EntId, String> {
 
 /// Make a bot fit to rocket-jump: full-ish health, the RL selected with rockets, no quad, off cooldown.
 /// Writing the entvars directly is the established way to set a loadout (mirrors the mode spawn kits).
-fn do_prep(game: &mut GameState, bot: u32, health: f32, rockets: f32) -> Result<String, String> {
+fn do_prep(game: &mut GameState, bot: u32, health: f32, rockets: f32) -> Result<Resp, String> {
     let e = valid_bot(game, bot)?;
-    ensure_item_trial_idle(game, e)?;
     if !game.entities[e].is_alive() {
         return Err(format!("bot {bot} not alive"));
     }
@@ -624,18 +365,13 @@ fn do_prep(game: &mut GameState, bot: u32, health: f32, rockets: f32) -> Result<
     game.entities[e].combat.super_damage_finished = 0.0; // clear quad — a self-rocket under quad is lethal
     game.entities[e].combat.attack_finished = 0.0; // off cooldown, so the fire isn't swallowed
     game.w_set_current_ammo(e); // sync currentammo/ammo-type bits to the RL
-    Ok(format!(
-        "{{\"bot\":{bot},\"health\":{},\"rockets\":{}}}",
-        jnum(health),
-        jnum(rockets)
-    ))
+    Ok(Resp::Prep { bot, health, rockets })
 }
 
 /// Place a bot at `pos` (feet on the ground it names), zero its momentum, and reset all navigation
 /// commitments so nothing stale (a mid-flight route/jump) survives the jump. `+1z` avoids startsolid.
-fn do_teleport(game: &mut GameState, bot: u32, pos: Vec3) -> Result<String, String> {
+fn do_teleport(game: &mut GameState, bot: u32, pos: Vec3) -> Result<Resp, String> {
     let e = valid_bot(game, bot)?;
-    ensure_item_trial_idle(game, e)?;
     let now = game.time();
     let at = pos + Vec3::new(0.0, 0.0, 1.0);
     game.entities[e].v.velocity = Vec3::ZERO;
@@ -644,7 +380,10 @@ fn do_teleport(game: &mut GameState, bot: u32, pos: Vec3) -> Result<String, Stri
     // Park the bot after placing it — otherwise, with no order, it would roam autonomously and arrive
     // at a subsequent rocket jump with residual velocity, contaminating the standstill measurement.
     game.entities[e].bot.puppet.order = Some(ControlOrder::Hold);
-    Ok(format!("{{\"bot\":{bot},\"origin\":{}}}", jvec3(game.entities[e].v.origin)))
+    Ok(Resp::Teleport {
+        bot,
+        origin: a3(game.entities[e].v.origin),
+    })
 }
 
 /// Clear every route/traversal commitment and seed the watchdogs at `at` (so the 200u teleport
@@ -655,19 +394,17 @@ fn reset_nav_state(bot: &mut crate::bot::state::BotState, at: Vec3, now: f32) {
     bot.route_pos = 0;
     bot.rj = RjState::default();
     bot.hook = HookState::default();
-    bot.drop_speed_jump();
+    bot.sj = None;
     bot.air = None;
     bot.bhop = Default::default();
     bot.watchdog.last_origin = at;
     bot.watchdog.stuck_origin = at;
     bot.watchdog.stuck_since = now;
     bot.repath_time = now;
-    bot.puppet.item_trial = None;
 }
 
-fn do_goto(game: &mut GameState, bot: u32, pos: Vec3) -> Result<String, String> {
+fn do_goto(game: &mut GameState, bot: u32, pos: Vec3) -> Result<Resp, String> {
     let e = valid_bot(game, bot)?;
-    ensure_item_trial_idle(game, e)?;
     let now = game.time();
     let b = &mut game.entities[e].bot;
     b.rj = RjState::default();
@@ -676,13 +413,13 @@ fn do_goto(game: &mut GameState, bot: u32, pos: Vec3) -> Result<String, String> 
     b.puppet.traj.clear();
     b.puppet.order = Some(ControlOrder::Goto { target: pos });
     b.puppet.best_dist = f32::INFINITY;
+    b.puppet.best_z = f32::NEG_INFINITY;
     b.puppet.best_since = now;
-    Ok(format!("{{\"bot\":{bot},\"target\":{}}}", jvec3(pos)))
+    Ok(Resp::Goto { bot, target: a3(pos) })
 }
 
-fn do_rj(game: &mut GameState, bot: u32, link: u32) -> Result<String, String> {
+fn do_rj(game: &mut GameState, bot: u32, link: u32) -> Result<Resp, String> {
     let e = valid_bot(game, bot)?;
-    ensure_item_trial_idle(game, e)?;
     let now = game.time();
     {
         let g = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
@@ -703,12 +440,11 @@ fn do_rj(game: &mut GameState, bot: u32, link: u32) -> Result<String, String> {
     b.repath_time = now;
     b.puppet.traj.clear(); // fresh flight trace
     b.puppet.order = Some(ControlOrder::RocketJump { link });
-    Ok(format!("{{\"bot\":{bot},\"link\":{link}}}"))
+    Ok(Resp::Rj { bot, link })
 }
 
-fn do_fly(game: &mut GameState, bot: u32, link: u32) -> Result<String, String> {
+fn do_fly(game: &mut GameState, bot: u32, link: u32) -> Result<Resp, String> {
     let e = valid_bot(game, bot)?;
-    ensure_item_trial_idle(game, e)?;
     let now = game.time();
     {
         let g = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
@@ -727,32 +463,33 @@ fn do_fly(game: &mut GameState, bot: u32, link: u32) -> Result<String, String> {
     b.puppet.fly_takeoff_speed = 0.0;
     b.puppet.best_since = now; // FlyLink stall clock (poll_fly gives up after FLY_TIMEOUT)
     b.puppet.order = Some(ControlOrder::FlyLink { link });
-    Ok(format!("{{\"bot\":{bot},\"link\":{link}}}"))
+    Ok(Resp::Fly { bot, link })
 }
 
-fn do_order(game: &mut GameState, bot: u32, order: ControlOrder) -> Result<String, String> {
+fn do_order(game: &mut GameState, bot: u32, order: ControlOrder) -> Result<Resp, String> {
     let e = valid_bot(game, bot)?;
-    ensure_item_trial_idle(game, e)?;
+    if order == ControlOrder::Hold {
+        let at = game.entities[e].v.origin;
+        let now = game.time();
+        game.entities[e].v.velocity = Vec3::ZERO;
+        reset_nav_state(&mut game.entities[e].bot, at, now);
+    }
     game.entities[e].bot.puppet.order = Some(order);
-    Ok(format!("{{\"bot\":{bot}}}"))
+    Ok(Resp::Ack { bot })
 }
 
-fn do_stop(game: &mut GameState, bot: u32) -> Result<String, String> {
+fn do_stop(game: &mut GameState, bot: u32) -> Result<Resp, String> {
     let e = valid_bot(game, bot)?;
-    ensure_item_trial_idle(game, e)?;
     let now = game.time();
     let b = &mut game.entities[e].bot;
     b.puppet.order = None;
     b.rj = RjState::default();
     b.route.clear();
     b.repath_time = now;
-    Ok(format!("{{\"bot\":{bot}}}"))
+    Ok(Resp::Ack { bot })
 }
 
-fn do_set(game: &mut GameState, name: &str, value: &str) -> Result<String, String> {
-    if any_item_trial_active(game) {
-        return Err("item trial busy; wait for ra_trial_result or timeout".into());
-    }
+fn do_set(game: &mut GameState, name: &str, value: &str) -> Result<Resp, String> {
     if !valid_cvar_name(name) {
         return Err(format!("bad cvar name '{name}'"));
     }
@@ -765,10 +502,13 @@ fn do_set(game: &mut GameState, name: &str, value: &str) -> Result<String, Strin
     } else {
         game.host.localcmd(&format!("set {name} \"{value}\""));
     }
-    Ok(format!("{{\"name\":{},\"value\":{}}}", jstr(name), jstr(value)))
+    Ok(Resp::Set {
+        name: name.to_string(),
+        value: value.to_string(),
+    })
 }
 
-fn do_get(game: &mut GameState, name: &str) -> Result<String, String> {
+fn do_get(game: &mut GameState, name: &str) -> Result<Resp, String> {
     if !valid_cvar_name(name) {
         return Err(format!("bad cvar name '{name}'"));
     }
@@ -776,125 +516,262 @@ fn do_get(game: &mut GameState, name: &str) -> Result<String, String> {
     let mut buf = [0u8; 128];
     let s = game.host.cvar_string(&cname, &mut buf).to_string();
     let f = game.host.cvar(&cname);
-    Ok(format!(
-        "{{\"name\":{},\"string\":{},\"value\":{}}}",
-        jstr(name),
-        jstr(&s),
-        jnum(f)
-    ))
+    Ok(Resp::Get {
+        name: name.to_string(),
+        string: s,
+        value: f,
+    })
 }
 
 // --- status / links snapshots ---
 
-fn status_json(game: &GameState) -> String {
-    let now = game.time();
+fn match_phase_name(phase: crate::mode::MatchPhase) -> &'static str {
+    match phase {
+        crate::mode::MatchPhase::Warmup => "warmup",
+        crate::mode::MatchPhase::Countdown { .. } => "countdown",
+        crate::mode::MatchPhase::Live => "live",
+        crate::mode::MatchPhase::Ended { .. } => "ended",
+    }
+}
+
+/// A compact reference to a live entity carried by strategy telemetry. Item goals need the
+/// classname + location; enemy/teammate references also benefit from the display name. Keeping the
+/// reference nullable makes the `0` sentinel explicit to MCP clients instead of exposing a fake
+/// world entity.
+fn ent_ref(game: &GameState, id: u32) -> Option<proto::EntRef> {
+    if id == 0 {
+        return None;
+    }
+    let ent = game.entities.get(id as usize).filter(|e| e.in_use)?;
+    Some(proto::EntRef {
+        ent: id,
+        name: game.netname_of(EntId(id)),
+        classname: ent.classname().unwrap_or("").to_string(),
+        origin: a3(ent.v.origin),
+        solid: format!("{:?}", ent.v.solid),
+    })
+}
+
+fn route_head(game: &GameState, e: EntId) -> proto::RouteHead {
+    let b = &game.entities[e].bot;
+    let pos = b.route_pos as u32;
+    let len = b.route.len() as u32;
+    let next = game.nav.graph.as_ref().and_then(|g| {
+        b.route.get(b.route_pos).map(|&link| proto::RouteNext {
+            link,
+            kind: kind_name(g.link_kind(link)).to_string(),
+            target: a3(g.cell_origin(g.link_target(link))),
+        })
+    });
+    proto::RouteHead { pos, len, next }
+}
+
+fn match_info(game: &GameState) -> proto::MatchInfo {
+    let cfg = game.team_match.config;
+    let mut scores = Vec::with_capacity(cfg.teams);
+    for team in 1..=cfg.teams {
+        let score = game
+            .entities
+            .iter()
+            .filter(|e| e.is_player() && e.in_use && e.mode_p.team as usize == team)
+            .map(|e| e.v.frags as i32)
+            .sum::<i32>();
+        scores.push(score);
+    }
+    let roster = game
+        .team_match
+        .roster
+        .iter()
+        .map(|(name, team)| proto::RosterEntry {
+            name: name.clone(),
+            team: *team as u32,
+        })
+        .collect();
+    proto::MatchInfo {
+        mode: game.mode.name().to_string(),
+        format: crate::mode::team::format_label(cfg),
+        phase: match_phase_name(game.team_match.phase).to_string(),
+        teams: cfg.teams as u32,
+        size: cfg.size as u32,
+        teamplay: game.level.teamplay as i32,
+        timelimit: game.level.timelimit as f32,
+        fraglimit: game.level.fraglimit as f32,
+        live_until: game.team_match.live_until,
+        scores,
+        roster,
+    }
+}
+
+fn status_resp(game: &GameState) -> proto::StatusResp {
     let (navmesh, cells, links, rj_links) = match game.nav.graph.as_ref() {
-        Some(g) => ("ready", g.cells.len(), g.links.len(), g.summary().rocket_jump),
+        Some(g) => (
+            "ready",
+            g.cells.len() as u32,
+            g.links.len() as u32,
+            g.summary().rocket_jump as u32,
+        ),
         None if game.nav.pending.is_some() => ("building", 0, 0, 0),
         None => ("none", 0, 0, 0),
     };
     let maxclients = game.host.cvar(c"maxclients").max(0.0) as u32;
-    let mut bots = String::new();
+    let mut bots = Vec::new();
     for i in 1..=maxclients {
         let ent = &game.entities[EntId(i)];
         if !ent.bot.is_bot || !ent.in_use {
             continue;
         }
-        if !bots.is_empty() {
-            bots.push(',');
-        }
-        let quad = ent.combat.super_damage_finished > now;
-        let quad_pickup_t = if quad {
-            jnum(ent.combat.super_damage_finished - crate::items::POWERUP_TIME)
-        } else {
-            "null".to_string()
-        };
-        let name = game.netname_of(EntId(i));
-        let ra_trial = match ent.bot.puppet.item_trial.as_ref() {
-            Some(trial) => format!(
-                "{{\"request_id\":{},\"scenario\":{},\"started\":{},\"elapsed\":{},\"deadline\":{},\"max_secs\":{}}}",
-                trial.request_id,
-                jstr(trial.scenario),
-                jnum(trial.started),
-                jnum(now - trial.started),
-                jnum(trial.deadline),
-                jnum(trial.deadline - trial.started),
-            ),
-            None => "null".to_string(),
-        };
-        bots.push_str(&format!(
-            "{{\"ent\":{i},\"client\":{},\"name\":{},\"origin\":{},\"health\":{},\"quad\":{quad},\"quad_pickup_t\":{quad_pickup_t},\"on_ground\":{},\"alive\":{},\"order\":{},\"rj_phase\":{},\"speed\":{},\"bhop\":{},\"bhop_peak\":{},\"ra_trial\":{ra_trial}}}",
-            ent.bot.client,
-            jstr(&name),
-            jvec3(ent.v.origin),
-            jnum(ent.v.health),
-            ent.v.flags.has(Flags::ONGROUND),
-            ent.is_alive(),
-            jstr(order_name(ent.bot.puppet.order)),
-            jstr(&format!("{:?}", ent.bot.rj.phase)),
-            jnum(ent.v.velocity.xy().length()),
-            jstr(&format!("{:?}", ent.bot.bhop.phase)),
-            jnum(ent.bot.bhop.peak),
-        ));
+        let b = &ent.bot;
+        bots.push(proto::BotStatus {
+            ent: i,
+            client: b.client,
+            name: game.netname_of(EntId(i)),
+            team: ent.mode_p.team as i32,
+            team_name: game.team_of(EntId(i)),
+            frags: ent.v.frags as i32,
+            origin: a3(ent.v.origin),
+            health: ent.v.health,
+            armor: ent.v.armorvalue,
+            armor_type: ent.v.armortype,
+            weapon: format!("{:?}", ent.v.weapon),
+            items: format!("{:?}", Items::from_f32(ent.v.items)),
+            ammo: proto::Ammo {
+                shells: ent.v.ammo_shells as i32,
+                nails: ent.v.ammo_nails as i32,
+                rockets: ent.v.ammo_rockets as i32,
+                cells: ent.v.ammo_cells as i32,
+            },
+            on_ground: ent.v.flags.has(Flags::ONGROUND),
+            alive: ent.is_alive(),
+            order: order_name(b.puppet.order).to_string(),
+            posture: format!("{:?}", b.posture),
+            known_enemy: ent_ref(game, b.percept.known_enemy),
+            goal: proto::BotGoal {
+                item: ent_ref(game, b.goal.item),
+                commit: format!("{:?}", b.goal.commit),
+                since: b.goal.since,
+                next_item: ent_ref(game, b.goal.next_item),
+                hold_item: ent_ref(game, b.goal.hold_item),
+                hold_for: ent_ref(game, b.goal.hold_for),
+            },
+            route: route_head(game, EntId(i)),
+            rj_phase: format!("{:?}", b.rj.phase),
+            speed: ent.v.velocity.xy().length(),
+            bhop: format!("{:?}", b.bhop.phase),
+            bhop_peak: b.bhop.peak,
+        });
     }
-    // Human clients (movement-lab live monitoring). Separate array so every
-    // existing consumer that iterates `bots` keeps its bots-only contract.
-    let mut players = String::new();
-    for i in 1..=maxclients {
-        let ent = &game.entities[EntId(i)];
-        if ent.bot.is_bot || !ent.in_use || !ent.is_player() {
-            continue;
-        }
-        if !players.is_empty() {
-            players.push(',');
-        }
-        players.push_str(&format!(
-            "{{\"ent\":{i},\"name\":{},\"origin\":{},\"health\":{},\"on_ground\":{},\"alive\":{},\"speed\":{}}}",
-            jstr(&game.netname_of(EntId(i))),
-            jvec3(ent.v.origin),
-            jnum(ent.v.health),
-            ent.v.flags.has(Flags::ONGROUND),
-            ent.is_alive(),
-            jnum(ent.v.velocity.xy().length()),
-        ));
+    proto::StatusResp {
+        map: game.level.mapname.clone(),
+        time: game.time(),
+        navmesh: navmesh.to_string(),
+        cells,
+        links,
+        rj_links,
+        match_: match_info(game),
+        oracle: oracle_info(game),
+        bots,
     }
-    format!(
-        "{{\"map\":{},\"time\":{},\"navmesh\":{},\"cells\":{cells},\"links\":{links},\"rj_links\":{rj_links},\"bots\":[{bots}],\"players\":[{players}]}}",
-        jstr(&game.level.mapname),
-        jnum(now),
-        jstr(navmesh),
-    )
 }
 
-fn links_json(game: &GameState) -> Result<String, String> {
+/// Map an oracle [`crate::bot::oracle::EvalSummary`] to the wire counts (identical fields).
+fn eval_counts(s: crate::bot::oracle::EvalSummary) -> proto::EvalCounts {
+    proto::EvalCounts {
+        treated: s.treated,
+        treated_success: s.treated_success,
+        controls: s.controls,
+        control_success: s.control_success,
+        applied: s.applied,
+        invalidated: s.invalidated,
+        pending: s.pending,
+    }
+}
+
+fn oracle_info(game: &GameState) -> proto::OracleInfo {
+    let mut by_kind = Vec::new();
+    let mut ep_by_kind = Vec::new();
+    for kind in crate::bot::oracle::NUGGET_KINDS {
+        let label = format!("{:?}", kind);
+        by_kind.push((label.clone(), eval_counts(game.oracle.eval_summary_for(kind))));
+        ep_by_kind.push((label, eval_counts(game.oracle.eval_episode_summary_for(kind))));
+    }
+    let eval = proto::Eval {
+        counts: eval_counts(game.oracle.eval_summary()),
+        by_kind,
+        episodes: proto::EpisodeEval {
+            counts: eval_counts(game.oracle.eval_episode_summary()),
+            by_kind: ep_by_kind,
+        },
+    };
+    let comms = game.oracle.communication_summary();
+    let communication = proto::Communication {
+        proposed: comms.proposed,
+        communicated: comms.communicated,
+        refreshed: comms.refreshed,
+        suppressed: comms.suppressed,
+        superseded: comms.superseded,
+        arm_clears: comms.arm_clears,
+    };
+    let plan = game.oracle.last_plan().map(|plan| proto::Plan {
+        generation: plan.generation as u64,
+        at: plan.at,
+        teams: plan
+            .teams
+            .iter()
+            .map(|team| proto::PlanTeam {
+                team: team.team as u32,
+                mode: format!("{:?}", team.mode),
+                control: format!("{:?}", team.control),
+                nuggets: team
+                    .nuggets
+                    .iter()
+                    .map(|n| proto::Nugget {
+                        recipient: n.recipient as i32,
+                        kind: format!("{:?}", n.kind),
+                        target_cell: n.target_cell as u32,
+                        subject: n.subject as i32,
+                        confidence: n.confidence,
+                        decision_at: n.decision_at,
+                        evidence_at: n.evidence_at,
+                        expires_at: n.expires_at,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    });
+    proto::OracleInfo {
+        running: game.oracle.running(),
+        epoch: game.oracle.epoch() as u64,
+        last_output: game.oracle.last_output(),
+        plan,
+        communication,
+        eval,
+    }
+}
+
+fn links_resp(game: &GameState) -> Result<Vec<proto::RjLink>, String> {
     let g = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
-    let mut items = String::new();
+    let mut links = Vec::new();
     for li in 0..g.links.len() as u32 {
         if g.link_kind(li) != LinkKind::RocketJump {
             continue;
         }
         let Some(tr) = g.rocket_jump_of_link(li) else { continue };
-        let src = g.cell_origin(g.link_source(li));
-        let tgt = g.cell_origin(g.link_target(li));
-        if !items.is_empty() {
-            items.push(',');
-        }
-        items.push_str(&format!(
-            "{{\"link\":{li},\"src\":{},\"tgt\":{},\"fire_pitch\":{},\"fire_yaw\":{},\"fire_delay\":{},\"airtime\":{},\"self_damage\":{},\"v0\":{},\"blast\":{},\"pos_blast\":{},\"land\":{}}}",
-            jvec3(src),
-            jvec3(tgt),
-            jnum(tr.fire_angles.x),
-            jnum(tr.fire_angles.y),
-            jnum(tr.fire_delay),
-            jnum(tr.airtime),
-            jnum(tr.self_damage),
-            jvec3(tr.v0),
-            jvec3(tr.blast),
-            jvec3(tr.pos_blast),
-            jvec3(tr.land),
-        ));
+        links.push(proto::RjLink {
+            link: li,
+            src: a3(g.cell_origin(g.link_source(li))),
+            tgt: a3(g.cell_origin(g.link_target(li))),
+            fire_pitch: tr.fire_angles.x,
+            fire_yaw: tr.fire_angles.y,
+            fire_delay: tr.fire_delay,
+            airtime: tr.airtime,
+            self_damage: tr.self_damage,
+            v0: a3(tr.v0),
+            blast: a3(tr.blast),
+            pos_blast: a3(tr.pos_blast),
+            land: a3(tr.land),
+        });
     }
-    Ok(format!("{{\"links\":[{items}]}}"))
+    Ok(links)
 }
 
 /// Human-readable name for a link kind, for the `cell` inspector.
@@ -916,151 +793,126 @@ fn kind_name(k: LinkKind) -> &'static str {
 /// Inspect the navmesh cell nearest `pos`: its origin plus every link leaving and entering it (index,
 /// kind, other endpoint). The diagnostic for "why can't the bot reach here" — an unreachable ledge
 /// has no incoming jump/speed-jump link.
-fn cell_json(game: &GameState, pos: Vec3) -> Result<String, String> {
+fn cell_resp(game: &GameState, pos: Vec3) -> Result<proto::CellResp, String> {
     let g = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
     let cell = g.nearest(pos).ok_or("no navmesh cell near that point")?;
-    let mut out = String::new();
-    let mut inc = String::new();
+    let mut out = Vec::new();
+    let mut incoming = Vec::new();
     for li in 0..g.links.len() as u32 {
         if g.link_source(li) == cell {
-            let e = if out.is_empty() { "" } else { "," };
             // `cost` is the static travel time only. What a hazard link *really* costs the planner is
             // `hazard_hp` valued against the asking bot's strength, so report the health and let the
             // caller price it — reporting seconds here would mean picking a bot to price it for.
-            out.push_str(&format!(
-                "{e}{{\"link\":{li},\"kind\":{},\"to\":{},\"cost\":{:.2},\"tgt_hazard\":{},\"hazard_hp\":{:.2},\"water_extra\":{:.2}}}",
-                jstr(kind_name(g.link_kind(li))),
-                jvec3(g.cell_origin(g.link_target(li))),
-                g.link_cost(li),
-                jstr(&format!("{:?}", g.cell_hazard(g.link_target(li)))),
-                g.link_hazard_hp(li),
-                g.link_water_extra(li),
-            ));
+            out.push(proto::CellLinkOut {
+                link: li,
+                kind: kind_name(g.link_kind(li)).to_string(),
+                to: a3(g.cell_origin(g.link_target(li))),
+                cost: g.link_cost(li),
+                tgt_hazard: format!("{:?}", g.cell_hazard(g.link_target(li))),
+                hazard_hp: g.link_hazard_hp(li),
+                water_extra: g.link_water_extra(li),
+            });
         }
         if g.link_target(li) == cell {
-            let e = if inc.is_empty() { "" } else { "," };
-            inc.push_str(&format!(
-                "{e}{{\"link\":{li},\"kind\":{},\"from\":{}}}",
-                jstr(kind_name(g.link_kind(li))),
-                jvec3(g.cell_origin(g.link_source(li)))
-            ));
+            incoming.push(proto::CellLinkIn {
+                link: li,
+                kind: kind_name(g.link_kind(li)).to_string(),
+                from: a3(g.cell_origin(g.link_source(li))),
+            });
         }
     }
-    Ok(format!(
-        "{{\"cell\":{},\"origin\":{},\"hazard\":{},\"out\":[{out}],\"in\":[{inc}]}}",
+    Ok(proto::CellResp {
         cell,
-        jvec3(g.cell_origin(cell)),
-        jstr(&format!("{:?}", g.cell_hazard(cell)))
-    ))
+        origin: a3(g.cell_origin(cell)),
+        hazard: format!("{:?}", g.cell_hazard(cell)),
+        out,
+        incoming,
+    })
+}
+
+/// List the map's bot-goal items (armor, health, weapons, ammo, powerups), so a caller can find a
+/// pickup without spelunking the bsp entity lump. Each item reports its entity origin, whether it's
+/// currently on the floor to be taken (`available`), and the nearest navmesh cell — the standable
+/// point to `goto`, since the entity origin itself floats above the floor and isn't a nav cell.
+fn items_resp(game: &GameState) -> Result<Vec<proto::ItemInfo>, String> {
+    let g = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
+    let mut out = Vec::new();
+    for (id, ent) in game.entities.live() {
+        let Some(classname) = ent.classname() else {
+            continue;
+        };
+        if !is_goal_classname(classname) {
+            continue;
+        }
+        let nav = g.nearest(ent.v.origin).map(|cell| proto::NavCell {
+            cell,
+            origin: a3(g.cell_origin(cell)),
+        });
+        out.push(proto::ItemInfo {
+            ent: id.0,
+            classname: classname.to_string(),
+            origin: a3(ent.v.origin),
+            available: ent.v.solid == Solid::Trigger,
+            nav,
+        });
+    }
+    Ok(out)
 }
 
 /// Dump a bot's current route: `route_pos` and each leg (index, kind, source→target).
-fn route_json(game: &GameState, bot: u32) -> Result<String, String> {
+fn route_resp(game: &GameState, bot: u32) -> Result<proto::RouteResp, String> {
     let e = valid_bot(game, bot)?;
     let g = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
     let b = &game.entities[e].bot;
-    let mut legs = String::new();
-    for (i, &leg) in b.route.iter().enumerate() {
-        if !legs.is_empty() {
-            legs.push(',');
-        }
-        legs.push_str(&format!(
-            "{{\"i\":{i},\"link\":{leg},\"kind\":{},\"src\":{},\"tgt\":{}}}",
-            jstr(kind_name(g.link_kind(leg))),
-            jvec3(g.cell_origin(g.link_source(leg))),
-            jvec3(g.cell_origin(g.link_target(leg))),
-        ));
-    }
-    Ok(format!(
-        "{{\"bot\":{bot},\"route_pos\":{},\"origin\":{},\"legs\":[{legs}]}}",
-        b.route_pos,
-        jvec3(game.entities[e].v.origin),
-    ))
-}
-
-/// Dump the latest committed speed-jump trace. Each frame is
-/// `[time,x,y,z,speed,phase,on_ground,clear,path_pos,hold,ascending]`.
-fn sjtrace_json(game: &GameState, bot: u32) -> Result<String, String> {
-    // Leave room for reply_ok's envelope, the widest i64 request id, and the writer's newline so the
-    // complete TCP line—not just this data array—stays below the requested 1 MB ceiling.
-    const MAX_DATA_BYTES: usize = 1_000_000 - 100;
-
-    let e = valid_bot(game, bot)?;
-    let mut frames: Vec<String> = game.entities[e]
-        .bot
-        .sj_trace
+    let legs = b
+        .route
         .iter()
-        .map(|f| {
-            format!(
-                "[{},{},{},{},{},{},{},{},{},{},{}]",
-                jnum(f.time),
-                jnum(f.origin.x),
-                jnum(f.origin.y),
-                jnum(f.origin.z),
-                jnum(f.speed),
-                jstr(&format!("{:?}", f.phase)),
-                f.on_ground as u8,
-                jnum(f.clear),
-                f.runway_path_pos,
-                f.hold as u8,
-                f.ascending as u8,
-            )
+        .enumerate()
+        .map(|(i, &leg)| proto::RouteLeg {
+            i: i as u32,
+            link: leg,
+            kind: kind_name(g.link_kind(leg)).to_string(),
+            src: a3(g.cell_origin(g.link_source(leg))),
+            tgt: a3(g.cell_origin(g.link_target(leg))),
         })
         .collect();
-    let mut bytes = 2 + frames.iter().map(String::len).sum::<usize>() + frames.len().saturating_sub(1);
-    let mut first = 0;
-    while bytes > MAX_DATA_BYTES && first < frames.len() {
-        bytes -= frames[first].len() + usize::from(frames.len() - first > 1);
-        first += 1;
-    }
-    Ok(format!("[{}]", frames.drain(first..).collect::<Vec<_>>().join(",")))
+    Ok(proto::RouteResp {
+        bot,
+        route_pos: b.route_pos as u32,
+        origin: a3(game.entities[e].v.origin),
+        legs,
+    })
 }
 
-/// Dump active failed-link penalty expiries relative to the current server time.
-fn penalties_json(game: &GameState, bot: u32) -> Result<String, String> {
+/// Dump a bot's `rtx_bot_debug` audit ring: the last `lines` per-frame sensor snapshots, oldest-first.
+/// The frames are already the wire schema, so this just tails the ring. Empty when `rtx_bot_debug`
+/// has been off (nothing was captured).
+fn audit_resp(game: &GameState, bot: u32, lines: usize) -> Result<proto::AuditResp, String> {
     let e = valid_bot(game, bot)?;
-    let now = game.time();
-    let items = game.entities[e]
-        .bot
-        .failed_links
-        .iter()
-        .filter(|(_, until, _)| *until > now)
-        .map(|(link, until, _)| format!("{{\"link\":{link},\"expires_in_s\":{}}}", jnum(*until - now)))
-        .collect::<Vec<_>>()
-        .join(",");
-    Ok(format!("[{items}]"))
-}
-
-/// Serialize a route as a JSON array of stable link/cell records. Shared by command acknowledgements
-/// and terminal acceptance events so a failed run carries the route it was asked to execute.
-fn route_legs_json(g: &crate::navmesh::NavGraph, route: &[u32]) -> String {
-    let mut legs = String::new();
-    for (i, &link) in route.iter().enumerate() {
-        if !legs.is_empty() {
-            legs.push(',');
-        }
-        legs.push_str(&format!(
-            "{{\"i\":{i},\"link\":{link},\"kind\":{},\"src\":{},\"tgt\":{}}}",
-            jstr(kind_name(g.link_kind(link))),
-            jvec3(g.cell_origin(g.link_source(link))),
-            jvec3(g.cell_origin(g.link_target(link))),
-        ));
-    }
-    format!("[{legs}]")
+    let frames = game.entities[e].bot.audit.tail(lines);
+    Ok(proto::AuditResp {
+        bot,
+        count: frames.len() as u32,
+        frames,
+    })
 }
 
 /// Search the offline pmove sim (against the live BSP) for a speed-curl jump from `src` to `tgt`: a
 /// held-strafe air-curl from a run-up-built takeoff speed. Grid-searches takeoff speed `v0`, launch
 /// heading `psi0`, and turn gain, returning the lowest-speed curl that lands within tolerance — the
 /// M2 solver, exercised live. Mirrors the human demo (build speed, one leap, gentle held-strafe sweep).
-fn curl_json(game: &GameState, src: Vec3, tgt: Vec3) -> Result<String, String> {
+fn curl_resp(game: &GameState, src: Vec3, tgt: Vec3) -> Result<proto::CurlResp, String> {
     use crate::bot::bhop;
     use crate::math::{wrap180, yaw_of};
     use crate::pmove_sim::{pm_step, PmParams, PmState};
-    let bsp = game.nav.bsp.as_ref().ok_or("no bsp loaded")?;
+    let bsp = game.nav.bsp.as_deref().ok_or("no bsp loaded")?;
     let cv = |name: &std::ffi::CStr, d: f32| {
         let v = game.host.cvar(name);
-        if v > 0.0 { v } else { d }
+        if v > 0.0 {
+            v
+        } else {
+            d
+        }
     };
     let p = PmParams {
         gravity: cv(c"sv_gravity", 800.0),
@@ -1081,13 +933,23 @@ fn curl_json(game: &GameState, src: Vec3, tgt: Vec3) -> Result<String, String> {
         let sigma = wrap180(yaw_of(tgt.xy() - src.xy()) - psi0).signum();
         for tick in 0..100 {
             let cmd = if tick == 0 {
-                bhop::Cmd { view_yaw: psi0, forward: 400.0, side: 0.0, jump: true }
+                bhop::Cmd {
+                    view_yaw: psi0,
+                    forward: 400.0,
+                    side: 0.0,
+                    jump: true,
+                }
             } else {
                 let v_xy = s.vel.xy();
                 let err = wrap180(yaw_of(tgt.xy() - s.origin.xy()) - yaw_of(v_xy));
-                let omega = (err.abs() * gain).min(bhop::omega_max(v_xy.length().max(1.0), amax, dt));
+                let omega = (err.abs() * gain).min(bhop::omega_gain_max(v_xy.length().max(1.0), amax, dt));
                 let st = bhop::strafe_rate(v_xy, sigma, omega, amax, dt);
-                bhop::Cmd { view_yaw: st.view_yaw, forward: st.forward, side: st.side, jump: false }
+                bhop::Cmd {
+                    view_yaw: st.view_yaw,
+                    forward: st.forward,
+                    side: st.side,
+                    jump: false,
+                }
             };
             pm_step(bsp, &mut s, &cmd, &p, dt);
             if tick > 3 && s.on_ground {
@@ -1113,13 +975,26 @@ fn curl_json(game: &GameState, src: Vec3, tgt: Vec3) -> Result<String, String> {
             }
         }
     }
-    match best {
-        Some((v0, psi0, gain, miss, land)) => Ok(format!(
-            "{{\"found\":true,\"v0\":{},\"psi0\":{},\"chord\":{},\"gain\":{},\"miss_xy\":{},\"land\":{}}}",
-            jnum(v0), jnum(psi0), jnum(chord), jnum(gain), jnum(miss), jvec3(land)
-        )),
-        None => Ok(format!("{{\"found\":false,\"chord\":{}}}", jnum(chord))),
-    }
+    Ok(match best {
+        Some((v0, psi0, gain, miss, land)) => proto::CurlResp {
+            found: true,
+            chord,
+            v0,
+            psi0,
+            gain,
+            miss_xy: miss,
+            land: a3(land),
+        },
+        None => proto::CurlResp {
+            found: false,
+            chord,
+            v0: 0.0,
+            psi0: 0.0,
+            gain: 0.0,
+            miss_xy: 0.0,
+            land: [0.0; 3],
+        },
+    })
 }
 
 /// Hand-plant a self-contained `SpeedJump` link into the live graph for takeoff-regime bring-up: the
@@ -1127,13 +1002,24 @@ fn curl_json(game: &GameState, src: Vec3, tgt: Vec3) -> Result<String, String> {
 /// cell nearest `tgt`, requiring `v_req` ups at the lip. The runtime flies a planted link exactly like
 /// a generated one, so a subsequent `goto <tgt>` exercises the committed-prestrafe takeoff on the real
 /// corridor. Returns the new link index and the resolved cell origins so the caller can verify routing.
-fn plant_link_json(game: &mut GameState, from: Vec3, takeoff: Vec3, tgt: Vec3, v_req: f32) -> Result<String, String> {
+fn plant_link_resp(
+    game: &mut GameState,
+    from: Vec3,
+    takeoff: Vec3,
+    tgt: Vec3,
+    v_req: f32,
+) -> Result<proto::PlanLinkResp, String> {
     use crate::navmesh::SpeedJumpTraversal;
     let gravity = {
         let g = game.host.cvar(c"sv_gravity");
-        if g > 0.0 { g } else { 800.0 }
+        if g > 0.0 {
+            g
+        } else {
+            800.0
+        }
     };
-    let g = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+    let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+    let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
     let from_cell = g.nearest(from).ok_or("no cell near from")?;
     let to_cell = g.nearest(tgt).ok_or("no cell near tgt")?;
     let dz = g.cell_origin(to_cell).z - takeoff.z;
@@ -1143,45 +1029,30 @@ fn plant_link_json(game: &mut GameState, from: Vec3, takeoff: Vec3, tgt: Vec3, v
     let vz0 = rtx_nav::qphys::JUMP_VZ;
     let disc = (vz0 * vz0 - 2.0 * gravity * dz).max(0.0);
     let airtime = (vz0 + disc.sqrt()) / gravity;
-    // A hand-planted link defaults to a firm curl gain (~12): the runtime's air path is
-    // `air_correct` pursuit onto the *bearing* (the link's landing), and the dm3 focus-route
-    // certification (5-streak ≤3.82 s, reproduced ×4) flew exactly that. The one-time "fly straight
-    // by default" swap (spawn-7 blocker: plants landing 180–230u off toward +x/+y) guarded against a
-    // runtime that homed gain>0 flights onto the `rtx_jump_curl_entry/landing_*` aim cvars — but in
-    // this runtime those aims only engage via a profiled axis (`curl_switch_dist != 0`), which a
-    // cvar-less plant never gets, so the blocker mechanics cannot reproduce here. The cvar still
-    // overrides for tuning.
+    // A hand-planted link is a curl by default (it's what we plant for the curl bring-up); the runtime
+    // reads this gain to pick `air_correct` over the slalom. A fast run-up overshoots a gentle curl, so
+    // the bring-up default is a firm gain that bleeds the excess onto the landing (see the harness gain
+    // sweep — ~12 lands the bravado LG dead-on). The cvar overrides it for tuning; step 4's solver will
+    // compute a per-link gain from the certified takeoff speed.
     let curl_gain = {
         let g = game.host.cvar(c"rtx_jump_curl_gain");
-        if g > 0.0 { g } else { 12.0 }
+        if g > 0.0 {
+            g
+        } else {
+            12.0
+        }
     };
     // Curl-link cost the banded planner now trusts (see `banded_step`): the honest run-up travel +
     // flight + a JumpGap-grade commitment (a rollout-certified envelope carries less risk than the
     // +1.0 charged to a modeled speed jump). Run-up is the `from`→lip distance at the mean build speed.
     let runup = (takeoff.xy() - g.cell_origin(from_cell).xy()).length();
     let cost = runup / 400.0 + airtime + 0.3;
-    let curl_switch_dist = game.host.cvar(c"rtx_jump_curl_switch_dist");
-    let curl_entry_aim = Vec3::new(
-        game.host.cvar(c"rtx_jump_curl_entry_x"),
-        game.host.cvar(c"rtx_jump_curl_entry_y"),
-        takeoff.z,
-    );
-    let curl_landing_aim = Vec3::new(
-        game.host.cvar(c"rtx_jump_curl_landing_x"),
-        game.host.cvar(c"rtx_jump_curl_landing_y"),
-        g.cell_origin(to_cell).z,
-    );
     let tr = SpeedJumpTraversal {
         takeoff,
         v_req,
         airtime,
-        landing_speed_lo: 0.0,
         chained: false,
         curl_gain,
-        curl_entry_aim,
-        curl_switch_dist,
-        curl_landing_aim,
-        ground_turn: None,
     };
     let li = g.plant_speed_jump(from_cell, to_cell, cost, tr);
     // Refresh the reachability + LOD tables so the new link is visible to steer's O(1) reachable()
@@ -1189,61 +1060,30 @@ fn plant_link_json(game: &mut GameState, from: Vec3, takeoff: Vec3, tgt: Vec3, v
     // reachable on the pre-plant graph instead of pathing over it.
     g.rebuild_derived();
     let (fo, to) = (g.cell_origin(from_cell), g.cell_origin(to_cell));
-    Ok(format!(
-        "{{\"link\":{li},\"from_cell\":{from_cell},\"to_cell\":{to_cell},\"from\":{},\"tgt\":{},\"takeoff\":{},\"v_req\":{},\"airtime\":{},\"cost\":{},\"curl_entry_aim\":{},\"curl_switch_dist\":{},\"curl_landing_aim\":{}}}",
-        jvec3(fo),
-        jvec3(to),
-        jvec3(takeoff),
-        jnum(v_req),
-        jnum(airtime),
-        jnum(cost),
-        jvec3(curl_entry_aim),
-        jnum(curl_switch_dist),
-        jvec3(curl_landing_aim),
-    ))
+    Ok(proto::PlanLinkResp {
+        link: li,
+        from_cell,
+        to_cell,
+        from: a3(fo),
+        tgt: a3(to),
+        takeoff: a3(takeoff),
+        v_req,
+        airtime,
+        cost,
+    })
 }
 
-/// Hand-plant a standable cell into the live graph at a gap-analysis coordinate. The nav layer
-/// performs the BSP floor snap and neighbor classification; this wrapper reports the resolved cell.
-fn plant_cell_json(game: &mut GameState, pos: Vec3) -> Result<String, String> {
-    let bsp = game.nav.bsp.as_ref().ok_or("no bsp")?;
-    let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
-    let (cell, links_created) = graph
-        .plant_cell(bsp, pos)
-        .ok_or("cell position is not standable dry floor")?;
-    let origin = graph.cell_origin(cell);
-    Ok(format!(
-        "{{\"cell\":{cell},\"origin\":{},\"links_created\":{links_created}}}",
-        jvec3(origin),
-    ))
-}
-
-/// Hard-disable a link while retaining its slot. Every router skips the tombstone, and later
-/// `planlink` appends cannot shift the IDs used by live route/editor diagnostics.
-fn unlink_json(game: &mut GameState, link: u32) -> Result<String, String> {
-    let g = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
-    let n = g.links.len() as u32;
-    if link >= n {
-        return Err(format!("link {link} out of range (0..{n})"));
-    }
-    if !g.unlink(link) {
-        return Err(format!("link {link} is already unlinked"));
-    }
-    let (src, tgt) = (g.cell_origin(g.link_source(link)), g.cell_origin(g.link_target(link)));
-    Ok(format!(
-        "{{\"link\":{link},\"removed\":true,\"src\":{},\"tgt\":{}}}",
-        jvec3(src),
-        jvec3(tgt),
-    ))
-}
-
-/// Probe the build-time curl certifier — see `ControlCmd::Probe`.
-fn probe_json(game: &GameState, takeoff: Vec3, tgt: Vec3, psi0: f32, runway: f32) -> Result<String, String> {
+/// Probe the build-time curl certifier — see [`Cmd::Probe`].
+fn probe_resp(game: &GameState, takeoff: Vec3, tgt: Vec3, psi0: f32, runway: f32) -> Result<proto::ProbeResp, String> {
     let bsp = game.nav.bsp.as_ref().ok_or("no bsp")?;
     let g = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
     let cv = |n: &std::ffi::CStr, d: f32| {
         let v = game.host.cvar(n);
-        if v > 0.0 { v } else { d }
+        if v > 0.0 {
+            v
+        } else {
+            d
+        }
     };
     let params = crate::navmesh::SpeedJumpParams {
         gravity: cv(c"sv_gravity", 800.0),
@@ -1254,30 +1094,39 @@ fn probe_json(game: &GameState, takeoff: Vec3, tgt: Vec3, psi0: f32, runway: f32
         curl: true,
     };
     let probe = g.curl_probe(bsp, takeoff, tgt, psi0, runway, params);
-    let mut d = String::new();
-    for (gain, land) in probe.landings {
-        if !d.is_empty() {
-            d.push(',');
-        }
-        let miss = (land.truncate() - tgt.truncate()).length();
-        d.push_str(&format!("{{\"gain\":{},\"land\":{},\"miss_xy\":{},\"miss_z\":{}}}", jnum(gain), jvec3(land), jnum(miss), jnum((land.z - tgt.z).abs())));
-    }
-    let cert_s = match probe.certified {
-        Some((v_req, gain, landing_speed_lo)) => format!(
-            "{{\"v_req\":{},\"gain\":{},\"landing_speed_lo\":{}}}",
-            jnum(v_req),
-            jnum(gain),
-            jnum(landing_speed_lo)
-        ),
-        None => "null".to_string(),
-    };
-    Ok(format!("{{\"v_deliver\":{},\"certified\":{cert_s},\"gains\":[{d}]}}", jnum(probe.v_deliver)))
+    let gains = probe
+        .landings
+        .iter()
+        .map(|&(gain, land)| proto::ProbeGain {
+            gain,
+            land: a3(land),
+            miss_xy: (land.truncate() - tgt.truncate()).length(),
+            miss_z: (land.z - tgt.z).abs(),
+        })
+        .collect();
+    let certified = probe.certified.map(|(v_req, gain)| proto::Cert { v_req, gain });
+    Ok(proto::ProbeResp {
+        v_deliver: probe.v_deliver,
+        certified,
+        gains,
+    })
+}
+
+/// The current map's raw BSP file, re-read on demand so a viewer can render the world without a local
+/// copy of the map. Mirrors `load_map_bsp`'s read path.
+fn bsp_resp(game: &GameState) -> Result<proto::BspResp, String> {
+    let path = cstring(&format!("maps/{}.bsp", game.level.mapname));
+    let bytes = game.host.read_file(&path).ok_or("could not read map BSP")?;
+    Ok(proto::BspResp {
+        map: game.level.mapname.clone(),
+        bytes,
+    })
 }
 
 /// List every generated curl link (SpeedJump with `curl_gain > 0`).
-fn curls_json(game: &GameState) -> Result<String, String> {
+fn curls_resp(game: &GameState) -> Result<Vec<proto::CurlLink>, String> {
     let g = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
-    let mut items = String::new();
+    let mut curls = Vec::new();
     for li in 0..g.links.len() as u32 {
         if g.link_kind(li) != LinkKind::SpeedJump {
             continue;
@@ -1286,19 +1135,16 @@ fn curls_json(game: &GameState) -> Result<String, String> {
         if tr.curl_gain <= 0.0 {
             continue;
         }
-        if !items.is_empty() {
-            items.push(',');
-        }
-        items.push_str(&format!(
-            "{{\"link\":{li},\"from\":{},\"takeoff\":{},\"tgt\":{},\"v_req\":{},\"gain\":{}}}",
-            jvec3(g.cell_origin(g.link_source(li))),
-            jvec3(tr.takeoff),
-            jvec3(g.cell_origin(g.link_target(li))),
-            jnum(tr.v_req),
-            jnum(tr.curl_gain),
-        ));
+        curls.push(proto::CurlLink {
+            link: li,
+            from: a3(g.cell_origin(g.link_source(li))),
+            takeoff: a3(tr.takeoff),
+            tgt: a3(g.cell_origin(g.link_target(li))),
+            v_req: tr.v_req,
+            gain: tr.curl_gain,
+        });
     }
-    Ok(format!("{{\"curls\":[{items}]}}"))
+    Ok(curls)
 }
 
 fn order_name(o: Option<ControlOrder>) -> &'static str {
@@ -1313,51 +1159,92 @@ fn order_name(o: Option<ControlOrder>) -> &'static str {
 
 // --- per-frame puppet pollers (emit lifecycle events) ---
 
-
 fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, now: f32) {
     let origin = game.entities[e].v.origin;
     let dxy = (origin.xy() - target.xy()).length();
     let dz = (origin.z - target.z).abs();
-    if dxy <= GOTO_ARRIVE_XY && dz <= GOTO_ARRIVE_Z {
-        game.entities[e].bot.puppet.order = Some(ControlOrder::Hold);
-        let traj = traj_json(&std::mem::take(&mut game.entities[e].bot.puppet.traj));
-        send(game, format!(
-            "{{\"ev\":\"arrived\",\"bot\":{bot},\"t\":{},\"origin\":{},\"target\":{},\"dist\":{},\"traj\":[{traj}]}}",
-            jnum(now), jvec3(origin), jvec3(target), jnum(dxy),
-        ));
+    let crossed_finish = goto_crossed_finish(&game.entities[e].bot.puppet.traj, origin, target);
+    if (dxy <= GOTO_ARRIVE_XY || crossed_finish) && dz <= GOTO_ARRIVE_Z {
+        let traj = traj_rows(&std::mem::take(&mut game.entities[e].bot.puppet.traj));
+        // A goto commonly ends while the bot is airborne and carrying several hundred ups. Merely
+        // swapping the order to Hold leaves the active hop controller, route, and momentum intact for
+        // another frame; on a finish-line target that is enough to cross trigger_changelevel, and on
+        // an ordinary target it can produce a sharp stale-route turn after the reported arrival.
+        // Finish the puppet order atomically: stop the body and discard every navigation commitment
+        // before the next bot frame observes Hold.
+        finish_goto_hold(game, e, origin, now);
+        send_event(
+            game,
+            Event::Arrived {
+                bot,
+                t: now,
+                origin: a3(origin),
+                target: a3(target),
+                dist: dxy,
+                traj,
+            },
+        );
         return;
     }
-    let (best_dist, best_since) = {
+    let (best_dist, best_since, best_z) = {
         let p = &game.entities[e].bot.puppet;
-        (p.best_dist, p.best_since)
+        (p.best_dist, p.best_since, p.best_z)
     };
-    if dxy < best_dist - STALL_EPS {
+    // A climb toward a target above (a spiral staircase) holds XY distance near-constant while
+    // ascending correctly, so gaining altitude counts as progress and keeps the stall clock from
+    // false-tripping on the only way up — mirrors the bot's own route watchdog.
+    let climbed = origin.z > best_z + GOTO_CLIMB_EPS;
+    if dxy < best_dist - STALL_EPS || climbed {
         let p = &mut game.entities[e].bot.puppet;
-        p.best_dist = dxy;
+        p.best_dist = dxy.min(p.best_dist);
+        p.best_z = p.best_z.max(origin.z);
         p.best_since = now;
     } else if now - best_since > STALL_SECS {
-        game.entities[e].bot.puppet.order = Some(ControlOrder::Hold);
-        let traj = traj_json(&std::mem::take(&mut game.entities[e].bot.puppet.traj));
-        send(game, format!(
-            "{{\"ev\":\"goto_stall\",\"bot\":{bot},\"t\":{},\"origin\":{},\"target\":{},\"dist\":{},\"best\":{},\"secs\":{},\"traj\":[{traj}]}}",
-            jnum(now), jvec3(origin), jvec3(target), jnum(dxy), jnum(best_dist), jnum(STALL_SECS),
-        ));
+        let traj = traj_rows(&std::mem::take(&mut game.entities[e].bot.puppet.traj));
+        finish_goto_hold(game, e, origin, now);
+        send_event(
+            game,
+            Event::GotoStall {
+                bot,
+                t: now,
+                origin: a3(origin),
+                target: a3(target),
+                dist: dxy,
+                best: best_dist,
+                secs: STALL_SECS,
+                traj,
+            },
+        );
     }
 }
 
-/// Serialize a flight/goto trace as `[t, x,y,z, vx,vy,vz]` rows.
-fn traj_json(traj: &[(f32, Vec3, Vec3)]) -> String {
-    let mut s = String::new();
-    for (ts, o, v) in traj {
-        if !s.is_empty() {
-            s.push(',');
-        }
-        s.push_str(&format!(
-            "[{},{},{},{},{},{},{}]",
-            jnum(*ts), jnum(o.x), jnum(o.y), jnum(o.z), jnum(v.x), jnum(v.y), jnum(v.z)
-        ));
+fn goto_crossed_finish(traj: &[(f32, Vec3, Vec3)], origin: Vec3, target: Vec3) -> bool {
+    let Some((_, start, _)) = traj.first() else {
+        return false;
+    };
+    let along = (target.xy() - start.xy()).normalize_or_zero();
+    if along == glam::Vec2::ZERO {
+        return false;
     }
-    s
+    let past = origin.xy() - target.xy();
+    if past.dot(along) < 0.0 {
+        return false;
+    }
+    (past - along * past.dot(along)).length() <= GOTO_FINISH_CORRIDOR
+}
+
+/// Stop a completed puppet goto without letting its route or bhop state leak into the Hold order.
+fn finish_goto_hold(game: &mut GameState, e: EntId, at: Vec3, now: f32) {
+    game.entities[e].v.velocity = Vec3::ZERO;
+    reset_nav_state(&mut game.entities[e].bot, at, now);
+    game.entities[e].bot.puppet.order = Some(ControlOrder::Hold);
+}
+
+/// A flight/goto trace as `[t, x, y, z, vx, vy, vz]` rows.
+fn traj_rows(traj: &[(f32, Vec3, Vec3)]) -> Vec<proto::TrajRow> {
+    traj.iter()
+        .map(|&(t, o, v)| [t, o.x, o.y, o.z, v.x, v.y, v.z])
+        .collect()
 }
 
 fn poll_rj(game: &mut GameState, e: EntId, bot: u32, link: u32, now: f32) {
@@ -1381,8 +1268,8 @@ fn poll_rj(game: &mut GameState, e: EntId, bot: u32, link: u32, now: f32) {
     let _ = now;
     game.entities[e].bot.rj.fails = 0;
     game.entities[e].bot.puppet.order = Some(ControlOrder::Hold);
-    let json = rj_result_json(bot, link, &telem, outcome, v0, blast, pos_blast, &traj);
-    send(game, json);
+    let result = rj_result(bot, link, &telem, outcome, v0, blast, pos_blast, &traj);
+    send_event(game, Event::RjResult(Box::new(result)));
 }
 
 /// Watch a FlyLink attempt: capture the horizontal speed at the speed-jump takeoff (the first airborne
@@ -1398,18 +1285,32 @@ fn poll_fly(game: &mut GameState, e: EntId, bot: u32, link: u32, now: f32) {
         game.entities[e].bot.puppet.order = Some(ControlOrder::Hold);
         game.entities[e].bot.rj.fails = 0;
         let _ = std::mem::take(&mut game.entities[e].bot.puppet.traj);
-        send(game, format!(
-            "{{\"ev\":\"fly_result\",\"bot\":{bot},\"link\":{link},\"on_target\":false,\"timeout\":true,\
-             \"land\":{},\"miss_xy\":9999,\"miss_z\":9999,\"takeoff_speed\":0,\"peak\":0,\"traj\":[]}}",
-            jvec3(origin),
-        ));
+        send_event(
+            game,
+            Event::FlyResult(proto::FlyResult {
+                bot,
+                link,
+                on_target: false,
+                timeout: true,
+                land: a3(origin),
+                target: [0.0; 3],
+                miss_xy: 9999.0,
+                miss_z: 9999.0,
+                takeoff_speed: 0.0,
+                peak: 0.0,
+                traj: Vec::new(),
+            }),
+        );
         return;
     }
     let og = game.entities[e].v.flags.has(Flags::ONGROUND);
     let origin = game.entities[e].v.origin;
     let speed = game.entities[e].v.velocity.xy().length();
     let Some(g) = game.nav.graph.as_ref() else { return };
-    let takeoff = g.speed_jump_of_link(link).map(|t| t.takeoff).unwrap_or_else(|| g.cell_origin(g.link_source(link)));
+    let takeoff = g
+        .speed_jump_of_link(link)
+        .map(|t| t.takeoff)
+        .unwrap_or_else(|| g.cell_origin(g.link_source(link)));
     let target = g.cell_origin(g.link_target(link));
     // "Past the lip" = progress along takeoff→target is positive, so the run-up (behind the lip) and its
     // corridor hops never register as the jump's flight.
@@ -1435,16 +1336,26 @@ fn poll_fly(game: &mut GameState, e: EntId, bot: u32, link: u32, now: f32) {
     game.entities[e].bot.puppet.order = Some(ControlOrder::Hold);
     game.entities[e].bot.rj.fails = 0;
     let _ = now;
-    send(game, format!(
-        "{{\"ev\":\"fly_result\",\"bot\":{bot},\"link\":{link},\"on_target\":{on_target},\"land\":{},\
-         \"target\":{},\"miss_xy\":{},\"miss_z\":{},\"takeoff_speed\":{},\"peak\":{},\"traj\":[{}]}}",
-        jvec3(origin), jvec3(target), jnum(miss_xy), jnum(miss_z), jnum(takeoff_speed), jnum(peak),
-        traj_json(&traj),
-    ));
+    send_event(
+        game,
+        Event::FlyResult(proto::FlyResult {
+            bot,
+            link,
+            on_target,
+            timeout: false,
+            land: a3(origin),
+            target: a3(target),
+            miss_xy,
+            miss_z,
+            takeoff_speed,
+            peak,
+            traj: traj_rows(&traj),
+        }),
+    );
 }
 
-#[allow(clippy::too_many_arguments)] // one JSON event's worth of measured + solved fields
-fn rj_result_json(
+#[allow(clippy::too_many_arguments)] // one event's worth of measured + solved fields
+fn rj_result(
     bot: u32,
     link: u32,
     t: &RjTelemetry,
@@ -1453,12 +1364,14 @@ fn rj_result_json(
     blast: Vec3,
     pos_blast: Vec3,
     traj: &[(f32, Vec3, Vec3)],
-) -> String {
+) -> proto::RjResult {
     // Terminal name + (for a touchdown/overrun) the landing measurement vs the target cell.
-    let (name, land) = match outcome {
-        RjOutcome::Landed { on_target, origin, t: ft } => {
-            (if on_target { "landed" } else { "landed_off" }, Some((origin, ft)))
-        }
+    let (name, land_pt) = match outcome {
+        RjOutcome::Landed {
+            on_target,
+            origin,
+            t: ft,
+        } => (if on_target { "landed" } else { "landed_off" }, Some((origin, ft))),
         RjOutcome::Overran { origin, t: ft } => ("overran", Some((origin, ft))),
         RjOutcome::StanceTimeout => ("stance_timeout", None),
         RjOutcome::LiftoffTimeout => ("liftoff_timeout", None),
@@ -1466,136 +1379,52 @@ fn rj_result_json(
         RjOutcome::EnemyAbort => ("enemy_abort", None),
         RjOutcome::LegVanished => ("leg_vanished", None),
     };
-    let press = match t.press {
-        Some(p) => format!(
-            "{{\"t\":{},\"origin\":{},\"view\":[{},{}],\"aim_err\":{},\"stance_off_xy\":{}}}",
-            jnum(p.t),
-            jvec3(p.origin),
-            jnum(p.view.x),
-            jnum(p.view.y),
-            jnum(p.aim_err),
-            jnum((p.origin.xy() - t.src.xy()).length()),
-        ),
-        None => "null".to_string(),
-    };
-    let fire = match t.fire {
-        Some(f) => format!(
-            "{{\"t\":{},\"delay\":{},\"origin\":{},\"view\":[{},{}],\"pitch_err\":{},\"yaw_err\":{}}}",
-            jnum(f.t),
-            jnum(f.actual_delay),
-            jvec3(f.origin),
-            jnum(f.view.x),
-            jnum(f.view.y),
-            jnum(f.view.x - (t.solved_angles.x + t.pitch_bias)),
-            jnum(wrap180(f.view.y - t.solved_angles.y)),
-        ),
-        None => "null".to_string(),
-    };
-    let land = match land {
-        Some((o, ft)) => format!(
-            "{{\"t\":{},\"origin\":{},\"miss_xy\":{},\"miss_z\":{}}}",
-            jnum(ft),
-            jvec3(o),
-            jnum((o.xy() - t.tgt.xy()).length()),
-            jnum((o.z - t.tgt.z).abs()),
-        ),
-        None => "null".to_string(),
-    };
-    // The flight trace: one [t, x,y,z, vx,vy,vz] per frame from stance through landing.
-    let mut trace = String::new();
-    for (ts, o, v) in traj {
-        if !trace.is_empty() {
-            trace.push(',');
-        }
-        trace.push_str(&format!(
-            "[{},{},{},{},{},{},{}]",
-            jnum(*ts), jnum(o.x), jnum(o.y), jnum(o.z), jnum(v.x), jnum(v.y), jnum(v.z)
-        ));
+    let press = t.press.map(|p| proto::RjPress {
+        t: p.t,
+        origin: a3(p.origin),
+        view: [p.view.x, p.view.y],
+        aim_err: p.aim_err,
+        stance_off_xy: (p.origin.xy() - t.src.xy()).length(),
+    });
+    let fire = t.fire.map(|f| proto::RjFire {
+        t: f.t,
+        delay: f.actual_delay,
+        origin: a3(f.origin),
+        view: [f.view.x, f.view.y],
+        pitch_err: f.view.x - (t.solved_angles.x + t.pitch_bias),
+        yaw_err: wrap180(f.view.y - t.solved_angles.y),
+    });
+    let land = land_pt.map(|(o, ft)| proto::RjLand {
+        t: ft,
+        origin: a3(o),
+        miss_xy: (o.xy() - t.tgt.xy()).length(),
+        miss_z: (o.z - t.tgt.z).abs(),
+    });
+    proto::RjResult {
+        bot,
+        link,
+        outcome: name.to_string(),
+        src: a3(t.src),
+        tgt: a3(t.tgt),
+        solved: proto::RjSolved {
+            pitch: t.solved_angles.x,
+            yaw: t.solved_angles.y,
+            delay: t.solved_delay,
+            airtime: t.airtime,
+            self_damage: t.self_damage,
+            v0: a3(v0),
+            blast: a3(blast),
+            pos_blast: a3(pos_blast),
+        },
+        bias: proto::RjBias {
+            delay: t.delay_bias,
+            pitch: t.pitch_bias,
+        },
+        press,
+        fire,
+        land,
+        traj: traj_rows(traj),
     }
-    format!(
-        "{{\"ev\":\"rj_result\",\"bot\":{bot},\"link\":{link},\"outcome\":{},\"src\":{},\"tgt\":{},\
-         \"solved\":{{\"pitch\":{},\"yaw\":{},\"delay\":{},\"airtime\":{},\"self_damage\":{},\
-         \"v0\":{},\"blast\":{},\"pos_blast\":{}}},\
-         \"bias\":{{\"delay\":{},\"pitch\":{}}},\"press\":{press},\"fire\":{fire},\"land\":{land},\
-         \"traj\":[{trace}]}}",
-        jstr(name),
-        jvec3(t.src),
-        jvec3(t.tgt),
-        jnum(t.solved_angles.x),
-        jnum(t.solved_angles.y),
-        jnum(t.solved_delay),
-        jnum(t.airtime),
-        jnum(t.self_damage),
-        jvec3(v0),
-        jvec3(blast),
-        jvec3(pos_blast),
-        jnum(t.delay_bias),
-        jnum(t.pitch_bias),
-    )
-}
-
-// --- tiny JSON emitters (no serde: the game crate stays dependency-free) ---
-
-/// Serialize one movement-lab event without staging the player samples in a collection.
-///
-/// Emits even with zero players: the empty event is the bridge's heartbeat — proof the build
-/// supports telemetry — so a bridge started before the human connects never falls back to polling.
-fn pmove_event_json(now: f32, players: impl IntoIterator<Item = PmoveSample>) -> String {
-    let mut out = String::new();
-    out.push_str("{\"ev\":\"pmove\",\"t\":");
-    out.push_str(&jnum(now));
-    out.push_str(",\"players\":[");
-    let mut first = true;
-    for player in players {
-        if !first {
-            out.push(',');
-        }
-        first = false;
-        let _ = write!(
-            out,
-            "{{\"ent\":{},\"origin\":{},\"vel\":{},\"on_ground\":{},\"ground_ent\":{}}}",
-            player.ent,
-            jvec3(player.origin),
-            jvec3(player.velocity),
-            player.on_ground,
-            player.ground_ent,
-        );
-    }
-    out.push_str("]}");
-    out
-}
-
-/// A finite `f32` as a JSON number (shortest round-trip form); non-finite → `null`.
-fn jnum(x: f32) -> String {
-    if x.is_finite() {
-        format!("{x}")
-    } else {
-        "null".to_string()
-    }
-}
-
-/// A `Vec3` as a JSON `[x,y,z]` array.
-fn jvec3(v: Vec3) -> String {
-    format!("[{},{},{}]", jnum(v.x), jnum(v.y), jnum(v.z))
-}
-
-/// A `&str` as a quoted, escaped JSON string.
-fn jstr(s: &str) -> String {
-    let mut o = String::with_capacity(s.len() + 2);
-    o.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => o.push_str("\\\""),
-            '\\' => o.push_str("\\\\"),
-            '\n' => o.push_str("\\n"),
-            '\r' => o.push_str("\\r"),
-            '\t' => o.push_str("\\t"),
-            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
-            c => o.push(c),
-        }
-    }
-    o.push('"');
-    o
 }
 
 #[cfg(test)]
@@ -1603,198 +1432,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_simple_verbs() {
-        assert_eq!(parse_line("7 status").unwrap(), (7, ControlCmd::Status));
-        assert_eq!(parse_line("  12   links  ").unwrap(), (12, ControlCmd::Links));
-        assert_eq!(parse_line("3 hold 1").unwrap(), (3, ControlCmd::Hold { bot: 1 }));
-        assert_eq!(parse_line("4 stop 2").unwrap(), (4, ControlCmd::Stop { bot: 2 }));
-        assert_eq!(parse_line("5 sjtrace 3").unwrap(), (5, ControlCmd::SjTrace { bot: 3 }));
-        assert_eq!(parse_line("6 penalties 3").unwrap(), (6, ControlCmd::Penalties { bot: 3 }));
-    }
-
-    #[test]
-    fn parses_vectors_and_links() {
-        assert_eq!(
-            parse_line("1 teleport 1 10 -20.5 300").unwrap(),
-            (1, ControlCmd::Teleport { bot: 1, pos: Vec3::new(10.0, -20.5, 300.0) })
-        );
-        assert_eq!(
-            parse_line("2 goto 1 0 0 0").unwrap(),
-            (2, ControlCmd::Goto { bot: 1, pos: Vec3::ZERO })
-        );
-        assert_eq!(parse_line("9 rj 1 412").unwrap(), (9, ControlCmd::Rj { bot: 1, link: 412 }));
-        assert_eq!(parse_line("10 unlink 412").unwrap(), (10, ControlCmd::Unlink { link: 412 }));
-        assert_eq!(
-            parse_line("11 plancell -320 64 128.5").unwrap(),
-            (11, ControlCmd::PlanCell { pos: Vec3::new(-320.0, 64.0, 128.5) })
-        );
-    }
-
-    #[test]
-    fn parses_planrj() {
-        assert_eq!(
-            parse_line("4 planrj 608 880 -290 1152 640 86").unwrap(),
-            (
-                4,
-                ControlCmd::PlanRj {
-                    from: Vec3::new(608.0, 880.0, -290.0),
-                    tgt: Vec3::new(1152.0, 640.0, 86.0),
-                }
-            )
-        );
-        assert!(parse_line("5 planrj 608 880 -290").unwrap_err().contains("tx"));
-        assert_eq!(
-            parse_line("6 planrjraw 608 880 -290 1152 640 86 65 158 0.3").unwrap(),
-            (
-                6,
-                ControlCmd::PlanRjRaw {
-                    from: Vec3::new(608.0, 880.0, -290.0),
-                    tgt: Vec3::new(1152.0, 640.0, 86.0),
-                    pitch: 65.0,
-                    yaw: 158.0,
-                    delay: 0.3,
-                    airtime: 1.5,
-                }
-            )
-        );
-        assert!(parse_line("7 planrjraw 0 0 0 1 1 1 65 158 9.0").unwrap_err().contains("delay"));
-        assert_eq!(parse_line("8 unlink 412").unwrap(), (8, ControlCmd::Unlink { link: 412 }));
-        assert!(parse_line("9 unlink").unwrap_err().contains("link"));
-    }
-
-    #[test]
-    fn parses_prep_defaults_and_overrides() {
-        assert_eq!(
-            parse_line("1 prep 1").unwrap(),
-            (1, ControlCmd::Prep { bot: 1, health: 100.0, rockets: 10.0 })
-        );
-        assert_eq!(
-            parse_line("1 prep 1 50 3").unwrap(),
-            (1, ControlCmd::Prep { bot: 1, health: 50.0, rockets: 3.0 })
-        );
-    }
-
-    #[test]
-    fn parses_ra_trial_variants_and_timeout_bounds() {
-        assert_eq!(
-            parse_line("21 ra_trial 1").unwrap(),
-            (
-                21,
-                ControlCmd::RaTrial {
-                    bot: 1,
-                    start: RaTrialStart::Ring,
-                    max_secs: RA_TRIAL_RING_DEFAULT_SECS,
-                },
-            )
-        );
-        assert_eq!(
-            parse_line("22 ra_trial 2 local 7.5").unwrap(),
-            (
-                22,
-                ControlCmd::RaTrial {
-                    bot: 2,
-                    start: RaTrialStart::Local,
-                    max_secs: 7.5,
-                },
-            )
-        );
-        assert_eq!(
-            parse_line("24 ra_trial 2 local").unwrap(),
-            (
-                24,
-                ControlCmd::RaTrial {
-                    bot: 2,
-                    start: RaTrialStart::Local,
-                    max_secs: RA_TRIAL_LOCAL_DEFAULT_SECS,
-                },
-            )
-        );
-        assert_eq!(
-            parse_line("23 ra_trial 3 8").unwrap(),
-            (
-                23,
-                ControlCmd::RaTrial {
-                    bot: 3,
-                    start: RaTrialStart::Ring,
-                    max_secs: 8.0,
-                },
-            )
-        );
-        assert_eq!(
-            parse_line("25 ra_trial 4 ra_spawn 6").unwrap(),
-            (
-                25,
-                ControlCmd::RaTrial {
-                    bot: 4,
-                    start: RaTrialStart::RaSpawn,
-                    max_secs: 6.0,
-                },
-            )
-        );
-        assert_eq!(
-            parse_line("26 ra_trial 4 ra_spawn").unwrap(),
-            (
-                26,
-                ControlCmd::RaTrial {
-                    bot: 4,
-                    start: RaTrialStart::RaSpawn,
-                    max_secs: RA_TRIAL_SPAWN_DEFAULT_SECS,
-                },
-            )
-        );
-        assert_eq!(
-            parse_line("27 ra_trial 2 sng_mega_w 15").unwrap(),
-            (
-                27,
-                ControlCmd::RaTrial {
-                    bot: 2,
-                    start: RaTrialStart::SngMegaW,
-                    max_secs: 15.0
-                }
-            )
-        );
-        assert_eq!(
-            parse_line("28 ra_trial 2 sng_mega_s").unwrap(),
-            (
-                28,
-                ControlCmd::RaTrial {
-                    bot: 2,
-                    start: RaTrialStart::SngMegaS,
-                    max_secs: 15.0
-                }
-            )
-        );
-        assert!(parse_line("1 ra_trial 1 local 0.5").is_err());
-        assert!(parse_line("1 ra_trial 1 ring NaN").is_err());
-        assert!(parse_line("1 ra_trial 1 ring 31").is_err());
-    }
-
-    #[test]
-    fn set_and_cmd_take_rest_of_line() {
-        assert_eq!(
-            parse_line("5 set rtx_rj_delay_bias 0.05").unwrap(),
-            (5, ControlCmd::Set { name: "rtx_rj_delay_bias".into(), value: "0.05".into() })
-        );
-        assert_eq!(
-            parse_line("6 get rtx_rj_stance").unwrap(),
-            (6, ControlCmd::Get { name: "rtx_rj_stance".into() })
-        );
-        assert_eq!(
-            parse_line("8 cmd map bravado").unwrap(),
-            (8, ControlCmd::Cmd { raw: "map bravado".into() })
-        );
-    }
-
-    #[test]
-    fn rejects_malformed() {
-        assert!(parse_line("").is_err());
-        assert!(parse_line("notanumber status").is_err());
-        assert!(parse_line("1 bogusverb").is_err());
-        assert!(parse_line("1 rj 1").is_err()); // missing link
-        assert!(parse_line("1 unlink").is_err()); // missing link
-        assert!(parse_line("1 plancell 0 0").is_err()); // missing z
-        assert!(parse_line("1 teleport 1 0 0").is_err()); // missing z
-        assert!(parse_line("1 set").is_err()); // missing cvar
+    fn fast_goto_crossing_stops_inside_bounded_finish_corridor() {
+        let traj = vec![(0.0, Vec3::new(0.0, 0.0, 24.0), Vec3::ZERO)];
+        let target = Vec3::new(0.0, 100.0, 24.0);
+        assert!(goto_crossed_finish(&traj, Vec3::new(56.0, 116.0, 48.0), target));
+        assert!(!goto_crossed_finish(&traj, Vec3::new(106.0, 116.0, 48.0), target));
+        assert!(!goto_crossed_finish(&traj, Vec3::new(0.0, 78.0, 48.0), target));
     }
 
     #[test]
@@ -1803,44 +1446,5 @@ mod tests {
         assert!(!valid_cvar_name("rtx; quit"));
         assert!(!valid_cvar_name(""));
         assert!(!valid_cvar_name("foo bar"));
-    }
-
-    #[test]
-    fn json_helpers_escape_and_format() {
-        assert_eq!(jnum(16.0), "16");
-        assert_eq!(jnum(f32::NAN), "null");
-        assert_eq!(jvec3(Vec3::new(1.0, 2.0, 3.0)), "[1,2,3]");
-        assert_eq!(jstr("a\"b\\c"), "\"a\\\"b\\\\c\"");
-    }
-
-    #[test]
-    fn pmove_event_json_has_authoritative_ground_and_full_velocity() {
-        let players = [
-            PmoveSample {
-                ent: 1,
-                origin: Vec3::new(10.0, -20.5, 30.0),
-                velocity: Vec3::new(320.0, 40.0, -12.0),
-                on_ground: true,
-                ground_ent: 0,
-            },
-            PmoveSample {
-                ent: 3,
-                origin: Vec3::new(1.0, 2.0, 3.0),
-                velocity: Vec3::new(-4.0, 5.0, 6.0),
-                on_ground: false,
-                ground_ent: -1,
-            },
-        ];
-        assert_eq!(
-            pmove_event_json(12.5, players),
-            "{\"ev\":\"pmove\",\"t\":12.5,\"players\":[\
-             {\"ent\":1,\"origin\":[10,-20.5,30],\"vel\":[320,40,-12],\"on_ground\":true,\"ground_ent\":0},\
-             {\"ent\":3,\"origin\":[1,2,3],\"vel\":[-4,5,6],\"on_ground\":false,\"ground_ent\":-1}]}"
-        );
-        // Zero players still emits — the heartbeat that keeps a pre-connect bridge in push mode.
-        assert_eq!(
-            pmove_event_json(12.5, std::iter::empty()),
-            "{\"ev\":\"pmove\",\"t\":12.5,\"players\":[]}"
-        );
     }
 }

@@ -458,7 +458,9 @@ impl GameState {
             } else if next.name() == "ctf" {
                 if let Some(p) = team::parse_match_alias(match_alias) {
                     if p.teams != 2 {
-                        host.conprint(&cstring("rtx: CTF is always 2 teams — clamping the format to 2 sides.\n"));
+                        host.conprint(&cstring(
+                            "rtx: CTF is always 2 teams — clamping the format to 2 sides.\n",
+                        ));
                     }
                 }
             }
@@ -467,6 +469,7 @@ impl GameState {
         // The cvar-buffer borrows (`mode_name`/`match_alias`) are read-only above and `next`/`cfg`
         // are `Copy`, so we're free to take `&mut self` now.
         if next.name() != self.mode.name() {
+            self.oracle.bump_epoch();
             self.mode = next;
             self.arena = ArenaState::default();
             self.team_match = MatchState {
@@ -482,6 +485,7 @@ impl GameState {
             self.opponents = crate::bot::model::OpponentModel::new(crate::bot::model::baseline_for_mode(next.name()));
             host.conprint(&cstring(&format!("rtx: game mode = {}\n", next.name())));
         } else if cfg != self.team_match.config {
+            self.oracle.bump_epoch();
             self.team_match = MatchState {
                 config: cfg,
                 ..Default::default()

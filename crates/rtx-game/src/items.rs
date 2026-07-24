@@ -102,9 +102,8 @@ impl GameState {
     /// `None` means it isn't coming back on a timer (deathmatch 2, or a megahealth, which rots
     /// rather than respawns).
     ///
-    /// Only a client ever has to ask — inside the server the handlers know — but the answer belongs
-    /// here regardless, next to the code it has to agree with.
-    #[cfg(feature = "netclient")]
+    /// Mirrors and the team oracle both ask this helper: the former reconstructs remote state, while
+    /// the latter timestamps only pickups its side could honestly witness.
     pub(crate) fn respawn_delay_of(&self, classname: &str) -> Option<f32> {
         let dm = self.level.deathmatch;
         match classname {
@@ -128,8 +127,9 @@ impl GameState {
     /// Schedule an item respawn (`SUB_regen`) after `delay`, then fire targets.
     fn pickup_finish(&mut self, e: EntId, other: EntId, delay: Option<f32>) {
         self.pickup_hide(e);
+        let time = self.time();
+        self.bot_item_taken(e, other, time);
         if let Some(delay) = delay {
-            let time = self.time();
             let ent = &mut self.entities[e];
             ent.v.nextthink = time + delay;
             ent.think = Think::SubRegen;
@@ -195,6 +195,7 @@ impl GameState {
             // Megahealth: rot back down later, no normal respawn.
             self.entities[other].v.items = self.entities[other].v.items.with(Items::SUPERHEALTH);
             self.pickup_hide(e);
+            self.bot_item_taken(e, other, time);
             if self.level.deathmatch != 4 {
                 let ent = &mut self.entities[e];
                 ent.v.nextthink = time + 5.0;
@@ -540,8 +541,7 @@ impl GameState {
             it.think = Think::SubRemove;
         }
         self.set_model(item, model);
-        self
-            .set_size(item, Vec3::new(-16.0, -16.0, 0.0), Vec3::new(16.0, 16.0, 56.0));
+        self.set_size(item, Vec3::new(-16.0, -16.0, 0.0), Vec3::new(16.0, 16.0, 56.0));
         item
     }
 
@@ -721,8 +721,7 @@ impl GameState {
         self.entities[e].set_touch(Touch::ItemArmor);
         self.set_item_model(e, Model::PROGS_ARMOR);
         self.entities[e].v.skin = skin;
-        self
-            .set_size(e, Vec3::new(-16.0, -16.0, 0.0), Vec3::new(16.0, 16.0, 56.0));
+        self.set_size(e, Vec3::new(-16.0, -16.0, 0.0), Vec3::new(16.0, 16.0, 56.0));
         self.start_item(e);
         true
     }
@@ -749,8 +748,7 @@ impl GameState {
         self.set_item_model(e, model);
         self.entities[e].set_touch(Touch::ItemWeapon);
         self.entities[e].netname = Some(spec.pickup_name.into());
-        self
-            .set_size(e, Vec3::new(-16.0, -16.0, 0.0), Vec3::new(16.0, 16.0, 56.0));
+        self.set_size(e, Vec3::new(-16.0, -16.0, 0.0), Vec3::new(16.0, 16.0, 56.0));
         self.start_item(e);
         true
     }
@@ -806,8 +804,7 @@ impl GameState {
             ent.v.items = item_bit.as_f32();
             ent.v.effects = ent.v.effects.with(effect);
         }
-        self
-            .set_size(e, Vec3::new(-16.0, -16.0, -24.0), Vec3::new(16.0, 16.0, 32.0));
+        self.set_size(e, Vec3::new(-16.0, -16.0, -24.0), Vec3::new(16.0, 16.0, 32.0));
         self.start_item(e);
         true
     }

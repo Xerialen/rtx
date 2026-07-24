@@ -63,6 +63,10 @@ pub struct BotState {
     pub repath_time: f32,
     /// The route-progress watchdogs — three ways a bot notices it isn't getting anywhere.
     pub watchdog: Watchdog,
+    /// Per-bot flight recorder (`rtx_bot_debug`): a fixed, once-allocated ring of compact per-frame
+    /// [`rtx_auditlog::AuditFrame`] sensor snapshots, dumped on demand via the control channel's
+    /// `audit` verb instead of flooding the server console. Budget is `rtx_bot_auditlog` MB.
+    pub audit: rtx_auditlog::Audit,
     /// Per-frame toggle, flipped each tick, used to *pulse* buttons that QW only acts on at a
     /// press edge (the respawn key, which needs a release between presses).
     pub pulse: bool,
@@ -75,6 +79,9 @@ pub struct BotState {
     /// Strategic fight posture derived from relative effective strength/firepower. Recovery owns
     /// movement toward a useful item; Hold/Press leave full movement to combat.
     pub posture: CombatPosture,
+    /// Expiring, timestamped team-strategy advice. The oracle worker never touches this directly;
+    /// the main bot frame validates and delivers addressed nuggets.
+    pub oracle: crate::bot::oracle::OracleInbox,
     /// Audience-wander state (a round mode's stands). See [`Wander`].
     pub wander: Wander,
     /// Anti-drown surface target: the air spot the nearest-breathable flood picked, with a short TTL
@@ -110,6 +117,10 @@ pub struct BotState {
     /// The bunnyhop controller (see [`crate::bot::bhop`]): the hop-cycle phase machine, sticky
     /// strafe sign, engage hysteresis, and telemetry.
     pub bhop: crate::bot::bhop::Bhop,
+    /// The predictive hop plan (see [`crate::bot::hopsim`]) being flown on a ledge corridor: the aim
+    /// point and gain whose rolled-out landing stays on the route. Planned on a grounded frame, held
+    /// across the hop's flight, and cleared on landing. `None` off ledge corridors or when boxed.
+    pub hop: Option<crate::bot::hopsim::HopPlan>,
     /// A committed [`LinkKind::SpeedJump`](crate::navmesh::LinkKind::SpeedJump) leg (a bhop run-up +
     /// leap) being flown. `None` = not on a speed jump. See [`Commit`].
     pub sj: Option<Commit>,
@@ -172,7 +183,35 @@ impl BotState {
 
     /// Whether `item` is currently on the avoid ring (an unexpired entry).
     pub fn is_avoided(&self, item: u32, now: f32) -> bool {
-        self.goal.avoid_items.iter().any(|&(it, until)| it == item && now < until)
+        self.goal
+            .avoid_items
+            .iter()
+            .any(|&(it, until)| it == item && now < until)
+    }
+
+    /// An item this bot was planning around has just left the floor. Drop a stale current/next
+    /// reference immediately; if it was the first leg, preserve the already-planned continuation.
+    /// The picker also gets a short avoid entry so an incidental touch cannot be selected straight
+    /// back while the authoritative respawn state is settling.
+    pub(crate) fn item_taken(&mut self, item: u32, now: f32, picked_by_me: bool, avoid_for: f32) {
+        if picked_by_me {
+            self.mark_avoid(item, now + avoid_for);
+        }
+        if self.goal.item == item {
+            if self.goal.next_item != 0 {
+                (self.goal.item, self.goal.item_cell, self.goal.commit) =
+                    (self.goal.next_item, self.goal.next_cell, self.goal.next_commit);
+                self.goal.since = now;
+            } else {
+                self.goal.item = 0;
+                self.goal.item_cell = 0;
+                self.goal.commit = GoalCommit::None;
+            }
+            (self.goal.next_item, self.goal.next_cell, self.goal.next_commit) = (0, 0, GoalCommit::None);
+            self.goal.next_pick = now;
+        } else if self.goal.next_item == item {
+            (self.goal.next_item, self.goal.next_cell, self.goal.next_commit) = (0, 0, GoalCommit::None);
+        }
     }
 
     /// Abandon the active item goal through the shared failure tail: avoid it, discard any bounded
@@ -764,6 +803,10 @@ pub struct Puppet {
     /// when it last improved. No improvement for a while ⇒ the target is (currently) inaccessible.
     pub best_dist: f32,
     pub best_since: f32,
+    /// Highest altitude the goto seeker has reached — a vertical climb (a spiral to a target above)
+    /// holds XY distance near-constant while ascending correctly, so a rise counts as progress and
+    /// resets the stall clock. Rebased to `-inf` when the goto order is (re)issued.
+    pub best_z: f32,
     /// Per-frame flight trace of a rocket-jump attempt: `(time, origin, velocity)` sampled each frame
     /// (post-move) while a RocketJump order is active, so the harness can compare the *actual* arc to
     /// the offline solve's prediction. Capped and cleared when the attempt's result is emitted.
@@ -883,6 +926,10 @@ pub struct Watchdog {
     /// way the displacement stuck-detector can't see (orbiting, wall-sliding) — penalize and re-path.
     pub progress_best: f32,
     pub progress_since: f32,
+    /// Highest floor altitude reached on the current route (landings only). Gaining altitude counts as
+    /// progress even when `progress_best` plateaus — so a spiral-staircase climb, whose horizontal
+    /// orbit holds route-remaining near-constant, doesn't false-trip the progress watchdog.
+    pub climb_best: f32,
     /// Origin on the previous bot frame, to detect a teleport (a large instant jump) and re-path
     /// from the landing spot.
     pub last_origin: Vec3,
@@ -938,4 +985,44 @@ pub enum HookPhase {
     Reel,
     /// Released: riding the parabola with no input until it lands.
     Ballistic,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taken_goal_promotes_its_continuation_and_avoids_for_the_picker() {
+        let mut bot = BotState::default();
+        bot.goal.item = 10;
+        bot.goal.item_cell = 100;
+        bot.goal.commit = GoalCommit::Pickup;
+        bot.goal.next_item = 20;
+        bot.goal.next_cell = 200;
+        bot.goal.next_commit = GoalCommit::Powerup;
+
+        bot.item_taken(10, 5.0, true, 3.0);
+
+        assert_eq!((bot.goal.item, bot.goal.item_cell), (20, 200));
+        assert_eq!(bot.goal.commit, GoalCommit::Powerup);
+        assert_eq!(bot.goal.next_item, 0);
+        assert!(bot.is_avoided(10, 7.9));
+        assert!(!bot.is_avoided(10, 8.0));
+    }
+
+    #[test]
+    fn teammate_taking_a_watched_item_releases_the_stale_goal() {
+        let mut bot = BotState::default();
+        bot.goal.item = 10;
+        bot.goal.item_cell = 100;
+        bot.goal.commit = GoalCommit::Pickup;
+
+        bot.item_taken(10, 5.0, false, 3.0);
+
+        assert_eq!(bot.goal.item, 0);
+        assert_eq!(bot.goal.item_cell, 0);
+        assert_eq!(bot.goal.commit, GoalCommit::None);
+        assert_eq!(bot.goal.next_pick, 5.0);
+        assert!(!bot.is_avoided(10, 5.0));
+    }
 }

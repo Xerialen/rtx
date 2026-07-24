@@ -267,7 +267,10 @@ where
     for<'a> <T as BinRead>::Args<'a>: Default,
 {
     if !(lump.size as usize).is_multiple_of(rec_size) {
-        eprintln!("navview: {what} lump size {} is not a multiple of {rec_size} — not this BSP version", lump.size);
+        eprintln!(
+            "navview: {what} lump size {} is not a multiple of {rec_size} — not this BSP version",
+            lump.size
+        );
         return None;
     }
     let count = lump.size as usize / rec_size;
@@ -386,7 +389,12 @@ pub fn parse_render_mesh(bytes: &[u8]) -> Option<RenderMesh> {
             // Liquid: emit flat tinted triangles into the water buffer (drawn additive, double-sided
             // — no winding fixup needed).
             let color = liquid_tint(kind);
-            fan(&loop_verts, |v| water.push(LineVertex { pos: v.to_array(), color }));
+            fan(&loop_verts, |v| {
+                water.push(LineVertex {
+                    pos: v.to_array(),
+                    color,
+                })
+            });
             continue;
         }
 
@@ -397,7 +405,11 @@ pub fn parse_render_mesh(bytes: &[u8]) -> Option<RenderMesh> {
             .get(face.plane as usize)
             .map(|p| {
                 let n = Vec3::from_array(p.normal);
-                if face.side != 0 { -n } else { n }
+                if face.side != 0 {
+                    -n
+                } else {
+                    n
+                }
             })
             .map(|n| n.normalize_or(Vec3::Z))
             .unwrap_or_else(|| newell_normal(&loop_verts));
@@ -405,14 +417,24 @@ pub fn parse_render_mesh(bytes: &[u8]) -> Option<RenderMesh> {
             loop_verts.reverse();
         }
         let n = front_n.to_array();
-        fan(&loop_verts, |v| vertices.push(MeshVertex { pos: v.to_array(), normal: n }));
+        fan(&loop_verts, |v| {
+            vertices.push(MeshVertex {
+                pos: v.to_array(),
+                normal: n,
+            })
+        });
     }
 
     if vertices.is_empty() && water.is_empty() {
         eprintln!("navview: BSP parsed but produced no world faces");
         return None;
     }
-    Some(RenderMesh { vertices, water, mins, maxs })
+    Some(RenderMesh {
+        vertices,
+        water,
+        mins,
+        maxs,
+    })
 }
 
 /// Fan-triangulate a vertex loop, calling `emit` for each of the `(v0, v[i], v[i+1])` corners.
@@ -461,7 +483,10 @@ pub const LINK_KINDS: [LinkKind; NUM_LINK_KINDS] = [
 
 /// Index of a kind within [`LINK_KINDS`] — the slot of its visibility flag.
 pub fn kind_index(kind: LinkKind) -> usize {
-    LINK_KINDS.iter().position(|&k| k == kind).expect("every LinkKind is in LINK_KINDS")
+    LINK_KINDS
+        .iter()
+        .position(|&k| k == kind)
+        .expect("every LinkKind is in LINK_KINDS")
 }
 
 /// Human-readable label for a link kind (the checkbox text).
@@ -492,7 +517,7 @@ pub fn link_color(kind: LinkKind) -> [f32; 3] {
         LinkKind::Plat => [0.20, 0.90, 0.90],       // cyan (needs live entities; not built offline)
         LinkKind::Teleport => [0.25, 0.45, 1.00],   // blue (needs live entities)
         LinkKind::Hook => [0.60, 0.30, 1.00],       // purple
-        LinkKind::RocketJump => [1.00, 1.00, 1.00],  // white
+        LinkKind::RocketJump => [1.00, 1.00, 1.00], // white
     }
 }
 
@@ -527,11 +552,15 @@ pub fn nav_lines(graph: &NavGraph, visible: &[bool; NUM_LINK_KINDS]) -> Vec<Line
             LinkKind::JumpGap => arc_pts(a, b, JUMP_APEX),
             LinkKind::DoubleJump => arc_pts(a, b, DOUBLE_ARC_PEAK),
             LinkKind::SpeedJump => match graph.speed_jump_of_link(li) {
-                Some(sj) => std::iter::once(a).chain(ballistic_pts(sj.takeoff, b, sj.airtime)).collect(),
+                Some(sj) => std::iter::once(a)
+                    .chain(ballistic_pts(sj.takeoff, b, sj.airtime))
+                    .collect(),
                 None => vec![a, b],
             },
             LinkKind::RocketJump => match graph.rocket_jump_of_link(li) {
-                Some(rj) => std::iter::once(a).chain(launch_pts(rj.pos_blast, rj.v0, rj.airtime)).collect(),
+                Some(rj) => std::iter::once(a)
+                    .chain(launch_pts(rj.pos_blast, rj.v0, rj.airtime))
+                    .collect(),
                 None => vec![a, b],
             },
             _ => vec![a, b],
@@ -570,10 +599,182 @@ pub fn nav_surface(graph: &NavGraph, bsp: &Bsp) -> Vec<LineVertex> {
                 if !supported {
                     continue;
                 }
-                let corner = |dx: f32, dy: f32| LineVertex { pos: [cx + dx * hs, cy + dy * hs, z], color };
-                let (a, b, c, d) = (corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0));
+                let corner = |dx: f32, dy: f32| LineVertex {
+                    pos: [cx + dx * hs, cy + dy * hs, z],
+                    color,
+                };
+                let (a, b, c, d) = (
+                    corner(-1.0, -1.0),
+                    corner(1.0, -1.0),
+                    corner(1.0, 1.0),
+                    corner(-1.0, 1.0),
+                );
                 out.extend_from_slice(&[a, b, c, a, c, d]);
             }
+        }
+    }
+    out
+}
+
+// --- live overlay (the running game's current route + bot, via the control channel) ------------
+
+/// Bright red for the bot's current path.
+const PATH_COLOR: [f32; 3] = [1.0, 0.15, 0.12];
+/// Yellow opaque faces for the live bot cube.
+const BOT_COLOR: [f32; 3] = [0.95, 0.78, 0.08];
+/// Dark outline for the bot cube's wireframe edges (contrast against the yellow faces).
+const BOT_EDGE: [f32; 3] = [0.12, 0.08, 0.0];
+
+/// Filled red tiles marking the bot's current route — one 32u quad per route cell, straight from the
+/// game's leg origins, lifted 3u so they sit just over the green walkable surface (which is at +1).
+pub fn path_tiles(origins: &[Vec3]) -> Vec<LineVertex> {
+    let hs = GRID * 0.5;
+    let mut out = Vec::with_capacity(origins.len() * 6);
+    for o in origins {
+        let z = o.z - FEET_DROP + 3.0;
+        let corner = |dx: f32, dy: f32| LineVertex {
+            pos: [o.x + dx * hs, o.y + dy * hs, z],
+            color: PATH_COLOR,
+        };
+        let (a, b, c, d) = (
+            corner(-1.0, -1.0),
+            corner(1.0, -1.0),
+            corner(1.0, 1.0),
+            corner(-1.0, 1.0),
+        );
+        out.extend_from_slice(&[a, b, c, a, c, d]);
+    }
+    out
+}
+
+/// Thick red ballistic arcs for the route's rocket-/speed-jump legs — an approximate parabola from
+/// takeoff to landing (the game reports only endpoints), drawn as several offset polylines so it reads
+/// as a fat line, since wgpu can't widen a `LineList`.
+pub fn path_arcs(legs: &[(Vec3, Vec3)]) -> Vec<LineVertex> {
+    let mut out = Vec::new();
+    for &(a, b) in legs {
+        let apex = a.z.max(b.z) + JUMP_APEX; // a plausible leap height above the higher endpoint
+        let arc = arc_pts(a, b, apex);
+        // A "plus" cross-section of offset copies — center plus ±3u in x/y and +3u up — to fake width.
+        for off in [
+            Vec3::ZERO,
+            Vec3::new(3.0, 0.0, 0.0),
+            Vec3::new(-3.0, 0.0, 0.0),
+            Vec3::new(0.0, 3.0, 0.0),
+            Vec3::new(0.0, -3.0, 0.0),
+            Vec3::new(0.0, 0.0, 3.0),
+        ] {
+            for w in arc.windows(2) {
+                out.push(LineVertex {
+                    pos: (w[0] + off).to_array(),
+                    color: PATH_COLOR,
+                });
+                out.push(LineVertex {
+                    pos: (w[1] + off).to_array(),
+                    color: PATH_COLOR,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The 8 corners of the QW player hull (`mins -16,-16,-24` / `maxs 16,16,32`) centred on `origin`,
+/// indexed by bit 0=x, 1=y, 2=z picking lo/hi per axis.
+fn bot_corners(origin: Vec3) -> [Vec3; 8] {
+    let lo = origin + Vec3::new(-16.0, -16.0, -24.0);
+    let hi = origin + Vec3::new(16.0, 16.0, 32.0);
+    let c = |i: usize| {
+        Vec3::new(
+            if i & 1 == 0 { lo.x } else { hi.x },
+            if i & 2 == 0 { lo.y } else { hi.y },
+            if i & 4 == 0 { lo.z } else { hi.z },
+        )
+    };
+    [c(0), c(1), c(2), c(3), c(4), c(5), c(6), c(7)]
+}
+
+/// The live bot as an **opaque** box the size of the QW player hull, centred on `origin` — 6 faces × 2
+/// triangles, solid yellow. Pair with [`bot_box`] for the wireframe edges over it. `TriangleList`.
+pub fn bot_faces(origin: Vec3) -> Vec<LineVertex> {
+    let v = bot_corners(origin);
+    // Each face is 4 corner indices in ring order; drawn double-sided so winding doesn't matter.
+    const FACES: [[usize; 4]; 6] = [
+        [0, 1, 3, 2], // z-lo
+        [4, 6, 7, 5], // z-hi
+        [0, 4, 5, 1], // y-lo
+        [2, 3, 7, 6], // y-hi
+        [0, 2, 6, 4], // x-lo
+        [1, 5, 7, 3], // x-hi
+    ];
+    let mut out = Vec::with_capacity(36);
+    for f in FACES {
+        let q = [v[f[0]], v[f[1]], v[f[2]], v[f[3]]];
+        for idx in [0, 1, 2, 0, 2, 3] {
+            out.push(LineVertex {
+                pos: q[idx].to_array(),
+                color: BOT_COLOR,
+            });
+        }
+    }
+    out
+}
+
+/// The live bot's 12 wireframe edges (dark, drawn over the opaque [`bot_faces`]). `LineList` pairs.
+pub fn bot_box(origin: Vec3) -> Vec<LineVertex> {
+    let v = bot_corners(origin);
+    const EDGES: [(usize, usize); 12] = [
+        (0, 1),
+        (1, 3),
+        (3, 2),
+        (2, 0), // bottom
+        (4, 5),
+        (5, 7),
+        (7, 6),
+        (6, 4), // top
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7), // verticals
+    ];
+    let mut out = Vec::with_capacity(24);
+    for (i, j) in EDGES {
+        for p in [v[i], v[j]] {
+            out.push(LineVertex {
+                pos: p.to_array(),
+                color: BOT_EDGE,
+            });
+        }
+    }
+    out
+}
+
+/// A wireframe outline of every navmesh cell — the 32u tile border under each cell, just over the
+/// filled walkable surface — so the individual cells read as a grid on top of the flat fill. `LineList`
+/// pairs, dim grey-green.
+pub fn nav_cell_wire(graph: &NavGraph) -> Vec<LineVertex> {
+    const WIRE: [f32; 3] = [0.10, 0.30, 0.12];
+    let hs = GRID * 0.5;
+    let mut out = Vec::with_capacity(graph.cells.len() * 8);
+    for cell in &graph.cells {
+        let o = cell.origin;
+        let z = o.z - FEET_DROP + 2.0; // just above the filled surface (which sits at +1)
+        let corner = |dx: f32, dy: f32| Vec3::new(o.x + dx * hs, o.y + dy * hs, z);
+        let ring = [
+            corner(-1.0, -1.0),
+            corner(1.0, -1.0),
+            corner(1.0, 1.0),
+            corner(-1.0, 1.0),
+        ];
+        for k in 0..4 {
+            out.push(LineVertex {
+                pos: ring[k].to_array(),
+                color: WIRE,
+            });
+            out.push(LineVertex {
+                pos: ring[(k + 1) % 4].to_array(),
+                color: WIRE,
+            });
         }
     }
     out
@@ -611,8 +812,16 @@ pub fn nav_clusters(graph: &NavGraph, bsp: &Bsp) -> Vec<LineVertex> {
                 if !supported {
                     continue;
                 }
-                let corner = |dx: f32, dy: f32| LineVertex { pos: [cx + dx * hs, cy + dy * hs, z], color };
-                let (a, b, c, d) = (corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0));
+                let corner = |dx: f32, dy: f32| LineVertex {
+                    pos: [cx + dx * hs, cy + dy * hs, z],
+                    color,
+                };
+                let (a, b, c, d) = (
+                    corner(-1.0, -1.0),
+                    corner(1.0, -1.0),
+                    corner(1.0, 1.0),
+                    corner(-1.0, 1.0),
+                );
                 out.extend_from_slice(&[a, b, c, a, c, d]);
             }
         }
@@ -636,15 +845,23 @@ fn push_gradient(out: &mut Vec<LineVertex>, path: &[Vec3], color: [f32; 3]) {
         let c0 = shade(acc / total);
         acc += w[0].distance(w[1]);
         let c1 = shade(acc / total);
-        out.push(LineVertex { pos: w[0].to_array(), color: c0 });
-        out.push(LineVertex { pos: w[1].to_array(), color: c1 });
+        out.push(LineVertex {
+            pos: w[0].to_array(),
+            color: c0,
+        });
+        out.push(LineVertex {
+            pos: w[1].to_array(),
+            color: c1,
+        });
     }
 }
 
 /// Sample the shared jump parabola (`rtx_nav::navmesh::arc_point`) — the exact curve the build
 /// cleared — into `ARC_SEGMENTS + 1` points.
 fn arc_pts(a: Vec3, b: Vec3, apex: f32) -> Vec<Vec3> {
-    (0..=ARC_SEGMENTS).map(|i| arc_point(a, b, apex, i as f32 / ARC_SEGMENTS as f32)).collect()
+    (0..=ARC_SEGMENTS)
+        .map(|i| arc_point(a, b, apex, i as f32 / ARC_SEGMENTS as f32))
+        .collect()
 }
 
 /// A gravity parabola from `a` to `b` over airtime `t_land`: xy is linear, z fits both endpoints with
@@ -734,12 +951,19 @@ mod tests {
                 stopspeed: 100.0,
                 curl: true,
             }),
-            Some(RocketJumpParams { gravity: 800.0, rj_extra: 0.0 }),
+            Some(RocketJumpParams {
+                gravity: 800.0,
+                rj_extra: 0.0,
+            }),
         );
 
         // No jump-type link may take off from a submerged cell — you can't jump underwater.
-        let jump_kinds =
-            [LinkKind::JumpGap, LinkKind::DoubleJump, LinkKind::SpeedJump, LinkKind::RocketJump];
+        let jump_kinds = [
+            LinkKind::JumpGap,
+            LinkKind::DoubleJump,
+            LinkKind::SpeedJump,
+            LinkKind::RocketJump,
+        ];
         let submerged = graph.cells.iter().filter(|c| bsp.is_liquid_at(c.origin)).count();
         for link in &graph.links {
             if jump_kinds.contains(&link.kind) {
@@ -772,16 +996,31 @@ mod tests {
 
         let surface = nav_surface(&graph, &bsp);
         // Each cell emits 0..=SURF_SUB² supported sub-quads, 6 verts (2 triangles) each.
-        assert!(surface.len().is_multiple_of(6), "surface verts are 2-triangle sub-quads");
-        assert!(!surface.is_empty(), "a real map has standable footprint under its cells");
+        assert!(
+            surface.len().is_multiple_of(6),
+            "surface verts are 2-triangle sub-quads"
+        );
+        assert!(
+            !surface.is_empty(),
+            "a real map has standable footprint under its cells"
+        );
         let max = graph.cells.len() * (SURF_SUB * SURF_SUB) as usize * 6;
-        assert!(surface.len() <= max, "surface can't exceed a full SURF_SUB² tiling per cell");
-        assert!(surface.iter().all(|v| v.color == link_color(LinkKind::Walk)), "surface tiles are Walk-green");
+        assert!(
+            surface.len() <= max,
+            "surface can't exceed a full SURF_SUB² tiling per cell"
+        );
+        assert!(
+            surface.iter().all(|v| v.color == link_color(LinkKind::Walk)),
+            "surface tiles are Walk-green"
+        );
 
         let all_visible = [true; NUM_LINK_KINDS];
         let lines = nav_lines(&graph, &all_visible);
         assert!(lines.len().is_multiple_of(2), "lines are LineList pairs");
-        assert!(!lines.is_empty(), "a real map should have non-Walk links (steps/jumps/drops)");
+        assert!(
+            !lines.is_empty(),
+            "a real map should have non-Walk links (steps/jumps/drops)"
+        );
         assert!(
             !lines.iter().any(|v| v.color == link_color(LinkKind::Walk)),
             "Walk links must be excluded from the line overlay (they are the surface)"
@@ -789,7 +1028,16 @@ mod tests {
 
         // Hiding a kind removes exactly its lines; hiding all leaves nothing.
         let none_visible = [false; NUM_LINK_KINDS];
-        assert!(nav_lines(&graph, &none_visible).is_empty(), "no kinds visible → no lines");
-        eprintln!("{}: {} cells → {} surface verts, {} line verts", path, graph.cells.len(), surface.len(), lines.len());
+        assert!(
+            nav_lines(&graph, &none_visible).is_empty(),
+            "no kinds visible → no lines"
+        );
+        eprintln!(
+            "{}: {} cells → {} surface verts, {} line verts",
+            path,
+            graph.cells.len(),
+            surface.len(),
+            lines.len()
+        );
     }
 }

@@ -8,6 +8,7 @@
 
 mod geom;
 mod gpu;
+mod live;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -30,7 +31,18 @@ use gpu::Gpu;
 /// Delivered from the background navmesh-build thread back to the event loop. The BSP is parsed on
 /// the main thread and shared into the worker, so it rides back alongside the finished graph.
 enum UserEvent {
-    NavBuilt { generation: u64, bsp: Arc<Bsp>, graph: NavGraph },
+    NavBuilt {
+        generation: u64,
+        bsp: Arc<Bsp>,
+        graph: NavGraph,
+    },
+    /// A live route poll from a running game: the bot's origin plus its current route legs.
+    Live(Box<rtx_ctlproto::RouteResp>),
+    /// The map BSP fetched over the control channel — so `--live` needn't be given a local `.bsp`
+    /// (and works for maps that live only inside a `.pak`, which the game reads via the engine FS).
+    Bsp(Box<rtx_ctlproto::BspResp>),
+    /// The live control-channel connection came up (`true`) or dropped (`false`).
+    LiveConnected(bool),
 }
 
 /// A noclip fly camera: a position plus yaw/pitch look angles (Quake Z-up, right-handed).
@@ -64,7 +76,11 @@ impl FlyCamera {
 
 impl Default for FlyCamera {
     fn default() -> Self {
-        FlyCamera { pos: Vec3::new(-256.0, 0.0, 128.0), yaw: 0.0, pitch: -0.3 }
+        FlyCamera {
+            pos: Vec3::new(-256.0, 0.0, 128.0),
+            yaw: 0.0,
+            pitch: -0.3,
+        }
     }
 }
 
@@ -87,6 +103,18 @@ struct App {
     visible: [bool; NUM_LINK_KINDS],
     /// Tint the walkable surface by LOD cluster instead of the flat walk color — the hierarchy overlay.
     clusters: bool,
+    /// Draw the per-cell wireframe grid over the filled walkable surface.
+    cells: bool,
+    /// Mapname (no extension) of the currently loaded BSP, so a repeated control-channel BSP fetch
+    /// (e.g. after a reconnect) skips rebuilding the navmesh for a map we already have.
+    loaded_map: Option<String>,
+    /// A BSP fetched over the control channel before the window/GPU existed; loaded once `resumed`
+    /// brings the renderer up.
+    pending_bsp: Option<Box<rtx_ctlproto::BspResp>>,
+    /// Whether the `--live` poller was started (so the panel shows a connection status).
+    live_mode: bool,
+    /// Whether the live control-channel poller is currently connected to a running game.
+    live_connected: bool,
     egui_ctx: egui::Context,
     /// egui's winit input translator; created with the window in `resumed`.
     egui_state: Option<egui_winit::State>,
@@ -114,6 +142,11 @@ impl App {
             nav: None,
             visible: [true; NUM_LINK_KINDS],
             clusters: false,
+            cells: true,
+            loaded_map: None,
+            pending_bsp: None,
+            live_mode: false,
+            live_connected: false,
             egui_ctx: egui::Context::default(),
             egui_state: None,
         }
@@ -122,7 +155,9 @@ impl App {
     /// Regenerate and upload the navmesh overlay (filled walkable surface + colored link lines) from
     /// the current graph and path-type visibility. Cheap enough to redo on every toggle change.
     fn rebuild_overlay(&mut self) {
-        let (Some(gpu), Some((bsp, graph))) = (self.gpu.as_mut(), self.nav.as_ref()) else { return };
+        let (Some(gpu), Some((bsp, graph))) = (self.gpu.as_mut(), self.nav.as_ref()) else {
+            return;
+        };
         if !self.visible[geom::kind_index(rtx_nav::navmesh::LinkKind::Walk)] {
             gpu.set_surface(&[]);
         } else if self.clusters {
@@ -131,9 +166,38 @@ impl App {
             gpu.set_surface(&geom::nav_surface(graph, bsp));
         }
         gpu.set_lines(&geom::nav_lines(graph, &self.visible));
+        if self.cells {
+            gpu.set_cellwire(&geom::nav_cell_wire(graph));
+        } else {
+            gpu.set_cellwire(&[]);
+        }
         if let Some(w) = &self.window {
             w.request_redraw();
         }
+    }
+
+    /// Rebuild the live overlay (route tiles + rocket/speed-jump arcs + bot cube) from one route poll.
+    /// The cells and arcs come straight from the game's leg world coordinates, so they align with the
+    /// map regardless of whether navview's own navmesh build matches the game's exactly.
+    fn apply_live(&mut self, route: &rtx_ctlproto::RouteResp) {
+        let Some(gpu) = self.gpu.as_mut() else { return };
+        // Path cells: each leg's source cell, plus the final leg's target.
+        let mut origins: Vec<Vec3> = route.legs.iter().map(|l| Vec3::from_array(l.src)).collect();
+        if let Some(last) = route.legs.last() {
+            origins.push(Vec3::from_array(last.tgt));
+        }
+        // Only the ballistic legs get the thick red arc.
+        let arcs: Vec<(Vec3, Vec3)> = route
+            .legs
+            .iter()
+            .filter(|l| l.kind == "rocketjump" || l.kind == "speedjump")
+            .map(|l| (Vec3::from_array(l.src), Vec3::from_array(l.tgt)))
+            .collect();
+        let origin = Vec3::from_array(route.origin);
+        gpu.set_path(&geom::path_tiles(&origins));
+        gpu.set_arcs(&geom::path_arcs(&arcs));
+        gpu.set_bot_faces(&geom::bot_faces(origin));
+        gpu.set_bot(&geom::bot_box(origin));
     }
 
     /// Run one egui frame and render the scene + UI. egui is cheap; a toggle change regenerates the
@@ -148,12 +212,20 @@ impl App {
         let ctx = self.egui_ctx.clone();
         let mut visible = self.visible;
         let mut clusters = self.clusters;
-        let full = ctx.run_ui(raw_input, |ui| build_panel(ui, &mut visible, &mut clusters));
-        self.egui_state.as_mut().unwrap().handle_platform_output(&window, full.platform_output);
+        let mut cells = self.cells;
+        let live = self.live_mode.then_some(self.live_connected);
+        let full = ctx.run_ui(raw_input, |ui| {
+            build_panel(ui, &mut visible, &mut clusters, &mut cells, live)
+        });
+        self.egui_state
+            .as_mut()
+            .unwrap()
+            .handle_platform_output(&window, full.platform_output);
 
-        if visible != self.visible || clusters != self.clusters {
+        if visible != self.visible || clusters != self.clusters || cells != self.cells {
             self.visible = visible;
             self.clusters = clusters;
+            self.cells = cells;
             self.rebuild_overlay();
         }
 
@@ -169,11 +241,12 @@ impl App {
         }
     }
 
-    /// Load a BSP: show its grey geometry immediately, then build the navmesh on a worker thread.
+    /// Load a BSP from disk: show its grey geometry immediately, then build the navmesh off-thread.
     fn load(&mut self, path: &Path) {
-        let Some(gpu) = self.gpu.as_mut() else { return };
-        let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
@@ -181,7 +254,15 @@ impl App {
                 return;
             }
         };
-        let Some(mesh) = geom::parse_render_mesh(&bytes) else {
+        self.load_bytes(&bytes, &name);
+    }
+
+    /// Load a BSP already in memory (from disk, or fetched over the control channel). Uploads the
+    /// grey geometry immediately and builds the navmesh on a worker thread. `name` may carry a
+    /// `.bsp` suffix or not; the stem is remembered in [`Self::loaded_map`] to dedupe refetches.
+    fn load_bytes(&mut self, bytes: &[u8], name: &str) {
+        let Some(gpu) = self.gpu.as_mut() else { return };
+        let Some(mesh) = geom::parse_render_mesh(bytes) else {
             self.set_title(&format!("navview — {name}: not a supported BSP"));
             return;
         };
@@ -195,10 +276,11 @@ impl App {
         if let Some(w) = &self.window {
             w.request_redraw();
         }
+        self.loaded_map = Some(name.strip_suffix(".bsp").unwrap_or(name).to_string());
 
         // Parse the BSP once on the main thread; the worker shares it (`Arc`) to build, and it rides
         // back with the graph for the overlay's liquid/hull queries.
-        let Some(bsp) = Bsp::parse(&bytes).map(Arc::new) else {
+        let Some(bsp) = Bsp::parse(bytes).map(Arc::new) else {
             self.set_title(&format!("navview — {name}: BSP parse failed"));
             return;
         };
@@ -224,7 +306,10 @@ impl App {
                     stopspeed: 100.0,
                     curl: true,
                 }),
-                Some(RocketJumpParams { gravity: 800.0, rj_extra: 0.0 }),
+                Some(RocketJumpParams {
+                    gravity: 800.0,
+                    rj_extra: 0.0,
+                }),
             );
             let _ = proxy.send_event(UserEvent::NavBuilt { generation, bsp, graph });
         });
@@ -260,7 +345,9 @@ impl App {
         w.set_cursor_visible(!on);
         if on {
             // Locked is ideal but unsupported on some platforms — fall back to Confined.
-            let _ = w.set_cursor_grab(CursorGrabMode::Locked).or_else(|_| w.set_cursor_grab(CursorGrabMode::Confined));
+            let _ = w
+                .set_cursor_grab(CursorGrabMode::Locked)
+                .or_else(|_| w.set_cursor_grab(CursorGrabMode::Confined));
         } else {
             let _ = w.set_cursor_grab(CursorGrabMode::None);
         }
@@ -288,6 +375,10 @@ impl ApplicationHandler<UserEvent> for App {
         if let Some(path) = self.pending_path.take() {
             self.load(&path);
         }
+        // A BSP that arrived over the control channel before the GPU existed: load it now.
+        if let Some(bsp) = self.pending_bsp.take() {
+            self.load_bytes(&bsp.bytes, &bsp.map);
+        }
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -313,7 +404,11 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::DroppedFile(path) => self.load(&path),
             WindowEvent::RedrawRequested => self.draw(),
-            WindowEvent::MouseInput { state, button: MouseButton::Right, .. } => {
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Right,
+                ..
+            } => {
                 self.set_looking(state == ElementState::Pressed);
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -347,17 +442,39 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn user_event(&mut self, _el: &ActiveEventLoop, event: UserEvent) {
-        let UserEvent::NavBuilt { generation, bsp, graph } = event;
-        if generation != self.generation {
-            return; // a newer map was dropped while this build ran — discard the stale result
+        match event {
+            UserEvent::NavBuilt { generation, bsp, graph } => {
+                if generation != self.generation {
+                    return; // a newer map was dropped while this build ran — discard the stale result
+                }
+                self.set_title(&format!(
+                    "navview — {} cells, {} links",
+                    graph.cells.len(),
+                    graph.links.len()
+                ));
+                self.nav = Some((bsp, graph));
+                self.rebuild_overlay();
+            }
+            UserEvent::Live(route) => self.apply_live(&route),
+            UserEvent::Bsp(bsp) => {
+                // Skip if we already have this map (e.g. a refetch after a reconnect); otherwise load
+                // now, or stash it for `resumed` if the renderer isn't up yet.
+                if self.loaded_map.as_deref() == Some(bsp.map.as_str()) {
+                } else if self.gpu.is_some() {
+                    self.load_bytes(&bsp.bytes, &bsp.map);
+                } else {
+                    self.pending_bsp = Some(bsp);
+                }
+            }
+            UserEvent::LiveConnected(up) => {
+                self.live_connected = up;
+                if !up {
+                    if let Some(gpu) = self.gpu.as_mut() {
+                        gpu.clear_live();
+                    }
+                }
+            }
         }
-        self.set_title(&format!(
-            "navview — {} cells, {} links",
-            graph.cells.len(),
-            graph.links.len()
-        ));
-        self.nav = Some((bsp, graph));
-        self.rebuild_overlay();
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -374,13 +491,23 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         // Poll (drive continuous movement) only while a move key is held; otherwise idle in Wait.
-        el.set_control_flow(if self.keys.is_empty() { ControlFlow::Wait } else { ControlFlow::Poll });
+        el.set_control_flow(if self.keys.is_empty() {
+            ControlFlow::Wait
+        } else {
+            ControlFlow::Poll
+        });
     }
 }
 
 /// The path-type toggle panel: a checkbox per `LinkKind`, labelled and swatched in that kind's
 /// overlay color. `Walk` toggles the filled walkable surface; the rest toggle their colored lines.
-fn build_panel(ui: &mut egui::Ui, visible: &mut [bool; NUM_LINK_KINDS], clusters: &mut bool) {
+fn build_panel(
+    ui: &mut egui::Ui,
+    visible: &mut [bool; NUM_LINK_KINDS],
+    clusters: &mut bool,
+    cells: &mut bool,
+    live: Option<bool>,
+) {
     egui::Window::new("Path types")
         .default_pos([12.0, 12.0])
         .resizable(false)
@@ -395,6 +522,18 @@ fn build_panel(ui: &mut egui::Ui, visible: &mut [bool; NUM_LINK_KINDS], clusters
             }
             ui.separator();
             ui.checkbox(clusters, "LOD clusters");
+            ui.checkbox(cells, "Cell grid");
+            // Live overlay status (only when started with `--live`): the current route is drawn as
+            // red cells, ballistic legs as thick red arcs, and the bot as a yellow bounding box.
+            if let Some(connected) = live {
+                ui.separator();
+                let (col, txt) = if connected {
+                    (egui::Color32::from_rgb(255, 60, 40), "live: connected")
+                } else {
+                    (egui::Color32::GRAY, "live: waiting for game…")
+                };
+                ui.colored_label(col, txt);
+            }
         });
 }
 
@@ -402,7 +541,30 @@ fn main() {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
-    let pending_path = std::env::args().nth(1).map(PathBuf::from);
-    let mut app = App::new(proxy, pending_path);
+
+    // Args: an optional positional `.bsp` path, and `--live [port]` (or `--connect [port]`) to attach
+    // the live overlay to a running game's control channel (default `rtx_control_port` = 27950).
+    let mut pending_path = None;
+    let mut live_port: Option<u16> = None;
+    let mut args = std::env::args().skip(1).peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--live" | "--connect" => {
+                let port = args.peek().and_then(|s| s.parse::<u16>().ok());
+                if port.is_some() {
+                    args.next();
+                }
+                live_port = Some(port.unwrap_or(27950));
+            }
+            _ if pending_path.is_none() => pending_path = Some(PathBuf::from(arg)),
+            _ => {}
+        }
+    }
+
+    let mut app = App::new(proxy.clone(), pending_path);
+    if let Some(port) = live_port {
+        app.live_mode = true;
+        live::spawn(proxy, port);
+    }
     event_loop.run_app(&mut app).expect("run app");
 }

@@ -23,16 +23,29 @@ seam is the [`ClientHost`](#the-two-embodiments) trait plus one discipline — *
 into exactly the fields the brain already reads** — so the brain never learns a second way to ask
 a question:
 
-```text
-  the server module                      the network client
-  ─────────────────                      ──────────────────
-  engine fills EntVars        ──▶         mirror writes EntVars from svc_playerinfo /
-                                          svc_packetentities / stats
-  engine answers traceline,   ──▶         NetHost answers traceline from the map's own BSP
-    cvars                                 (rtx-nav) and its own cvar store
-  pointcontents from the parsed BSP (rtx-nav) in *both* — no longer an engine syscall
-  set_bot_cmd → SV_RunCmd      ──▶         cmd sink → clc_move on the wire
-  server runs trigger touches  ──▶         the server does it for us (we are a real client)
+```mermaid
+flowchart LR
+  subgraph SERVER["the server module"]
+    direction TB
+    s1["engine fills EntVars"]
+    s2["engine answers traceline, cvars"]
+    s3["set_bot_cmd → SV_RunCmd"]
+    s4["server runs trigger touches"]
+  end
+  subgraph CLIENT["the network client"]
+    direction TB
+    c1["mirror writes EntVars from svc_playerinfo /<br/>svc_packetentities / stats"]
+    c2["NetHost answers traceline from the map's own<br/>BSP (rtx-nav) and its own cvar store"]
+    c3["cmd sink → clc_move on the wire"]
+    c4["the server does it for us (we are a real client)"]
+  end
+  s1 -.->|same field| c1
+  s2 -.->|same answer| c2
+  s3 -.->|same cmd| c3
+  s4 -.->|same effect| c4
+  shared["pointcontents — parsed BSP (rtx-nav), identical in both, no engine syscall"]
+  SERVER -.-> shared
+  CLIENT -.-> shared
 ```
 
 ### Where the code lives
@@ -44,8 +57,10 @@ a question:
 | `crates/rtx-nav/` | The pure navigation core — BSP clip-hull reader, navmesh build & query, movement physics. No engine or game state; deterministic math that unit-tests without a host. |
 | `crates/rtx-proto/` | QuakeWorld + NetQuake wire protocols as pure codecs. |
 | `crates/rtx-client/` | The thin front-door binary that parses argv and calls `netclient::run`. |
-| `crates/navview/` | A wgpu/winit 3D viewer for the generated navmesh. |
-| `crates/rjmcp/` | An MCP bridge onto the control channel, for live rocket-jump tuning. |
+| `crates/rtx-nav-view/` | A wgpu/winit 3D viewer for the generated navmesh; with `--live` it overlays a running game's bot and route, fetching the map BSP over the control channel. |
+| `crates/rtx-ctlproto/` | The typed control-channel schema (request / reply / event) plus its length-framed msgpack codec, shared by the game and its clients. |
+| `crates/rtx-auditlog/` | A once-allocated per-bot ring of compact sensor frames; the MCP's `audit` tool decodes it. |
+| `crates/rtx-mcp/` | An MCP bridge onto the control channel, for live bot control and rocket-jump tuning. |
 
 The split between `rtx-game` and `rtx-nav` is the load-bearing one. `rtx-nav` sees only the parsed
 BSP and pure physics; it knows nothing about entities, items, or clients. That purity is what lets
@@ -58,19 +73,21 @@ The engine calls the module **once per bot frame for the whole squad**, not once
 `run_bots` (`bot/mod.rs`) loops the in-use bot edicts and calls `run_bot` on each. One `run_bot`
 is one bot's entire think for the frame, and it runs these stages in order:
 
-```text
-  sense ─▶ death/respawn ─▶ prearm_traversal ─▶ resolve_objective ─▶ weapons_hot
-    │                            (lock a         (perceive + goals      (mode
-    │                          committed jump)     + vigil)             lockout)
-    ▼
-  bot_link_pricing ─▶ plat_statuses ─▶ drown/burn override ─▶ race_line ─▶ steer
-    (A* surcharges,                     (reflex goal hijack)              (route →
-     incl. RJ fitness)                                                    command)
-    │
-    ▼
-  engage ─▶ water / item reclaim ─▶ projectile & grenade overlays ─▶ emit
-  (combat overlay,                    (dodge, shove, lob→shoot)      (compose usercmd,
-   if enemy in sight)                                                 set_bot_cmd)
+```mermaid
+flowchart TB
+  sense[sense] --> death[death / respawn]
+  death --> prearm["prearm_traversal<br/>(lock a committed jump)"]
+  prearm --> objective["resolve_objective<br/>(perceive + goals + vigil)"]
+  objective --> weapons["weapons_hot<br/>(mode lockout)"]
+  weapons --> pricing["bot_link_pricing<br/>(A* surcharges, incl. RJ fitness)"]
+  pricing --> plat[plat_statuses]
+  plat --> drown["drown / burn override<br/>(reflex goal hijack)"]
+  drown --> race[race_line]
+  race --> steer["steer<br/>(route → command)"]
+  steer --> engage["engage<br/>(combat overlay, if enemy in sight)"]
+  engage --> water[water / item reclaim]
+  water --> overlays["projectile & grenade overlays<br/>(dodge, shove, lob→shoot)"]
+  overlays --> emit["emit<br/>(compose usercmd, set_bot_cmd)"]
 ```
 
 | stage | function | what it does |
@@ -114,22 +131,20 @@ stairs, not a jump, because two shallow risers inside one grid span classify as 
 The graph is assembled in a fixed order — each pass layering richer links onto the static-hull
 cut beneath it:
 
-```text
-  entirely off the main thread (a pure function of the parsed BSP):
-
-    NavGraph::build            cells + walk/step/drop/jump links + ledge flags
-      → add_double_jumps       wider gaps an air-jump reaches
-      → add_speed_jumps        bhop-carried gaps (+ curl jumps)
-      → add_hooks              grappling-hook arcs
-      → add_rocket_jumps       rocket-blast arcs
-      → add_plats              func_plat lift boarding
-      → add_teleports          trigger_teleport pairs
-      → add_gates              button-gated door obstructions
-      → surcharge_under_plat_links
-      → flag_hazards           lava/slime cell + link surcharges (hull-0 pointcontents)
-      → flag_water             underwater cells + swim tax    (hull-0 pointcontents)
-      → build_reachability     SCC + transitive closure (O(1) "can A reach B?")
-      → build_lod              the coarse cluster/portal hierarchy (prices the liquid costs in)
+```mermaid
+flowchart TB
+  build["NavGraph::build<br/>cells + walk/step/drop/jump links + ledge flags"] --> djump["add_double_jumps<br/>wider gaps an air-jump reaches"]
+  djump --> sjump["add_speed_jumps<br/>bhop-carried gaps (+ curl jumps)"]
+  sjump --> hooks["add_hooks<br/>grappling-hook arcs"]
+  hooks --> rjump["add_rocket_jumps<br/>rocket-blast arcs"]
+  rjump --> plats["add_plats<br/>func_plat lift boarding"]
+  plats --> teleports["add_teleports<br/>trigger_teleport pairs"]
+  teleports --> gates["add_gates<br/>button-gated door obstructions"]
+  gates --> surcharge[surcharge_under_plat_links]
+  surcharge --> hazards["flag_hazards<br/>lava/slime cell + link surcharges (hull-0 pointcontents)"]
+  hazards --> water["flag_water<br/>underwater cells + swim tax (hull-0 pointcontents)"]
+  water --> reach["build_reachability<br/>SCC + transitive closure (O(1) can A reach B?)"]
+  reach --> lod["build_lod<br/>coarse cluster/portal hierarchy (prices the liquid costs in)"]
 ```
 
 The whole build is a **pure function of the BSP** — which is what makes it safe to run off-thread
@@ -477,6 +492,19 @@ In a team composition, coordination is always on (it is the *inferred enemy* mod
 CTF role assignment (attack / midfield / defense, escorts peeling for a carrier) is a mode concern
 — see [game modes](modes.md).
 
+The opt-in team oracle (`bot/oracle.rs`) adds a slower layer above these reflexes. The game thread
+copies observation-gated snapshots and events into an overwrite mailbox; a worker owns its backend
+state and the immutable `Arc<NavGraph>`, and returns addressed, expiring nuggets through another
+overwrite slot. It never holds an entity or host reference, never blocks a bot frame, and is joined
+before unload. Map, mode, and roster changes advance an epoch that invalidates queued work.
+
+Freshness is an explicit data dependency, not just a TTL. A nugget records when the worker decided
+and the newest evidence time behind its subject. Per-team revision clocks reject worker output or
+remove inbox advice when that team's evidence is newer. The authoritative outcome evaluator is
+main-thread-only and never feeds facts back into planning; randomized whole-team holdout episodes
+make its treated/control success rates a usable read on whether the advice is helping. CTF exercises
+snapshot and planning construction but deliberately skips inbox delivery.
+
 ## Movement execution
 
 Turning a route into a usercmd is the job of `bot/steer.rs` and the driver modules it calls. Steer
@@ -535,13 +563,12 @@ and abandon the chased goal, so the planner diverts instead of re-issuing the de
 
 - **Plats** — a bot holds a standoff 40 units outside a raised lift's footprint (standing under it
   resets its descent timer), boards when it lowers, and gives up after 8 seconds.
-- **Ledges** — on a navmesh cell flagged as an open-cored inner edge (the `ledge` flag), bhop is
-  vetoed, ground speed is capped (`rtx_bot_ledgecap`, 210 u/s), and a geometric ledge brake thrusts
-  backward when velocity drifts off-corridor toward the drop. A second, hazard-aware brake keys off
-  the near-field's `edge_ahead`: when a drop *or lava* edge lies within the bot's stopping distance
-  along its velocity, it reverses the wish and cancels the hop — killing the momentum that would
-  carry a fast bot over a lip even mid-bhop — and the stuck detector likewise holds its unwedge-jump
-  rather than launch a wedged bot off a lava lip.
+- **Ledges** — on a navmesh cell flagged as an open-cored inner edge (the `ledge` flag), near-field
+  steering bends the bhop bearing away from the drop while suppressing unsafe lateral zigzag. A
+  second, hazard-aware brake keys off the near-field's `edge_ahead`: when a drop *or lava* edge lies
+  within the bot's stopping distance along its velocity, it reverses the wish and cancels the hop —
+  killing the momentum that would carry a fast bot over a lip even mid-bhop — and the stuck detector
+  likewise holds its unwedge-jump rather than launch a wedged bot off a lava lip.
 - **Stairs** — risers drop the hop chain to a walk (a human runs *up* stairs), while the near-field
   glide tracks the treads.
 - **Water** — two reflexes override navigation entirely. When submerged with under five seconds of
@@ -690,7 +717,6 @@ gameplay knobs, is the [cvar reference](cvars.md).
 | `rtx_bot_par` | `1` | Fan goal floods across the worker pool; `0` = serial. |
 | `rtx_bot_nearfield` | `1` | Last-metre steering off the 8u clearance grid. |
 | `rtx_bot_glide` | `1` | Straighten the grid zigzag on a certified clear chord (sub-toggle of nearfield). |
-| `rtx_bot_ledgecap` | `210` | Careful-ledge walk-speed cap (u/s); `0` = full maxspeed. |
 | `rtx_bot_turnrate` | `0` | View turn-rate ceiling (deg/s); `0` = skill-scaled default. |
 | `rtx_bot_prof` | `10` | Seconds between profile reports; `0` = off. |
 | `rtx_control_port` | `0` | Localhost TCP for scripted bot puppetry and tuning. |

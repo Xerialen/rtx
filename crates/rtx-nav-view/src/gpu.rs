@@ -22,6 +22,8 @@ pub struct Gpu {
     water_pipeline: wgpu::RenderPipeline,
     surf_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
+    /// Opaque vertex-colored `TriangleList` (depth-writing) — the solid bot cube.
+    cube_pipeline: wgpu::RenderPipeline,
     camera_buf: wgpu::Buffer,
     camera_bind: wgpu::BindGroup,
     /// (buffer, vertex count) for the world mesh, the liquid surfaces, the walkable surface tiles,
@@ -30,6 +32,15 @@ pub struct Gpu {
     water_vbuf: Option<(wgpu::Buffer, u32)>,
     surf_vbuf: Option<(wgpu::Buffer, u32)>,
     line_vbuf: Option<(wgpu::Buffer, u32)>,
+    /// Live overlay from a running game: red route tiles (drawn with the surface pipeline), and thick
+    /// red rocket-/speed-jump arcs plus the bot's bounding-box cube (both the line pipeline). `None`
+    /// until a live route arrives / after disconnect.
+    path_vbuf: Option<(wgpu::Buffer, u32)>,
+    arc_vbuf: Option<(wgpu::Buffer, u32)>,
+    bot_vbuf: Option<(wgpu::Buffer, u32)>,
+    /// Opaque bot-cube faces (surf-cube pipeline) and the per-cell wireframe grid (line pipeline).
+    bot_face_vbuf: Option<(wgpu::Buffer, u32)>,
+    cellwire_vbuf: Option<(wgpu::Buffer, u32)>,
     /// egui's wgpu backend, drawn in a second pass over the 3D scene each frame.
     egui_renderer: egui_wgpu::Renderer,
 }
@@ -173,6 +184,21 @@ impl Gpu {
             None,
             line_stride,
         );
+        // Opaque vertex-colored triangles (the solid bot cube): depth-tested and depth-writing, drawn
+        // double-sided so cube winding doesn't matter.
+        let cube_pipeline = make_pipeline(
+            &device,
+            &layout,
+            &shader,
+            ("vs_line", "fs_line"),
+            config.format,
+            wgpu::PrimitiveTopology::TriangleList,
+            wgpu::CompareFunction::Less,
+            wgpu::BlendState::REPLACE,
+            true,
+            None,
+            line_stride,
+        );
 
         let egui_renderer = egui_wgpu::Renderer::new(&device, config.format, egui_wgpu::RendererOptions::default());
 
@@ -186,12 +212,18 @@ impl Gpu {
             water_pipeline,
             surf_pipeline,
             line_pipeline,
+            cube_pipeline,
             camera_buf,
             camera_bind,
             mesh_vbuf: None,
             water_vbuf: None,
             surf_vbuf: None,
             line_vbuf: None,
+            path_vbuf: None,
+            arc_vbuf: None,
+            bot_vbuf: None,
+            bot_face_vbuf: None,
+            cellwire_vbuf: None,
             egui_renderer,
         }
     }
@@ -230,10 +262,44 @@ impl Gpu {
         self.surf_vbuf = self.upload(bytemuck::cast_slice(verts), verts.len() as u32, "surface");
     }
 
-    /// Drop the whole navmesh overlay (surface + lines) — used while a new map's build is in flight.
+    /// Drop the whole navmesh overlay (surface + lines + cell wireframe) — while a build is in flight.
     pub fn clear_overlay(&mut self) {
         self.line_vbuf = None;
         self.surf_vbuf = None;
+        self.cellwire_vbuf = None;
+    }
+
+    /// Replace the per-cell wireframe grid overlay.
+    pub fn set_cellwire(&mut self, verts: &[LineVertex]) {
+        self.cellwire_vbuf = self.upload(bytemuck::cast_slice(verts), verts.len() as u32, "cellwire");
+    }
+
+    /// Replace the live route-tile buffer (red filled quads).
+    pub fn set_path(&mut self, verts: &[LineVertex]) {
+        self.path_vbuf = self.upload(bytemuck::cast_slice(verts), verts.len() as u32, "path");
+    }
+
+    /// Replace the opaque bot-cube face buffer.
+    pub fn set_bot_faces(&mut self, verts: &[LineVertex]) {
+        self.bot_face_vbuf = self.upload(bytemuck::cast_slice(verts), verts.len() as u32, "botfaces");
+    }
+
+    /// Replace the live rocket-/speed-jump arc buffer (thick red lines).
+    pub fn set_arcs(&mut self, verts: &[LineVertex]) {
+        self.arc_vbuf = self.upload(bytemuck::cast_slice(verts), verts.len() as u32, "arcs");
+    }
+
+    /// Replace the live bot bounding-box cube buffer.
+    pub fn set_bot(&mut self, verts: &[LineVertex]) {
+        self.bot_vbuf = self.upload(bytemuck::cast_slice(verts), verts.len() as u32, "bot");
+    }
+
+    /// Drop the live overlay (route tiles + arcs + bot cube) — on disconnect from the game.
+    pub fn clear_live(&mut self) {
+        self.path_vbuf = None;
+        self.arc_vbuf = None;
+        self.bot_vbuf = None;
+        self.bot_face_vbuf = None;
     }
 
     fn upload(&self, data: &[u8], count: u32, label: &str) -> Option<(wgpu::Buffer, u32)> {
@@ -292,7 +358,12 @@ impl Gpu {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.08, g: 0.09, b: 0.10, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.08,
+                            g: 0.09,
+                            b: 0.10,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -326,7 +397,38 @@ impl Gpu {
                 pass.set_vertex_buffer(0, buf.slice(..));
                 pass.draw(0..*count, 0..1);
             }
+            // The live route tiles ride the same translucent surface pipeline, drawn after (so red
+            // sits over green).
+            if let Some((buf, count)) = &self.path_vbuf {
+                pass.set_pipeline(&self.surf_pipeline);
+                pass.set_vertex_buffer(0, buf.slice(..));
+                pass.draw(0..*count, 0..1);
+            }
+            // The opaque bot cube (depth-writing) before the lines, so its edges/wireframes compose on
+            // top of the solid faces.
+            if let Some((buf, count)) = &self.bot_face_vbuf {
+                pass.set_pipeline(&self.cube_pipeline);
+                pass.set_vertex_buffer(0, buf.slice(..));
+                pass.draw(0..*count, 0..1);
+            }
+            // Opaque lines on top: nav links, the per-cell wireframe grid, then the live arcs and the
+            // bot's edge wireframe.
             if let Some((buf, count)) = &self.line_vbuf {
+                pass.set_pipeline(&self.line_pipeline);
+                pass.set_vertex_buffer(0, buf.slice(..));
+                pass.draw(0..*count, 0..1);
+            }
+            if let Some((buf, count)) = &self.cellwire_vbuf {
+                pass.set_pipeline(&self.line_pipeline);
+                pass.set_vertex_buffer(0, buf.slice(..));
+                pass.draw(0..*count, 0..1);
+            }
+            if let Some((buf, count)) = &self.arc_vbuf {
+                pass.set_pipeline(&self.line_pipeline);
+                pass.set_vertex_buffer(0, buf.slice(..));
+                pass.draw(0..*count, 0..1);
+            }
+            if let Some((buf, count)) = &self.bot_vbuf {
                 pass.set_pipeline(&self.line_pipeline);
                 pass.set_vertex_buffer(0, buf.slice(..));
                 pass.draw(0..*count, 0..1);
@@ -342,7 +444,10 @@ impl Gpu {
                         view: &view,
                         resolve_target: None,
                         depth_slice: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -356,7 +461,8 @@ impl Gpu {
             self.egui_renderer.free_texture(id);
         }
 
-        self.queue.submit(egui_cmds.into_iter().chain(std::iter::once(encoder.finish())));
+        self.queue
+            .submit(egui_cmds.into_iter().chain(std::iter::once(encoder.finish())));
         frame.present();
     }
 }
@@ -365,7 +471,11 @@ fn make_depth(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
     device
         .create_texture(&wgpu::TextureDescriptor {
             label: Some("depth"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -391,8 +501,7 @@ fn make_pipeline(
     stride: u64,
 ) -> wgpu::RenderPipeline {
     // Both vertex formats are two vec3s (pos, normal|color) → the same attribute layout.
-    const ATTRS: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+    const ATTRS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("navview pipeline"),
         layout: Some(layout),

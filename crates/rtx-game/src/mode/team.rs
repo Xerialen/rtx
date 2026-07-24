@@ -83,6 +83,9 @@ pub(crate) struct MatchState {
     /// The roster locked at match start: `(netname, team)`. Used to reattach a reconnecting player
     /// (and to restore teams after the start-reload clears per-entity state).
     pub roster: Vec<(String, u8)>,
+    /// Bot netnames from the locked roster. Unlike network clients, mvdsv drops fake clients on the
+    /// start reload, so population management uses this list to recreate only the rostered bots.
+    pub bot_roster: Vec<String>,
     /// Set by the `start` command right before the reload; consumed once in `worldspawn` to arm the
     /// countdown. Distinguishes a match-start reload (preserve state) from any other map change
     /// (fresh warmup).
@@ -142,7 +145,10 @@ pub(crate) fn resolve_composition(mode: &str, alias: &str) -> MatchConfig {
             }
         }
         _ => match parse_match_alias(alias) {
-            Some(cfg) if mode == "ctf" => MatchConfig { teams: 2, size: cfg.size },
+            Some(cfg) if mode == "ctf" => MatchConfig {
+                teams: 2,
+                size: cfg.size,
+            },
             Some(cfg) => cfg,
             None => resolve_composition(mode, ""),
         },
@@ -333,6 +339,7 @@ pub(crate) fn tick_lifecycle(g: &mut GameState) {
                     };
                     g.team_match.phase = MatchPhase::Warmup;
                     g.team_match.roster.clear();
+                    g.team_match.bot_roster.clear();
                     for e in benched_players {
                         g.put_client_in_server(e);
                     }
@@ -489,6 +496,12 @@ pub(crate) fn start_match(g: &mut GameState) {
         }
         r
     };
+    g.team_match.bot_roster = players(g)
+        .into_iter()
+        .filter(|&e| g.entities[e].bot.is_bot)
+        .map(|e| g.netname_of(e))
+        .filter(|name| roster.iter().any(|(roster_name, _)| roster_name == name))
+        .collect();
     g.team_match.roster = roster;
     g.team_match.resuming = true;
     g.broadcast(PrintLevel::High, "Match starting — reloading map…\n");
@@ -572,7 +585,7 @@ const CARRIER_HELP_RESPONDERS: usize = 2;
 /// Pick the nearest `cap` responders with an edict-id tie break. Pure so simultaneous bot decisions
 /// use the same stable ownership rule instead of every teammate answering the same call.
 fn selected_responders(mut candidates: Vec<(EntId, f32)>, cap: usize) -> Vec<EntId> {
-    candidates.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.0.cmp(&b.0.0)));
+    candidates.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0 .0.cmp(&b.0 .0)));
     candidates.into_iter().take(cap).map(|(e, _)| e).collect()
 }
 
@@ -604,8 +617,7 @@ pub(crate) fn help_target(g: &GameState, bot: EntId) -> Option<EntId> {
             let be = &g.entities[b];
             let apri = (ae.mode_p.ctf.carrying == 0, ae.v.health > 40.0);
             let bpri = (be.mode_p.ctf.carrying == 0, be.v.health > 40.0);
-            apri
-                .cmp(&bpri)
+            apri.cmp(&bpri)
                 .then_with(|| be.mode_p.team_signal.hurt_at.total_cmp(&ae.mode_p.team_signal.hurt_at))
                 .then_with(|| a.0.cmp(&b.0))
         })?;
@@ -653,8 +665,8 @@ pub(crate) fn nearest_enemy(g: &GameState, bot: EntId) -> Option<EntId> {
             e.is_alive() && e.v.takedamage != TakeDamage::No && e.mode_p.team != my_team
         })
         .map(|en| {
-            let d = (g.entities[en].v.origin - origin).length_squared()
-                * g.target_dist_bias(bot, en, now, weapons_stay);
+            let d =
+                (g.entities[en].v.origin - origin).length_squared() * g.target_dist_bias(bot, en, now, weapons_stay);
             (en, d, teammate_attackers(g, bot, my_team, en))
         })
         .collect();
@@ -668,7 +680,11 @@ fn teammate_attackers(g: &GameState, bot: EntId, my_team: u8, enemy: EntId) -> u
         .into_iter()
         .filter(|&t| {
             let e = &g.entities[t];
-            t != bot && e.bot.is_bot && e.v.health > 0.0 && e.mode_p.team == my_team && e.bot.percept.known_enemy == enemy.0
+            t != bot
+                && e.bot.is_bot
+                && e.v.health > 0.0
+                && e.mode_p.team == my_team
+                && e.bot.percept.known_enemy == enemy.0
         })
         .count() as u32
 }
@@ -676,8 +692,10 @@ fn teammate_attackers(g: &GameState, bot: EntId, my_team: u8, enemy: EntId) -> u
 /// Pick from `(enemy, dist², attacker_count)`: the nearest enemy under the [`MAX_ATTACKERS`] cap,
 /// else (all saturated) the nearest overall — never `None` when any candidate exists. Pure.
 fn assign_target(candidates: &[(EntId, f32, u32)]) -> Option<EntId> {
-    let nearest = |set: &mut dyn Iterator<Item = &(EntId, f32, u32)>| set.min_by(|a, b| a.1.total_cmp(&b.1)).map(|&(e, _, _)| e);
-    nearest(&mut candidates.iter().filter(|&&(_, _, atk)| atk < MAX_ATTACKERS)).or_else(|| nearest(&mut candidates.iter()))
+    let nearest =
+        |set: &mut dyn Iterator<Item = &(EntId, f32, u32)>| set.min_by(|a, b| a.1.total_cmp(&b.1)).map(|&(e, _, _)| e);
+    nearest(&mut candidates.iter().filter(|&&(_, _, atk)| atk < MAX_ATTACKERS))
+        .or_else(|| nearest(&mut candidates.iter()))
 }
 
 /// The nearest living player not on `my_team` to an arbitrary `point` — used to pick a target near a
@@ -740,7 +758,10 @@ mod tests {
         // Humans are seated before bots (so a human is never benched while a bot plays); unassigned
         // players then fill team 1 before team 2, so the two humans (2, 4) land ahead of the bots.
         let team_of = |e: EntId| seated.iter().find(|&&(x, _)| x == e).unwrap().1;
-        assert!(seated.iter().take(2).all(|&(e, _)| e == EntId(2) || e == EntId(4)), "humans seated first");
+        assert!(
+            seated.iter().take(2).all(|&(e, _)| e == EntId(2) || e == EntId(4)),
+            "humans seated first"
+        );
         assert_eq!(team_of(EntId(2)), 1);
         assert_eq!(team_of(EntId(4)), 1);
         assert_eq!(team_of(EntId(1)), 2);

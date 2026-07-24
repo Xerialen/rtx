@@ -327,10 +327,7 @@ impl GameState {
     /// The set of pools with a plausible witness to an event at `pos`: any live bot on that pool's
     /// side within [`WITNESS_RADIUS`]. One pass over the client slots — events (shots, pickups) are
     /// rare, not per-frame. Empty when opponent modeling is off.
-    pub(crate) fn witness_pools(&self, pos: Vec3) -> u16 {
-        if !self.host.cvar_bool(c"rtx_bot_model") {
-            return 0;
-        }
+    pub(crate) fn evidence_pools(&self, pos: Vec3) -> u16 {
         let maxclients = self.host().cvar(c"maxclients") as u32;
         let mut mask = 0u16;
         for e in (1..=maxclients).map(EntId) {
@@ -354,6 +351,17 @@ impl GameState {
         mask
     }
 
+    /// Opponent-model wrapper around the shared honest witness classification. The team oracle uses
+    /// [`Self::evidence_pools`] independently, so turning point estimates off does not also erase its
+    /// event stream.
+    pub(crate) fn witness_pools(&self, pos: Vec3) -> u16 {
+        if self.host.cvar_bool(c"rtx_bot_model") {
+            self.evidence_pools(pos)
+        } else {
+            0
+        }
+    }
+
     /// What `observer`'s pool believes about `target` right now (drift applied to health). `None` when
     /// modeling is off or the observer has no pool (a team-0 human). The returned copy keeps
     /// `last_update` intact so a consumer can age the belief; only `health` is drifted.
@@ -362,12 +370,7 @@ impl GameState {
     /// scaling blood off a pellet count, a witness that lost the thread — but a live enemy has at least
     /// 1 hp by definition, and reading one as already dead (a 0 stack) is just a bad guess that would
     /// have a bot break off a kill it hasn't made. A genuinely dead target is reset elsewhere, not read.
-    pub(crate) fn opponent_est(
-        &self,
-        observer: EntId,
-        target: EntId,
-        now: f32,
-    ) -> Option<OpponentEstimate> {
+    pub(crate) fn opponent_est(&self, observer: EntId, target: EntId, now: f32) -> Option<OpponentEstimate> {
         if !self.host.cvar_bool(c"rtx_bot_model") {
             return None;
         }
@@ -383,10 +386,14 @@ impl GameState {
     /// Hook: `attacker` dealt `damage` (pre-armor) to `targ`. The attacker's whole side learns it —
     /// they saw the hit land — so this updates the attacker's pool directly, not by earshot.
     pub(crate) fn model_note_damage(&mut self, attacker: EntId, targ: EntId, damage: f32) {
-        if !self.host.cvar_bool(c"rtx_bot_model") || attacker == targ {
+        if attacker == targ {
             return;
         }
         if !self.entities[attacker].is_player() || !self.entities[targ].is_player() {
+            return;
+        }
+        crate::bot::oracle::note_damage(self, attacker, targ, damage);
+        if !self.host.cvar_bool(c"rtx_bot_model") {
             return;
         }
         if let Some(pool) = self.observer_pool(attacker) {
@@ -412,15 +419,20 @@ impl GameState {
 
     /// Hook: `firer` started a weapon fire. Every pool with a bot in earshot learns which weapon.
     pub(crate) fn model_note_weapon_fire(&mut self, firer: EntId) {
-        if !self.host.cvar_bool(c"rtx_bot_model") {
-            return;
-        }
         let Some(bit) = weapon_fire_bit(self.entities[firer].v.weapon) else {
             return;
         };
         let org = self.entities[firer].v.origin;
         let now = self.time();
-        let mask = self.witness_pools(org);
+        let mut evidence_mask = self.evidence_pools(org);
+        if let Some(pool) = self.observer_pool(firer) {
+            evidence_mask |= 1 << pool;
+        }
+        crate::bot::oracle::note_weapon_fire(self, firer, self.entities[firer].v.weapon, evidence_mask, now);
+        if !self.host.cvar_bool(c"rtx_bot_model") {
+            return;
+        }
+        let mask = evidence_mask;
         for pool in iter_pools(mask) {
             self.opponents.note_weapon(pool, firer, bit, now);
         }
@@ -428,11 +440,12 @@ impl GameState {
 
     /// Hook: `picker` collected an item. Every pool with a bot in earshot of the pickup learns it.
     pub(crate) fn model_note_pickup(&mut self, picker: EntId, kind: PickupKind) {
+        let now = self.time();
+        crate::bot::oracle::note_player_pickup(self, picker, now);
         if !self.host.cvar_bool(c"rtx_bot_model") {
             return;
         }
         let org = self.entities[picker].v.origin;
-        let now = self.time();
         let mask = self.witness_pools(org);
         for pool in iter_pools(mask) {
             self.opponents.note_pickup(pool, picker, kind, now);
@@ -442,17 +455,10 @@ impl GameState {
     /// The distance² weighting for choosing `target` from `observer`'s view under opponent modeling:
     /// [`target_bias`] fed by the shared estimate, or `1.0` when there's no belief (or modeling is
     /// off), so a caller can multiply its raw dist² unconditionally and get plain nearest when off.
-    pub(crate) fn target_dist_bias(
-        &self,
-        observer: EntId,
-        target: EntId,
-        now: f32,
-        weapons_stay: bool,
-    ) -> f32 {
+    pub(crate) fn target_dist_bias(&self, observer: EntId, target: EntId, now: f32, weapons_stay: bool) -> f32 {
         match self.opponent_est(observer, target, now) {
             Some(est) => {
-                let armed_big =
-                    est.items.has(Items::ROCKET_LAUNCHER) || est.items.has(Items::LIGHTNING);
+                let armed_big = est.items.has(Items::ROCKET_LAUNCHER) || est.items.has(Items::LIGHTNING);
                 target_bias(est_strength(&est, now), armed_big, weapons_stay)
             }
             None => 1.0,
@@ -461,13 +467,14 @@ impl GameState {
 
     /// Hook: `target` died or respawned — wipe its entry back to the spawn kit in every pool.
     pub(crate) fn model_reset_target(&mut self, target: EntId) {
-        if !self.host.cvar_bool(c"rtx_bot_model") {
-            return;
-        }
         if !self.entities[target].is_player() {
             return;
         }
         let now = self.time();
+        crate::bot::oracle::note_death(self, target, now);
+        if !self.host.cvar_bool(c"rtx_bot_model") {
+            return;
+        }
         self.opponents.reset_target(target, now);
     }
 }
@@ -547,7 +554,15 @@ mod tests {
         m.note_pickup(0, t, PickupKind::Mega, 1.0);
         assert_eq!(m.entry(0, t).health, 200.0);
         // Armor replaces value/type.
-        m.note_pickup(0, t, PickupKind::Armor { value: 150.0, atype: 0.6 }, 1.0);
+        m.note_pickup(
+            0,
+            t,
+            PickupKind::Armor {
+                value: 150.0,
+                atype: 0.6,
+            },
+            1.0,
+        );
         assert_eq!(m.entry(0, t).armor_value, 150.0);
         assert_eq!(m.entry(0, t).armor_type, 0.6);
         // Weapon ORs the bit; quad sets a 30 s expiry.
@@ -579,7 +594,7 @@ mod tests {
         assert_eq!(drifted_health(30.0, 0.0, 4.0), 30.0); // within DRIFT_GRACE
         assert_eq!(drifted_health(30.0, 0.0, 10.0), 40.0); // 5 s past grace · 2/s
         assert_eq!(drifted_health(30.0, 0.0, 100.0), 100.0); // capped
-        // At/above prior (incl. witnessed mega overheal) never drifts.
+                                                             // At/above prior (incl. witnessed mega overheal) never drifts.
         assert_eq!(drifted_health(100.0, 0.0, 100.0), 100.0);
         assert_eq!(drifted_health(250.0, 0.0, 100.0), 250.0);
     }
@@ -629,7 +644,10 @@ mod tests {
         m.note_weapon(0, EntId(3), Items::ROCKET_LAUNCHER, 0.0);
         m.note_weapon(2, EntId(3), Items::LIGHTNING, 0.0);
         let a = m.believed_arsenal(EntId(3));
-        assert!(a.has(Items::ROCKET_LAUNCHER) && a.has(Items::LIGHTNING), "union of both pools");
+        assert!(
+            a.has(Items::ROCKET_LAUNCHER) && a.has(Items::LIGHTNING),
+            "union of both pools"
+        );
         // A player nobody saw with a big gun stays at the baseline kit (no RL/LG believed).
         assert!(!m.believed_arsenal(EntId(4)).has(Items::ROCKET_LAUNCHER));
         // The world slot is never a target.

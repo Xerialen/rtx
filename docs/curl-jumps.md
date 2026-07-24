@@ -424,48 +424,6 @@ so a movement change cannot pass merely by reaching a coordinate near RA. Its `r
 (p50 = 12.6255s) is calibrated from an admitted same-life set of 86 human runs across 77 demos;
 those are aggregate thresholds only, never routes or input sequences.
 
-## Interaction with `rtx_bot_ledgecap`
-
-`rtx_bot_ledgecap` is upstream's careful-ledge walk-speed cap: default `210` u/s, `0` = full
-maxspeed (upstream `crates/rtx-game/src/cvars.rs:86`, documented upstream
-`docs/cvars.md:88`). On a navmesh cell flagged beside a fatal drop it scales the wish by
-`cap / MOVE_SPEED` for the **whole run**, not just at corners (upstream `steer.rs:1125`), because
-the 96u `TURN_SLOW_RADIUS` approach slowdown bites too late to bleed a full-speed straight's
-momentum before the lip.
-
-The tension with curls is direct and structural: **a ledge cap is a policy that says "be slow near
-drops"; a curl is a link that says "be at exactly `v_req` at the drop."** A curl's takeoff is a
-ledge over a pit by construction (`jumps.rs:334` requires no ground the leap way), and the
-certificate begins at a speed the cap forbids — 210 u/s is far below every certified `v_req` in
-this family, and the runtime's own too-slow abort trips at `v_req · 0.85` (`steer.rs:1393`).
-
-Upstream already anticipates this and exempts jump run-ups (upstream `steer.rs:635`):
-
-```rust
-let is_jump = |l| matches!(graph.link_kind(l), JumpGap | DoubleJump | SpeedJump);
-let jump_at_hand = cur_leg.is_some_and(&is_jump)
-    || bot.route.get(bot.route_pos + 1).is_some_and(|&l| is_jump(l));
-let on_ledge = graph.is_ledge(bot_cell) && !jump_at_hand;
-```
-
-That exemption covers the current leg and the next one. The structural question a reviewer should
-press on is what happens **two legs out**. A plain curl's `from` cell is placed up to
-`CURL_RUNUP_CAP = 512` units back from the takeoff (`physics.rs:101`), so the run-up is inside the
-curl leg and exempt. A *chained* curl has no self-contained runway at all — the speed has to be
-carried in over the preceding Walk/Step legs, and on those legs `jump_at_hand` is false, so a
-flagged ledge cell caps the approach at 210 u/s and the bot arrives below the certified entry
-envelope's floor. The fail-closed check then does its job and refuses the leg, which is correct
-behaviour and a dead route.
-
-**Current measured status.** The rebased branch now passes two consecutive 20-attempt RA-spawn
-streaks (**40/40**) with near-field steering enabled and prohibited movement assists, including
-the ledge cap, disabled. The failures were not fixed by a cvar workaround. Their two code causes
-were approach steering acting several ordinary legs before a certified jump, and a v3 setup latch
-that assumed a future frame cadence it had not proved. The current implementation scopes the
-approach forces by the upcoming link contract and requires a full physical rollout under a
-per-frame-revalidated controller/movement clock. The structural tension above remains useful when
-reviewing upstream ledge policy, but this branch neither depends on nor certifies the ledge cap.
-
 ## Known limitations and open defects
 
 **Lateral controller state is family-specific, not discarded.** For the **plain** curl family,

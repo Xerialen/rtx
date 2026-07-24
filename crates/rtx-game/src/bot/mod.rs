@@ -13,7 +13,6 @@
 //!
 //! [navmesh]: crate::navmesh
 
-
 use glam::{Vec2, Vec3, Vec3Swizzles};
 
 pub(crate) mod bhop;
@@ -21,7 +20,10 @@ mod combat;
 pub(crate) mod goals;
 mod grenade;
 mod hook;
+pub(crate) mod hopsim;
+pub(crate) mod human_profile;
 pub(crate) mod model;
+pub(crate) mod oracle;
 pub(crate) mod par;
 pub(crate) mod perception;
 mod population;
@@ -35,10 +37,10 @@ pub use population::manage_population;
 pub(crate) use population::{drain_roster, RosterOp};
 // Reused by the netclient to name its own bodies the same way the roster names qwprogs bots; the
 // qwprogs build calls these through their defining module, so the re-export is netclient-only.
-#[cfg(feature = "netclient")]
-pub(crate) use population::{bot_display_name, bot_name};
 #[cfg(test)]
 use population::bot_target;
+#[cfg(feature = "netclient")]
+pub(crate) use population::{bot_display_name, bot_name};
 
 use crate::bot::state::{
     AirCommit, BotState, CombatPosture, GoalCommit, GrenadePhase, HookPhase, RjPhase, Wander,
@@ -48,7 +50,7 @@ use crate::defs::{
     VEC_HULL_MIN, VEC_VIEW_OFS,
 };
 use crate::entity::{EntId, Entity, Touch};
-use crate::game::{cstring, GameState};
+use crate::game::GameState;
 use crate::math::{angle_vectors, wrap180, yaw_of};
 use crate::mode::BotIntent;
 use crate::navmesh::{CellId, HazardPrice, LinkCosts, LinkKind, NavGraph};
@@ -176,7 +178,13 @@ pub(super) enum Landing {
 /// Classify a ballistic landing (see [`Landing`]). `elapsed` is time since the ballistic phase
 /// began; a touchdown only counts after a 0.1 s settle so the takeoff frame isn't read as an instant
 /// landing. `airtime_budget` is the solved airtime plus the driver's watchdog slack.
-pub(super) fn ballistic_landing(origin: Vec3, target: Vec3, on_ground: bool, elapsed: f32, airtime_budget: f32) -> Landing {
+pub(super) fn ballistic_landing(
+    origin: Vec3,
+    target: Vec3,
+    on_ground: bool,
+    elapsed: f32,
+    airtime_budget: f32,
+) -> Landing {
     if on_ground && elapsed > 0.1 {
         Landing::Down {
             on_target: (origin.xy() - target.xy()).length() <= ARRIVE_RADIUS * 2.0,
@@ -293,6 +301,9 @@ const PENALTY_TTL: f32 = 8.0;
 /// can't see (e.g. orbiting a pillar at full speed) — penalize the leg and re-path.
 const PROGRESS_STALL_TIME: f32 = 2.5;
 const PROGRESS_EPS: f32 = 32.0;
+/// Altitude gain (on a landing) that counts as fresh progress for the watchdog — half a 16u stair
+/// step. Climbing a spiral resets the stall timer this way even while route-remaining plateaus.
+const CLIMB_EPS: f32 = 8.0;
 
 /// One bot's accumulated frame command: what navigation proposes and the combat/grenade overlays
 /// mutate in turn, before the aim spring and view projection in `run_bot` turn it into the final
@@ -370,6 +381,7 @@ pub fn run_bots(game: &mut GameState, clock_claim: BotFrameScheduleClaim) {
     // per bot (mvdsv's `SV_RunBots` runs `SV_ProgStartFrame(true)` before its client loop), so this
     // one bracket is already the whole squad's think time — see `prof`.
     let host = *game.host();
+    oracle::frame_begin(game);
     // Reconcile the goal-selection worker pool to `rtx_bot_par` (builds it on first enable). Cheap
     // when already in the wanted state; the floods themselves are dispatched from `best_item_plan`.
     game.bot_pool.ensure(&host);
@@ -400,6 +412,8 @@ pub fn run_bots(game: &mut GameState, clock_claim: BotFrameScheduleClaim) {
             }
         }
     }
+
+    oracle::frame_end(game);
 
     if profiling {
         game.bot_prof.add_frame(frame.stop(), bots, budget);
@@ -452,10 +466,6 @@ fn bot_pickup_items(game: &mut GameState, e: EntId) {
         })
         .collect();
     let now = game.time();
-    let goal_item = game.entities[e].bot.goal.item;
-    let next_item = game.entities[e].bot.goal.next_item;
-    let next_cell = game.entities[e].bot.goal.next_cell;
-    let next_commit = game.entities[e].bot.goal.next_commit;
     let hold_item = game.entities[e].bot.goal.hold_item;
     let holding = hold_item != 0 && now < game.entities[e].bot.goal.hold_until;
     for item in hits {
@@ -469,9 +479,15 @@ fn bot_pickup_items(game: &mut GameState, e: EntId) {
             // Just collected our goal item — briefly avoid it so an instant-respawn pickup (or a
             // weapons-stay trigger that lingers solid) can't recapture the goal slot the same second;
             // the slot frees up for the next-best pickup instead of re-fixating in place.
-            if item.0 == goal_item {
+            // Hidden map items are cleared for every watcher by `bot_item_taken`, called from the
+            // authoritative pickup handler. This local tail remains for pickups that do not hide via
+            // `pickup_finish` (weapons-stay, backpacks, flags and runes).
+            if item.0 == game.entities[e].bot.goal.item {
                 let b = &mut game.entities[e].bot;
                 b.mark_avoid(item.0, now + PICKUP_AVOID_TIME);
+                let next_item = b.goal.next_item;
+                let next_cell = b.goal.next_cell;
+                let next_commit = b.goal.next_commit;
                 if next_item != 0 {
                     b.goal.set_item(next_item);
                     (b.goal.item_cell, b.goal.commit) = (next_cell, next_commit);
@@ -548,6 +564,130 @@ struct Objective {
 /// Resolve what this bot pursues this frame: reconcile a stale hook, ask the mode for an intent
 /// (or the pacifist override), (re)pick an item goal on a slow cadence, and settle on the world
 /// target to steer toward. Runs while `&mut game` is free — before the navmesh borrow.
+/// Per-bot audit ring-buffer byte budget resolved from `rtx_bot_auditlog` (MB). Passed to
+/// [`rtx_auditlog::Audit::push`] so a live cvar change resizes the ring on the next frame.
+pub(crate) fn audit_cap(host: &crate::host::HostApi) -> usize {
+    (host.cvar(c"rtx_bot_auditlog").max(0.0) * (1024.0 * 1024.0)) as usize
+}
+
+// Map the bot's internal phase/posture/commit enums to the audit schema's mirror enums. The `match`es
+// are exhaustive, so adding a game variant is a compile error here until the schema mirror gains one.
+fn ax_bhop(p: bhop::Phase) -> rtx_auditlog::Bhop {
+    match p {
+        bhop::Phase::Off => rtx_auditlog::Bhop::Off,
+        bhop::Phase::Prestrafe => rtx_auditlog::Bhop::Prestrafe,
+        bhop::Phase::Hop => rtx_auditlog::Bhop::Hop,
+        bhop::Phase::Zigzag => rtx_auditlog::Bhop::Zigzag,
+    }
+}
+fn ax_hook(p: state::HookPhase) -> rtx_auditlog::Hook {
+    match p {
+        state::HookPhase::Idle => rtx_auditlog::Hook::Idle,
+        state::HookPhase::Aim => rtx_auditlog::Hook::Aim,
+        state::HookPhase::Flight => rtx_auditlog::Hook::Flight,
+        state::HookPhase::Reel => rtx_auditlog::Hook::Reel,
+        state::HookPhase::Ballistic => rtx_auditlog::Hook::Ballistic,
+    }
+}
+fn ax_rj(p: state::RjPhase) -> rtx_auditlog::Rj {
+    match p {
+        state::RjPhase::Idle => rtx_auditlog::Rj::Idle,
+        state::RjPhase::Stance => rtx_auditlog::Rj::Stance,
+        state::RjPhase::Rise => rtx_auditlog::Rj::Rise,
+        state::RjPhase::Ballistic => rtx_auditlog::Rj::Ballistic,
+    }
+}
+fn ax_posture(p: state::CombatPosture) -> rtx_auditlog::Posture {
+    match p {
+        state::CombatPosture::Recover => rtx_auditlog::Posture::Recover,
+        state::CombatPosture::Hold => rtx_auditlog::Posture::Hold,
+        state::CombatPosture::Press => rtx_auditlog::Posture::Press,
+    }
+}
+fn ax_commit(p: state::GoalCommit) -> rtx_auditlog::Commit {
+    match p {
+        state::GoalCommit::None => rtx_auditlog::Commit::None,
+        state::GoalCommit::Pickup => rtx_auditlog::Commit::Pickup,
+        state::GoalCommit::Powerup => rtx_auditlog::Commit::Powerup,
+    }
+}
+
+/// Capture one bot frame's sensor snapshot for the per-bot audit ring (`rtx_bot_debug`). Reads only —
+/// a handful of field copies, no allocation, no formatting — so it is cheap to run every frame. The
+/// caller pushes the returned frame under the `rtx_bot_debug` gate.
+#[allow(clippy::too_many_arguments)]
+fn capture_frame(
+    game: &GameState,
+    e: EntId,
+    now: f32,
+    origin: Vec3,
+    speed: f32,
+    forward: i32,
+    side: i32,
+    buttons: i32,
+    has_enemy: bool,
+    watch: u32,
+) -> rtx_auditlog::AuditFrame {
+    use rtx_auditlog::flags as af;
+    let ent = &game.entities[e];
+    let b = &ent.bot;
+    // Item-goal geometry: distance to the item and its cell's height under the item origin.
+    let (goal_dist, goal_dz, on_item_now) = if b.goal.item != 0 {
+        let it = &game.entities[EntId(b.goal.item)];
+        let dz = game
+            .nav
+            .graph
+            .as_ref()
+            .map_or(0.0, |g| g.cell_origin(b.goal.item_cell).z - it.v.origin.z);
+        let oi = it.v.solid == Solid::Trigger && on_item(origin, it.v.origin);
+        ((it.v.origin - origin).length(), dz, oi)
+    } else {
+        (0.0, 0.0, false)
+    };
+    let aware = b.percept.known_enemy != 0 && now < b.percept.known_until;
+    let pen = b.failed_links.iter().filter(|&&(_, until, _)| until > now).count() as u16;
+    let mut flags = 0u16;
+    flags |= af::ENEMY * has_enemy as u16;
+    flags |= af::ON_GROUND * ent.v.flags.has(Flags::ONGROUND) as u16;
+    flags |= af::IN_WATER * (ent.v.waterlevel > 0.0) as u16;
+    flags |= af::ON_ITEM * on_item_now as u16;
+    flags |= af::OWN_LG * ent.v.items.has(Items::LIGHTNING) as u16;
+    flags |= af::AWARE * aware as u16;
+    flags |= af::ATTACK * ((buttons & BUTTON_ATTACK) != 0) as u16;
+    flags |= af::JUMP * ((buttons & BUTTON_JUMP) != 0) as u16;
+    let bpos = b.route_pos;
+    rtx_auditlog::AuditFrame {
+        t: now,
+        origin: origin.to_array(),
+        vel: ent.v.velocity.to_array(),
+        speed,
+        peak: b.bhop.peak,
+        flags,
+        bhop: ax_bhop(b.bhop.phase),
+        hops: b.bhop.hops as u16,
+        flips: b.bhop.flips as u16,
+        off_reason: rtx_auditlog::Tag::new(b.bhop.off_reason),
+        hook: ax_hook(b.hook.phase),
+        rj: ax_rj(b.rj.phase),
+        route_len: b.route.len() as u16,
+        route_pos: bpos as u16,
+        band: b.route_bands.get(bpos).copied().unwrap_or(0) as i16,
+        forward: forward as i16,
+        side: side as i16,
+        posture: ax_posture(b.posture),
+        commit: ax_commit(b.goal.commit),
+        goal_ent: b.goal.item,
+        goal_cell: b.goal.item_cell as i32,
+        goal_dist,
+        goal_dz,
+        gate: b.gate.errand.map_or(-1, |er| er.index as i32),
+        known_enemy: b.percept.known_enemy,
+        pen,
+        magnet: b.goal.magnet_item,
+        watch,
+    }
+}
+
 /// The immutable per-frame snapshot of a bot's edict — read once so the later `&mut bot` /
 /// `&mut nav` borrows in `run_bot` don't have to re-borrow the entity to read it (the grapple
 /// fields are set in the previous frame's PlayerPreThink, so they're stable across this frame).
@@ -663,8 +803,40 @@ fn sense(game: &GameState, e: EntId, frame_clock: BotFrameClock) -> Sense {
         pitch_bias: host.cvar(c"rtx_rj_pitch_bias"),
     };
     Sense {
-        host, now, frametime, msec, frame_clock, origin, v_angle, client, weapon, on_ground, in_water, submerged, burning, air_left, alive, vz, air_jumped, enemy_seen_time, v_xy, speed, grapple_hook, has_grapple, hook_out, on_hook, anchor, reel_half_step,
-        attack_finished, has_rl, ammo_rockets, health, armortype, armorvalue, quad, rj_knobs,
+        host,
+        now,
+        frametime,
+        msec,
+        frame_clock,
+        origin,
+        v_angle,
+        client,
+        weapon,
+        on_ground,
+        in_water,
+        submerged,
+        burning,
+        air_left,
+        alive,
+        vz,
+        air_jumped,
+        enemy_seen_time,
+        v_xy,
+        speed,
+        grapple_hook,
+        has_grapple,
+        hook_out,
+        on_hook,
+        anchor,
+        reel_half_step,
+        attack_finished,
+        has_rl,
+        ammo_rockets,
+        health,
+        armortype,
+        armorvalue,
+        quad,
+        rj_knobs,
     }
 }
 
@@ -754,7 +926,87 @@ fn end_spawn_exit(b: &mut BotState, now: f32) {
     b.goal.next_pick = now;
 }
 
-fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3, client: i32) -> Objective {
+fn reject_oracle_advice(game: &mut GameState, e: EntId, nugget: oracle::OracleNugget, now: f32) {
+    game.entities[e].bot.oracle.discard(nugget, now);
+    game.oracle.invalidate_trial(nugget, now);
+}
+
+/// Admit one current oracle nugget into the ordinary objective layer. The caller has already run
+/// perception and urgent recovery; this helper refuses hard mode goals, committed traversal, and
+/// handoff holds. Item advice is deliberately an uncommitted goal, so visible combat can still own
+/// movement. Positional advice only redirects idle/search movement, never a visible engagement.
+fn apply_oracle_advice(
+    game: &mut GameState,
+    e: EntId,
+    now: f32,
+    intent: Option<BotIntent>,
+    combat_last_seen: Option<Vec3>,
+    traversal_committed: bool,
+    holding: bool,
+) -> Option<Vec3> {
+    if traversal_committed
+        || holding
+        || hard_mode_objective(intent)
+        || game.entities[e].bot.goal.commit != GoalCommit::None
+    {
+        return None;
+    }
+    let nugget = game.entities[e].bot.oracle.best(now)?;
+    let Some(graph) = game.nav.graph.as_ref() else {
+        return None;
+    };
+    if nugget.target_cell as usize >= graph.cells.len() {
+        reject_oracle_advice(game, e, nugget, now);
+        return None;
+    }
+
+    match nugget.kind {
+        oracle::NuggetKind::Rearm | oracle::NuggetKind::PrepareItem => {
+            let item = EntId(nugget.subject);
+            if item.0 == 0 || item.0 as usize >= game.entities.len() {
+                reject_oracle_advice(game, e, nugget, now);
+                return None;
+            }
+            let armed = (game.entities[e].v.items.has(Items::ROCKET_LAUNCHER)
+                && game.entities[e].v.ammo_rockets >= 1.0)
+                || (game.entities[e].v.items.has(Items::LIGHTNING) && game.entities[e].v.ammo_cells >= 1.0);
+            if nugget.kind == oracle::NuggetKind::Rearm && armed || !game.item_goal_valid(e, item, now) {
+                reject_oracle_advice(game, e, nugget, now);
+                return None;
+            }
+            let goal = &mut game.entities[e].bot.goal;
+            if goal.item != item.0 {
+                goal.since = now;
+            }
+            goal.item = item.0;
+            goal.item_cell = nugget.target_cell;
+            goal.next_item = 0;
+            goal.next_commit = GoalCommit::None;
+            goal.next_pick = nugget.expires_at;
+            game.entities[e].bot.oracle.mark_applied(nugget);
+            game.oracle.mark_applied(nugget, now);
+            None
+        }
+        oracle::NuggetKind::Regroup | oracle::NuggetKind::CoverArea | oracle::NuggetKind::Intercept => {
+            let visible_fight = matches!(intent, Some(BotIntent::Fight(_))) && combat_last_seen.is_none();
+            if visible_fight || matches!(intent, Some(BotIntent::Advance(_))) {
+                return None;
+            }
+            let target = graph.cell_origin(nugget.target_cell);
+            let goal = &mut game.entities[e].bot.goal;
+            goal.item = 0;
+            goal.next_item = 0;
+            goal.commit = GoalCommit::None;
+            goal.next_commit = GoalCommit::None;
+            goal.next_pick = nugget.expires_at;
+            game.entities[e].bot.oracle.mark_applied(nugget);
+            game.oracle.mark_applied(nugget, now);
+            Some(target)
+        }
+    }
+}
+
+fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3) -> Objective {
     let host = *game.host();
     // Hook invariant net: if we're mid-hook but no longer hold the grapple (a mode loadout stripped
     // it, e.g. Rocket Arena), abandon the traversal cleanly — release any live hook and reset the
@@ -807,7 +1059,9 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3, cli
             }
         };
         return Objective {
-            hooking, on_sj, on_rj,
+            hooking,
+            on_sj,
+            on_rj,
             enemy: None,
             chasing: false,
             item_committed: false,
@@ -842,7 +1096,12 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3, cli
         None
     } else if benched {
         // Benched spectator (structured match, off the locked roster): stroll the stands, no fighting.
-        Some(BotIntent::Move(crate::mode::wander_point(game, e, "info_player_deathmatch", |_| None)))
+        Some(BotIntent::Move(crate::mode::wander_point(
+            game,
+            e,
+            "info_player_deathmatch",
+            |_| None,
+        )))
     } else if host.cvar_bool(c"rtx_bot_pacifist") && mode.allows_bot_pacifist_override() {
         // Global override where the mode permits it: don't fight — just tail the nearest human.
         // Race refuses this because its hard Move intent is the ordered checkpoint/finish route.
@@ -929,10 +1188,7 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3, cli
         b.goal.next_pick = now;
     }
 
-    let traversal_committed = hooking
-        || on_sj
-        || on_rj
-        || game.entities[e].bot.air.is_some();
+    let traversal_committed = hooking || on_sj || on_rj || game.entities[e].bot.air.is_some();
 
     // Strategic recovery: relative strength/firepower and critical health can make a reachable
     // health/armor/weapon pickup own movement for several seconds. A powerup plan normally wins;
@@ -943,8 +1199,8 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3, cli
             let previous = game.entities[e].bot.posture;
             let (posture, recovery) = game.recovery_decision(e, en, now, previous);
             game.entities[e].bot.posture = posture;
-            let may_preempt = game.entities[e].bot.goal.commit != GoalCommit::Powerup
-                || game.entities[e].v.health <= 20.0;
+            let may_preempt =
+                game.entities[e].bot.goal.commit != GoalCommit::Powerup || game.entities[e].v.health <= 20.0;
             if may_preempt {
                 if let Some((item, cell)) = recovery {
                     let b = &mut game.entities[e].bot;
@@ -969,10 +1225,10 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3, cli
     let urgent_allowed = !stack_exit
         && matches!(intent, None | Some(BotIntent::Fight(_) | BotIntent::Advance(_)))
         && !traversal_committed;
-    // A timed powerup commitment normally freezes item selection, but a known respawn wait is spare
-    // route time: use it to collect a nearby health/armor/weapon only when the complete two-leg path
-    // still preserves the powerup arrival. Keep the powerup as a completion-critical continuation,
-    // so touching the bridge item immediately resumes the quad/pent run.
+    // A timed powerup commitment normally freezes item selection, but nearby preparation is useful:
+    // on a live opening Quad, pick up an effectively on-route weapon/armor first; during a respawn
+    // wait, spend only route slack. Keep the powerup as a completion-critical continuation, so
+    // touching the bridge item immediately resumes the quad/pent run.
     if urgent_allowed
         && game.entities[e].bot.goal.commit == GoalCommit::Powerup
         && now >= game.entities[e].bot.goal.next_urgent
@@ -1016,6 +1272,7 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3, cli
         now,
         intent.is_none() && !stack_exit && game.entities[e].bot.goal.commit == GoalCommit::None,
     );
+    let oracle_target = apply_oracle_advice(game, e, now, intent, combat_last_seen, traversal_committed, holding);
     if holding {
         // `update_handoff_hold` set `goal_item` to the held weapon — nothing else to pick this frame.
     } else if game.entities[e].bot.goal.commit != GoalCommit::None {
@@ -1104,6 +1361,7 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3, cli
     // Opt-in diagnostics (`rtx_bot_debug 1`): one throttled line per bot — what it wants, how far,
     // whether it's standing on that item, and whether it owns the LG. Pinpoints pickup-vs-desire.
     if host.cvar_bool(c"rtx_bot_debug") && now >= game.entities[e].bot.repath_time {
+        let client = game.entities[e].bot.client;
         let gi = game.entities[e].bot.goal.item;
         let (goal, dist, overlap) = if gi != 0 {
             let it = &game.entities[EntId(gi)];
@@ -1220,6 +1478,9 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3, cli
     // mode's target, the chosen item, or the nearest human.
     let (target_origin, item_cell) = match intent {
         Some(BotIntent::Fight(_)) if chasing => vigil.unwrap_or(goal_item_terminal),
+        Some(BotIntent::Fight(_)) if oracle_target.is_some() && combat_last_seen.is_some() => {
+            (oracle_target.unwrap(), None)
+        }
         // Visible → the enemy's live origin (combat owns aim on sight); aware-but-unseen → the
         // last-seen spot, so the bot searches where they went instead of tracking through walls.
         Some(BotIntent::Fight(en)) => (combat_last_seen.unwrap_or(game.entities[en].v.origin), None),
@@ -1233,6 +1494,7 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3, cli
         // this spawn instead of falling into the ordinary human-follow/roam path. The 1.5-second
         // selector cadence will commit as soon as a respawning stack item enters its lookahead.
         None if stack_exit => (origin, None),
+        None if oracle_target.is_some() => (oracle_target.unwrap(), None),
         None => {
             polite = true; // following / roaming: no need to stand on the exact spot
             if let Some(spot) = mode.bot_idle_roam(game, e) {
@@ -1309,8 +1571,7 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3, cli
         }
         let mi = game.entities[e].bot.goal.magnet_item;
         // Revalidate cheaply each frame: a magnet is good only while it's still on the floor.
-        (mi != 0 && game.entities[EntId(mi)].v.solid == Solid::Trigger)
-            .then(|| game.entities[EntId(mi)].v.origin)
+        (mi != 0 && game.entities[EntId(mi)].v.solid == Solid::Trigger).then(|| game.entities[EntId(mi)].v.origin)
     } else {
         game.entities[e].bot.goal.magnet_item = 0;
         None
@@ -1327,9 +1588,23 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3, cli
     // `surfacing`/`swim_up` are decided in `run_bot` (they need the borrowed graph + bot cell), so
     // the normal objective leaves them off — the anti-drown override flips them on when it fires.
     Objective {
-        hooking, on_sj, on_rj, enemy, chasing, item_committed, polite, target_origin, item_cell,
-        alternate_item_cell, magnet, watch_point, vigil: vigil.is_some(), item_solid, surfacing: false,
-        swim_up: false, order_link: None,
+        hooking,
+        on_sj,
+        on_rj,
+        enemy,
+        chasing,
+        item_committed,
+        polite,
+        target_origin,
+        item_cell,
+        alternate_item_cell,
+        magnet,
+        watch_point,
+        vigil: vigil.is_some(),
+        item_solid,
+        surfacing: false,
+        swim_up: false,
+        order_link: None,
     }
 }
 
@@ -1359,8 +1634,23 @@ fn emit(
     rj: &rj::RjDrive,
     enemy: Option<EntId>,
 ) {
-    let Sense { host, now, frametime, v_angle, client, msec, speed, .. } = s;
-    let BotCmd { look, move_world, mut buttons, impulse, shot } = cmd;
+    let Sense {
+        host,
+        now,
+        frametime,
+        v_angle,
+        client,
+        msec,
+        speed,
+        ..
+    } = s;
+    let BotCmd {
+        look,
+        move_world,
+        mut buttons,
+        impulse,
+        shot,
+    } = cmd;
     let skill = host.cvar(c"rtx_bot_skill").clamp(0.0, 7.0);
 
     // View + move for the frame. When the bhop controller is driving, translate its usercmd into a
@@ -1373,7 +1663,10 @@ fn emit(
     let (look, move_world) = match bhop_cmd {
         Some(c) => {
             let w = bhop::wishdir_fs(c.view_yaw, c.forward, c.side);
-            (Vec3::new(look.x, c.view_yaw, 0.0), Vec3::new(w.x, w.y, 0.0) * crate::defs::BOT_MOVE_SPEED)
+            (
+                Vec3::new(look.x, c.view_yaw, 0.0),
+                Vec3::new(w.x, w.y, 0.0) * crate::defs::BOT_MOVE_SPEED,
+            )
         }
         None => (look, move_world),
     };
@@ -1387,7 +1680,11 @@ fn emit(
         // overrides the skill-scaled default when > 0.
         let cap = {
             let c = game.host().cvar(c"rtx_bot_turnrate");
-            if c > 0.0 { c } else { combat::aim_rate_cap(skill) }
+            if c > 0.0 {
+                c
+            } else {
+                combat::aim_rate_cap(skill)
+            }
         };
         let b = &mut game.entities[e].bot;
         if b.aim.angles == Vec3::ZERO {
@@ -1444,7 +1741,12 @@ fn emit(
             b.rj.jump_time = now;
             // Harness telemetry: the actual press moment, the settled view, and the residual aim
             // error against the (biased) fire angles. Inert without a puppet order consuming it.
-            b.rj.telem.press = Some(state::RjPress { t: now, origin: s.origin, view, aim_err: err });
+            b.rj.telem.press = Some(state::RjPress {
+                t: now,
+                origin: s.origin,
+                view,
+                aim_err: err,
+            });
         }
     }
     // The rocket fires this frame (the driver set `rj.fire` in Stance-timed Rise): stamp the settled
@@ -1467,26 +1769,24 @@ fn emit(
         trial.pending_buttons = buttons as u32;
     }
 
-    // Combat/gate diagnostics: what the bot is chasing and whether it's stuck at a gate. Enable
-    // with `rtx_bot_debug 1` (conprint shows without `developer`).
+    // Per-frame flight recorder (`rtx_bot_debug`): capture this bot's full sensor/decision snapshot
+    // into its audit ring instead of `conprint`ing a line (which floods the console and drops
+    // packets). Dump it with the control channel's `audit` verb. See [`rtx_auditlog`].
     if host.cvar_bool(c"rtx_bot_debug") {
-        let gate = game.entities[e].bot.gate.errand.map(|er| er.index);
-        let route = game.entities[e].bot.route.len();
-        let hph = game.entities[e].bot.hook.phase;
-        let rjph = game.entities[e].bot.rj.phase;
-        let bpos = game.entities[e].bot.route_pos;
-        let band = game.entities[e].bot.route_bands.get(bpos).copied().unwrap_or(0);
-        let bh = &game.entities[e].bot.bhop;
-        host.conprint(&cstring(&format!(
-            "rtx bot{client}: enemy={} gate={gate:?} hook={hph:?} rj={rjph:?} bhop={:?} hops={} flips={} peak={:.0} \
-             spd={speed:.0} route={route} band={band} fwd={forward} side={side} atk={}\n",
+        let origin = game.entities[e].v.origin; // post-move origin for this frame's snapshot
+        let frame = capture_frame(
+            game,
+            e,
+            now,
+            origin,
+            speed,
+            forward,
+            side,
+            buttons,
             enemy.is_some(),
-            bh.phase,
-            bh.hops,
-            bh.flips,
-            bh.peak,
-            (buttons & BUTTON_ATTACK) != 0,
-        )));
+            0, // spectate-watch target: not plumbed to `emit`; reserved in the schema
+        );
+        game.entities[e].bot.audit.push(frame, audit_cap(&host));
     }
 
     host.set_bot_cmd(client, msec, view, forward, side, 0, buttons, impulse);
@@ -1560,7 +1860,16 @@ fn prearm_traversal(game: &mut GameState, e: EntId, now: f32, on_ground: bool) {
 fn run_bot(game: &mut GameState, e: EntId, frame_clock: BotFrameClock) {
     let s = sense(game, e, frame_clock);
     // The spine reads only these; `steer` re-destructures the full snapshot from `s` via `SteerCtx`.
-    let Sense { host, now, msec, origin, v_angle, client, alive, .. } = s;
+    let Sense {
+        host,
+        now,
+        msec,
+        origin,
+        v_angle,
+        client,
+        alive,
+        ..
+    } = s;
     // Flip the per-frame pulse used for press/release-edge buttons.
     let pulse = {
         let b = &mut game.entities[e].bot;
@@ -1666,10 +1975,15 @@ fn run_bot(game: &mut GameState, e: EntId, frame_clock: BotFrameClock) {
     // silently drop a goal flood we'd already paid for.
     let profiling = game.bot_prof.profiling();
     let t = prof::Timer::start(profiling);
-    let mut o = resolve_objective(game, e, now, origin, client);
+    let mut o = resolve_objective(game, e, now, origin);
     game.bot_prof.add_phase(prof::Phase::Objective, t.stop());
     // The spine and prologue read a few fields; `steer` re-destructures the rest from `o` via `SteerCtx`.
-    let Objective { enemy, item_cell, target_origin, .. } = o;
+    let Objective {
+        enemy,
+        item_cell,
+        target_origin,
+        ..
+    } = o;
 
     // Whether weapons may fire right now (a match-mode countdown locks them out). Read before the nav
     // borrow: a rocket jump must not jump when the engine would swallow its rocket (jump, no blast).
@@ -1768,7 +2082,14 @@ fn run_bot(game: &mut GameState, e: EntId, frame_clock: BotFrameClock) {
 
     let t = prof::Timer::start(profiling);
     let bot = &mut game.entities[e].bot;
-    let steer::SteerOut { mut cmd, bhop_cmd, hook, rj, traversal_lock, overlays_ok } = steer::steer(
+    let steer::SteerOut {
+        mut cmd,
+        bhop_cmd,
+        hook,
+        rj,
+        traversal_lock,
+        overlays_ok,
+    } = steer::steer(
         graph,
         bot,
         steer::SteerCtx {
@@ -1960,6 +2281,21 @@ impl LinkPricing {
 }
 
 impl GameState {
+    /// An authoritative map pickup disappeared. Release every bot still planning around that old
+    /// live item so the timed-departure selector, rather than a stale standing goal, decides when to
+    /// return. The picker is briefly avoid-listed even when the touch was incidental to its route.
+    pub(crate) fn bot_item_taken(&mut self, item: EntId, picker: EntId, now: f32) {
+        oracle::note_item_taken(self, item, picker, now);
+        let maxclients = self.host().cvar(c"maxclients") as u32;
+        for client in (1..=maxclients).map(EntId) {
+            if self.entities[client].bot.is_bot {
+                self.entities[client]
+                    .bot
+                    .item_taken(item.0, now, client == picker, PICKUP_AVOID_TIME);
+            }
+        }
+    }
+
     /// Gather bot `e`'s live A* pricing (see [`LinkPricing`]) — closed gates, its failed-link
     /// surcharges (expired entries dropped), and its rocket-jump fitness gate.
     pub(crate) fn bot_link_pricing(&self, e: EntId, now: f32) -> LinkPricing {
@@ -2084,10 +2420,7 @@ fn progress_stalled(best: f32, since: f32, remaining: f32, now: f32) -> bool {
 
 /// Whether `p` lies within the box `[fp_min, fp_max]` grown by `margin` on every side.
 pub(crate) fn in_footprint(p: Vec2, fp_min: Vec2, fp_max: Vec2, margin: f32) -> bool {
-    p.x >= fp_min.x - margin
-        && p.x <= fp_max.x + margin
-        && p.y >= fp_min.y - margin
-        && p.y <= fp_max.y + margin
+    p.x >= fp_min.x - margin && p.x <= fp_max.x + margin && p.y >= fp_min.y - margin && p.y <= fp_max.y + margin
 }
 
 /// Where to stand while a raised plat comes down: the bot's current spot if it's already at least
@@ -2178,7 +2511,11 @@ fn penalize_leg(bot: &mut BotState, link: Option<u32>, kind: Option<LinkKind>, n
 /// `Plat` link, the very kind `penalize_leg` exempts (the ordinary watchdogs misread waiting on a
 /// lift as failure, but an 8s hold with no descent is a genuine one worth diverting from).
 fn penalize_link(bot: &mut BotState, link: u32, now: f32) {
-    if let Some(slot) = bot.failed_links.iter_mut().find(|(l, until, _)| *l == link && *until > now) {
+    if let Some(slot) = bot
+        .failed_links
+        .iter_mut()
+        .find(|(l, until, _)| *l == link && *until > now)
+    {
         slot.2 = slot.2.saturating_add(1);
         slot.1 = now + PENALTY_TTL;
         return;
@@ -2328,6 +2665,50 @@ fn corridor_point(graph: &NavGraph, route: &[u32], route_pos: usize, origin: Vec
     point_along(origin, ground_leg_targets(graph, route, route_pos), d)
 }
 
+/// The 3D length of the polyline `origin → each successive target`. For a route whose legs are
+/// contiguous (each leg's target is the next leg's source) this is the total remaining travel
+/// distance: the partial leg from `origin` to the current target, then every leg after it.
+fn remaining_over(origin: Vec3, targets: impl Iterator<Item = Vec3>) -> f32 {
+    let mut prev = origin;
+    let mut total = 0.0;
+    for t in targets {
+        total += (t - prev).length();
+        prev = t;
+    }
+    total
+}
+
+/// Total remaining route length (see [`remaining_over`]) over *all* legs from `route_pos`, not just
+/// the ground ones. Unlike the straight-line XY distance to the goal, this shrinks monotonically as a
+/// bot advances along a winding route — a spiral staircase whose top sits over its own core keeps a
+/// near-constant XY distance to the goal through a *correct* climb, which false-trips the progress
+/// watchdog; remaining arc-length does not, while still plateauing on a true orbit. `0.0` when the
+/// route is exhausted (the caller falls back to the direct goal distance there).
+fn route_remaining(graph: &NavGraph, route: &[u32], route_pos: usize, origin: Vec3) -> f32 {
+    remaining_over(
+        origin,
+        route
+            .get(route_pos..)
+            .unwrap_or_default()
+            .iter()
+            .map(|&leg| graph.cell_origin(graph.link_target(leg))),
+    )
+}
+
+/// Whether the bot is on, or about to reach, a ledge-flagged cell — the gate for predictive hop
+/// planning ([`hopsim`](crate::bot::hopsim)). Checks the current cell and the next few legs' targets;
+/// the flags are precomputed per cell, so unlike the near-field they stay valid mid-air, and arming a
+/// step before the drop lets the planner take over while the bot is still on solid ground.
+fn ledge_soon(graph: &NavGraph, route: &[u32], route_pos: usize, bot_cell: CellId) -> bool {
+    graph.is_ledge(bot_cell)
+        || route
+            .get(route_pos..)
+            .unwrap_or_default()
+            .iter()
+            .take(4)
+            .any(|&leg| graph.is_ledge(graph.link_target(leg)))
+}
+
 /// A wander destination for an idle bot with nothing to chase: a random reachable navmesh cell,
 /// refreshed on arrival or every few seconds. Keeps bots moving on a human-less server instead of
 /// freezing on the spawn (the "bots stand still with no human" case).
@@ -2378,7 +2759,12 @@ fn nearest_air(graph: &NavGraph, bot_cell: CellId, costs: &LinkCosts) -> Option<
 /// bounded flood — the escape targets are always close. `settled` is in nondecreasing-cost order, so
 /// the first qualifying cell is the nearest one within [`ESCAPE_FLOOD_MAX`]. Only if nothing within
 /// the bound qualifies does it pay for a whole-graph flood, so the result equals the global nearest.
-fn nearest_settled(graph: &NavGraph, bot_cell: CellId, costs: &LinkCosts, ok: impl Fn(CellId) -> bool) -> Option<CellId> {
+fn nearest_settled(
+    graph: &NavGraph,
+    bot_cell: CellId,
+    costs: &LinkCosts,
+    ok: impl Fn(CellId) -> bool,
+) -> Option<CellId> {
     let (_, settled) = graph.costs_from_within(bot_cell, costs, ESCAPE_FLOOD_MAX);
     if let Some(&c) = settled.iter().find(|&&c| ok(c)) {
         return Some(c);
@@ -2450,7 +2836,6 @@ fn nearest_human(game: &GameState, bot_e: EntId) -> Option<EntId> {
     }
     best.map(|(e, _)| e)
 }
-
 
 /// Drop bot bookkeeping when a bot client disconnects (kicked, or removed by the manager), so
 /// a slot reused by a future human isn't mistaken for a bot.
@@ -2527,66 +2912,44 @@ mod tests {
     fn runway_over_stops_at_bends_and_ascents() {
         let origin = Vec3::ZERO;
         let flat: Vec<Vec3> = (1..=12).map(|i| Vec3::new(i as f32 * 32.0, 0.0, 0.0)).collect();
-        assert!((runway_over(origin, flat.iter().copied()) - 384.0).abs() < 1.0, "flat corridor should be full length");
+        assert!(
+            (runway_over(origin, flat.iter().copied()) - 384.0).abs() < 1.0,
+            "flat corridor should be full length"
+        );
 
         // A 90° bend after ~128u: runway stops around the last straight chord (before the turn).
         let mut bend = flat[..4].to_vec();
         bend.extend((1..=8).map(|i| Vec3::new(128.0, i as f32 * 32.0, 0.0)));
         let r = runway_over(origin, bend.iter().copied());
-        assert!((96.0..=200.0).contains(&r), "bend should stop the runway near it, got {r}");
+        assert!(
+            (96.0..=200.0).contains(&r),
+            "bend should stop the runway near it, got {r}"
+        );
 
         // Ascending staircase: 8u riser per 32u run ⇒ ~24u climb per 96u chord ⇒ stops early.
-        let stairs: Vec<Vec3> = (1..=12).map(|i| Vec3::new(i as f32 * 32.0, 0.0, i as f32 * 8.0)).collect();
-        assert!(runway_over(origin, stairs.iter().copied()) < 160.0, "should not treat stairs as runway");
+        let stairs: Vec<Vec3> = (1..=12)
+            .map(|i| Vec3::new(i as f32 * 32.0, 0.0, i as f32 * 8.0))
+            .collect();
+        assert!(
+            runway_over(origin, stairs.iter().copied()) < 160.0,
+            "should not treat stairs as runway"
+        );
 
         // Descending staircase (hopping down is fine) and a lone 16u step both stay full length.
-        let down: Vec<Vec3> = (1..=12).map(|i| Vec3::new(i as f32 * 32.0, 0.0, -(i as f32) * 8.0)).collect();
-        assert!(runway_over(origin, down.iter().copied()) > 350.0, "descending stairs should stay runway");
+        let down: Vec<Vec3> = (1..=12)
+            .map(|i| Vec3::new(i as f32 * 32.0, 0.0, -(i as f32) * 8.0))
+            .collect();
+        assert!(
+            runway_over(origin, down.iter().copied()) > 350.0,
+            "descending stairs should stay runway"
+        );
         let mut step = flat.clone();
         for p in step.iter_mut().skip(6) {
             p.z = 16.0; // a single 16u lip partway along an otherwise level corridor
         }
-        assert!(runway_over(origin, step.iter().copied()) > 350.0, "a lone step should not truncate the runway");
-
-        // Exact lower-RA-ramp cadence from DM3: alternating flat/+8u cells add only 16u per 96u.
-        // It is a sustained ascent, not a flat bhop runway; a fresh hop chain here caused the live
-        // bot to sail off the narrow ramp and loop below RA until timeout.
-        let dm3_ra_ramp = [
-            Vec3::new(256.0, -832.0, 32.0),
-            Vec3::new(288.0, -832.0, 32.0),
-            Vec3::new(320.0, -832.0, 40.0),
-            Vec3::new(352.0, -832.0, 40.0),
-            Vec3::new(384.0, -832.0, 48.0),
-            Vec3::new(416.0, -832.0, 48.0),
-            Vec3::new(448.0, -800.0, 56.0),
-        ];
-        let ramp_runway = runway_over(Vec3::new(224.0, -832.0, 24.0), dm3_ra_ramp.into_iter());
         assert!(
-            ramp_runway < bhop::ZIGZAG_ENGAGE,
-            "DM3's sustained lower-RA ascent must be run, not hopped: {ramp_runway}u"
-        );
-
-        // Exact ordinary corridor preceding the recorded single-frame contact on DM3 link 5682.
-        // Chord one heads southwest; chord two turns south by ~32.3 degrees. At the observed
-        // ~398 ups a full hop needs ~333u, so this bend must truncate the runway before +jump.
-        let dm3_upper_bend = [
-            Vec3::new(-192.0, -608.0, 152.0),
-            Vec3::new(-224.0, -640.0, 152.0),
-            Vec3::new(-224.0, -672.0, 152.0),
-            Vec3::new(-224.0, -704.0, 152.0),
-            Vec3::new(-224.0, -736.0, 152.0),
-            Vec3::new(-224.0, -768.0, 152.0),
-            Vec3::new(-192.0, -800.0, 152.0),
-            Vec3::new(-192.0, -832.0, 152.0),
-        ];
-        let upper_runway = runway_over(
-            Vec3::new(-161.35172, -572.8917, 152.03125),
-            dm3_upper_bend.into_iter(),
-        );
-        let observed_hop_need = 398.0 * bhop::T_HOP + bhop::HOP_MARGIN;
-        assert!(
-            upper_runway < 160.0 && upper_runway < observed_hop_need,
-            "DM3 upper bend must stop at the first ~124u chord and hold the observed full hop: runway={upper_runway} need={observed_hop_need}",
+            runway_over(origin, step.iter().copied()) > 350.0,
+            "a lone step should not truncate the runway"
         );
     }
 
@@ -2595,8 +2958,43 @@ mod tests {
         let origin = Vec3::ZERO;
         let pts: Vec<Vec3> = (1..=4).map(|i| Vec3::new(i as f32 * 100.0, 0.0, 0.0)).collect();
         assert!((point_along(origin, pts.iter().copied(), 250.0).x - 250.0).abs() < 0.5);
-        assert!((point_along(origin, pts.iter().copied(), 9999.0).x - 400.0).abs() < 0.5, "clamps to the last point");
+        assert!(
+            (point_along(origin, pts.iter().copied(), 9999.0).x - 400.0).abs() < 0.5,
+            "clamps to the last point"
+        );
         assert!((point_along(origin, pts.iter().copied(), 0.0).x - 0.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn remaining_over_shrinks_on_a_helix_the_xy_distance_hides() {
+        use std::f32::consts::TAU;
+        // A helical climb whose top sits over its own core: leg targets spiral up around the XY
+        // origin. Walking it, remaining arc-length must shrink monotonically — while the straight-line
+        // XY distance to the top does *not*, which is exactly what false-tripped the old watchdog.
+        let r = 100.0;
+        let pts: Vec<Vec3> = (0..=16)
+            .map(|i| {
+                let a = i as f32 / 4.0 * TAU; // four turns
+                Vec3::new(r * a.cos(), r * a.sin(), i as f32 * 20.0)
+            })
+            .collect();
+        let goal = *pts.last().unwrap();
+
+        let mut prev_rem = f32::INFINITY;
+        let mut xy_rose = false;
+        let mut prev_xy = (goal.xy() - pts[0].xy()).length();
+        for (i, &origin) in pts.iter().enumerate() {
+            let rem = remaining_over(origin, pts[i + 1..].iter().copied());
+            assert!(rem < prev_rem, "remaining arc-length must shrink: {rem} !< {prev_rem}");
+            prev_rem = rem;
+            let xy = (goal.xy() - origin.xy()).length();
+            xy_rose |= xy > prev_xy + 1.0; // the XY metric is non-monotonic on the way up
+            prev_xy = xy;
+        }
+        assert!(
+            xy_rose,
+            "the XY-to-goal distance should rise somewhere on a helix (why arc-length wins)"
+        );
     }
 
     #[test]
@@ -2609,7 +3007,11 @@ mod tests {
         assert_eq!(bot_target(5, 1, pickup, false), Some(5));
         // Structured warmup caps the fill to the empty seats (4 seats − 1 human = 3).
         assert_eq!(bot_target(5, 1, two_by_two, true), Some(3));
-        assert_eq!(bot_target(2, 1, two_by_two, true), Some(2), "cvar below empty seats wins");
+        assert_eq!(
+            bot_target(2, 1, two_by_two, true),
+            Some(2),
+            "cvar below empty seats wins"
+        );
         assert_eq!(bot_target(5, 4, two_by_two, true), Some(0), "humans fill every seat");
         // Structured live → freeze (no add, no trim).
         assert_eq!(bot_target(5, 1, two_by_two, false), None);
@@ -2697,7 +3099,9 @@ mod tests {
         let bytes = std::fs::read(&path).expect("read bsp");
         let bsp = Bsp::parse(&bytes).expect("parse bsp");
         let graph = NavGraph::build(&bsp);
-        let quad = graph.nearest(Vec3::new(752.0, 24.0, 288.0)).expect("no cell near the quad");
+        let quad = graph
+            .nearest(Vec3::new(752.0, 24.0, 288.0))
+            .expect("no cell near the quad");
 
         // The platform proper: the walk/step-connected plateau containing the quad cell (jump
         // links excluded, so the launch ledge across the void doesn't count as "on it").
@@ -2735,9 +3139,7 @@ mod tests {
             .links
             .iter()
             .filter(|l| {
-                on_platform[l.to as usize]
-                    && !on_platform[l.from as usize]
-                    && !matches!(l.kind, LinkKind::Drop)
+                on_platform[l.to as usize] && !on_platform[l.from as usize] && !matches!(l.kind, LinkKind::Drop)
             })
             .count();
         eprintln!(
@@ -2789,7 +3191,13 @@ mod tests {
         ] {
             assert!(bot_pickup_touch(touch), "{touch:?} should be collected manually");
         }
-        for touch in [Touch::Teleport, Touch::Hurt, Touch::ButtonTouch, Touch::Multi, Touch::PlatCenter] {
+        for touch in [
+            Touch::Teleport,
+            Touch::Hurt,
+            Touch::ButtonTouch,
+            Touch::Multi,
+            Touch::PlatCenter,
+        ] {
             assert!(!bot_pickup_touch(touch), "{touch:?} must remain engine/map-owned");
         }
     }
@@ -2866,7 +3274,10 @@ mod tests {
         for _ in 0..400 {
             (a, v) = spring_step(a, v, 170.0, omega, dt, cap);
         }
-        assert!((a - 170.0).abs() < 1.0 && v.abs() < 5.0, "converges to target: a={a} v={v}");
+        assert!(
+            (a - 170.0).abs() < 1.0 && v.abs() < 5.0,
+            "converges to target: a={a} v={v}"
+        );
     }
 
     #[test]
@@ -2876,7 +3287,10 @@ mod tests {
         // Full surcharge at the moment of use, half at half the TTL, nothing at/after expiry.
         assert!((tele_reuse_penalty(until, now) - TELEPORT_REUSE_SURCHARGE).abs() < 1e-3);
         let half = tele_reuse_penalty(until, now + TELEPORT_REUSE_TTL / 2.0);
-        assert!((half - TELEPORT_REUSE_SURCHARGE / 2.0).abs() < 1e-3, "half-life surcharge: {half}");
+        assert!(
+            (half - TELEPORT_REUSE_SURCHARGE / 2.0).abs() < 1e-3,
+            "half-life surcharge: {half}"
+        );
         assert_eq!(tele_reuse_penalty(until, until), 0.0, "expired");
         assert_eq!(tele_reuse_penalty(0.0, now), 0.0, "empty slot");
         // Orders below the closed-gate wall, so a sole-route teleport is still taken.
@@ -2898,7 +3312,12 @@ mod tests {
         // Past the window with no meaningful improvement: stalled.
         assert!(progress_stalled(100.0, 0.0, 100.0, PROGRESS_STALL_TIME + 0.1));
         // Past the window but the remaining distance dropped well below best: not stalled.
-        assert!(!progress_stalled(100.0, 0.0, 100.0 - PROGRESS_EPS - 1.0, PROGRESS_STALL_TIME + 0.1));
+        assert!(!progress_stalled(
+            100.0,
+            0.0,
+            100.0 - PROGRESS_EPS - 1.0,
+            PROGRESS_STALL_TIME + 0.1
+        ));
     }
 
     #[test]
@@ -2908,12 +3327,19 @@ mod tests {
         penalize_leg(&mut b, None, Some(LinkKind::Walk), 1.0);
         penalize_leg(&mut b, Some(3), Some(LinkKind::Plat), 1.0);
         penalize_leg(&mut b, Some(3), Some(LinkKind::Teleport), 1.0);
-        assert!(b.failed_links.iter().all(|&(_, until, _)| until == 0.0), "exempt legs recorded nothing");
+        assert!(
+            b.failed_links.iter().all(|&(_, until, _)| until == 0.0),
+            "exempt legs recorded nothing"
+        );
         // A walk leg records one strike; failing it again bumps strikes and refreshes expiry.
         penalize_leg(&mut b, Some(3), Some(LinkKind::Walk), 1.0);
         penalize_leg(&mut b, Some(3), Some(LinkKind::Walk), 2.0);
         let e = b.failed_links.iter().find(|&&(l, _, _)| l == 3).unwrap();
-        assert_eq!((e.1, e.2), (2.0 + PENALTY_TTL, 2), "same leg bumped to 2 strikes, expiry refreshed");
+        assert_eq!(
+            (e.1, e.2),
+            (2.0 + PENALTY_TTL, 2),
+            "same leg bumped to 2 strikes, expiry refreshed"
+        );
     }
 
     #[test]
@@ -2921,9 +3347,16 @@ mod tests {
         // The plat-wait timeout must strike a Plat link directly — the kind `penalize_leg` exempts.
         let mut b = BotState::default();
         penalize_leg(&mut b, Some(9), Some(LinkKind::Plat), 1.0);
-        assert!(b.failed_links.iter().all(|&(_, until, _)| until == 0.0), "penalize_leg still exempts Plat");
+        assert!(
+            b.failed_links.iter().all(|&(_, until, _)| until == 0.0),
+            "penalize_leg still exempts Plat"
+        );
         penalize_link(&mut b, 9, 1.0);
-        let e = b.failed_links.iter().find(|&&(l, _, _)| l == 9).expect("plat link recorded");
+        let e = b
+            .failed_links
+            .iter()
+            .find(|&&(l, _, _)| l == 9)
+            .expect("plat link recorded");
         assert_eq!((e.1, e.2), (1.0 + PENALTY_TTL, 1), "plat link struck once");
     }
 
@@ -2931,9 +3364,18 @@ mod tests {
     fn in_footprint_margins() {
         let (lo, hi) = (Vec2::new(-16.0, -16.0), Vec2::new(16.0, 16.0));
         assert!(in_footprint(Vec2::ZERO, lo, hi, 0.0), "centre is inside");
-        assert!(!in_footprint(Vec2::new(20.0, 0.0), lo, hi, 0.0), "20u past +X face is outside");
-        assert!(in_footprint(Vec2::new(20.0, 0.0), lo, hi, 8.0), "within an 8u margin it's inside");
-        assert!(!in_footprint(Vec2::new(25.0, 0.0), lo, hi, 8.0), "past the margin it's outside again");
+        assert!(
+            !in_footprint(Vec2::new(20.0, 0.0), lo, hi, 0.0),
+            "20u past +X face is outside"
+        );
+        assert!(
+            in_footprint(Vec2::new(20.0, 0.0), lo, hi, 8.0),
+            "within an 8u margin it's inside"
+        );
+        assert!(
+            !in_footprint(Vec2::new(25.0, 0.0), lo, hi, 8.0),
+            "past the margin it's outside again"
+        );
     }
 
     #[test]
@@ -2947,10 +3389,16 @@ mod tests {
         let out = plat_standoff(near, lo, hi);
         assert_eq!(out.x, 16.0 + PLAT_STANDOFF, "pushed past the +X face");
         assert_eq!(out.z, 24.0, "keeps the bot's own height");
-        assert!(!in_footprint(out.xy(), lo, hi, PLAT_STANDOFF - 0.01), "result clears the standoff box");
+        assert!(
+            !in_footprint(out.xy(), lo, hi, PLAT_STANDOFF - 0.01),
+            "result clears the standoff box"
+        );
         // Dead centre is degenerate (all faces equal) but must still resolve to a point outside.
         let centre = plat_standoff(Vec3::new(0.0, 0.0, 24.0), lo, hi);
-        assert!(!in_footprint(centre.xy(), lo, hi, PLAT_STANDOFF - 0.01), "centre still escapes");
+        assert!(
+            !in_footprint(centre.xy(), lo, hi, PLAT_STANDOFF - 0.01),
+            "centre still escapes"
+        );
     }
 
     #[test]
@@ -2965,9 +3413,17 @@ mod tests {
         // Behind the bot (negative projection) — never step backward for it.
         assert!(!magnet_on_corridor(origin, waypoint, Vec2::new(-10.0, 0.0)));
         // Beyond the waypoint plus one arrival radius — it belongs to a later leg.
-        assert!(!magnet_on_corridor(origin, waypoint, Vec2::new(100.0 + ARRIVE_RADIUS + 1.0, 0.0)));
+        assert!(!magnet_on_corridor(
+            origin,
+            waypoint,
+            Vec2::new(100.0 + ARRIVE_RADIUS + 1.0, 0.0)
+        ));
         // Right up to the waypoint-plus-slack it still counts.
-        assert!(magnet_on_corridor(origin, waypoint, Vec2::new(100.0 + ARRIVE_RADIUS - 1.0, 0.0)));
+        assert!(magnet_on_corridor(
+            origin,
+            waypoint,
+            Vec2::new(100.0 + ARRIVE_RADIUS - 1.0, 0.0)
+        ));
         // A degenerate zero-length leg has no corridor.
         assert!(!magnet_on_corridor(origin, origin, Vec2::new(1.0, 0.0)));
     }

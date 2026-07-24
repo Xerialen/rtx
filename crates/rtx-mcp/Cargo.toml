@@ -1,15 +1,15 @@
 # The rocket-jump tuning harness bridge: an MCP (stdio) server that puppets rtx bots through the
 # game module's TCP control channel and manages the local mvdsv process. Kept out of the workspace
-# default build (like navview) so plain `cargo build`/CI never pull the rmcp/tokio tree.
+# default build (like rtx-nav-view) so plain `cargo build`/CI never pull the rmcp/tokio tree.
 [package]
-name = "rjmcp"
+name = "rtx-mcp"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 publish = false
 
 [[bin]]
-name = "rjmcp"
+name = "rtx-mcp"
 path = "src/main.rs"
 
 [dependencies]
@@ -19,3 +19,7 @@ rmcp = { version = "2.2", features = ["server", "macros", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The typed control-protocol schema + msgpack codec shared with the game (`rtx-ctlproto`); the MCP
+# decodes typed replies and re-serialises them as JSON for Claude.
+rtx-ctlproto = { workspace = true }
+rmp-serde = { workspace = true }

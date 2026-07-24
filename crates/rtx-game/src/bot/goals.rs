@@ -20,9 +20,7 @@
 use glam::{Vec3, Vec3Swizzles};
 
 use crate::arsenal::AmmoKind;
-use crate::defs::{
-    Bits, Items, Solid, RUNE_HASTE, RUNE_MASK, RUNE_REGEN, RUNE_RESISTANCE, RUNE_STRENGTH,
-};
+use crate::defs::{Bits, Items, Solid, RUNE_HASTE, RUNE_MASK, RUNE_REGEN, RUNE_RESISTANCE, RUNE_STRENGTH};
 use crate::entity::{EntId, Think, Touch};
 use crate::game::GameState;
 use crate::navmesh::{CellId, LinkCosts, LinkKind, NavGraph, CLOSED_GATE_PENALTY};
@@ -30,29 +28,36 @@ use crate::navmesh::{CellId, LinkCosts, LinkKind, NavGraph, CLOSED_GATE_PENALTY}
 /// Beyond this travel-or-respawn time (seconds) an *ordinary* item isn't worth pursuing.
 pub(crate) const LOOKAHEAD: f32 = 10.0;
 
-/// Powerups (quad/pentagram) are planned much farther out than ordinary pickups: a powerup is worth
-/// crossing the map for and worth *waiting at* (arrive early, deny the enemy its timing). 30 s covers
-/// any trek plus the tail of the 60 s quad respawn, while ordinary items keep the tight [`LOOKAHEAD`]
-/// so a bot doesn't detour half a minute for a shard.
+/// Powerups (quad/pentagram) are understood much farther out than ordinary pickups. This bounds the
+/// score and any cross-map route; [`POWERUP_SETUP_LEAD`] separately prevents a nearby bot from leaving
+/// before it is time to establish control. Ordinary items keep the tight [`LOOKAHEAD`].
 const POWERUP_LOOKAHEAD: f32 = 30.0;
+/// How early a bot may arrive to establish powerup control after accounting for its actual route.
+/// This keeps cross-map foresight (`travel + lead`) without turning the last half of every Quad
+/// cycle into a vigil directly on the spawn.
+const POWERUP_SETUP_LEAD: f32 = 4.0;
 
 /// Give-up leash for a *powerup* goal (bot/mod.rs's `GOAL_GIVEUP_TIME` for ordinary items is 10 s).
 /// A cross-map quad run legitimately takes longer than that; the progress watchdog still catches a
 /// genuinely stuck bot far sooner. Sized to [`POWERUP_LOOKAHEAD`] plus a margin.
 pub(crate) const POWERUP_GIVEUP: f32 = 35.0;
 
-/// Red armour and megahealth — the "holy grail" pickups — are planned farther out than a shard but
-/// not as far as a powerup: worth a real trek and worth cycling, since holding them is half of QW map
-/// control. 20 s covers a cross-room run plus the tail of a 20 s armour respawn, staying under the
-/// powerup's 30 so a quad still wins a straight contest. Only when [`Stats::stack`] discipline is on.
+/// Red armour and megahealth — the "holy grail" pickups — are understood farther out than a shard but
+/// not as far as a powerup. The full 20-second cycle remains visible to scoring, while
+/// [`MAJOR_SETUP_LEAD`] decides when a route should actually begin. Only when [`Stats::stack`]
+/// discipline is on.
 const MAJOR_LOOKAHEAD: f32 = 20.0;
+/// RA/mega need a little timing margin, not their entire respawn spent camping the pickup. Two
+/// seconds is enough to take a nearby position and contest while leaving most of the 20-second RA
+/// cycle for weapons, health, and territory control.
+const MAJOR_SETUP_LEAD: f32 = 2.0;
 /// Give-up leash for a *major* (RA/mega) goal: longer than an ordinary item's 10 s (a cross-room run
 /// is legitimate), shorter than a powerup's, sized to [`MAJOR_LOOKAHEAD`] plus a margin.
 pub(crate) const MAJOR_GIVEUP: f32 = 25.0;
 
-/// How far out a goal is worth planning, by tier. A quad is worth crossing the map for and waiting at;
-/// red armour/mega are worth a trek and a cycle; an ordinary shard only a short detour. The score
-/// curve ([`item_score`]) decays each to zero at its own horizon.
+/// How far out a goal is understood, by tier. A quad is worth crossing the map for; red armour/mega
+/// are worth a trek and a cycle; an ordinary shard only a short detour. The score curve
+/// ([`item_score`]) decays each to zero at its own horizon, while timed departure is gated separately.
 #[derive(Clone, Copy, PartialEq)]
 enum Horizon {
     Ordinary,
@@ -67,10 +72,10 @@ enum Horizon {
 /// item on the near side of an open corridor is still preferred to one that needs a door opened.
 const GATE_OPEN_COST: f32 = 8.0;
 
-/// Powerup team-split threshold: a teammate counts as "so much nearer that I should take something
-/// else" once they're within this fraction of the bot's own distance to the powerup. Below 1.0 so a
-/// near-tie still lets both press it (redundancy against a contest) but a clear lead defers cleanly.
-const POWERUP_DEFER_RATIO: f32 = 0.7;
+/// Powerup team-split threshold: defer to any strictly nearer teammate. Exact distance ties settle
+/// through the stable entity-id reservation, so only one teammate owns the item while the other is
+/// free to cover armor, weapons, and approach routes.
+const POWERUP_DEFER_RATIO: f32 = 1.0;
 
 /// Minimum *desire* an item must have for a bot to break off combat and detour for it (the
 /// optional `rtx_bot_greed` behavior). Set so a genuinely wanted weapon/health/armor swing clears
@@ -228,10 +233,11 @@ const LOST_CONTEST_MULT: f32 = 0.35;
 /// the navigation watchdogs can't see, since the bot keeps moving). Q3's goal-selection dampening.
 const GOAL_HYSTERESIS: f32 = 1.3;
 
-/// Score multiplier for an item a teammate bot has already claimed (is fetching), so teammates don't
-/// race the same pickup. Small enough that a powerup's dominating desire still wins it (the quad
-/// stays contested), large enough to discourage two bots converging on one health/armor.
-const CLAIM_DISCOUNT: f32 = 0.3;
+/// Score multiplier for an ordinary item a teammate bot has already claimed (is fetching), so the
+/// second bot strongly prefers another weapon/armor route. Timed powerups use deterministic ownership
+/// below rather than this soft multiplier. Human Bravado winners shared an exact strategic goal only
+/// 0.7% of sampled time; `0.1` still permits convergence when there truly is no competitive alternative.
+const CLAIM_DISCOUNT: f32 = 0.1;
 
 /// Desire *floor* for a big weapon (RL/LG) the enemy side is believed to lack, in a game where
 /// weapons don't stay — item denial, the deathmatch-1 team play (weapons hide and respawn in 30 s,
@@ -466,12 +472,7 @@ fn hold_continues(
     mate_has_weapon: bool,
     enemy_contesting: bool,
 ) -> bool {
-    now < hold_until
-        && item_on_floor
-        && mate_alive
-        && mate_powered
-        && !mate_has_weapon
-        && !enemy_contesting
+    now < hold_until && item_on_floor && mate_alive && mate_powered && !mate_has_weapon && !enemy_contesting
 }
 
 /// The `Items` bit a weapon pickup grants (to check whether the bot already owns it).
@@ -572,8 +573,16 @@ fn firepower(items: f32, shells: f32, nails: f32, rockets: f32, cells: f32) -> f
 fn estimated_stats(est: crate::bot::model::OpponentEstimate, weapons_stay: bool, stack: bool) -> Stats {
     let has = |bit: Items| est.items.has(bit);
     let shells = if has(Items::SUPER_SHOTGUN) { 20.0 } else { 10.0 };
-    let nails = if has(Items::NAILGUN) || has(Items::SUPER_NAILGUN) { 50.0 } else { 0.0 };
-    let rockets = if has(Items::GRENADE_LAUNCHER) || has(Items::ROCKET_LAUNCHER) { 10.0 } else { 0.0 };
+    let nails = if has(Items::NAILGUN) || has(Items::SUPER_NAILGUN) {
+        50.0
+    } else {
+        0.0
+    };
+    let rockets = if has(Items::GRENADE_LAUNCHER) || has(Items::ROCKET_LAUNCHER) {
+        10.0
+    } else {
+        0.0
+    };
     let cells = if has(Items::LIGHTNING) { 30.0 } else { 0.0 };
     let strength = total_strength(est.health, est.armor_value, est.armor_type);
     Stats {
@@ -715,7 +724,9 @@ fn ammo_desire(s: &Stats, a: AmmoKind) -> f32 {
         }
         AmmoKind::Cells => {
             if s.cells < 100.0 {
-                ((50.0 - s.cells) * 0.2).max(2.5).max(dry(s.items.has(Items::LIGHTNING)))
+                ((50.0 - s.cells) * 0.2)
+                    .max(2.5)
+                    .max(dry(s.items.has(Items::LIGHTNING)))
             } else {
                 0.0
             }
@@ -892,15 +903,38 @@ impl GameState {
             return false;
         };
         let s = self.bot_stats(bot_e);
+        let tier = self.horizon_of(item, cat, s.stack);
+        // Revalidate deterministic powerup ownership as teammates move. Selection alone is not
+        // enough: a farther bot can publish the goal first, then a nearer teammate legitimately
+        // takes ownership on its later frame. Without this check the first bot's Powerup commit
+        // prevents re-selection and both remain locked onto Quad until somebody touches it.
+        let my_team = self.entities[bot_e].mode_p.team;
+        if matches!(cat, Category::Powerup) && my_team != 0 {
+            let point = ent.v.origin;
+            let my_dist = (point - self.entities[bot_e].v.origin).length();
+            if defer_powerup_to_teammate(
+                self.item_claimed_by_teammate(bot_e, my_team, item.0),
+                my_dist,
+                self.nearest_teammate_dist(bot_e, my_team, point),
+            ) {
+                return false;
+            }
+        }
+        // RA/mega use a need-and-distance owner rather than a soft claim discount. A stacked bot
+        // that selected RA first must release it when a newly hurt teammate becomes the better use
+        // of the pickup; otherwise both keep the same live goal until one touches it.
+        if tier == Horizon::Major && my_team != 0 && self.major_item_owned_by_teammate(bot_e, my_team, item, cat, now) {
+            return false;
+        }
         // A goal respawning within its own tier's horizon is still a valid standing goal (arrive early
         // and wait): a powerup out to 30 s, a major (RA/mega) to 20, an ordinary item the tight 10.
-        let horizon = match self.horizon_of(item, cat, s.stack) {
+        let horizon = match tier {
             Horizon::Powerup => POWERUP_LOOKAHEAD,
             Horizon::Major => MAJOR_LOOKAHEAD,
             Horizon::Ordinary => LOOKAHEAD,
         };
-        let reachable_soon = ent.v.solid == Solid::Trigger
-            || (matches!(ent.think, Think::SubRegen) && ent.v.nextthink - now < horizon);
+        let reachable_soon =
+            ent.v.solid == Solid::Trigger || (matches!(ent.think, Think::SubRegen) && ent.v.nextthink - now < horizon);
         if !reachable_soon {
             return false;
         }
@@ -929,7 +963,8 @@ impl GameState {
     /// wanted (`contains_major`) — holding them is map control, worth breaking a fight for. An ordinary
     /// first leg is allowed only when the bounded plan proves it bridges to one of those.
     pub(crate) fn select_major_item(&self, bot_e: EntId) -> Option<ItemPlan> {
-        self.best_item_plan(bot_e).filter(|p| p.contains_powerup || p.contains_major)
+        self.best_item_plan(bot_e)
+            .filter(|p| p.contains_powerup || p.contains_major)
     }
 
     /// Fresh-spawn exit: take one available armor or weapon before initiating combat. Unlike the
@@ -1038,7 +1073,7 @@ impl GameState {
                 local_pickup_in_budget(item.0 == self.entities[bot_e].bot.goal.item, distance, t)
                     .then_some((item, cell, commit, desire / (t + 0.25)))
             })
-            .max_by(|a, b| a.3.total_cmp(&b.3).then_with(|| b.0.0.cmp(&a.0.0)))
+            .max_by(|a, b| a.3.total_cmp(&b.3).then_with(|| b.0 .0.cmp(&a.0 .0)))
             .map(|(item, cell, commit, _)| (item, cell, commit))
     }
 
@@ -1084,11 +1119,11 @@ impl GameState {
 
     /// Find a useful ordinary pickup that can be collected without arriving late for a powerup the
     /// bot is already timing. A powerup commitment deliberately blocks normal re-scoring, but that
-    /// must not make a bot walk past yellow armor and then idle on a hidden quad. This narrow bridge
-    /// is allowed only while the target has a known respawn time, only for a spawned nearby
-    /// health/armor/weapon, and only when the complete `bot -> pickup -> powerup` route reaches the
-    /// powerup no later than the direct route (plus [`POWERUP_BRIDGE_SLACK`]). Respawn slack therefore
-    /// becomes useful preparation time without weakening the actual quad/pent commitment.
+    /// must not make a bot walk past a nearby RL/armor either on the opening run to a live Quad or
+    /// while heading toward a timed respawn. Only a spawned nearby health/armor/weapon qualifies, and
+    /// only when the complete `bot -> pickup -> powerup` route reaches the powerup no later than the
+    /// direct route (plus [`POWERUP_BRIDGE_SLACK`]). Respawn slack therefore becomes useful preparation
+    /// time, while a live powerup permits only an effectively on-route pickup.
     pub(crate) fn select_powerup_bridge_item(
         &self,
         bot_e: EntId,
@@ -1098,12 +1133,13 @@ impl GameState {
     ) -> Option<(EntId, CellId)> {
         let graph = self.nav.graph.as_ref()?;
         let power = &self.entities[powerup];
-        if power.v.solid == Solid::Trigger
-            || !matches!(power.think, Think::SubRegen)
-            || power.v.nextthink <= now
-        {
+        let respawn_wait = if power.v.solid == Solid::Trigger {
+            0.0
+        } else if matches!(power.think, Think::SubRegen) && power.v.nextthink > now {
+            power.v.nextthink - now
+        } else {
             return None;
-        }
+        };
 
         let origin = self.entities[bot_e].v.origin;
         let from = graph.nearest(origin)?;
@@ -1119,8 +1155,6 @@ impl GameState {
         if !direct.is_finite() {
             return None;
         }
-        let respawn_wait = power.v.nextthink - now;
-
         let mut candidates = Vec::new();
         for &(idx, cell) in &self.nav.goals {
             if idx == powerup.0 || self.entities[bot_e].bot.is_avoided(idx, now) {
@@ -1163,9 +1197,8 @@ impl GameState {
             .take(PLAN_PRIMARY_LIMIT)
             .find_map(|(item, cell, _desire, first_leg)| {
                 let second_leg = PlanCosts::single(graph, cell, &link_costs, lod).cost_to(powerup_cell);
-                (second_leg.is_finite()
-                    && powerup_bridge_arrives_in_time(direct, first_leg + second_leg, respawn_wait))
-                .then_some((item, cell))
+                (second_leg.is_finite() && powerup_bridge_arrives_in_time(direct, first_leg + second_leg, respawn_wait))
+                    .then_some((item, cell))
             })
     }
 
@@ -1238,6 +1271,12 @@ impl GameState {
                 if !useful {
                     return None;
                 }
+                if teamwork
+                    && self.horizon_of(item, cat, s.stack) == Horizon::Major
+                    && self.major_item_owned_by_teammate(bot_e, my_team, item, cat, now)
+                {
+                    return None;
+                }
                 let t = costs[cell as usize];
                 if !t.is_finite() || t > RECOVERY_TRAVEL {
                     return None;
@@ -1249,7 +1288,7 @@ impl GameState {
                 };
                 Some((item, cell, desire * claim / (t + 0.5)))
             })
-            .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.0.0.cmp(&a.0.0)))
+            .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.0 .0.cmp(&a.0 .0)))
             .map(|(item, cell, _)| (item, cell))
     }
 
@@ -1304,6 +1343,31 @@ impl GameState {
         reservation_owner(&candidates).is_some_and(|owner| owner != bot_e)
     }
 
+    /// Whether another available team bot is the better RA/mega owner. Ownership balances actual
+    /// marginal value against straight-line travel: a critically weak bot can take over from a
+    /// nearby stacked denial bot, while a tiny need advantage does not pull somebody across the map.
+    /// A teammate committed to a different powerup is excluded so reserving Quad cannot leave RA
+    /// ownerless. The edict-id tie break makes every sequential bot frame reach the same answer.
+    fn major_item_owned_by_teammate(&self, bot_e: EntId, my_team: u8, item: EntId, cat: Category, now: f32) -> bool {
+        let point = self.entities[item].v.origin;
+        let maxclients = self.host().cvar(c"maxclients") as u32;
+        let candidates: Vec<(EntId, f32)> = (1..=maxclients)
+            .map(EntId)
+            .filter_map(|t| {
+                let e = &self.entities[t];
+                let available =
+                    t == bot_e || e.bot.goal.commit != super::state::GoalCommit::Powerup || e.bot.goal.item == item.0;
+                (e.bot.is_bot && e.v.health > 0.0 && e.mode_p.team == my_team && available).then(|| {
+                    let stats = self.bot_stats(t);
+                    let desire = self.desire_with_floors(t, &stats, item, cat, self.deny_active(t), now);
+                    let distance = (e.v.origin - point).length();
+                    (t, strategic_owner_score(desire, distance))
+                })
+            })
+            .collect();
+        strategic_reservation_owner(&candidates).is_some_and(|owner| owner != bot_e)
+    }
+
     /// Whether any living enemy player is believed — in this bot's shared opponent-model pool — to
     /// hold weapon `bit`. The signal [`denial_floor`] reads: an unheld big weapon on the enemy side
     /// is worth denying. `false` when opponent modeling is off (`opponent_est` yields nothing), so the
@@ -1315,9 +1379,7 @@ impl GameState {
             e.is_player()
                 && e.v.health > 0.0
                 && enemy_of(my_team, e.mode_p.team)
-                && self
-                    .opponent_est(bot_e, t, now)
-                    .is_some_and(|est| est.items.has(bit))
+                && self.opponent_est(bot_e, t, now).is_some_and(|est| est.items.has(bit))
         })
     }
 
@@ -1360,9 +1422,7 @@ impl GameState {
             }
             // Mega/RA detected independent of the stack cvar (`true`): denial is a modeling feature, not
             // resource discipline, so it holds even when the leaner valuation is selected.
-            Category::Health | Category::Armor { .. }
-                if self.horizon_of(item, cat, true) == Horizon::Major =>
-            {
+            Category::Health | Category::Armor { .. } if self.horizon_of(item, cat, true) == Horizon::Major => {
                 desire = desire.max(DENIAL_DESIRE);
             }
             _ => {}
@@ -1377,9 +1437,7 @@ impl GameState {
     /// `bot_pickup_items` suppresses the grab). Team modes only, gated by `rtx_bot_model` +
     /// `rtx_bot_model`; a non-idle bot (one with a fight or a move objective) never holds.
     pub(crate) fn update_handoff_hold(&mut self, e: EntId, now: f32, idle: bool) -> bool {
-        let enabled = idle
-            && self.entities[e].mode_p.team != 0
-            && self.host().cvar_bool(c"rtx_bot_model");
+        let enabled = idle && self.entities[e].mode_p.team != 0 && self.host().cvar_bool(c"rtx_bot_model");
         if !enabled {
             self.clear_hold(e);
             return false;
@@ -1443,16 +1501,14 @@ impl GameState {
         let mate = EntId(self.entities[e].bot.goal.hold_for);
         let m = &self.entities[mate];
         let mate_alive = mate.0 != 0 && m.is_player() && m.v.health > 0.0;
-        let mate_powered =
-            m.combat.super_damage_finished > now || m.combat.invincible_finished > now;
+        let mate_powered = m.combat.super_damage_finished > now || m.combat.invincible_finished > now;
         let mate_has_weapon = m.v.items.has(weapon_bit(w));
         // Contest: a perceived, living enemy near the weapon means "take it rather than leave it".
         let known = self.entities[e].bot.percept.known_enemy;
         let enemy_contesting = known != 0 && now < self.entities[e].bot.percept.known_until && {
             let ent = &self.entities[EntId(known)];
             ent.v.health > 0.0
-                && (ent.v.origin - it.v.origin).length_squared()
-                    < HOLD_CONTEST_RANGE * HOLD_CONTEST_RANGE
+                && (ent.v.origin - it.v.origin).length_squared() < HOLD_CONTEST_RANGE * HOLD_CONTEST_RANGE
         };
         hold_continues(
             now,
@@ -1599,9 +1655,9 @@ impl GameState {
         };
         // The item we're already chasing, for the hysteresis bonus below.
         let current_goal = self.entities[bot_e].bot.goal.item;
-        // Item claims (teamwork): an item a living teammate bot is already fetching is discounted, so
-        // teammates spread across pickups instead of racing the same one. A powerup's dominating
-        // desire still beats the discount, so the quad stays contested. Off in FFA (no team).
+        // Item claims (teamwork): an ordinary item a living teammate bot is already fetching is
+        // strongly discounted, so teammates spread across weapons/armor instead of racing the same
+        // one. Powerups use the deterministic ownership gate below. Off in FFA (no team).
         let my_team = self.entities[bot_e].mode_p.team;
         let teamwork = my_team != 0;
         // Item denial (opponent modeling): raise the desire to hold a big weapon the enemy side is
@@ -1657,12 +1713,26 @@ impl GameState {
             // immunity and the team split below — a major is contested and yielded like an ordinary
             // item (a weaker bot losing a mega race shouldn't feed a fight over it).
             let horizon = self.horizon_of(item, cat, s.stack);
+            if horizon == Horizon::Major
+                && teamwork
+                && self.major_item_owned_by_teammate(bot_e, my_team, item, cat, now)
+            {
+                continue;
+            }
             // Desire including any denial floor (weapon the enemy lacks, or mega/RA). Priced through the
             // shared helper so `item_goal_valid` agrees the goal is still worth holding.
             let desire = self.desire_with_floors(bot_e, &s, item, cat, deny, now);
             let travel = costs.cost_to(cell);
             if !travel.is_finite() {
                 continue; // unreachable from here
+            }
+            let ent = &self.entities[item];
+            if ent.v.solid != Solid::Trigger
+                && matches!(ent.think, Think::SubRegen)
+                && ent.v.nextthink > now
+                && !respawn_departure_ready(horizon, ent.v.nextthink - now, travel)
+            {
+                continue;
             }
             let Some(t) = self.item_collect_time(item, travel, now) else {
                 continue;
@@ -1676,10 +1746,10 @@ impl GameState {
                     .then(|| self.item_collect_time(item, eta, now))
                     .flatten()
             });
-            // Split uncontested powerups deterministically: one bot takes quad while teammates take
-            // armor/weapons. If a known enemy can arrive within 1.5 s of us, keep backup coverage —
-            // a contested major pickup is more important than perfect reservation efficiency.
-            if powerup && teamwork && !enemy_eta.is_some_and(|eta| eta <= t + 1.5) {
+            // Give a powerup one deterministic owner while teammates take armor/weapons or cover its
+            // approaches. Human Bravado 2on2 decisions keep these strategic goals split even under
+            // contest pressure; the combat overlay can still pull the second bot into the fight.
+            if powerup && teamwork {
                 let item_org = self.entities[item].v.origin;
                 let my_dist = (item_org - self.entities[bot_e].v.origin).length();
                 let mate_dist = self.nearest_teammate_dist(bot_e, my_team, item_org);
@@ -1715,9 +1785,7 @@ impl GameState {
                 continue;
             };
             let travel = costs.cost_to(cell);
-            if !travel.is_finite()
-                || (self.team_match.live_until > now && now + travel >= self.team_match.live_until)
-            {
+            if !travel.is_finite() || (self.team_match.live_until > now && now + travel >= self.team_match.live_until) {
                 continue;
             }
             let enemy_eta = enemy_context.as_ref().and_then(|(_, enemy_costs, _)| {
@@ -1732,7 +1800,14 @@ impl GameState {
                     continue;
                 }
             }
-            consider(EntId(i as u32), cell, desire, travel, claim_mult(i as u32), Horizon::Powerup);
+            consider(
+                EntId(i as u32),
+                cell,
+                desire,
+                travel,
+                claim_mult(i as u32),
+                Horizon::Powerup,
+            );
         }
 
         // Live backpacks aren't in the static catalog (they spawn on death / a teammate's toss and
@@ -1783,10 +1858,17 @@ impl GameState {
             }
         }
         let leg_costs: Vec<PlanCosts> = if lod {
-            primaries.iter().map(|c| PlanCosts::Coarse(graph.coarse_costs(c.cell, &base, true))).collect()
+            primaries
+                .iter()
+                .map(|c| PlanCosts::Coarse(graph.coarse_costs(c.cell, &base, true)))
+                .collect()
         } else {
             let source_cells: Vec<CellId> = primaries.iter().map(|c| c.cell).collect();
-            self.bot_pool.flood_batch(graph, &source_cells, &base).into_iter().map(PlanCosts::Exact).collect()
+            self.bot_pool
+                .flood_batch(graph, &source_cells, &base)
+                .into_iter()
+                .map(PlanCosts::Exact)
+                .collect()
         };
         let mut best: Option<(ItemCandidate, Option<ItemCandidate>, f32)> = None;
         for (pi, &first) in primaries.iter().enumerate() {
@@ -1877,7 +1959,21 @@ impl GameState {
 fn reservation_owner(candidates: &[(EntId, f32)]) -> Option<EntId> {
     candidates
         .iter()
-        .min_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.0.cmp(&b.0.0)))
+        .min_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0 .0.cmp(&b.0 .0)))
+        .map(|&(e, _)| e)
+}
+
+/// Need-versus-distance score used to reserve RA/mega within one team. One second of straight-line
+/// running roughly doubles the denominator; actual route cost still decides whether the owner's
+/// ordinary goal selection considers the item reachable at all.
+fn strategic_owner_score(desire: f32, distance: f32) -> f32 {
+    desire.max(DENIAL_DESIRE) / (1.0 + distance.max(0.0) / 320.0)
+}
+
+fn strategic_reservation_owner(candidates: &[(EntId, f32)]) -> Option<EntId> {
+    candidates
+        .iter()
+        .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0 .0.cmp(&a.0 .0)))
         .map(|&(e, _)| e)
 }
 
@@ -1906,9 +2002,23 @@ fn best_magnet(candidates: &[(u32, f32, f32)]) -> Option<u32> {
 
 /// Pure core of the powerup team-split: defer (skip the powerup as a goal) when a teammate has
 /// already claimed it, or the nearest teammate is within [`POWERUP_DEFER_RATIO`] of the bot's own
-/// distance to it. A clear teammate lead defers; a near-tie lets both press it.
+/// distance to it. With the ratio at `1.0`, any strictly nearer teammate takes precedence; exact
+/// ties are resolved by the stable claim owner on the following selection.
 fn defer_powerup_to_teammate(claimed: bool, my_dist: f32, best_mate_dist: Option<f32>) -> bool {
     claimed || best_mate_dist.is_some_and(|d| d < POWERUP_DEFER_RATIO * my_dist)
+}
+
+/// Whether it is time to leave for a hidden timed pickup. The broad scoring horizons still bound
+/// how far ahead the bot understands a cycle, but departure is `route travel + setup lead`: a bot
+/// across the map starts earlier than one already standing beside the spawn. Ordinary items retain
+/// their historical horizon behavior; the anti-camp policy applies only to strategic timed items.
+fn respawn_departure_ready(horizon: Horizon, respawn_wait: f32, travel: f32) -> bool {
+    let lead = match horizon {
+        Horizon::Powerup => POWERUP_SETUP_LEAD,
+        Horizon::Major => MAJOR_SETUP_LEAD,
+        Horizon::Ordinary => return true,
+    };
+    respawn_wait <= travel + lead
 }
 
 /// The goal score for an item, or `None` beyond its horizon. Ordinary items decay to zero at
@@ -2030,6 +2140,34 @@ mod tests {
     }
 
     #[test]
+    fn timed_items_depart_by_travel_plus_setup_not_full_respawn() {
+        // A bot beside a just-taken RA or halfway-due Quad keeps cycling the rest of the map.
+        assert!(!respawn_departure_ready(Horizon::Major, 20.0, 0.25));
+        assert!(!respawn_departure_ready(Horizon::Powerup, 30.0, 2.0));
+        // A remote bot leaves sooner, but still arrives only by the intended setup margin.
+        assert!(respawn_departure_ready(Horizon::Major, 5.0, 3.0));
+        assert!(respawn_departure_ready(Horizon::Powerup, 7.0, 3.0));
+        // Ordinary item behavior is deliberately unchanged.
+        assert!(respawn_departure_ready(Horizon::Ordinary, 9.0, 0.0));
+    }
+
+    #[test]
+    fn major_owner_balances_need_distance_and_stable_ties() {
+        let weak_far = strategic_owner_score(120.0, 320.0);
+        let stacked_near = strategic_owner_score(0.0, 64.0);
+        assert!(weak_far > stacked_near, "real recovery need should beat nearby denial");
+
+        let tiny_need_far = strategic_owner_score(31.0, 640.0);
+        assert!(
+            tiny_need_far < stacked_near,
+            "a marginal need must not pull a bot across the map"
+        );
+
+        let tied = [(EntId(7), 10.0), (EntId(3), 10.0)];
+        assert_eq!(strategic_reservation_owner(&tied), Some(EntId(3)));
+    }
+
+    #[test]
     fn denial_floor_gates() {
         // A big weapon the enemy lacks, no weapons-stay → the denial floor.
         assert_eq!(denial_floor(WeaponKind::Rl, false, false), DENIAL_DESIRE);
@@ -2077,7 +2215,10 @@ mod tests {
         let quad = item_score(207.0, 20.0, Horizon::Powerup).unwrap();
         let health = item_score(50.0, 1.0, Horizon::Ordinary).unwrap();
         let armor = item_score(80.0, 3.0, Horizon::Ordinary).unwrap();
-        assert!(quad > health && quad > armor, "quad {quad} vs health {health}, armor {armor}");
+        assert!(
+            quad > health && quad > armor,
+            "quad {quad} vs health {health}, armor {armor}"
+        );
         // An ordinary item past LOOKAHEAD is dropped; a powerup at the same t is still a candidate.
         assert!(item_score(200.0, 12.0, Horizon::Ordinary).is_none());
         assert!(item_score(200.0, 12.0, Horizon::Powerup).is_some());
@@ -2141,7 +2282,12 @@ mod tests {
         // RL nearly dry (fp 16): rocket boxes clear the combat bar.
         assert!(ammo_desire(&stats(Items::ROCKET_LAUNCHER, 2.0, 0.0, 16.0, true), AmmoKind::Rockets) >= bar);
         // RL well-fed (fp 100): only the ordinary top-off, no panic.
-        assert!(ammo_desire(&stats(Items::ROCKET_LAUNCHER, 15.0, 0.0, 100.0, true), AmmoKind::Rockets) < bar);
+        assert!(
+            ammo_desire(
+                &stats(Items::ROCKET_LAUNCHER, 15.0, 0.0, 100.0, true),
+                AmmoKind::Rockets
+            ) < bar
+        );
         // Owns RL but LG-fed (fp 100 from cells): low rockets don't panic — the firepower gate self-solves.
         let lg_fed = stats(Items::LIGHTNING | Items::ROCKET_LAUNCHER, 2.0, 100.0, 100.0, true);
         assert!(ammo_desire(&lg_fed, AmmoKind::Rockets) < bar);
@@ -2224,7 +2370,7 @@ mod tests {
         assert_eq!(stack_pressure(80.0), 1.25);
         assert_eq!(stack_pressure(40.0), STACK_PRESSURE_MAX); // 100/40 = 2.5, at the cap
         assert_eq!(stack_pressure(10.0), STACK_PRESSURE_MAX); // clamped, not runaway
-        // Monotonic: a thinner stack is never valued less.
+                                                              // Monotonic: a thinner stack is never valued less.
         assert!(stack_pressure(70.0) > stack_pressure(90.0));
     }
 
@@ -2259,11 +2405,12 @@ mod tests {
 
     #[test]
     fn powerup_defer_splits_the_team() {
-        // A teammate claim, or one substantially nearer, defers this bot to something else.
+        // A teammate claim, or any strictly nearer teammate, defers this bot to something else.
         assert!(defer_powerup_to_teammate(true, 100.0, None)); // claimed
         assert!(defer_powerup_to_teammate(false, 1000.0, Some(500.0))); // mate at 0.5× my dist
-        // A near-tie (mate at 0.9×) or no teammate → both press it / this bot pursues.
-        assert!(!defer_powerup_to_teammate(false, 1000.0, Some(900.0)));
+        assert!(defer_powerup_to_teammate(false, 1000.0, Some(900.0))); // mate at 0.9× my dist
+                                                                        // A farther teammate or no teammate leaves this bot as the powerup owner.
+        assert!(!defer_powerup_to_teammate(false, 1000.0, Some(1100.0)));
         assert!(!defer_powerup_to_teammate(false, 1000.0, None));
     }
 }

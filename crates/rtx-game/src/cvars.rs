@@ -36,8 +36,12 @@ impl CvarValue for CvarSeed {
 /// leap and fall in. So the server **advertises** these in serverinfo (like KTX's `pm_*` keys) and a
 /// client mirrors them; a client on any other server forces them off. Grapple isn't here — the client
 /// forces it off unconditionally, because the hook's *state* isn't on the wire to mirror at all.
-pub(crate) const RTX_MOVE_CVARS: &[&str] =
-    &["rtx_doublejump", "rtx_walljump", "rtx_elevator_jump", "rtx_shootable_grenades"];
+pub(crate) const RTX_MOVE_CVARS: &[&str] = &[
+    "rtx_doublejump",
+    "rtx_walljump",
+    "rtx_elevator_jump",
+    "rtx_shootable_grenades",
+];
 
 /// The rtx tunables and their first-run defaults, registered in [`GameState::init`](crate::game).
 /// `cvar_default` only seeds a cvar that's unset, so a value from `server.cfg` (or a `set` before
@@ -46,12 +50,12 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
     use CvarSeed::{Bool, Float, Str};
     &[
         // Mid-air double jump, on by default (set `rtx_doublejump 0` to disable).
-        ("rtx_doublejump", Bool(true)),
+        ("rtx_doublejump", Bool(false)),
         // Bots bunnyhop (air-strafe to build speed) on open stretches; on by default.
         ("rtx_bot_bhop", Bool(true)),
         // Generate curl jumps (run-up down a corridor, air-turn onto an offset platform), certified by
         // a pmove rollout in the navmesh build. A sub-toggle of bhop (`rtx_bot_bhop 0` disables it too).
-        ("rtx_bot_curljump", Bool(false)),
+        ("rtx_bot_curljump", Bool(true)),
         // Bots ground-zigzag (circle-strafe) on straight corridors too short to hop; on by default.
         // A sub-toggle of the bhop controller — `rtx_bot_bhop 0` disables it regardless.
         ("rtx_bot_zigzag", Bool(true)),
@@ -77,21 +81,16 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // is clear, glide toward it instead of the next 32u cell centre (smooths the residual grid
         // zigzag on plain walk legs). On by default; inert when `rtx_bot_nearfield` is 0.
         ("rtx_bot_glide", Bool(true)),
-        // Careful-ledge walk speed (u/s): on a navmesh cell flagged beside a fatal drop (a wall-hugging
-        // walkway over an open pit — an open-cored spiral staircase's inner edge) the walk is held to
-        // this speed for the whole run, not just at the corners. A full-speed walk builds momentum on
-        // the straights that carries off the inner edge at the bends, faster than the 40u `ledge_ahead`
-        // brake or the edge nudge can bleed it. Jump run-ups are exempt (they keep bhop speed to clear
-        // the gap). 0 disables the cap (full maxspeed on ledges). See the ledge flag in `navmesh`.
-        // Default 0, not 210: the lab prohibition set (dj/wj/ledgecap) must read 0 on every rig —
-        // parity_readback fails a deploy closed otherwise, and the RA certification era ran with 0.
-        // Opt in per server cfg where the cap is wanted.
-        ("rtx_bot_ledgecap", Float(0.0)),
         // Seconds of speed-scaled route corridor used as the bhop steering look-ahead. Longer values
         // expose broad bends earlier; the distance remains capped in the steering core.
         ("rtx_bot_bhop_lookahead", Float(0.9)),
         // Maximum corridor distance exposed by the speed-scaled bhop look-ahead.
         ("rtx_bot_bhop_lookahead_cap", Float(448.0)),
+        // Predictive hop planning on ledge corridors (a spiral staircase's inner edge): roll the pmove
+        // a hop ahead and take only hops whose predicted landing stays on the route, so the bot bhops a
+        // curved walkway at speed instead of edge-braking or carrying off it. Gated to ledge-flagged
+        // cells, so open play is untouched. See `bot::hopsim`.
+        ("rtx_bot_hopplan", Bool(true)),
         // A bot's health weights how willing it is to shortcut through lava/slime: hurt bots detour,
         // healthy (or armored, or biosuited) ones clip the corner. `0` prices every bot as a bare
         // spawn — hazards still cost, but the same to everyone. See `bot::bot_hazard_strength`.
@@ -101,16 +100,16 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // waterlevel-1 lava cell at ~1.7s.
         ("rtx_bot_hazard_k", Float(15.0)),
         // Wall jump (kick off a wall you jump into), on by default (`rtx_walljump 0` to disable).
-        ("rtx_walljump", Bool(true)),
+        ("rtx_walljump", Bool(false)),
         // Elevator jump: a rising lift boosts your jump by `lift_speed * rtx_elevator_jump`. A
         // multiplier (0 disables, 1 = add the lift's true speed, 2 = double it, …).
-        ("rtx_elevator_jump", Float(2.0)),
+        ("rtx_elevator_jump", Float(0.0)),
         // Shoot live grenades to detonate them early, on by default (`rtx_shootable_grenades 0`
         // to restore classic non-shootable grenades).
-        ("rtx_shootable_grenades", Bool(true)),
+        ("rtx_shootable_grenades", Bool(false)),
         // Grappling hook (purectf port), on by default — every player spawns with it (impulse 22
         // to select). `rtx_grapple 0` to disable.
-        ("rtx_grapple", Bool(true)),
+        ("rtx_grapple", Bool(false)),
         // Hook throw / reel-in speed multipliers (purectf's `localinfo hookspeed`/`hookpull`), each
         // scaling its base `× sv_maxspeed`. Defaults match purectf's shipped server.cfg.
         ("rtx_hook_speed", Float(1.25)),
@@ -120,7 +119,7 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // whose token is absent is removed everywhere: its map pickup (`weapon_*`) is dropped at map
         // load and it's stripped from every spawn kit (so it can never be picked up or fired).
         // Unknown tokens are ignored. `hook` composes with `rtx_grapple` (both must allow it).
-        ("rtx_weapons", Str("axe hook sg ssg ng sng gl rl lg")),
+        ("rtx_weapons", Str("axe sg ssg ng sng gl rl lg")),
         // Game mode (ruleset): `dm` (deathmatch, the default), `ra` (Rocket Arena), `midair`, or
         // `ctf`. Read live each frame. A string cvar. See `crate::mode`.
         ("rtx_mode", Str("dm")),
@@ -153,8 +152,8 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // boost (Haste is attack-rate only). Runes spawn only in CTF.
         ("rtx_runes", Float(0.0)),
         // CTF: allow voluntarily tossing your carried flag (impulse 26) / held rune (impulse 24).
-        ("rtx_ctf_tossflag", Bool(false)),
-        ("rtx_ctf_tossrune", Bool(false)),
+        ("rtx_ctf_tossflag", Bool(true)),
+        ("rtx_ctf_tossrune", Bool(true)),
         // Any mode: let players drop items for teammates — a capped ammo backpack (impulse 20) and
         // the current weapon (impulse 21), as in purectf. `0` disables both.
         ("rtx_dropitems", Bool(false)),
@@ -172,7 +171,7 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         ("rtx_bot_name", Str("")),
         ("rtx_bot_skill", Float(3.0)),
         // Keep bots on the server even with no humans connected (default off).
-        ("rtx_bot_alone", Bool(false)),
+        ("rtx_bot_alone", Bool(true)),
         // Pacifist bots: in FFA, don't fight — just trail the nearest human (for experimenting).
         ("rtx_bot_pacifist", Bool(false)),
         // Greedy bots: let a fighting bot break off to grab a compelling nearby pickup (powerup, a
@@ -188,8 +187,13 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // major "must-cycle" pickups, and panic for ammo when a bot's firepower is about to collapse.
         // Off = the leaner ktx-parity valuation (a topped-up bot ignores items until a true need). On.
         ("rtx_bot_stack", Bool(true)),
-        // Per-bot goal/pickup diagnostics to the server console (off by default).
+        // Per-bot goal/pickup diagnostics (off by default). When on, high-rate trace lines go to the
+        // per-bot audit ring buffer (dumped via the control channel's `audit` verb), not the console —
+        // a per-frame `conprint` floods the console and drops packets. See [`crate::bot::state::Audit`].
         ("rtx_bot_debug", Bool(false)),
+        // Per-bot audit ring-buffer budget, in MB (the `rtx_bot_debug` trace store). Oldest lines are
+        // evicted once a bot's buffer exceeds this; only allocated while `rtx_bot_debug` is on.
+        ("rtx_bot_auditlog", Float(10.0)),
         // Bot evaluation profiler: seconds between server-console reports of what the bot brain costs
         // per bot frame (p95, worst, and the head-room left against the `maxfps` slice the engine
         // allots it). On by default — it's console-only, three lines per report, and the timing is a
@@ -250,7 +254,7 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // old behavior). `rtx_bot_reaction` is the base delay (seconds) a target must stay seen
         // before the bot reacts, shortened with skill; 0 = instant. Both 0 ≈ pre-perception bots.
         ("rtx_bot_fov", Float(120.0)),
-        ("rtx_bot_reaction", Float(0.4)),
+        ("rtx_bot_reaction", Float(0.01)),
         // Ceiling on how fast a bot's view turns (deg/s) — the aim spring's angular-speed clamp, so a
         // large look-target flip (a spawn-wait scan, a goal re-pick, a flickering enemy) is a fast human
         // pan, not an instant snap or a spin. 0 = the skill-scaled default (`combat::aim_rate_cap`);
@@ -263,6 +267,13 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // unconditional in a team composition; this switch controls only the inferred enemy model.
         // 0 = the old estimate-free behavior.
         ("rtx_bot_model", Bool(true)),
+        // Slow team-level reasoning. The worker observes only owned, observation-gated snapshots and
+        // publishes expiring advice; off by default while its value is measured on recorded matches.
+        ("rtx_bot_oracle", Bool(false)),
+        ("rtx_bot_oracle_debug", Bool(false)),
+        ("rtx_bot_oracle_eval", Bool(false)),
+        // Fraction of complete team-plan episodes retained as shadow controls during evaluation.
+        ("rtx_bot_oracle_holdout", Float(0.0)),
     ]
 };
 
@@ -271,5 +282,8 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
 /// command buffer (see [`GameState::rtx_cvar_bool`](crate::game::GameState::rtx_cvar_bool)). A small
 /// linear scan over the table — only called during a navmesh build, not per frame.
 pub(crate) fn default_of(name: &str) -> Option<CvarSeed> {
-    RTX_CVAR_DEFAULTS.iter().find(|(n, _)| *n == name).map(|&(_, seed)| seed)
+    RTX_CVAR_DEFAULTS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|&(_, seed)| seed)
 }

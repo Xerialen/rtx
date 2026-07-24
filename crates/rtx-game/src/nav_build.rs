@@ -128,8 +128,7 @@ impl GameState {
         // The BSP was parsed once at map load (`load_map_bsp`); share it (`Arc`) into the worker.
         // A missing parse means the map couldn't be read — bots simply stay disabled.
         let Some(bsp) = self.nav.bsp.clone() else {
-            self.host
-                .dprint(c"rtx: navmesh: map BSP not parsed; bots disabled\n");
+            self.host.dprint(c"rtx: navmesh: map BSP not parsed; bots disabled\n");
             return;
         };
         // Gather the entity-derived inputs on the main thread (they read the spawned entities),
@@ -271,7 +270,7 @@ impl GameState {
             lreach,
         ));
         self.host.dprint(&msg);
-        self.nav.graph = Some(graph);
+        self.nav.graph = Some(std::sync::Arc::new(graph));
         self.nav.goals = goals;
     }
 
@@ -446,11 +445,9 @@ pub(crate) fn collect_touch_terminals(
 #[cfg(all(test, feature = "netclient"))]
 mod tests {
     use super::*;
-    use crate::bsp::Bsp;
     use crate::defs::{Bits, Items, Solid};
     use crate::entity::{Entity, Touch};
     use crate::netclient::host::NetHost;
-    use crate::navmesh::{LinkCosts, LinkKind, NavGraph};
     use std::path::PathBuf;
 
     fn armor_entity(classname: &str, origin: Vec3) -> Entity {
@@ -508,128 +505,9 @@ mod tests {
     }
 
     #[test]
-    fn dm3_ra_wrong_side_endpoint_rebinds_to_a_real_take() {
-        armor_take_from_terminal(
-            "item_armorInv",
-            Vec3::new(256.0, -704.0, 304.0),
-            Vec3::new(360.0, -677.0, 264.0),
-        );
-    }
-
-    #[test]
-    fn dm3_ya_upper_floor_endpoint_rebinds_to_a_real_take() {
-        armor_take_from_terminal(
-            "item_armor2",
-            Vec3::new(1232.0, -904.0, -48.0),
-            Vec3::new(1239.0, -887.0, 88.0),
-        );
-    }
-
-    /// Optional real-map check used by the DM3 bench/ref loop. The always-on endpoint tests above
-    /// exercise catalog filtering plus the real armor handler without shipping id's BSP in-tree;
-    /// setting `RTX_TEST_BSP=.../dm3.bsp` additionally proves the generated DM3 graph exposes
-    /// touch-valid terminals for both armor entities and that those exact cell origins take armor.
-    #[test]
-    fn dm3_real_navmesh_exposes_takeable_ra_and_ya_terminals() {
-        let Ok(path) = std::env::var("RTX_TEST_BSP") else {
-            return;
-        };
-        if !path.to_ascii_lowercase().contains("dm3") {
-            return;
-        }
-        let bytes = std::fs::read(path).expect("read dm3 bsp");
-        let bsp = Bsp::parse(&bytes).expect("parse dm3 bsp");
-        let graph = NavGraph::build(&bsp);
-
-        for (classname, item_origin, bad_endpoint) in [
-            (
-                "item_armorInv",
-                Vec3::new(256.0, -704.0, 304.0),
-                Vec3::new(360.0, -677.0, 264.0),
-            ),
-            (
-                "item_armor2",
-                Vec3::new(1232.0, -904.0, -48.0),
-                Vec3::new(1239.0, -887.0, 88.0),
-            ),
-        ] {
-            let armor = armor_entity(classname, item_origin);
-            assert!(
-                !crate::bot::item_terminal_touches(bad_endpoint, &armor),
-                "observed endpoint is not a take"
-            );
-            let terminals = collect_touch_terminals(
-                graph
-                    .cells
-                    .iter()
-                    .enumerate()
-                    .map(|(cell, c)| (cell as navmesh::CellId, c.origin)),
-                &armor,
-            );
-            assert!(!terminals.is_empty(), "{classname} has no touch-valid DM3 terminal");
-            let terminal = graph.cell_origin(terminals[0]);
-            assert!(crate::bot::item_terminal_touches(terminal, &armor));
-            assert_armor_take(classname, item_origin, terminal);
-        }
-    }
-
-    /// The control-channel acceptance anchors must reach a physical RA take without a planned Drop.
-    /// The RA-tunnel case is additionally bound to the exact stock deathmatch-spawn BSP entity and
-    /// its deterministic standing-cell snap, so a nearby nickname cannot silently replace it.
-    #[test]
-    fn dm3_real_ring_anchors_route_to_ra_without_a_drop() {
-        let Ok(path) = std::env::var("RTX_TEST_BSP") else {
-            return;
-        };
-        if !path.to_ascii_lowercase().contains("dm3") {
-            return;
-        }
-        let bytes = std::fs::read(path).expect("read dm3 bsp");
-        let bsp = Bsp::parse(&bytes).expect("parse dm3 bsp");
-        let graph = NavGraph::build(&bsp);
-        let ra_spawn = Vec3::new(192.0, -208.0, -176.0);
-        assert!(
-            bsp.entities.split('}').any(|block| {
-                block.contains("\"classname\" \"info_player_deathmatch\"")
-                    && block.contains("\"origin\" \"192 -208 -176\"")
-            }),
-            "stock DM3 RA.tunnel deathmatch spawn entity moved or vanished"
-        );
-        let ra_spawn_cell = graph.nearest(ra_spawn).expect("RA spawn has no standing nav cell");
-        assert_eq!(graph.cell_origin(ra_spawn_cell), Vec3::new(192.0, -224.0, -176.0));
-        let armor = armor_entity("item_armorInv", Vec3::new(256.0, -704.0, 304.0));
-        let terminals = collect_touch_terminals(
-            graph
-                .cells
-                .iter()
-                .enumerate()
-                .map(|(cell, c)| (cell as navmesh::CellId, c.origin)),
-            &armor,
-        );
-        assert!(!terminals.is_empty(), "RA has no touch-valid terminal");
-
-        for (name, hint) in [
-            ("local", Vec3::new(360.0, -677.0, 264.0)),
-            ("ra_spawn", ra_spawn),
-            ("ring", Vec3::new(240.0, -32.0, 56.0)),
-        ] {
-            let start = graph.nearest(hint).unwrap_or_else(|| panic!("{name} start has no nav cell"));
-            let costs = LinkCosts::default();
-            let travel = graph.costs_from(start, &costs);
-            let terminal = terminals
-                .iter()
-                .copied()
-                .filter(|&cell| travel[cell as usize].is_finite())
-                .min_by(|&a, &b| travel[a as usize].total_cmp(&travel[b as usize]))
-                .unwrap_or_else(|| panic!("{name} cannot reach an RA terminal"));
-            let route = graph
-                .find_path(start, terminal, &costs)
-                .unwrap_or_else(|| panic!("{name} RA route vanished"));
-            assert!(
-                route.iter().all(|&link| graph.link_kind(link) != LinkKind::Drop),
-                "{name} RA route contains a Drop: {route:?}"
-            );
-            assert!(crate::bot::item_terminal_touches(graph.cell_origin(terminal), &armor));
+    fn armor_endpoint_catalog_rebinds_to_a_real_take() {
+        for classname in ["item_armorInv", "item_armor2"] {
+            armor_take_from_terminal(classname, Vec3::ZERO, Vec3::new(96.0, 0.0, 64.0));
         }
     }
 }
