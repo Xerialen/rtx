@@ -56,6 +56,18 @@ ray, and the highlighted cell's origin goes out as a `Goto` on the control chann
 what the hover highlight showed you. The bot's new route appears in the red overlay on the next poll
 (~100ms). Right-drag still looks around, and clicks on the panel don't count as map clicks.
 
+The panel's **map picker** lists what the connected server can load, with the current map selected;
+choosing another switches the level and the viewer follows it. The list is the server's answer to
+`Cmd::Maps` — it walks its own gamedirs for loose `maps/*.bsp` plus the same inside their `.pak`s,
+so it reflects what that server will actually accept rather than what happens to be on your disk
+(`rtx-mcp`'s `list_maps` asks the same question).
+
+Expect the connection to drop each time the map changes: the engine unloads and reloads the game
+module on a level change, taking the control channel with it. The game closes the channel down
+cleanly on `GAME_SHUTDOWN` so the next image can bind it, and clients reconnect within a second —
+but a client that assumes a level change is transparent, or that waits on a reply to the `map`
+command itself, will hang. See `control::shutdown`.
+
 The viewer builds the navmesh with the **game's stock loadout** — bhop speed jumps and rocket jumps
 on, double jump and the grapple off — so what you inspect is the mesh bots actually navigate. Those
 two arcade options are opt-in: their path-type checkboxes (marked `*`) re-run the build with that
