@@ -914,22 +914,25 @@ fn cell_by_id_resp(game: &GameState, cell: u32) -> Result<proto::CellResp, Strin
 fn describe_cell(g: &NavGraph, cell: u32) -> proto::CellResp {
     let mut out = Vec::new();
     let mut incoming = Vec::new();
+    // Outgoing comes from the adjacency, not a scan of every link: a link can exist in the array and
+    // still be untraversable (a teleport trigger's cell keeps only its teleport exit — walking out of
+    // one is not a thing a player can do). Reporting the array would show exits nothing can take.
+    for &li in &g.adjacency[cell as usize] {
+        // `cost` is the static travel time only. What a hazard link *really* costs the planner is
+        // `hazard_hp` valued against the asking bot's strength, so report the health and let the
+        // caller price it — reporting seconds here would mean picking a bot to price it for.
+        out.push(proto::CellLinkOut {
+            link: li,
+            kind: kind_name(g.link_kind(li)).to_string(),
+            to_cell: g.link_target(li),
+            to: a3(g.cell_origin(g.link_target(li))),
+            cost: g.link_cost(li),
+            tgt_hazard: format!("{:?}", g.cell_hazard(g.link_target(li))),
+            hazard_hp: g.link_hazard_hp(li),
+            water_extra: g.link_water_extra(li),
+        });
+    }
     for li in 0..g.links.len() as u32 {
-        if g.link_source(li) == cell {
-            // `cost` is the static travel time only. What a hazard link *really* costs the planner is
-            // `hazard_hp` valued against the asking bot's strength, so report the health and let the
-            // caller price it — reporting seconds here would mean picking a bot to price it for.
-            out.push(proto::CellLinkOut {
-                link: li,
-                kind: kind_name(g.link_kind(li)).to_string(),
-                to_cell: g.link_target(li),
-                to: a3(g.cell_origin(g.link_target(li))),
-                cost: g.link_cost(li),
-                tgt_hazard: format!("{:?}", g.cell_hazard(g.link_target(li))),
-                hazard_hp: g.link_hazard_hp(li),
-                water_extra: g.link_water_extra(li),
-            });
-        }
         if g.link_target(li) == cell {
             incoming.push(proto::CellLinkIn {
                 link: li,

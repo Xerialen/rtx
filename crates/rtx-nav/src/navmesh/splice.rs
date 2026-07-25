@@ -96,6 +96,22 @@ fn touch_volume(tmin: Vec3, tmax: Vec3) -> (Vec3, Vec3) {
     )
 }
 
+/// Whether `p` is inside the box (already grown to a touch volume).
+fn in_box(p: Vec3, lo: Vec3, hi: Vec3) -> bool {
+    p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y && p.z >= lo.z && p.z <= hi.z
+}
+
+/// Whether the segment `a → b` passes over the box in XY. Sampled rather than solved: the real path
+/// of a leg is a hop, not a chord, and a sample every 16 units is finer than the 32u grid the cells
+/// sit on, so nothing a body could fit through is missed.
+fn segment_hits_box_xy(a: Vec3, b: Vec3, lo: Vec3, hi: Vec3) -> bool {
+    let steps = (((b.xy() - a.xy()).length() / 16.0).ceil() as i32).clamp(1, 64);
+    (0..=steps).any(|i| {
+        let p = a.xy().lerp(b.xy(), i as f32 / steps as f32);
+        p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y
+    })
+}
+
 /// A standing player's origin sits this far below the top of their head (the QW box is `maxs.z =
 /// 32`). With [`ORIGIN_TO_FEET`], the pair is what grows a box into the volume an origin can touch
 /// it from.
@@ -263,16 +279,37 @@ impl NavGraph {
             }
 
             for c in entrances {
-                if c != dest {
-                    self.push_link(Link {
-                        from: c,
-                        to: dest,
-                        kind: LinkKind::Teleport,
-                        cost: 0.2,
-                    });
+                if c == dest {
+                    continue;
                 }
+                self.push_link(Link {
+                    from: c,
+                    to: dest,
+                    kind: LinkKind::Teleport,
+                    cost: 0.2,
+                });
+                // Standing inside a trigger is not a thing a player can do: the moment their box
+                // touches it they are somewhere else. So every *other* way out of this cell is a
+                // fiction — and the planner believed it, because these cells carry the ordinary walk
+                // links the carve gave them and sit right beside a corridor. On aerowalk a route from
+                // 374 to 684 walked through the trigger cells at y=384, and the bot was thrown across
+                // the map mid-leg, re-pathed onto the same route, and did it again for ever.
+                //
+                // Keep the incoming links: walking *in* is how the teleporter is used. Drop the
+                // outgoing ones, so the only exit A* can plan is the teleport itself, which is the
+                // truth. Pruning the adjacency rather than the link array keeps link ids — and the
+                // side tables keyed by them — stable; every traversal (A*, reachability, LOD) reads
+                // adjacency, so none of them can route through the volume any more.
+                let out_kept: Vec<u32> = self.adjacency[c as usize]
+                    .iter()
+                    .copied()
+                    .filter(|&li| self.links[li as usize].kind == LinkKind::Teleport)
+                    .collect();
+                self.adjacency[c as usize] = out_kept;
             }
         }
+        // Every trigger is known now, so the map-wide pass can run once.
+        self.prune_links_through_teleports();
     }
 
     /// Carve a standable cell inside a trigger's touch volume, and walk-link the floor to it.
@@ -391,6 +428,50 @@ impl NavGraph {
             for li in hit {
                 self.gates.tag(li, idx);
             }
+        }
+    }
+
+    /// Drop every link whose path crosses a teleport trigger without *ending* in one.
+    ///
+    /// Pruning the trigger cells' own exits stops the planner routing through the volume, but not a
+    /// leg that merely passes over it between two cells outside: the bot walks — or, worse, hops — the
+    /// straight line between them, clips the trigger in mid-air and is thrown across the map. The
+    /// near-field keeps a grounded bot clear, but it is only built on grounded frames, so a bhopping
+    /// bot has nothing steering it away. The honest fix is that such a leg is not traversable at all.
+    ///
+    /// A link that *ends* inside a volume is kept: that is the deliberate approach to the teleporter,
+    /// and without it no bot could ever use one.
+    fn prune_links_through_teleports(&mut self) {
+        let vols: Vec<(Vec3, Vec3)> = self.tele_volumes.iter().map(|&(lo, hi)| touch_volume(lo, hi)).collect();
+        if vols.is_empty() {
+            return;
+        }
+        // A hop rises well above the floor while staying over the same ground, so the vertical test is
+        // loose: what decides this is whether the leg passes over the trigger in XY.
+        let z_slack = JUMP_APEX;
+        for c in 0..self.cells.len() {
+            let a = self.cells[c].origin;
+            let keep: Vec<u32> = self.adjacency[c]
+                .iter()
+                .copied()
+                .filter(|&li| {
+                    let link = self.links[li as usize];
+                    let b = self.cells[link.to as usize].origin;
+                    !vols.iter().enumerate().any(|(vi, &(lo, hi))| {
+                        // Ending in this volume is the point of the link, not a hazard.
+                        if in_box(b, lo, hi) {
+                            return false;
+                        }
+                        // Ignore volumes on another storey entirely.
+                        if a.z.min(b.z) > hi.z + z_slack || a.z.max(b.z) < lo.z - z_slack {
+                            return false;
+                        }
+                        let _ = vi;
+                        segment_hits_box_xy(a, b, lo, hi)
+                    })
+                })
+                .collect();
+            self.adjacency[c] = keep;
         }
     }
 
