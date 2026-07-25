@@ -8,9 +8,10 @@ usage() {
 Usage:
   scripts/test-dm3-mega-fresh-boot.sh [runtime-root]
 
-Build the game module from this checkout, boot a brand-new isolated DM3 server
-tree, verify the repo-baked navpatch provenance, and run 40 typed-msgpack mega
-item trials. The acceptance floor is 38/40 (95%).
+Build the game module from this checkout and boot brand-new isolated DM3 server
+trees. First verify that an alternate nav-build config skips the patch while
+keeping its graph usable; then verify the repo-baked patch provenance and run
+40 typed-msgpack mega item trials. The acceptance floor is 38/40 (95%).
 
 runtime-root defaults to $RTX_DM3_FRESH_BOOT_ROOT, then ./playground. It must
 contain:
@@ -18,8 +19,8 @@ contain:
   id1/pak0.pak
   qw/maps/dm3.bsp
 
-The test creates its isolated server tree below the system temp directory. Its
-path and fresh-boot-report.json are printed in the test output and retained.
+The tests create isolated server trees below the system temp directory. Their
+paths and the acceptance run's fresh-boot-report.json are printed and retained.
 
 Example:
   ./scripts/test-dm3-mega-fresh-boot.sh /srv/quake/rtx-test-assets
@@ -110,4 +111,4 @@ RTX_DM3_FRESH_BOOT_MVDSV="$mvdsv" \
 RTX_DM3_FRESH_BOOT_PAK0="$pak0" \
 RTX_DM3_FRESH_BOOT_BSP="$bsp" \
 RTX_DM3_FRESH_BOOT_QWPROGS="$qwprogs" \
-    cargo test --locked -p rtx-game --test dm3_mega_fresh_boot -- --ignored --nocapture
+    cargo test --locked -p rtx-game --test dm3_mega_fresh_boot -- --ignored --nocapture --test-threads=1

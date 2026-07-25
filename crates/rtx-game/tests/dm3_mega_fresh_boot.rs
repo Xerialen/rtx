@@ -11,7 +11,7 @@
 //! RTX_DM3_FRESH_BOOT_PAK0=/path/to/pak0.pak
 //! RTX_DM3_FRESH_BOOT_BSP=/path/to/dm3.bsp
 //! RTX_DM3_FRESH_BOOT_QWPROGS=/path/to/qwprogs.so
-//! cargo test -p rtx-game --test dm3_mega_fresh_boot -- --ignored --nocapture
+//! cargo test -p rtx-game --test dm3_mega_fresh_boot -- --ignored --nocapture --test-threads=1
 //! ```
 //!
 //! For the supported one-command wrapper, see `scripts/test-dm3-mega-fresh-boot.sh`.
@@ -35,6 +35,7 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(12 * 60);
 struct PatchContract {
     id: String,
     bsp_sha256: String,
+    source_build: serde_json::Value,
     source_graph_sha256: String,
     patched_graph_sha256: String,
     counts: Counts,
@@ -219,7 +220,7 @@ fn fresh_root() -> PathBuf {
     std::env::temp_dir().join(format!("rtx-dm3-mega-fresh-{}-{stamp}", std::process::id()))
 }
 
-fn spawn_server(control_port: u16, game_port: u16, qtv_port: u16) -> Server {
+fn spawn_server(control_port: u16, game_port: u16, qtv_port: u16, rocket_jump_links: bool) -> Server {
     let mvdsv = required_path("RTX_DM3_FRESH_BOOT_MVDSV");
     let pak0 = required_path("RTX_DM3_FRESH_BOOT_PAK0");
     let bsp = required_path("RTX_DM3_FRESH_BOOT_BSP");
@@ -232,6 +233,7 @@ fn spawn_server(control_port: u16, game_port: u16, qtv_port: u16) -> Server {
     copy(&bsp, &root.join("qw/maps/dm3.bsp"));
     copy(&qwprogs, &root.join("qw/qwprogs.so"));
 
+    let rocket_jump_links = u8::from(rocket_jump_links);
     let config = format!(
         r#"hostname "RTX DM3 mega fresh boot"
 sv_progtype 1
@@ -250,7 +252,7 @@ set rtx_shootable_grenades 0
 set rtx_bot_bhop 1
 set rtx_bot_curljump 1
 set rtx_jump_curl_gain 0
-set rtx_bot_rocketjump 1
+set rtx_bot_rocketjump {rocket_jump_links}
 set rtx_rj_cost_scale 0.35
 set rtx_bot_count 1
 set rtx_bot_name "dm3-fresh"
@@ -296,6 +298,52 @@ fn assert_zero_cvar(control: &mut Control, name: &str) {
     }
 }
 
+fn wait_ready(control: &mut Control) -> StatusResp {
+    let build_deadline = Instant::now() + BUILD_TIMEOUT;
+    loop {
+        assert!(Instant::now() < build_deadline, "navmesh build timed out");
+        let status = control.status();
+        if let Some(error) = status.nav_patch_error.as_ref() {
+            panic!("built-in patch failed closed: {error}");
+        }
+        if status.navmesh == "ready" && !status.bots.is_empty() {
+            return status;
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+}
+
+#[test]
+#[ignore = "requires mvdsv, pak0.pak, dm3.bsp, and a freshly-built qwprogs module"]
+fn dm3_alternate_source_config_skips_patch_and_keeps_navmesh() {
+    let control_port = free_tcp_port();
+    let game_port = free_udp_port();
+    let qtv_port = free_tcp_port();
+    let server = spawn_server(control_port, game_port, qtv_port, false);
+    let mut control = Control::connect(control_port, Instant::now() + Duration::from_secs(20));
+    let ready = wait_ready(&mut control);
+
+    assert!(
+        ready.nav_patch.is_none(),
+        "alternate source config must not apply the patch"
+    );
+    assert!(
+        ready.nav_patch_error.is_none(),
+        "alternate source config is not a patch error"
+    );
+    assert_eq!(ready.rj_links, 0);
+    assert!(ready.links > 0);
+    assert_zero_cvar(&mut control, "rtx_bot_rocketjump");
+    let log = fs::read_to_string(server.root.join("server.log")).expect("read alternate-config server log");
+    assert!(
+        log.contains("skipped built-in patch dm3-mega-m2-v1")
+            && log.contains("rocket_jump expected Some")
+            && log.contains("got None")
+            && log.contains("using unpatched graph"),
+        "server did not report the config-gated skip:\n{log}"
+    );
+}
+
 #[test]
 #[ignore = "requires mvdsv, pak0.pak, dm3.bsp, and a freshly-built qwprogs module"]
 fn dm3_mega_patch_survives_fresh_boot_and_40_item_trials() {
@@ -315,20 +363,9 @@ fn dm3_mega_patch_survives_fresh_boot_and_40_item_trials() {
     let control_port = free_tcp_port();
     let game_port = free_udp_port();
     let qtv_port = free_tcp_port();
-    let server = spawn_server(control_port, game_port, qtv_port);
+    let server = spawn_server(control_port, game_port, qtv_port, true);
     let mut control = Control::connect(control_port, Instant::now() + Duration::from_secs(20));
-    let build_deadline = Instant::now() + BUILD_TIMEOUT;
-    let ready = loop {
-        assert!(Instant::now() < build_deadline, "navmesh build timed out");
-        let status = control.status();
-        if let Some(error) = status.nav_patch_error.as_ref() {
-            panic!("built-in patch failed closed: {error}");
-        }
-        if status.navmesh == "ready" && !status.bots.is_empty() {
-            break status;
-        }
-        thread::sleep(Duration::from_secs(1));
-    };
+    let ready = wait_ready(&mut control);
 
     let patch = ready
         .nav_patch
@@ -395,6 +432,7 @@ fn dm3_mega_patch_survives_fresh_boot_and_40_item_trials() {
         "manifest_sha256": manifest_sha256,
         "bsp_sha256": bsp_sha256,
         "qwprogs_sha256": qwprogs_sha256,
+        "source_build": &contract.source_build,
         "source_graph_sha256": contract.source_graph_sha256,
         "patched_graph_sha256": contract.patched_graph_sha256,
         "source_cells": contract.counts.source_cells,

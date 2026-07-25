@@ -1,8 +1,30 @@
 {
-  "schema": "rtx-nav-postbuild-patch/1",
+  "schema": "rtx-nav-postbuild-patch/2",
   "id": "dm3-mega-m2-v1",
   "map": "dm3",
   "bsp_sha256": "aec9edbb727c0a206edc2c0688775ce8242c0d51e1ee7583c7126c76f7c3b2f1",
+  "source_build": {
+    "stock_movement": false,
+    "hooks": null,
+    "double_jump": false,
+    "speed_jump": {
+      "gravity": 800.0,
+      "accel": 10.0,
+      "maxspeed": 320.0,
+      "friction": 4.0,
+      "stopspeed": 100.0,
+      "curl": true
+    },
+    "rocket_jump": {
+      "gravity": 800.0,
+      "rj_extra": 0.0,
+      "accel": 10.0,
+      "maxspeed": 320.0,
+      "friction": 4.0,
+      "stopspeed": 100.0,
+      "cost_scale": 0.35
+    }
+  },
   "source_graph_sha256": "5c15ad55f1af87914ca70ccb125d9170deb6079cc0c7b86b648b0a30aebc3836",
   "patched_graph_sha256": "af319dbea3bc7a4eb448475b3ab770885004393fa5f01dc3288dde3d6ca7935c",
   "counts": {

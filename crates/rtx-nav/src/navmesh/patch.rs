@@ -15,10 +15,10 @@ use glam::{Vec3, Vec3Swizzles};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use super::{GroundTurnCurl, LinkKind, NavGraph, SpeedJumpTraversal};
+use super::{GroundTurnCurl, HookParams, LinkKind, NavGraph, RocketJumpParams, SpeedJumpParams, SpeedJumpTraversal};
 
 const DM3_MEGA_PATCH: &str = include_str!("../../data/navpatches/dm3-mega-v1.json");
-const PATCH_SCHEMA: &str = "rtx-nav-postbuild-patch/1";
+const PATCH_SCHEMA: &str = "rtx-nav-postbuild-patch/2";
 const GRAPH_HASH_SCHEMA: &[u8] = b"rtx-nav-graph-sha256/1\0";
 
 /// Successful application provenance, retained on the per-map nav state and exposed to harnesses.
@@ -32,6 +32,127 @@ pub struct BuiltinPatchReport {
     pub added_links: u32,
     pub total_links: u32,
     pub active_links: u32,
+}
+
+/// Exact nav-generator inputs whose unpatched graph a built-in patch is pinned to.
+///
+/// A different, legitimate server configuration makes the patch inapplicable rather than invalid.
+/// The graph itself remains SHA-bound whenever these inputs match.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NavPatchSourceConfig {
+    stock_movement: bool,
+    hooks: Option<PinnedHookParams>,
+    double_jump: bool,
+    speed_jump: Option<PinnedSpeedJumpParams>,
+    rocket_jump: Option<PinnedRocketJumpParams>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PinnedHookParams {
+    gravity: f32,
+    pull: f32,
+    throw: f32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PinnedSpeedJumpParams {
+    gravity: f32,
+    accel: f32,
+    maxspeed: f32,
+    friction: f32,
+    stopspeed: f32,
+    curl: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PinnedRocketJumpParams {
+    gravity: f32,
+    rj_extra: f32,
+    accel: f32,
+    maxspeed: f32,
+    friction: f32,
+    stopspeed: f32,
+    cost_scale: f32,
+}
+
+impl NavPatchSourceConfig {
+    /// Snapshot the same inputs passed to [`super::build_navmesh`].
+    pub fn from_build_inputs(
+        stock_movement: bool,
+        hooks: Option<HookParams>,
+        double_jump: bool,
+        speed_jump: Option<SpeedJumpParams>,
+        rocket_jump: Option<RocketJumpParams>,
+    ) -> Self {
+        Self {
+            stock_movement,
+            hooks: hooks.map(|params| PinnedHookParams {
+                gravity: params.gravity,
+                pull: params.pull,
+                throw: params.throw,
+            }),
+            double_jump,
+            speed_jump: speed_jump.map(|params| PinnedSpeedJumpParams {
+                gravity: params.gravity,
+                accel: params.accel,
+                maxspeed: params.maxspeed,
+                friction: params.friction,
+                stopspeed: params.stopspeed,
+                curl: params.curl,
+            }),
+            rocket_jump: rocket_jump.map(|params| PinnedRocketJumpParams {
+                gravity: params.gravity,
+                rj_extra: params.rj_extra,
+                accel: params.accel,
+                maxspeed: params.maxspeed,
+                friction: params.friction,
+                stopspeed: params.stopspeed,
+                cost_scale: params.cost_scale,
+            }),
+        }
+    }
+
+    fn mismatch(self, actual: Self) -> Option<String> {
+        macro_rules! mismatch {
+            ($field:ident) => {
+                if self.$field != actual.$field {
+                    return Some(format!(
+                        "{} expected {:?}, got {:?}",
+                        stringify!($field),
+                        self.$field,
+                        actual.$field
+                    ));
+                }
+            };
+        }
+        mismatch!(stock_movement);
+        mismatch!(hooks);
+        mismatch!(double_jump);
+        mismatch!(speed_jump);
+        mismatch!(rocket_jump);
+        None
+    }
+}
+
+/// A built-in patch was deliberately not applied because this graph was built under another valid
+/// movement configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BuiltinPatchSkip {
+    pub id: String,
+    pub manifest_sha256: String,
+    pub reason: String,
+}
+
+/// Decision made for one completed source graph.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BuiltinPatchOutcome {
+    NotApplicable,
+    Skipped(BuiltinPatchSkip),
+    Applied(BuiltinPatchReport),
 }
 
 /// A fail-closed built-in patch error. The game logs this and leaves the graph uninstalled.
@@ -59,6 +180,7 @@ struct PatchDocument {
     id: String,
     map: String,
     bsp_sha256: String,
+    source_build: NavPatchSourceConfig,
     source_graph_sha256: String,
     patched_graph_sha256: String,
     counts: PatchCounts,
@@ -313,15 +435,18 @@ fn parse_document() -> Result<(PatchDocument, String), NavPatchError> {
 
 /// Apply the built-in patch for `map` immediately after the ordinary graph build.
 ///
-/// `Ok(None)` means the map has no built-in patch. Every `Err` is fail-closed: the caller must
-/// discard the graph and keep bots disabled.
+/// A source-build configuration mismatch returns [`BuiltinPatchOutcome::Skipped`]: the graph is
+/// legitimate but outside this patch's domain, so the caller installs it unmodified. Every `Err`
+/// after a matching configuration is fail-closed: the caller must discard the graph and keep bots
+/// disabled.
 pub fn apply_builtin_patch(
     map: &str,
     bsp_sha256: Option<[u8; 32]>,
+    source_config: NavPatchSourceConfig,
     graph: &mut NavGraph,
-) -> Result<Option<BuiltinPatchReport>, NavPatchError> {
+) -> Result<BuiltinPatchOutcome, NavPatchError> {
     if map != "dm3" {
-        return Ok(None);
+        return Ok(BuiltinPatchOutcome::NotApplicable);
     }
     let (document, manifest_sha256) = parse_document()?;
     if document.map != map {
@@ -335,6 +460,13 @@ pub fn apply_builtin_patch(
             "DM3 patch schema mismatch: expected {PATCH_SCHEMA}, got {}",
             document.schema
         )));
+    }
+    if let Some(reason) = document.source_build.mismatch(source_config) {
+        return Ok(BuiltinPatchOutcome::Skipped(BuiltinPatchSkip {
+            id: document.id,
+            manifest_sha256,
+            reason,
+        }));
     }
     let actual_bsp = bsp_sha256
         .as_ref()
@@ -469,7 +601,7 @@ pub fn apply_builtin_patch(
         )));
     }
 
-    Ok(Some(BuiltinPatchReport {
+    Ok(BuiltinPatchOutcome::Applied(BuiltinPatchReport {
         id: document.id,
         manifest_sha256,
         source_graph_sha256,
@@ -485,6 +617,26 @@ pub fn apply_builtin_patch(
 mod tests {
     use super::*;
 
+    fn matching_source_config() -> NavPatchSourceConfig {
+        NavPatchSourceConfig::from_build_inputs(
+            false,
+            None,
+            false,
+            Some(SpeedJumpParams {
+                gravity: 800.0,
+                accel: 10.0,
+                maxspeed: 320.0,
+                friction: 4.0,
+                stopspeed: 100.0,
+                curl: true,
+            }),
+            Some(RocketJumpParams {
+                cost_scale: 0.35,
+                ..RocketJumpParams::default()
+            }),
+        )
+    }
+
     #[test]
     fn embedded_dm3_contract_is_structurally_closed() {
         let (document, digest) = parse_document().expect("embedded patch parses");
@@ -493,6 +645,7 @@ mod tests {
         assert_eq!(document.bsp_sha256.len(), 64);
         assert_eq!(document.source_graph_sha256.len(), 64);
         assert_eq!(document.patched_graph_sha256.len(), 64);
+        assert_eq!(document.source_build, matching_source_config());
         assert_eq!(digest.len(), 64);
         assert_eq!(document.removes.len(), 174);
         assert_eq!(document.adds.len() as u32, document.counts.added_links);
@@ -528,8 +681,51 @@ mod tests {
     fn dm3_bsp_mismatch_fails_before_graph_mutation() {
         let mut graph = NavGraph::test_graph(Vec::new(), Vec::new());
         let before = graph_sha256(&graph);
-        let error = apply_builtin_patch("dm3", Some([0; 32]), &mut graph).expect_err("wrong BSP must fail closed");
+        let error = apply_builtin_patch("dm3", Some([0; 32]), matching_source_config(), &mut graph)
+            .expect_err("wrong BSP must fail closed");
         assert!(error.to_string().contains("BSP SHA-256 mismatch"));
+        assert_eq!(graph_sha256(&graph), before);
+    }
+
+    #[test]
+    fn different_source_config_skips_before_graph_validation() {
+        let mut graph = NavGraph::test_graph(Vec::new(), Vec::new());
+        let before = graph_sha256(&graph);
+        let alternate = NavPatchSourceConfig::from_build_inputs(
+            false,
+            None,
+            false,
+            Some(SpeedJumpParams {
+                gravity: 800.0,
+                accel: 10.0,
+                maxspeed: 320.0,
+                friction: 4.0,
+                stopspeed: 100.0,
+                curl: true,
+            }),
+            None,
+        );
+        let outcome =
+            apply_builtin_patch("dm3", Some([0; 32]), alternate, &mut graph).expect("alternate config is valid");
+        let BuiltinPatchOutcome::Skipped(skip) = outcome else {
+            panic!("alternate config should skip the patch");
+        };
+        assert!(skip.reason.contains("rocket_jump"));
+        assert_eq!(graph_sha256(&graph), before);
+    }
+
+    #[test]
+    fn double_jump_source_config_also_skips_before_graph_validation() {
+        let mut graph = NavGraph::test_graph(Vec::new(), Vec::new());
+        let before = graph_sha256(&graph);
+        let mut alternate = matching_source_config();
+        alternate.double_jump = true;
+        let outcome =
+            apply_builtin_patch("dm3", Some([0; 32]), alternate, &mut graph).expect("alternate config is valid");
+        let BuiltinPatchOutcome::Skipped(skip) = outcome else {
+            panic!("alternate config should skip the patch");
+        };
+        assert!(skip.reason.contains("double_jump"));
         assert_eq!(graph_sha256(&graph), before);
     }
 
@@ -537,7 +733,10 @@ mod tests {
     fn maps_without_a_builtin_patch_are_unchanged() {
         let mut graph = NavGraph::test_graph(Vec::new(), Vec::new());
         let before = graph_sha256(&graph);
-        assert_eq!(apply_builtin_patch("dm2", None, &mut graph).unwrap(), None);
+        assert_eq!(
+            apply_builtin_patch("dm2", None, matching_source_config(), &mut graph).unwrap(),
+            BuiltinPatchOutcome::NotApplicable
+        );
         assert_eq!(graph_sha256(&graph), before);
     }
 }

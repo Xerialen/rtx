@@ -45,7 +45,10 @@ pub use jumps::{
 };
 use lod::Lod;
 pub use lod::{CoarseCosts, Corridor};
-pub use patch::{apply_builtin_patch, graph_sha256, hex_digest, sha256_bytes, BuiltinPatchReport, NavPatchError};
+pub use patch::{
+    apply_builtin_patch, graph_sha256, hex_digest, sha256_bytes, BuiltinPatchOutcome, BuiltinPatchReport,
+    BuiltinPatchSkip, NavPatchError, NavPatchSourceConfig,
+};
 use physics::*;
 pub use physics::{
     attainable_speed, band_of, bhop_k, prestrafe_delivered_from, BAND_EDGES, BAND_FLOOR, BAND_V_MAX, BHOP_EFF,
@@ -2480,10 +2483,11 @@ pub struct NavState {
     /// Whether a build has been kicked off for this map (so a failed BSP read doesn't retry every
     /// frame). Reset when a new map loads.
     pub attempted: bool,
-    /// A background build in flight: the channel the worker thread delivers its finished graph on.
-    /// The main thread polls it each frame and swaps the result into `graph` when ready (`None` when
-    /// no build is running). Dropping it (on map change) discards a stale build.
-    pub pending: Option<std::sync::mpsc::Receiver<NavGraph>>,
+    /// A background build in flight: the channel delivers its finished graph together with the
+    /// exact generator-input snapshot used for patch applicability. The main thread polls it each
+    /// frame and swaps the result into `graph` when ready (`None` when no build is running). Dropping
+    /// it (on map change) discards a stale build.
+    pub pending: Option<std::sync::mpsc::Receiver<(NavGraph, NavPatchSourceConfig)>>,
     /// Static catalog of item-goal pickups: `(entity index, nearest cell)`. Built once with the
     /// graph; items don't move, so their cell is fixed. Live availability and desire are read
     /// fresh at selection time (by the game's `bot::goals`).

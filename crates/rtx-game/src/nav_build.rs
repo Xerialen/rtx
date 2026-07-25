@@ -213,9 +213,14 @@ impl GameState {
             stopspeed: self.host.cvar(c"sv_stopspeed").max(0.0),
             cost_scale: self.rtx_cvar_f32("rtx_rj_cost_scale").max(0.0),
         });
+        // Built-in patches are pinned to the exact generator inputs, not merely to a map name.
+        // Carry this snapshot beside the worker result: cvars may change while a long build runs,
+        // and the applicability decision must describe the graph that was actually generated.
+        let patch_source_config =
+            navmesh::NavPatchSourceConfig::from_build_inputs(stock, hooks, double_jump, speed_jump, rocket_jump);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(navmesh::build_navmesh(
+            let graph = navmesh::build_navmesh(
                 &bsp,
                 plats,
                 teleports,
@@ -224,7 +229,8 @@ impl GameState {
                 double_jump,
                 speed_jump,
                 rocket_jump,
-            ));
+            );
+            let _ = tx.send((graph, patch_source_config));
         });
         self.nav.pending = Some(rx);
         self.host.dprint(c"rtx: navmesh: building in background...\n");
@@ -238,8 +244,8 @@ impl GameState {
         let Some(rx) = self.nav.pending.as_ref() else {
             return;
         };
-        let mut graph = match rx.try_recv() {
-            Ok(graph) => graph,
+        let (mut graph, patch_source_config) = match rx.try_recv() {
+            Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => return, // still building
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.nav.pending = None;
@@ -247,22 +253,38 @@ impl GameState {
             }
         };
         self.nav.pending = None;
-        match navmesh::apply_builtin_patch(&self.level.mapname, self.nav.bsp_sha256, &mut graph) {
-            Ok(report) => {
-                if let Some(report) = report.as_ref() {
-                    let msg = cstring(&format!(
-                        "rtx: navmesh: applied built-in patch {} source={} patched={} removed={} added={} total={} active={}\n",
-                        report.id,
-                        report.source_graph_sha256,
-                        report.patched_graph_sha256,
-                        report.removed_links,
-                        report.added_links,
-                        report.total_links,
-                        report.active_links,
-                    ));
-                    self.host.dprint(&msg);
-                }
-                self.nav.patch = report;
+        match navmesh::apply_builtin_patch(
+            &self.level.mapname,
+            self.nav.bsp_sha256,
+            patch_source_config,
+            &mut graph,
+        ) {
+            Ok(navmesh::BuiltinPatchOutcome::Applied(report)) => {
+                let msg = cstring(&format!(
+                    "rtx: navmesh: applied built-in patch {} source={} patched={} removed={} added={} total={} active={}\n",
+                    report.id,
+                    report.source_graph_sha256,
+                    report.patched_graph_sha256,
+                    report.removed_links,
+                    report.added_links,
+                    report.total_links,
+                    report.active_links,
+                ));
+                self.host.dprint(&msg);
+                self.nav.patch = Some(report);
+                self.nav.patch_error = None;
+            }
+            Ok(navmesh::BuiltinPatchOutcome::Skipped(skip)) => {
+                let msg = cstring(&format!(
+                    "rtx: navmesh: skipped built-in patch {} manifest={} for source config: {}; using unpatched graph\n",
+                    skip.id, skip.manifest_sha256, skip.reason,
+                ));
+                self.host.dprint(&msg);
+                self.nav.patch = None;
+                self.nav.patch_error = None;
+            }
+            Ok(navmesh::BuiltinPatchOutcome::NotApplicable) => {
+                self.nav.patch = None;
                 self.nav.patch_error = None;
             }
             Err(error) => {
