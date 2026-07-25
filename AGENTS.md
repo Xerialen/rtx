@@ -61,9 +61,14 @@ the same way.
 `cargo run --release -p rtx-waypoint-check -- dm3 dm4 …` (no map named ⇒ every `waypoints/*.bot`
 whose BSP resolves) parses KTX's hand-authored `.bot` waypoint files, rebuilds our navmesh offline
 from the map's BSP, and reports — per authored rocket-jump / curl-jump path — whether our mesh
-reproduces it (`MATCHED`), crosses the gap another way (`JUMP`), merely routes around it (`ROUTE`),
-or can't connect the endpoints at all (`UNREACH` / `UNSNAP` — the blind spots worth chasing). Runs
-fully offline over `playground/` (no server); exit 1 when any endpoint is unreachable/off-mesh.
+reproduces it (`MATCHED` / `TOWARD`), crosses the gap another way (`JUMP`), merely routes around it
+(`ROUTE`), or can't connect the endpoints at all (`UNREACH` / `UNSNAP`). Runs fully offline over
+`playground/` (no server); exit 1 when any endpoint is unreachable/off-mesh.
+
+- Every gap is attributed to the **generator bound that owns it** (`[xy>air-pass]` on the path line,
+  bucketed with an average detour per map and across the sweep) — that roll-up, not the raw verdicts,
+  is the work list. Buckets are the public RJ envelope consts in `rtx-nav` (`RJ_MIN_RISE`,
+  `RJ_MAX_RISE`, `RJ_RANGE_XY`, `RJ_AIR_RANGE_XY`); see [development.md](docs/development.md).
 
 - KTX marker ids include the map's *entity* markers (items, doors, triggers) claimed in lump order
   before the file's `CreateMarker`s, so the tool walks the entity lump to resolve them and prints a

@@ -86,14 +86,41 @@ cargo run --release -p rtx-waypoint-check            # every waypoints/*.bot who
 cargo run --release -p rtx-waypoint-check -- --radius 128 dm3   # loosen endpoint matching
 ```
 
-For each map it parses the `.bot` file, rebuilds the navmesh with the viewer's stock-DM recipe (plus
-teleporters wired from the entity lump), and classifies every authored rocket-jump / curl-jump path
-in descending strength: **MATCHED** (a same-kind link bridges the endpoints), **JUMP** (a different
-airborne link does), **ROUTE** (no matching link but a route exists), **UNREACH** / **UNSNAP** (the
-endpoints don't connect, or one is off the mesh — the blind spots). Exit code is `1` when any path is
-unreachable/off-mesh, `0` when all are at least route-connected.
+For each map it parses the `.bot` file, rebuilds the navmesh with the game's **default** DM cvars
+(bhop + curl + rocket jump on, double jump *off*, teleporters wired from the entity lump), and
+classifies every authored rocket-jump / curl-jump path in descending strength: **MATCHED** (a
+same-kind link bridges the endpoints), **TOWARD** (a same-kind link launches from around the source
+and lands in the destination's LoD region — the shortcut exists even if the landing cell isn't the
+authored one), **JUMP** (a different airborne link crosses the gap), **ROUTE** (no matching link,
+only a ground detour), **UNREACH** / **UNSNAP** (the endpoints don't connect, or one is off the
+mesh). MATCHED + TOWARD is the coverage number; everything below is a gap. Exit code is `1` when any
+path is unreachable/off-mesh, `0` when all are at least route-connected.
 
-Two things to know when reading the output:
+Each gap is then attributed to the **generator bound that owns it** — the report tags the path line
+(`[xy>air-pass]`) and rolls the buckets up per map and across the sweep:
+
+```
+rj gaps by generator bound 68: 8 off-mesh, 24 rise<min (~2.5s detour), 15 xy>ballistic (~5.2s detour),
+                               15 xy>air-pass (~7.0s detour), 6 in-envelope (~9.0s detour)
+```
+
+The buckets are the rocket-jump search envelope in `rtx-nav` (`RJ_MIN_RISE`, `RJ_MAX_RISE`,
+`RJ_RANGE_XY`, `RJ_AIR_RANGE_XY`, public for exactly this), evaluated in the order the builder's own
+gates fire, measured between the mesh cells the endpoints snap to:
+
+| bucket | meaning |
+| --- | --- |
+| `off-mesh` | an endpoint isn't on the mesh, or the two don't connect at all — a nav *coverage* hole (water, an unmeshed ledge, a pit floor), not an RJ-tuning one |
+| `rise<min` | a near-flat crossing authored to skip a gap rather than climb; the generator skips these by design |
+| `rise>max` | higher than one blast is modelled to lift |
+| `xy>ballistic` | beyond `RJ_RANGE_XY`, so *neither* pass ever simulates the pair |
+| `xy>air-pass` | inside the ballistic reach but past `RJ_AIR_RANGE_XY`. A steep shot puts nearly all its impulse into Z, so the unsteered parabola can't cover the ground — and the air-steered pass that could is capped short of here |
+| `in-envelope` | both passes were allowed to look and neither produced a link: a solver problem, not a bound |
+
+The averaged detour is what each bucket costs the bot in practice, so a bucket can be ranked by the
+time fixing it would buy rather than by path count alone.
+
+Two more things to know when reading the output:
 
 - **Marker numbering.** KTX assigns the low marker ids to the map's *entity* markers — items, doors,
   triggers, spawns — claimed in entity-lump order *before* the file's own `CreateMarker`s. The tool

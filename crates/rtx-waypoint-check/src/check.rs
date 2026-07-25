@@ -24,10 +24,11 @@
 //! - **Unsnapped** — an endpoint didn't land on any nav cell (a marker over a pedestal, water, or
 //!   void), so no honest verdict is possible.
 
-use glam::Vec3;
+use glam::{Vec3, Vec3Swizzles};
 use rtx_nav::bsp::Bsp;
 use rtx_nav::navmesh::{
     build_navmesh, LinkCosts, LinkKind, NavGraph, RocketJumpParams, SpeedJumpParams, CLOSED_GATE_PENALTY,
+    RJ_AIR_RANGE_XY, RJ_MAX_RISE, RJ_MIN_RISE, RJ_RANGE_XY,
 };
 
 use crate::botfile::ResolvedPath;
@@ -108,6 +109,60 @@ pub fn build(bsp: &Bsp) -> NavGraph {
             rj_extra: 0.0,
         }),
     )
+}
+
+/// *Why* an authored rocket jump we failed to reproduce is missing — the generator bound that
+/// excluded it, measured from the same (rise, horizontal) pair the builder gates on.
+///
+/// A [`Verdict`] says how badly we missed; this says which knob owns the miss, which is what turns
+/// a report into a work list. The variants are ordered the way the builder's gates fire, so each
+/// path is attributed to the *first* bound that rejected it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gap {
+    /// An endpoint is off the mesh, or the two don't connect at all. A nav **coverage** hole (water,
+    /// an unmeshed ledge, a pit floor) — no amount of rocket-jump tuning reaches it.
+    OffMesh,
+    /// Rise below [`RJ_MIN_RISE`]: a near-flat crossing, authored to skip a gap rather than climb.
+    /// The generator skips these by design — reopening them means deciding horizontal RJs are in scope.
+    Flat,
+    /// Rise above [`RJ_MAX_RISE`] — higher than one blast is modelled to lift.
+    TooHigh,
+    /// Horizontal beyond [`RJ_RANGE_XY`]: outside *both* passes, so the pair is never simulated.
+    TooFar,
+    /// Horizontal past [`RJ_AIR_RANGE_XY`] but inside [`RJ_RANGE_XY`] — the band only the ballistic
+    /// pass scans. A steep authored shot puts nearly all its impulse into Z, so the unsteered
+    /// parabola can't cover the ground; the air-steered pass that could is capped short of here.
+    AirBlind,
+    /// Inside the envelope on both axes: the generator did look at this pair and came up empty.
+    /// The residue worth debugging in the solver itself rather than in a bound.
+    InEnvelope,
+}
+
+impl Gap {
+    /// Every variant, in gate order — the iteration order of the report's gap roll-up.
+    pub const ALL: [Gap; 6] = [
+        Gap::OffMesh,
+        Gap::Flat,
+        Gap::TooHigh,
+        Gap::TooFar,
+        Gap::AirBlind,
+        Gap::InEnvelope,
+    ];
+
+    pub fn index(self) -> usize {
+        Gap::ALL.iter().position(|&g| g == self).expect("variant in ALL")
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Gap::OffMesh => "off-mesh",
+            Gap::Flat => "rise<min",
+            Gap::TooHigh => "rise>max",
+            Gap::TooFar => "xy>ballistic",
+            Gap::AirBlind => "xy>air-pass",
+            Gap::InEnvelope => "in-envelope",
+        }
+    }
 }
 
 /// A navmesh plus the link indices grouped by family, so each path is checked without re-scanning.
@@ -282,6 +337,30 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Attribute a *missed* rocket-jump path to the generator bound that owns it. `None` when the
+    /// shortcut is reproduced (matched/toward/jump) or the path isn't a rocket jump — there's nothing
+    /// to explain.
+    ///
+    /// The (rise, horizontal) pair is measured between the mesh cells the endpoints snap to, since
+    /// those — not the authored marker origins — are what the builder actually enumerates. If either
+    /// end fails to snap the path is [`Gap::OffMesh`] regardless of geometry.
+    pub fn gap(&self, p: &ResolvedPath, fam: Family, v: &Verdict) -> Option<Gap> {
+        if fam != Family::RocketJump {
+            return None;
+        }
+        match v {
+            Verdict::Matched(_) | Verdict::TowardConnected(_) | Verdict::JumpConnected(_) => return None,
+            Verdict::Unreachable { .. } | Verdict::Unsnapped { .. } => return Some(Gap::OffMesh),
+            Verdict::RouteConnected { .. } => {}
+        }
+        let g = self.graph;
+        let (Some(ca), Some(cb)) = (g.nearest(p.from.pos()), g.nearest(p.to.pos())) else {
+            return Some(Gap::OffMesh);
+        };
+        let (a, b) = (g.cell_origin(ca), g.cell_origin(cb));
+        Some(gap_of(b.z - a.z, (b.xy() - a.xy()).length()))
+    }
+
     /// A same-kind link launching from around the source that lands in the destination's *region*.
     /// You have to be at the launch spot to rocket-jump, so the source stays tight (within `radius` of
     /// A). The landing is the forgiving end: it counts if it falls in B's LoD-cluster neighbourhood
@@ -433,6 +512,23 @@ impl<'a> Checker<'a> {
     }
 }
 
+/// Which generator bound rejects a `(rise, horizontal)` pair, evaluated in the order the builder's
+/// own gates fire so a miss is blamed on the *first* one that excluded it. `InEnvelope` means both
+/// passes were allowed to look at this pair and neither produced a link.
+fn gap_of(dz: f32, horiz: f32) -> Gap {
+    if dz < RJ_MIN_RISE {
+        Gap::Flat
+    } else if dz > RJ_MAX_RISE {
+        Gap::TooHigh
+    } else if horiz > RJ_RANGE_XY {
+        Gap::TooFar
+    } else if horiz > RJ_AIR_RANGE_XY {
+        Gap::AirBlind
+    } else {
+        Gap::InEnvelope
+    }
+}
+
 /// Horizontal distance if the two points share a storey (`|Δz| ≤ Z_TOL`), else infinite.
 fn dist_window(p: Vec3, q: Vec3) -> f32 {
     if (p.z - q.z).abs() <= Z_TOL {
@@ -467,6 +563,22 @@ fn is_local(k: LinkKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gap_blames_the_first_gate_that_rejects() {
+        // A near-flat crossing is "too flat" even when it's also absurdly long — rise gates first.
+        assert_eq!(gap_of(16.0, 700.0), Gap::Flat);
+        assert_eq!(gap_of(400.0, 100.0), Gap::TooHigh);
+        // Past the ballistic reach: no pass looks here at all.
+        assert_eq!(gap_of(200.0, RJ_RANGE_XY + 1.0), Gap::TooFar);
+        // The band only the (unsteered) ballistic pass scans — dm3's ~250u-rise / ~380u-out family.
+        assert_eq!(gap_of(250.0, 380.0), Gap::AirBlind);
+        // Bounds themselves are inclusive, matching the builder's `(MIN..=MAX).contains` gate.
+        assert_eq!(gap_of(RJ_MIN_RISE, RJ_AIR_RANGE_XY), Gap::InEnvelope);
+        assert_eq!(gap_of(RJ_MAX_RISE, RJ_RANGE_XY), Gap::AirBlind);
+        // Squarely inside both passes' reach: the solver looked and found nothing.
+        assert_eq!(gap_of(120.0, 100.0), Gap::InEnvelope);
+    }
 
     #[test]
     fn window_metric_respects_storeys() {

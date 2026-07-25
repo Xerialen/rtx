@@ -28,7 +28,7 @@ mod pak;
 mod report;
 
 use check::{Checker, Family};
-use report::Tally;
+use report::{GapTally, Tally};
 
 const USAGE: &str = "\
 rtx-waypoint-check — check KTX waypoint RJ/curl coverage against the generated navmesh
@@ -110,6 +110,7 @@ fn run(config: &Config) -> ExitCode {
 
     let mut grand_rj = Tally::default();
     let mut grand_curl = Tally::default();
+    let mut grand_gaps = GapTally::default();
     let mut any_hole = false;
     let mut fatal = false;
     let mut skipped: Vec<String> = Vec::new();
@@ -135,10 +136,11 @@ fn run(config: &Config) -> ExitCode {
             continue;
         };
 
-        let (rj, curl) = process_map(map, &text, &bsp, config.radius);
+        let (rj, curl, gaps) = process_map(map, &text, &bsp, config.radius);
         any_hole |= rj.holes() + curl.holes() > 0;
         grand_rj.merge(&rj);
         grand_curl.merge(&curl);
+        grand_gaps.merge(&gaps);
         processed += 1;
     }
 
@@ -156,6 +158,9 @@ fn run(config: &Config) -> ExitCode {
         println!(
             "   rj shortcut coverage: {rj_sc}/{rj_n} reproduced ({rj_gap} are detour-only or unreachable — the real gaps)"
         );
+        if let Some(line) = grand_gaps.line() {
+            println!("   rj gaps by generator bound {line}");
+        }
     }
 
     if fatal {
@@ -167,8 +172,9 @@ fn run(config: &Config) -> ExitCode {
     }
 }
 
-/// Parse, build, classify, and print one map. Returns its (rocket-jump, curl) tallies.
-fn process_map(map: &str, text: &str, bsp: &Bsp, radius: f32) -> (Tally, Tally) {
+/// Parse, build, classify, and print one map. Returns its (rocket-jump, curl) verdict tallies plus
+/// the roll-up of *why* each missed rocket jump is missing.
+fn process_map(map: &str, text: &str, bsp: &Bsp, radius: f32) -> (Tally, Tally, GapTally) {
     let file = botfile::parse(text);
     let markers = ent::marker_walk(bsp);
     let k = markers.len() as u32;
@@ -212,20 +218,28 @@ fn process_map(map: &str, text: &str, bsp: &Bsp, radius: f32) -> (Tally, Tally) 
     }
 
     let mut rj_tally = Tally::default();
+    let mut gaps = GapTally::default();
     for p in &rj_paths {
         let v = checker.classify(p, Family::RocketJump);
-        println!("{}", report::path_line(Family::RocketJump, p, &v));
+        let gap = checker.gap(p, Family::RocketJump, &v);
+        println!("{}", report::path_line(Family::RocketJump, p, &v, gap));
         rj_tally.add(&v);
+        if let Some(g) = gap {
+            gaps.add(g, &v);
+        }
     }
     let mut curl_tally = Tally::default();
     for p in &curl_paths {
         let v = checker.classify(p, Family::Curl);
-        println!("{}", report::path_line(Family::Curl, p, &v));
+        println!("{}", report::path_line(Family::Curl, p, &v, None));
         curl_tally.add(&v);
     }
 
     println!("-- {map}: rj {} | curl {}", rj_tally.line(), curl_tally.line());
-    (rj_tally, curl_tally)
+    if let Some(line) = gaps.line() {
+        println!("   rj gaps {line}");
+    }
+    (rj_tally, curl_tally, gaps)
 }
 
 fn note_missing(explicit: bool, fatal: &mut bool, skipped: &mut Vec<String>, map: &str, why: &str) {

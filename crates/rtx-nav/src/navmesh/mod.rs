@@ -96,20 +96,25 @@ const HOOK_MAX_PER_CELL: usize = 4;
 
 // --- rocket jumps (blast-launched leaps up to high ledges) ---
 
+// The four bounds below are the generator's *search envelope*: a (rise, horizontal) pair outside
+// them is never even simulated. They're public so an offline audit — `rtx-waypoint-check`, scoring
+// our coverage against KTX's hand-authored waypoints — can attribute a missed jump to the exact
+// bound that excluded it, rather than re-hardcoding these numbers and drifting out of sync.
+
 /// Max horizontal reach of a rocket-jump link. A floor-fired RJ is mostly vertical, so the reach is
 /// tighter than a hook's — an RJ that also travels far is rare and fragile.
-const RJ_RANGE_XY: f32 = 400.0;
+pub const RJ_RANGE_XY: f32 = 400.0;
 /// Highest rise a rocket-jump link may climb — the realistic apex (~280u) plus landing slack.
-const RJ_MAX_RISE: f32 = 320.0;
+pub const RJ_MAX_RISE: f32 = 320.0;
 /// Horizontal reach of the **air-steered** rocket-jump pass — tighter than the ballistic
 /// [`RJ_RANGE_XY`]. The air pass enumerates candidate targets per source cell, so its reach bounds
 /// that scan; the near-vertical high jumps it exists to recover (launch offset from a raised ledge by
 /// a column or two) sit well inside this, and a wider net would cost build time for the rarer,
 /// riskier long-range air jumps. Straight rocket-boosts for horizontal speed are out of scope.
-const RJ_AIR_RANGE_XY: f32 = 192.0;
+pub const RJ_AIR_RANGE_XY: f32 = 192.0;
 /// Lowest a target may sit above the source and still be worth a rocket jump (below this a jump or
 /// double jump already reaches — see the useful-gate).
-const RJ_MIN_RISE: f32 = 40.0;
+pub const RJ_MIN_RISE: f32 = 40.0;
 /// Landing acceptance window: how far the solved touchdown may sit from a cell for the shot to count
 /// as landing *on* it. Tight in Z — a rocket jump must put the bot squarely on the ledge, not a
 /// player-height below it. A looser Z (was 48, a full hull) let `nearest_within` snap a landing that

@@ -6,7 +6,7 @@ use glam::Vec3;
 use rtx_nav::navmesh::LinkKind;
 
 use crate::botfile::{MarkerPos, ResolvedPath};
-use crate::check::{Family, Verdict};
+use crate::check::{Family, Gap, Verdict};
 
 /// Per-family verdict counts.
 #[derive(Default, Clone, Copy)]
@@ -82,8 +82,65 @@ impl Tally {
     }
 }
 
-/// One report line for a classified path.
-pub fn path_line(fam: Family, p: &ResolvedPath, v: &Verdict) -> String {
+/// Why the rocket jumps we *didn't* reproduce are missing, bucketed by the generator bound that
+/// excluded each — the report's work list. Carries the detour each miss costs the bot so a bucket
+/// can be ranked by what fixing it would actually buy, not just by how many paths land in it.
+#[derive(Default, Clone, Copy)]
+pub struct GapTally {
+    counts: [u32; Gap::ALL.len()],
+    /// Summed ground-route cost of the misses in each bucket (finite routes only).
+    detour: [f32; Gap::ALL.len()],
+    routed: [u32; Gap::ALL.len()],
+}
+
+impl GapTally {
+    pub fn add(&mut self, gap: Gap, v: &Verdict) {
+        let i = gap.index();
+        self.counts[i] += 1;
+        if let Verdict::RouteConnected { cost, .. } = v {
+            if cost.is_finite() {
+                self.detour[i] += cost;
+                self.routed[i] += 1;
+            }
+        }
+    }
+
+    pub fn merge(&mut self, o: &GapTally) {
+        for i in 0..Gap::ALL.len() {
+            self.counts[i] += o.counts[i];
+            self.detour[i] += o.detour[i];
+            self.routed[i] += o.routed[i];
+        }
+    }
+
+    pub fn total(&self) -> u32 {
+        self.counts.iter().sum()
+    }
+
+    /// `8 xy>air-pass (~9.4s detour), 1 in-envelope (~8.9s detour)`, or `None` when nothing missed.
+    pub fn line(&self) -> Option<String> {
+        if self.total() == 0 {
+            return None;
+        }
+        let parts: Vec<String> = Gap::ALL
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| self.counts[i] > 0)
+            .map(|(i, g)| {
+                let mut s = format!("{} {}", self.counts[i], g.label());
+                if self.routed[i] > 0 {
+                    s += &format!(" (~{:.1}s detour)", self.detour[i] / self.routed[i] as f32);
+                }
+                s
+            })
+            .collect();
+        Some(format!("{}: {}", self.total(), parts.join(", ")))
+    }
+}
+
+/// One report line for a classified path. `gap` names the generator bound that owns a miss (see
+/// [`Gap`]); it's `None` for a path whose shortcut we reproduce.
+pub fn path_line(fam: Family, p: &ResolvedPath, v: &Verdict, gap: Option<Gap>) -> String {
     let fam_s = match fam {
         Family::RocketJump => "rj",
         Family::Curl => "curl",
@@ -106,7 +163,7 @@ pub fn path_line(fam: Family, p: &ResolvedPath, v: &Verdict) -> String {
         Family::Curl => format!("hint {}", p.angle_hint),
     };
     format!(
-        "  {:<4} {:>3}->{:<3} {} -> {}   {:<20}  {}",
+        "  {:<4} {:>3}->{:<3} {} -> {}   {:<20}  {}{}",
         fam_s,
         p.src,
         p.dst,
@@ -114,6 +171,10 @@ pub fn path_line(fam: Family, p: &ResolvedPath, v: &Verdict) -> String {
         endpoint(&p.to),
         params,
         verdict(v),
+        match gap {
+            Some(g) => format!("  [{}]", g.label()),
+            None => String::new(),
+        },
     )
 }
 
