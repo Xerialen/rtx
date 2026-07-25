@@ -45,7 +45,7 @@ use crate::defs::{Bits, Flags, Items, Solid, Weapon};
 use crate::entity::EntId;
 use crate::game::{cstring, GameState, MAX_EDICTS};
 use crate::math::wrap180;
-use crate::navmesh::LinkKind;
+use crate::navmesh::{LinkKind, NavGraph};
 
 /// A goto is "arrived" once within this XY radius of the target (matches the bot's own arrival gate)
 /// or after a bounded finish-plane crossing, and within [`GOTO_ARRIVE_Z`] in Z. This stays independent
@@ -407,6 +407,7 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
             Ok(Resp::Queued)
         }
         Cmd::Cell { pos } => cell_resp(game, v3(pos)).map(Resp::Cell),
+        Cmd::CellById { cell } => cell_by_id_resp(game, cell).map(Resp::Cell),
         Cmd::Route { bot } => route_resp(game, bot).map(Resp::Route),
         Cmd::Audit { bot, lines } => audit_resp(game, bot, lines as usize).map(Resp::Audit),
         Cmd::Curls => curls_resp(game).map(Resp::Curls),
@@ -896,6 +897,21 @@ fn kind_name(k: LinkKind) -> &'static str {
 fn cell_resp(game: &GameState, pos: Vec3) -> Result<proto::CellResp, String> {
     let g = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
     let cell = g.nearest(pos).ok_or("no navmesh cell near that point")?;
+    Ok(describe_cell(g, cell))
+}
+
+/// [`cell_resp`] by cell id instead of by point — the direction a route, a link listing or an earlier
+/// reply hands you, none of which give coordinates you could feed back to `nearest`.
+fn cell_by_id_resp(game: &GameState, cell: u32) -> Result<proto::CellResp, String> {
+    let g = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
+    if cell as usize >= g.cells.len() {
+        return Err(format!("no such cell {cell} (the mesh has {})", g.cells.len()));
+    }
+    Ok(describe_cell(g, cell))
+}
+
+/// A cell's origin, hazard and both link directions.
+fn describe_cell(g: &NavGraph, cell: u32) -> proto::CellResp {
     let mut out = Vec::new();
     let mut incoming = Vec::new();
     for li in 0..g.links.len() as u32 {
@@ -906,6 +922,7 @@ fn cell_resp(game: &GameState, pos: Vec3) -> Result<proto::CellResp, String> {
             out.push(proto::CellLinkOut {
                 link: li,
                 kind: kind_name(g.link_kind(li)).to_string(),
+                to_cell: g.link_target(li),
                 to: a3(g.cell_origin(g.link_target(li))),
                 cost: g.link_cost(li),
                 tgt_hazard: format!("{:?}", g.cell_hazard(g.link_target(li))),
@@ -917,17 +934,18 @@ fn cell_resp(game: &GameState, pos: Vec3) -> Result<proto::CellResp, String> {
             incoming.push(proto::CellLinkIn {
                 link: li,
                 kind: kind_name(g.link_kind(li)).to_string(),
+                from_cell: g.link_source(li),
                 from: a3(g.cell_origin(g.link_source(li))),
             });
         }
     }
-    Ok(proto::CellResp {
+    proto::CellResp {
         cell,
         origin: a3(g.cell_origin(cell)),
         hazard: format!("{:?}", g.cell_hazard(cell)),
         out,
         incoming,
-    })
+    }
 }
 
 /// List the map's bot-goal items (armor, health, weapons, ammo, powerups), so a caller can find a
@@ -972,6 +990,8 @@ fn route_resp(game: &GameState, bot: u32) -> Result<proto::RouteResp, String> {
             i: i as u32,
             link: leg,
             kind: kind_name(g.link_kind(leg)).to_string(),
+            src_cell: g.link_source(leg),
+            tgt_cell: g.link_target(leg),
             src: a3(g.cell_origin(g.link_source(leg))),
             tgt: a3(g.cell_origin(g.link_target(leg))),
         })

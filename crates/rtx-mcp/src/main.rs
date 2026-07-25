@@ -756,6 +756,8 @@ struct TeleportArgs {
     bot: Option<u32>,
     /// A rocket-jump link id — teleports to its source cell (overrides x/y/z when given).
     link: Option<u32>,
+    /// A navmesh cell id — teleports to that cell's origin (overrides x/y/z; `link` wins over it).
+    cell: Option<u32>,
     x: Option<f32>,
     y: Option<f32>,
     z: Option<f32>,
@@ -764,9 +766,11 @@ struct TeleportArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct GotoArgs {
     bot: Option<u32>,
-    x: f32,
-    y: f32,
-    z: f32,
+    /// A navmesh cell id to run to. Takes precedence over x/y/z, which may then be omitted.
+    cell: Option<u32>,
+    x: Option<f32>,
+    y: Option<f32>,
+    z: Option<f32>,
     /// Seconds to await arrival/stall (default 30).
     timeout: Option<f32>,
 }
@@ -865,9 +869,11 @@ struct BotArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct CellArgs {
-    x: f32,
-    y: f32,
-    z: f32,
+    /// A cell id to look up directly. Takes precedence over x/y/z, which may then be omitted.
+    cell: Option<u32>,
+    x: Option<f32>,
+    y: Option<f32>,
+    z: Option<f32>,
 }
 
 // --- tools ------------------------------------------------------------------------------------
@@ -1066,12 +1072,25 @@ impl RtxMcp {
         finish(r)
     }
 
+    /// A cell id's world origin, so tools that take a position can take a cell id instead.
+    async fn cell_origin(&self, cell: u32) -> Result<[f32; 3], String> {
+        let v = self.req(Cmd::CellById { cell }, SHORT).await?;
+        vec3_of(v.get("origin").unwrap_or(&Value::Null))
+    }
+
     #[tool(
-        description = "Inspect the navmesh cell nearest a world point, including incoming and \
-        outgoing link kinds, costs, and hazards."
+        description = "Inspect a navmesh cell — by `cell` id, or the one nearest a world point — \
+        including incoming and outgoing link kinds, costs, hazards, and the cell id on each side of \
+        every link, so the graph can be walked by id from here."
     )]
     async fn inspect_cell(&self, Parameters(a): Parameters<CellArgs>) -> Result<CallToolResult, McpError> {
-        finish(self.req(Cmd::Cell { pos: [a.x, a.y, a.z] }, SHORT).await)
+        let cmd = match a.cell {
+            Some(cell) => Cmd::CellById { cell },
+            None => Cmd::Cell {
+                pos: [a.x.unwrap_or(0.0), a.y.unwrap_or(0.0), a.z.unwrap_or(0.0)],
+            },
+        };
+        finish(self.req(cmd, SHORT).await)
     }
 
     #[tool(
@@ -1161,6 +1180,8 @@ impl RtxMcp {
                     .find(|l| l.get("link").and_then(Value::as_u64) == Some(link as u64))
                     .ok_or_else(|| format!("link {link} is not a rocket-jump link"))?;
                 vec3_of(entry.get("src").unwrap_or(&Value::Null))?
+            } else if let Some(cell) = a.cell {
+                self.cell_origin(cell).await?
             } else {
                 [a.x.unwrap_or(0.0), a.y.unwrap_or(0.0), a.z.unwrap_or(0.0)]
             };
@@ -1177,17 +1198,14 @@ impl RtxMcp {
     async fn goto(&self, Parameters(a): Parameters<GotoArgs>) -> Result<CallToolResult, McpError> {
         let r = async {
             let bot = self.resolve_bot(a.bot).await?;
+            let pos = match a.cell {
+                Some(cell) => self.cell_origin(cell).await?,
+                None => [a.x.unwrap_or(0.0), a.y.unwrap_or(0.0), a.z.unwrap_or(0.0)],
+            };
             let timeout = Duration::from_secs_f32(a.timeout.unwrap_or(30.0));
             let conn = self.conn().await?;
             let rx = conn.events.subscribe();
-            self.req(
-                Cmd::Goto {
-                    bot,
-                    pos: [a.x, a.y, a.z],
-                },
-                SHORT,
-            )
-            .await?;
+            self.req(Cmd::Goto { bot, pos }, SHORT).await?;
             conn.await_event(rx, |v| is_ev(v, "arrived", bot) || is_ev(v, "goto_stall", bot), timeout)
                 .await
         }

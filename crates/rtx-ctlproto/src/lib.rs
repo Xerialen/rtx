@@ -114,6 +114,9 @@ pub enum Cmd {
     RunCmd { raw: String },
     /// Inspect the navmesh cell nearest a world point.
     Cell { pos: Vec3 },
+    /// Inspect a navmesh cell by id — the other direction from [`Cmd::Cell`], so a cell named in a
+    /// route, a link listing or an earlier reply can be looked up without first knowing where it is.
+    CellById { cell: u32 },
     /// Dump a bot's current A* route.
     Route { bot: u32 },
     /// Dump the tail of a bot's `rtx_bot_debug` audit ring.
@@ -446,6 +449,8 @@ pub struct ItemInfo {
 pub struct CellLinkOut {
     pub link: u32,
     pub kind: String,
+    /// The cell this link lands on, so the graph can be walked by id rather than re-resolved by point.
+    pub to_cell: u32,
     pub to: Vec3,
     pub cost: f32,
     pub tgt_hazard: String,
@@ -457,6 +462,8 @@ pub struct CellLinkOut {
 pub struct CellLinkIn {
     pub link: u32,
     pub kind: String,
+    /// The cell this link leaves from — see [`CellLinkOut::to_cell`].
+    pub from_cell: u32,
     pub from: Vec3,
 }
 
@@ -474,6 +481,9 @@ pub struct RouteLeg {
     pub i: u32,
     pub link: u32,
     pub kind: String,
+    /// Cells the leg runs between, so a route reads as ids and not only as coordinates.
+    pub src_cell: u32,
+    pub tgt_cell: u32,
     pub src: Vec3,
     pub tgt: Vec3,
 }
