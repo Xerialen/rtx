@@ -18,7 +18,9 @@ use sha2::{Digest, Sha256};
 use super::{GroundTurnCurl, HookParams, LinkKind, NavGraph, RocketJumpParams, SpeedJumpParams, SpeedJumpTraversal};
 
 const DM3_MEGA_PATCH: &str = include_str!("../../data/navpatches/dm3-mega-v1.json");
+const DM3_RA_PATCH: &str = include_str!("../../data/navpatches/dm3-ra-v1.json");
 const PATCH_SCHEMA: &str = "rtx-nav-postbuild-patch/2";
+const ROUTE_PATCH_SCHEMA: &str = "rtx-nav-route-patch/1";
 const GRAPH_HASH_SCHEMA: &[u8] = b"rtx-nav-graph-sha256/1\0";
 
 /// Successful application provenance, retained on the per-map nav state and exposed to harnesses.
@@ -183,6 +185,7 @@ struct PatchDocument {
     source_build: NavPatchSourceConfig,
     source_graph_sha256: String,
     patched_graph_sha256: String,
+    route_patches: Vec<RoutePatchReference>,
     counts: PatchCounts,
     physics: PatchPhysics,
     removes: Vec<RemoveSelector>,
@@ -196,10 +199,50 @@ struct PatchDocument {
 struct PatchCounts {
     source_cells: u32,
     source_links: u32,
+    source_rocket_jump_links: u32,
     removed_links: u32,
     added_links: u32,
     patched_links: u32,
     patched_active_links: u32,
+    patched_rocket_jump_links: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RoutePatchReference {
+    id: String,
+    manifest_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RoutePatchDocument {
+    schema: String,
+    id: String,
+    map: String,
+    bsp_sha256: String,
+    source_spec_sha256: String,
+    demo_sha256: String,
+    combined_patch_id: String,
+    source_graph_sha256: String,
+    patched_graph_sha256: String,
+    counts: RoutePatchCounts,
+    removes: Vec<RemoveSelector>,
+    adds: Vec<AddProfile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RoutePatchCounts {
+    source_links: u32,
+    source_rocket_jump_links: u32,
+    remove_selector_start: u32,
+    remove_selectors: u32,
+    removed_links: u32,
+    add_profile_start: u32,
+    added_links: u32,
+    patched_links: u32,
+    patched_rocket_jump_links: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,7 +253,7 @@ struct PatchPhysics {
     commit_cost: f32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct RemoveSelector {
     kind: PatchLinkKind,
@@ -236,7 +279,7 @@ impl PatchLinkKind {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct AddProfile {
     kind: AddLinkKind,
@@ -427,10 +470,86 @@ fn active_link_count(graph: &NavGraph) -> u32 {
         .count() as u32
 }
 
-fn parse_document() -> Result<(PatchDocument, String), NavPatchError> {
+fn link_kind_count(graph: &NavGraph, kind: LinkKind) -> u32 {
+    graph.links.iter().filter(|link| link.kind == kind).count() as u32
+}
+
+fn validate_route_patch(
+    document: &PatchDocument,
+    route: &RoutePatchDocument,
+    route_manifest_sha256: &str,
+) -> Result<(), NavPatchError> {
+    if route.schema != ROUTE_PATCH_SCHEMA {
+        return Err(NavPatchError::new(format!(
+            "DM3 route patch schema mismatch: expected {ROUTE_PATCH_SCHEMA}, got {}",
+            route.schema
+        )));
+    }
+    let Some(reference) = document.route_patches.iter().find(|reference| reference.id == route.id) else {
+        return Err(NavPatchError::new(format!(
+            "DM3 combined patch does not reference route patch {}",
+            route.id
+        )));
+    };
+    if reference.manifest_sha256 != route_manifest_sha256 {
+        return Err(NavPatchError::new(format!(
+            "DM3 route patch {} SHA-256 mismatch: expected {}, got {route_manifest_sha256}",
+            route.id, reference.manifest_sha256
+        )));
+    }
+    if route.map != document.map
+        || route.bsp_sha256 != document.bsp_sha256
+        || route.combined_patch_id != document.id
+        || route.source_graph_sha256 != document.source_graph_sha256
+        || route.patched_graph_sha256 != document.patched_graph_sha256
+        || route.counts.source_links != document.counts.source_links
+        || route.counts.source_rocket_jump_links != document.counts.source_rocket_jump_links
+        || route.counts.patched_links != document.counts.patched_links
+        || route.counts.patched_rocket_jump_links != document.counts.patched_rocket_jump_links
+    {
+        return Err(NavPatchError::new(format!(
+            "DM3 route patch {} does not match the combined graph contract",
+            route.id
+        )));
+    }
+    if route.source_spec_sha256.len() != 64 || route.demo_sha256.len() != 64 {
+        return Err(NavPatchError::new(format!(
+            "DM3 route patch {} has invalid source provenance",
+            route.id
+        )));
+    }
+    let remove_start = route.counts.remove_selector_start as usize;
+    let remove_end = remove_start.saturating_add(route.counts.remove_selectors as usize);
+    let add_start = route.counts.add_profile_start as usize;
+    let add_end = add_start.saturating_add(route.counts.added_links as usize);
+    if route.removes.len() as u32 != route.counts.remove_selectors
+        || route.adds.len() as u32 != route.counts.added_links
+        || document.removes.get(remove_start..remove_end) != Some(route.removes.as_slice())
+        || document.adds.get(add_start..add_end) != Some(route.adds.as_slice())
+        || route
+            .removes
+            .iter()
+            .map(|selector| selector.expected_matches)
+            .sum::<u32>()
+            != route.counts.removed_links
+    {
+        return Err(NavPatchError::new(format!(
+            "DM3 route patch {} does not match its combined selector/profile ranges",
+            route.id
+        )));
+    }
+    Ok(())
+}
+
+fn parse_document() -> Result<(PatchDocument, String, String), NavPatchError> {
     let document: PatchDocument = serde_json::from_str(DM3_MEGA_PATCH)
         .map_err(|error| NavPatchError::new(format!("embedded DM3 patch is invalid: {error}")))?;
-    Ok((document, hex_digest(&sha256_bytes(DM3_MEGA_PATCH.as_bytes()))))
+    let route: RoutePatchDocument = serde_json::from_str(DM3_RA_PATCH)
+        .map_err(|error| NavPatchError::new(format!("embedded DM3 RA patch is invalid: {error}")))?;
+    let manifest_sha256 = hex_digest(&sha256_bytes(DM3_MEGA_PATCH.as_bytes()));
+    let route_manifest_sha256 = hex_digest(&sha256_bytes(DM3_RA_PATCH.as_bytes()));
+    validate_route_patch(&document, &route, &route_manifest_sha256)?;
+    Ok((document, manifest_sha256, route_manifest_sha256))
 }
 
 /// Apply the built-in patch for `map` immediately after the ordinary graph build.
@@ -448,7 +567,7 @@ pub fn apply_builtin_patch(
     if map != "dm3" {
         return Ok(BuiltinPatchOutcome::NotApplicable);
     }
-    let (document, manifest_sha256) = parse_document()?;
+    let (document, manifest_sha256, _) = parse_document()?;
     if document.map != map {
         return Err(NavPatchError::new(format!(
             "DM3 patch map mismatch: expected dm3, got {}",
@@ -487,6 +606,13 @@ pub fn apply_builtin_patch(
             document.counts.source_links,
             graph.cells.len(),
             graph.links.len()
+        )));
+    }
+    let source_rocket_jump_links = link_kind_count(graph, LinkKind::RocketJump);
+    if source_rocket_jump_links != document.counts.source_rocket_jump_links {
+        return Err(NavPatchError::new(format!(
+            "DM3 source RocketJump count mismatch: expected {}, got {source_rocket_jump_links}",
+            document.counts.source_rocket_jump_links
         )));
     }
     let source_graph_sha256 = hex_digest(&graph_sha256(graph));
@@ -593,6 +719,13 @@ pub fn apply_builtin_patch(
             document.counts.patched_links, document.counts.patched_active_links
         )));
     }
+    let patched_rocket_jump_links = link_kind_count(graph, LinkKind::RocketJump);
+    if patched_rocket_jump_links != document.counts.patched_rocket_jump_links {
+        return Err(NavPatchError::new(format!(
+            "DM3 patched RocketJump count mismatch: expected {}, got {patched_rocket_jump_links}",
+            document.counts.patched_rocket_jump_links
+        )));
+    }
     let patched_graph_sha256 = hex_digest(&graph_sha256(graph));
     if patched_graph_sha256 != document.patched_graph_sha256 {
         return Err(NavPatchError::new(format!(
@@ -639,7 +772,7 @@ mod tests {
 
     #[test]
     fn embedded_dm3_contract_is_structurally_closed() {
-        let (document, digest) = parse_document().expect("embedded patch parses");
+        let (document, digest, route_digest) = parse_document().expect("embedded patch parses");
         assert_eq!(document.schema, PATCH_SCHEMA);
         assert_eq!(document.map, "dm3");
         assert_eq!(document.bsp_sha256.len(), 64);
@@ -647,6 +780,8 @@ mod tests {
         assert_eq!(document.patched_graph_sha256.len(), 64);
         assert_eq!(document.source_build, matching_source_config());
         assert_eq!(digest.len(), 64);
+        assert_eq!(route_digest.len(), 64);
+        assert_eq!(document.route_patches.len(), 1);
         assert_eq!(document.removes.len(), 174);
         assert_eq!(document.adds.len() as u32, document.counts.added_links);
         assert_eq!(

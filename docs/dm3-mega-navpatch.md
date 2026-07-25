@@ -1,10 +1,17 @@
 # DM3 mega navpatch provenance
 
-The built-in `dm3-mega-m2-v1` patch makes the SNG→mega chain part of a normal DM3 nav build.
+The built-in `dm3-mega-m2-v1` patch makes the SNG→mega chain and the selected RA
+mellanledge shortcut part of a normal DM3 nav build.
 There is no editor export or post-boot curation step. The game embeds
 [`dm3-mega-v1.json`](../crates/rtx-nav/data/navpatches/dm3-mega-v1.json), applies it immediately
 after the ordinary graph build, rebuilds derived topology, and installs the graph only if every
 identity and count below matches.
+
+The combined graph manifest also SHA-pins the committed
+[`dm3-ra-v1.json`](../crates/rtx-nav/data/navpatches/dm3-ra-v1.json) route patch. That file carries
+the RA source/demo provenance, 38 geometric selector records (46 exact matches), and the two
+selected RA profiles. Runtime parsing fails closed if its digest, graph identities, counts, or
+selector/profile slices differ from the combined patch.
 
 ## Pinned chain
 
@@ -12,14 +19,17 @@ identity and count below matches.
 |----------|------------------|
 | Patch schema | `rtx-nav-postbuild-patch/2` |
 | Patch id | `dm3-mega-m2-v1` |
-| Patch-manifest SHA-256 | `771d69033620be6eeaeabc2dc703ad0c884a89045035544cec96650a4a544aeb` |
+| Combined patch-manifest SHA-256 | `81efa2cc7d48b6d8143491e7f12ef7d41b6c0e61266b5465ee4fbe3da562a1fd` |
+| RA route-patch SHA-256 | `8941400ebfddb530b943f90c44a770d5e3f55d5e6708f243f2903a8aabfe5842` |
+| RA source-spec SHA-256 | `549b4734458a68daba9ec055604e97f18bea0faae15d270ad48061ec52af84d8` |
+| RA source-demo SHA-256 | `e58692e69991b82efe7eed8daee915b7327b51be471edad6bccbf28b26fc27af` |
 | Stock DM3 BSP SHA-256 | `aec9edbb727c0a206edc2c0688775ce8242c0d51e1ee7583c7126c76f7c3b2f1` |
 | Source graph SHA-256 | `5c15ad55f1af87914ca70ccb125d9170deb6079cc0c7b86b648b0a30aebc3836` |
-| Source graph | 4,631 cells; 50,993 links |
+| Source graph | 4,631 cells; 50,993 links; 732 rocket-jump links |
 | Geometric removal selectors | 174 selectors; exactly 199 matched links |
 | Added traversal profiles | 12 speed-jump profiles |
 | Patched graph SHA-256 | `af319dbea3bc7a4eb448475b3ab770885004393fa5f01dc3288dde3d6ca7935c` |
-| Patched graph | 51,005 total links; 50,806 active links |
+| Patched graph | 51,005 total links; 50,806 active links; 732 rocket-jump links |
 
 The source SHA is scoped to this exact nav-generator configuration, stored as
 `source_build` in the manifest:

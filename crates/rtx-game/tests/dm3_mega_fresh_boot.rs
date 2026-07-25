@@ -29,6 +29,7 @@ use rtx_ctlproto::{Cmd, Event, Msg, Request, Resp, SngMegaResult, SngMegaScenari
 use serde::Deserialize;
 
 const PATCH_PATH: &str = "../rtx-nav/data/navpatches/dm3-mega-v1.json";
+const RA_PATCH_PATH: &str = "../rtx-nav/data/navpatches/dm3-ra-v1.json";
 const BUILD_TIMEOUT: Duration = Duration::from_secs(12 * 60);
 
 #[derive(Debug, Deserialize)]
@@ -38,6 +39,7 @@ struct PatchContract {
     source_build: serde_json::Value,
     source_graph_sha256: String,
     patched_graph_sha256: String,
+    route_patches: Vec<RoutePatchReference>,
     counts: Counts,
     verification: Verification,
 }
@@ -46,10 +48,18 @@ struct PatchContract {
 struct Counts {
     source_cells: u32,
     source_links: u32,
+    source_rocket_jump_links: u32,
     removed_links: u32,
     added_links: u32,
     patched_links: u32,
     patched_active_links: u32,
+    patched_rocket_jump_links: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutePatchReference {
+    id: String,
+    manifest_sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,6 +361,14 @@ fn dm3_mega_patch_survives_fresh_boot_and_40_item_trials() {
     let manifest_bytes = fs::read(&manifest_path).expect("read DM3 patch");
     let manifest_sha256 = rtx_nav::navmesh::hex_digest(&rtx_nav::navmesh::sha256_bytes(&manifest_bytes));
     let contract: PatchContract = serde_json::from_slice(&manifest_bytes).expect("parse DM3 patch");
+    let ra_manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(RA_PATCH_PATH);
+    let ra_manifest_sha256 = file_sha256(&ra_manifest_path);
+    let ra_reference = contract
+        .route_patches
+        .iter()
+        .find(|route| route.id == "dm3-ra-mellanledge-v1")
+        .expect("combined patch references the RA route patch");
+    assert_eq!(ra_reference.manifest_sha256, ra_manifest_sha256);
     assert_eq!(contract.verification.attempts, 40);
     assert_eq!(contract.verification.scenarios.len(), 2);
     let bsp_sha256 = file_sha256(&required_path("RTX_DM3_FRESH_BOOT_BSP"));
@@ -381,6 +399,11 @@ fn dm3_mega_patch_survives_fresh_boot_and_40_item_trials() {
     assert_eq!(patch.active_links, contract.counts.patched_active_links);
     assert_eq!(ready.cells, contract.counts.source_cells);
     assert_eq!(ready.links, contract.counts.patched_links);
+    assert_eq!(ready.rj_links, contract.counts.patched_rocket_jump_links);
+    assert_eq!(
+        contract.counts.source_rocket_jump_links,
+        contract.counts.patched_rocket_jump_links
+    );
     assert_zero_cvar(&mut control, "rtx_walljump");
     assert_zero_cvar(&mut control, "rtx_doublejump");
 
@@ -430,6 +453,8 @@ fn dm3_mega_patch_survives_fresh_boot_and_40_item_trials() {
         "schema": "rtx-dm3-mega-fresh-boot-report/1",
         "patch_id": contract.id,
         "manifest_sha256": manifest_sha256,
+        "ra_patch_id": ra_reference.id,
+        "ra_manifest_sha256": ra_manifest_sha256,
         "bsp_sha256": bsp_sha256,
         "qwprogs_sha256": qwprogs_sha256,
         "source_build": &contract.source_build,
@@ -437,10 +462,12 @@ fn dm3_mega_patch_survives_fresh_boot_and_40_item_trials() {
         "patched_graph_sha256": contract.patched_graph_sha256,
         "source_cells": contract.counts.source_cells,
         "source_links": contract.counts.source_links,
+        "source_rocket_jump_links": contract.counts.source_rocket_jump_links,
         "removed_links": patch.removed_links,
         "added_links": patch.added_links,
         "total_links": ready.links,
         "active_links": patch.active_links,
+        "rocket_jump_links": ready.rj_links,
         "attempts": contract.verification.attempts,
         "successes": successes,
         "rate": successes as f64 / contract.verification.attempts as f64,
