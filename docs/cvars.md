@@ -83,13 +83,15 @@ Covered in depth in [bot navigation](bots.md#navigation).
 | `rtx_bot_zigzag` | `1` | Ground-zigzag (circle-strafe) on straight corridors too short to hop. Sub-toggle of bhop. |
 | `rtx_bot_curljump` | `0` | Generate curl jumps (run-up + air-turn onto an offset platform), certified by a pmove rollout. Sub-toggle of bhop. |
 | `rtx_bot_bandplan` | `1` | Plan over speed bands (kinodynamic A*), crediting speed carried between legs. `0` = plain A*. |
+| `rtx_bot_name` | *(empty)* | Exact in-game/scoreboard name for the first server-side bot; later bots receive `-2`, `-3`, … suffixes. |
+| `rtx_bot_bhop_lookahead` | `0.9` | Seconds of speed-scaled corridor used for bhop steering look-ahead. |
+| `rtx_bot_bhop_lookahead_cap` | `448` | Maximum corridor distance used by bhop steering look-ahead. |
 | `rtx_bot_rocketjump` | `1` | Rocket-jump to ledges when it clearly beats the walk and the bot is fit to fly it. |
 | `rtx_bot_hazard_health` | `1` | A bot's health weights its willingness to shortcut through lava/slime. `0` = price every bot as a bare spawn. |
 | `rtx_bot_hazard_k` | `15` | Seconds of detour accepted per unit of survival strength a hazard eats (higher = more timid). |
 | `rtx_bot_lod` | `1` | Navigate over the coarse LOD cluster/portal hierarchy — goal scoring and long steering read a bounded-overestimate coarse cost. `0` = exact whole-graph floods. |
 | `rtx_bot_nearfield` | `1` | Steer the last metre off a fine 8u clearance grid: nudge off walls and drop-edges, centre through doorways. `0` = the drop-only edge probe. |
 | `rtx_bot_glide` | `1` | When the near-field certifies a straight look-ahead chord is clear, glide toward it instead of the next cell centre (smooths the grid zigzag). Sub-toggle of nearfield. |
-| `rtx_bot_ledgecap` | `210` | Careful-ledge walk-speed cap (u/s) on cells flagged beside a fatal drop (an open-cored spiral's inner edge). `0` = full maxspeed. |
 
 ## Development & tuning
 

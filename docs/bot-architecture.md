@@ -205,7 +205,7 @@ All routing lives in `navmesh/query.rs`, the read-only side of the graph:
 
 - **`find_path`** — plain A*, with a straight-line-time heuristic that is admissible (never an
   overestimate), so the first path found is optimal.
-- **`find_path_banded`** — a kinodynamic A* over `(cell, band)` states with four speed bands
+- **`find_path_banded`** — a kinodynamic A* over `(cell, band)` states with five speed bands
   (`rtx_bot_bandplan`). It credits the speed a bot carries between legs, so chained speed jumps and
   hot corridors actually route; carried speed only survives a corner inside a 45° cone. This is the
   live planner.
@@ -563,13 +563,12 @@ and abandon the chased goal, so the planner diverts instead of re-issuing the de
 
 - **Plats** — a bot holds a standoff 40 units outside a raised lift's footprint (standing under it
   resets its descent timer), boards when it lowers, and gives up after 8 seconds.
-- **Ledges** — on a navmesh cell flagged as an open-cored inner edge (the `ledge` flag), bhop is
-  vetoed, ground speed is capped (`rtx_bot_ledgecap`, 210 u/s), and a geometric ledge brake thrusts
-  backward when velocity drifts off-corridor toward the drop. A second, hazard-aware brake keys off
-  the near-field's `edge_ahead`: when a drop *or lava* edge lies within the bot's stopping distance
-  along its velocity, it reverses the wish and cancels the hop — killing the momentum that would
-  carry a fast bot over a lip even mid-bhop — and the stuck detector likewise holds its unwedge-jump
-  rather than launch a wedged bot off a lava lip.
+- **Ledges** — on a navmesh cell flagged as an open-cored inner edge (the `ledge` flag), near-field
+  steering bends the bhop bearing away from the drop while suppressing unsafe lateral zigzag. A
+  second, hazard-aware brake keys off the near-field's `edge_ahead`: when a drop *or lava* edge lies
+  within the bot's stopping distance along its velocity, it reverses the wish and cancels the hop —
+  killing the momentum that would carry a fast bot over a lip even mid-bhop — and the stuck detector
+  likewise holds its unwedge-jump rather than launch a wedged bot off a lava lip.
 - **Stairs** — risers drop the hop chain to a walk (a human runs *up* stairs), while the near-field
   glide tracks the treads.
 - **Water** — two reflexes override navigation entirely. When submerged with under five seconds of
@@ -718,7 +717,6 @@ gameplay knobs, is the [cvar reference](cvars.md).
 | `rtx_bot_par` | `1` | Fan goal floods across the worker pool; `0` = serial. |
 | `rtx_bot_nearfield` | `1` | Last-metre steering off the 8u clearance grid. |
 | `rtx_bot_glide` | `1` | Straighten the grid zigzag on a certified clear chord (sub-toggle of nearfield). |
-| `rtx_bot_ledgecap` | `210` | Careful-ledge walk-speed cap (u/s); `0` = full maxspeed. |
 | `rtx_bot_turnrate` | `0` | View turn-rate ceiling (deg/s); `0` = skill-scaled default. |
 | `rtx_bot_prof` | `10` | Seconds between profile reports; `0` = off. |
 | `rtx_control_port` | `0` | Localhost TCP for scripted bot puppetry and tuning. |

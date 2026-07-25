@@ -135,6 +135,9 @@ impl NavGraph {
                 return Some(self.reconstruct(&came_from, start, goal));
             }
             for &li in &self.adjacency[cell as usize] {
+                if self.link_removed(li) {
+                    continue;
+                }
                 let link = self.links[li as usize];
                 if !self.in_window(link.to, allowed) {
                     continue;
@@ -233,21 +236,60 @@ impl NavGraph {
                 route.end_band = band;
                 return Some(route);
             }
-            // The heading we arrived along, for the carry-around-corners test.
+            // The heading we arrived along, for the carry-around-corners test. A ground-turn curl
+            // rotates far off its from→to chord by design, so the direction its carry actually
+            // points after landing is the CERTIFIED landing heading, not the chord.
             let in_link = came_link[state as usize];
-            let in_dir = (in_link != u32::MAX).then(|| self.link_dir(in_link));
+            let in_dir = (in_link != u32::MAX).then(|| {
+                match self.speed_jump_of_link(in_link) {
+                    Some(t) if t.ground_turn.is_some() => {
+                        let (s, c) = t.ground_turn.unwrap().landing_yaw.to_radians().sin_cos();
+                        Vec2::new(c, s)
+                    }
+                    // A straight speed jump's carry points along the FLIGHT (takeoff → target),
+                    // not the from→to chord, which the runway segment drags off-axis.
+                    Some(t) => {
+                        let to = self.links[in_link as usize].to;
+                        (self.cells[to as usize].origin.xy() - t.takeoff.xy()).normalize_or_zero()
+                    }
+                    None => self.link_dir(in_link),
+                }
+            });
             for &li in &self.adjacency[cell as usize] {
+                if self.link_removed(li) {
+                    continue;
+                }
                 if !self.in_window(self.links[li as usize].to, allowed) {
                     continue;
                 }
-                // Carried speed only counts if the corridor continues within the cone.
+                // Carried speed only counts if the corridor continues within the cone — except into
+                // a ground-turn curl, which certifies its own entry-heading envelope (the grounded
+                // rotation happens inside the leg): test the arrival heading against that envelope.
                 let entry = match in_dir {
                     Some(d) if d.length_squared() > 0.01 => {
-                        let cos = d.dot(self.link_dir(li)).clamp(-1.0, 1.0);
-                        if cos.acos().to_degrees() > SPEED_CONE_DEG {
-                            0
+                        if let Some(gt) = self.speed_jump_of_link(li).and_then(|t| t.ground_turn) {
+                            let mut yaw = d.y.atan2(d.x).to_degrees().rem_euclid(360.0);
+                            // A blended runway-turn starts while ordinary ground steering is still
+                            // completing the corner into the source cell. Predict the same geometric
+                            // continuation that generated the separate turned contract; the last
+                            // graph chord alone can admit a straight-entry certificate the live
+                            // controller cannot enter.
+                            if gt.blended_runway {
+                                let turn_away = (yaw - gt.runway_yaw + 180.0).rem_euclid(360.0) - 180.0;
+                                yaw = (yaw + turn_away * 0.40).rem_euclid(360.0);
+                            }
+                            if super::yaw_in_envelope(yaw, gt.entry_yaw_lo, gt.entry_yaw_hi) {
+                                band
+                            } else {
+                                continue;
+                            }
                         } else {
-                            band
+                            let cos = d.dot(self.link_dir(li)).clamp(-1.0, 1.0);
+                            if cos.acos().to_degrees() > SPEED_CONE_DEG {
+                                0
+                            } else {
+                                band
+                            }
                         }
                     }
                     _ => band,
@@ -344,6 +386,9 @@ impl NavGraph {
                 continue; // a cheaper path already settled this cell
             }
             for &li in &self.adjacency[cell as usize] {
+                if self.link_removed(li) {
+                    continue;
+                }
                 let link = self.links[li as usize];
                 let ng = g + link.cost + self.link_extra(li, costs) + self.chained_block(li);
                 if ng < cost[link.to as usize] {
@@ -453,6 +498,22 @@ impl NavGraph {
     /// The standing player-origin position of a cell (the point a bot steers toward).
     pub fn cell_origin(&self, cell: CellId) -> Vec3 {
         self.cells[cell as usize].origin
+    }
+
+    /// Whether two cells are the same standable patch: identical, or joined directly by a grounded
+    /// walk/step link in either direction. Traversal landing checks use this to accept a neighboring
+    /// grid sample on one continuous ledge without confusing it with a drop, jump, or floor below.
+    pub fn same_ground_patch(&self, a: CellId, b: CellId) -> bool {
+        if a == b {
+            return true;
+        }
+        let joined = |from: CellId, to: CellId| {
+            self.adjacency[from as usize].iter().any(|&li| {
+                let link = self.links[li as usize];
+                link.to == to && matches!(link.kind, LinkKind::Walk | LinkKind::Step)
+            })
+        };
+        joined(a, b) || joined(b, a)
     }
 
     /// Whether a bot standing on this cell is under water (its origin is submerged, so pmove swims).

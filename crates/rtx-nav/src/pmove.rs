@@ -69,6 +69,24 @@ pub struct PmState {
     pub jump_held: bool,
 }
 
+/// Contacts made by one [`pm_step_report`] tick.  The ordinary [`pm_step`] wrapper deliberately
+/// discards this, while offline movement certifiers use it to reject a trajectory that reaches its
+/// destination only by scraping along a wall.  A stair riser resolved by the normal step-up path is
+/// reported as `stepped`, not `wall_contact`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PmReport {
+    /// The selected movement path clipped against a non-floor plane (or started all-solid).
+    pub wall_contact: bool,
+    /// Ground movement selected the step-up path over the blocked flat path.
+    pub stepped: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MoveReport {
+    blocked: bool,
+    wall_contact: bool,
+}
+
 /// Overbounce for movement clipping (slide exactly along the plane, no bounce).
 const OVERBOUNCE: f32 = 1.0;
 /// A surface counts as ground when its normal tilts up at least this much (QW's `0.7`).
@@ -76,8 +94,19 @@ const GROUND_NORMAL_Z: f32 = 0.7;
 /// Above this rising speed the player is considered airborne regardless of a floor below (jumping).
 const ONGROUND_MAX_VZ: f32 = 180.0;
 
+fn trace_is_wall(trace: &HullTrace) -> bool {
+    trace.start_solid || trace.all_solid || (trace.fraction < 1.0 && trace.plane_normal.z < GROUND_NORMAL_Z)
+}
+
 /// Advance one engine tick of `dt` seconds, mutating `s` in place.
 pub fn pm_step(hull: &impl Hull, s: &mut PmState, cmd: &Cmd, p: &PmParams, dt: f32) {
+    let _ = pm_step_report(hull, s, cmd, p, dt);
+}
+
+/// Advance one engine tick and return the contacts made by the movement path the step solver chose.
+/// This has exactly the same state transition as [`pm_step`]; it only exposes information the BSP
+/// traces already computed.
+pub fn pm_step_report(hull: &impl Hull, s: &mut PmState, cmd: &Cmd, p: &PmParams, dt: f32) -> PmReport {
     s.on_ground = categorize(hull, s.origin, s.vel);
 
     // CheckJump — before friction, so a landing-frame jump skips ground friction and takes air accel.
@@ -101,20 +130,25 @@ pub fn pm_step(hull: &impl Hull, s: &mut PmState, cmd: &Cmd, p: &PmParams, dt: f
     if s.on_ground {
         let h = apply_groundaccel(s.vel.xy(), wishdir, wishspeed, p.accel, dt);
         // Ground movement is horizontal; the step logic owns Z.
-        let (o, v) = ground_move(hull, s.origin, Vec3::new(h.x, h.y, 0.0), dt);
+        let (o, v, report) = ground_move(hull, s.origin, Vec3::new(h.x, h.y, 0.0), dt);
         s.origin = o;
         s.vel = Vec3::new(v.x, v.y, 0.0);
+        s.on_ground = categorize(hull, s.origin, s.vel);
+        return report;
     } else {
         let h = apply_airaccel(s.vel.xy(), wishdir, wishspeed, p.accel, dt);
         s.vel.x = h.x;
         s.vel.y = h.y;
         s.vel.z -= p.gravity * dt;
-        let (o, v, _) = fly_move(hull, s.origin, s.vel, dt);
+        let (o, v, report) = fly_move(hull, s.origin, s.vel, dt);
         s.origin = o;
         s.vel = v;
+        s.on_ground = categorize(hull, s.origin, s.vel);
+        return PmReport {
+            wall_contact: report.wall_contact,
+            stepped: false,
+        };
     }
-
-    s.on_ground = categorize(hull, s.origin, s.vel);
 }
 
 /// Whether the player at `o` with velocity `v` is standing on ground: a short downward hull trace
@@ -136,7 +170,7 @@ fn clip_velocity(v: Vec3, normal: Vec3, overbounce: f32) -> Vec3 {
 /// surface clip the velocity to slide along it, accumulating planes so a crease is handled by moving
 /// along their intersection and a pocket dead-stops. Up to 4 bumps. Returns the new origin/velocity
 /// and whether anything was hit.
-fn fly_move(hull: &impl Hull, origin: Vec3, velocity: Vec3, dt: f32) -> (Vec3, Vec3, bool) {
+fn fly_move(hull: &impl Hull, origin: Vec3, velocity: Vec3, dt: f32) -> (Vec3, Vec3, MoveReport) {
     const MAX_CLIP_PLANES: usize = 5;
     let mut o = origin;
     let mut v = velocity;
@@ -146,6 +180,7 @@ fn fly_move(hull: &impl Hull, origin: Vec3, velocity: Vec3, dt: f32) -> (Vec3, V
     let mut nplanes = 0usize;
     let mut time_left = dt;
     let mut blocked = false;
+    let mut wall_contact = false;
 
     for _ in 0..4 {
         if v == Vec3::ZERO {
@@ -153,8 +188,19 @@ fn fly_move(hull: &impl Hull, origin: Vec3, velocity: Vec3, dt: f32) -> (Vec3, V
         }
         let end = o + v * time_left;
         let tr = hull.trace(o, end);
+        // A trace that begins embedded but escapes can report `fraction == 1` and `all_solid ==
+        // false`. Preserve that contact before either early-exit; reaching the endpoint does not
+        // make the starting overlap safe.
+        wall_contact |= tr.start_solid;
         if tr.all_solid {
-            return (o, Vec3::ZERO, true); // wedged in solid — give up
+            return (
+                o,
+                Vec3::ZERO,
+                MoveReport {
+                    blocked: true,
+                    wall_contact: true,
+                },
+            ); // wedged in solid — give up
         }
         if tr.fraction > 0.0 {
             o = tr.endpos;
@@ -165,9 +211,17 @@ fn fly_move(hull: &impl Hull, origin: Vec3, velocity: Vec3, dt: f32) -> (Vec3, V
             break; // moved the whole way
         }
         blocked = true;
+        wall_contact |= trace_is_wall(&tr);
         time_left -= time_left * tr.fraction;
         if nplanes >= MAX_CLIP_PLANES {
-            return (o, Vec3::ZERO, true); // too many planes — dead stop
+            return (
+                o,
+                Vec3::ZERO,
+                MoveReport {
+                    blocked: true,
+                    wall_contact,
+                },
+            ); // too many planes — dead stop
         }
         planes[nplanes] = tr.plane_normal;
         nplanes += 1;
@@ -186,7 +240,14 @@ fn fly_move(hull: &impl Hull, origin: Vec3, velocity: Vec3, dt: f32) -> (Vec3, V
             None => {
                 // Caught in a crease: slide along the intersection of the two planes, or stop.
                 if nplanes != 2 {
-                    return (o, Vec3::ZERO, true);
+                    return (
+                        o,
+                        Vec3::ZERO,
+                        MoveReport {
+                            blocked: true,
+                            wall_contact,
+                        },
+                    );
                 }
                 let dir = planes[0].cross(planes[1]);
                 dir * dir.dot(v)
@@ -194,24 +255,39 @@ fn fly_move(hull: &impl Hull, origin: Vec3, velocity: Vec3, dt: f32) -> (Vec3, V
         };
         // Never let clipping reverse us into the original heading (kills tiny oscillation).
         if v.dot(primal) <= 0.0 {
-            return (o, Vec3::ZERO, true);
+            return (
+                o,
+                Vec3::ZERO,
+                MoveReport {
+                    blocked: true,
+                    wall_contact,
+                },
+            );
         }
     }
-    (o, v, blocked)
+    (o, v, MoveReport { blocked, wall_contact })
 }
 
 /// Ground move with step-up: attempt the flat slide, and independently attempt stepping up
 /// [`STEP_HEIGHT`], sliding, then settling back down — keep whichever advanced farther horizontally
 /// (QW `PM_StepSlideMove`). Lets a runner climb stairs and lips without a jump.
-fn ground_move(hull: &impl Hull, origin: Vec3, velocity: Vec3, dt: f32) -> (Vec3, Vec3) {
-    let (flat_o, flat_v, blocked) = fly_move(hull, origin, velocity, dt);
-    if !blocked {
-        return (flat_o, flat_v);
+fn ground_move(hull: &impl Hull, origin: Vec3, velocity: Vec3, dt: f32) -> (Vec3, Vec3, PmReport) {
+    let (flat_o, flat_v, flat_report) = fly_move(hull, origin, velocity, dt);
+    if !flat_report.blocked {
+        return (
+            flat_o,
+            flat_v,
+            PmReport {
+                wall_contact: flat_report.wall_contact,
+                stepped: false,
+            },
+        );
     }
     let step = Vec3::new(0.0, 0.0, STEP_HEIGHT);
     // Step up (only as far as the hull can rise), slide, then trace back down to the floor.
-    let up = hull.trace(origin, origin + step).endpos;
-    let (mut up_o, up_v, _) = fly_move(hull, up, velocity, dt);
+    let up_trace = hull.trace(origin, origin + step);
+    let up = up_trace.endpos;
+    let (mut up_o, up_v, up_report) = fly_move(hull, up, velocity, dt);
     let down = hull.trace(up_o, up_o - step * 2.0);
     if down.plane_normal.z >= GROUND_NORMAL_Z || down.fraction < 1.0 {
         up_o = down.endpos;
@@ -220,9 +296,27 @@ fn ground_move(hull: &impl Hull, origin: Vec3, velocity: Vec3, dt: f32) -> (Vec3
     let flat_d = (flat_o.xy() - origin.xy()).length_squared();
     let up_d = (up_o.xy() - origin.xy()).length_squared();
     if up_d > flat_d {
-        (up_o, up_v)
+        // The blocked flat attempt is the expected stair-riser contact when the selected step-up
+        // path makes more progress.  Only contacts on that selected upper path count as walls.
+        let up_wall = trace_is_wall(&up_trace);
+        let down_wall = trace_is_wall(&down);
+        (
+            up_o,
+            up_v,
+            PmReport {
+                wall_contact: up_wall || up_report.wall_contact || down_wall,
+                stepped: true,
+            },
+        )
     } else {
-        (flat_o, flat_v)
+        (
+            flat_o,
+            flat_v,
+            PmReport {
+                wall_contact: flat_report.wall_contact,
+                stepped: false,
+            },
+        )
     }
 }
 
@@ -311,6 +405,32 @@ impl<F: Fn(f32, f32) -> Option<f32>> Hull for HeightHull<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn trace(fraction: f32, normal: Vec3, start_solid: bool, all_solid: bool) -> HullTrace {
+        HullTrace {
+            fraction,
+            endpos: Vec3::ZERO,
+            plane_normal: normal,
+            plane_dist: 0.0,
+            start_solid,
+            all_solid,
+            in_open: !start_solid,
+            in_water: false,
+        }
+    }
+
+    #[test]
+    fn contact_report_distinguishes_floor_from_wall_ceiling_and_solid() {
+        assert!(!trace_is_wall(&trace(1.0, Vec3::ZERO, false, false)));
+        assert!(!trace_is_wall(&trace(0.5, Vec3::Z, false, false)));
+        assert!(trace_is_wall(&trace(0.5, Vec3::X, false, false)));
+        assert!(trace_is_wall(&trace(0.5, -Vec3::Z, false, false)));
+        assert!(trace_is_wall(&trace(0.5, Vec3::new(0.8, 0.0, 0.6), false, false)));
+        assert!(trace_is_wall(&trace(0.0, Vec3::Z, true, true)));
+        // Adversarial escape trace: not all-solid and no impact plane, but the hull started inside
+        // geometry. The old classifier silently accepted this as clear.
+        assert!(trace_is_wall(&trace(1.0, Vec3::Z, true, false)));
+    }
 
     /// A flat-floor hop from a standstill-ish run reaches the analytic apex and lands after the
     /// analytic airtime — validating that `HeightHull` traces a rollout faithfully enough to plan on.

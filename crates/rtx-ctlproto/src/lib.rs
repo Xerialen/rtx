@@ -106,6 +106,16 @@ pub enum Cmd {
     Hold { bot: u32 },
     /// Stop a bot and clear its puppet state.
     Stop { bot: u32 },
+    /// Run the real SNG-spawn → rockets → megahealth item-goal path. All map anchors come from the
+    /// caller's SHA-bound manifest; the game contains no route coordinates.
+    SngMega {
+        bot: u32,
+        scenario: SngMegaScenario,
+        start: Vec3,
+        mega: Vec3,
+        rockets: Vec3,
+        max_secs: f32,
+    },
     /// Set a live server cvar.
     Set { name: String, value: String },
     /// Read a cvar's string and float value.
@@ -138,6 +148,9 @@ pub enum Cmd {
         tgt: Vec3,
         v_req: f32,
     },
+    /// Hard-disable one live nav link. External SHA-bound manifests resolve geometry to the current
+    /// boot's link id before issuing this command.
+    Unlink { link: u32 },
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -186,6 +199,7 @@ pub enum Resp {
     Ack {
         bot: u32,
     },
+    SngMega(SngMegaResp),
     Set {
         name: String,
         value: String,
@@ -202,6 +216,12 @@ pub enum Resp {
     Probe(ProbeResp),
     Curl(CurlResp),
     PlanLink(PlanLinkResp),
+    Unlink {
+        link: u32,
+        removed: bool,
+        src: Vec3,
+        tgt: Vec3,
+    },
     Bsp(Box<BspResp>),
 }
 
@@ -226,9 +246,25 @@ pub struct StatusResp {
     pub cells: u32,
     pub links: u32,
     pub rj_links: u32,
+    /// Repo-owned post-build patch provenance. `None` for maps without a built-in patch.
+    pub nav_patch: Option<NavPatchStatus>,
+    /// Fail-closed reason when a required built-in patch was rejected and no graph was installed.
+    pub nav_patch_error: Option<String>,
     pub match_: MatchInfo,
     pub oracle: OracleInfo,
     pub bots: Vec<BotStatus>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NavPatchStatus {
+    pub id: String,
+    pub manifest_sha256: String,
+    pub source_graph_sha256: String,
+    pub patched_graph_sha256: String,
+    pub removed_links: u32,
+    pub added_links: u32,
+    pub total_links: u32,
+    pub active_links: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -402,7 +438,9 @@ pub struct OracleInfo {
 pub struct RjLink {
     pub link: u32,
     pub src: Vec3,
+    pub launch: Vec3,
     pub tgt: Vec3,
+    pub run_velocity: Vec3,
     pub fire_pitch: f32,
     pub fire_yaw: f32,
     pub fire_delay: f32,
@@ -536,6 +574,26 @@ pub struct PlanLinkResp {
     pub cost: f32,
 }
 
+/// Which stock SNG-room deathmatch spawn an item trial starts from. Coordinates remain external in
+/// the SHA-bound trial manifest and travel in [`Cmd::SngMega`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SngMegaScenario {
+    West,
+    South,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SngMegaResp {
+    pub bot: u32,
+    pub scenario: SngMegaScenario,
+    pub start: Vec3,
+    pub start_cell: u32,
+    pub item: u32,
+    pub terminal: u32,
+    pub waypoint: u32,
+    pub max_secs: f32,
+}
+
 // ---------------------------------------------------------------------------------------------------
 // Events (game -> MCP, async)
 // ---------------------------------------------------------------------------------------------------
@@ -567,6 +625,66 @@ pub enum Event {
     RjResult(Box<RjResult>),
     /// A fly-link attempt finished (landed, timed out, …).
     FlyResult(FlyResult),
+    /// Terminal result from the real SNG megahealth item-goal trial.
+    SngMegaResult(Box<SngMegaResult>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ItemTrialSample {
+    pub t: f32,
+    pub origin: Vec3,
+    pub velocity: Vec3,
+    pub wish: Vec3,
+    pub buttons: u32,
+    pub on_ground: bool,
+    pub wall: bool,
+    pub route_pos: u32,
+    pub link: Option<u32>,
+    pub terminal: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SngMegaResult {
+    pub request_id: i64,
+    pub map: String,
+    pub bot: u32,
+    pub client: i32,
+    pub ok: bool,
+    pub reason: String,
+    pub scenario: SngMegaScenario,
+    pub waypoint_item: u32,
+    pub waypoint_done: bool,
+    pub started: f32,
+    pub ended: f32,
+    pub elapsed: f32,
+    pub max_secs: f32,
+    pub start: Vec3,
+    pub origin: Vec3,
+    pub velocity: Vec3,
+    pub wish: Vec3,
+    pub buttons: u32,
+    pub on_ground: bool,
+    pub alive: bool,
+    pub item: u32,
+    pub item_origin: Vec3,
+    pub terminal: u32,
+    pub terminal_origin: Vec3,
+    pub selected_item: u32,
+    pub selected_terminal: u32,
+    pub route_pos: u32,
+    pub current_link: Option<u32>,
+    pub health: f32,
+    pub items: f32,
+    pub item_available: bool,
+    pub min_z: f32,
+    pub peak_speed: f32,
+    pub wall_secs: f32,
+    pub wall_contacts: u32,
+    pub wall_normal: Vec3,
+    pub route_captured: bool,
+    pub initial_route: Vec<RouteLeg>,
+    pub samples: Vec<ItemTrialSample>,
+    pub samples_truncated: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -576,6 +694,7 @@ pub struct RjSolved {
     pub delay: f32,
     pub airtime: f32,
     pub self_damage: f32,
+    pub run_velocity: Vec3,
     pub v0: Vec3,
     pub blast: Vec3,
     pub pos_blast: Vec3,
@@ -621,6 +740,7 @@ pub struct RjResult {
     /// Terminal outcome label (`landed`, `landed_off`, `overran`, `stance_timeout`, …).
     pub outcome: String,
     pub src: Vec3,
+    pub launch: Vec3,
     pub tgt: Vec3,
     pub solved: RjSolved,
     pub bias: RjBias,

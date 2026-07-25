@@ -230,12 +230,15 @@ pub fn rollout(bsp: &Bsp, line: &RaceLine, nodes: &[RaceRouteNode], pm: &PmParam
             committed: tech == TECH_SPEEDJUMP,
             carry: tech == TECH_HOP || tech == TECH_SPEEDJUMP,
             hold_jump: tech == TECH_SPEEDJUMP && st.vel.xy().length() < pts[cursor.min(last)].target_speed,
+            defer_jump: false, // offline racing lines have no stair-phase BSP probe
+            phase_defer_frames: None,
             // Racing-line speed jumps are straight (curl_gain 0) and must NOT enter the curl takeoff
             // regime: `runway` here is remaining-line arclength, not distance-to-takeoff, so the
             // hold-to-lip branch would misfire. `hold_jump` above already gates the leap by target_speed.
             takeoff_speed: 0.0,
             curl_gain: 0.0, // racing-line speed jumps are straight; keep the slalom the line was tuned with
-            guide_gain: 0.0, // the offline racing line drives the slalom, not a runtime hop plan
+            launch_yaw_tol: 0.0,
+            guide_gain: 0.0,      // the offline racing line drives the slalom, not a runtime hop plan
             clear: f32::INFINITY, // the offline line is already collision-clean; no runtime wall probe
             now: t,
         };

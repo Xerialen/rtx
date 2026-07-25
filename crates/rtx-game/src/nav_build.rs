@@ -20,6 +20,7 @@ use crate::navmesh;
 pub(crate) struct PlatStatus {
     pub down: bool,
     pub surface_z: f32,
+    pub velocity_z: f32,
 }
 
 impl GameState {
@@ -85,6 +86,7 @@ impl GameState {
                 PlatStatus {
                     down: !p.in_use || p.mover.state == crate::entity::MoverPhase::Bottom,
                     surface_z: p.v.origin.z + p.v.maxs.z,
+                    velocity_z: p.v.velocity.z,
                 }
             })
             .collect()
@@ -102,9 +104,13 @@ impl GameState {
             self.host.dprint(c"rtx: navmesh: could not read map BSP\n");
             return;
         };
+        self.nav.bsp_sha256 = Some(navmesh::sha256_bytes(&bytes));
         match crate::bsp::Bsp::parse(&bytes) {
             Some(bsp) => self.nav.bsp = Some(std::sync::Arc::new(bsp)),
-            None => self.host.dprint(c"rtx: navmesh: unsupported/malformed BSP\n"),
+            None => {
+                self.nav.bsp_sha256 = None;
+                self.host.dprint(c"rtx: navmesh: unsupported/malformed BSP\n");
+            }
         }
     }
 
@@ -201,10 +207,20 @@ impl GameState {
         let rocket_jump = (!stock && self.rtx_cvar_bool("rtx_bot_rocketjump")).then(|| navmesh::RocketJumpParams {
             gravity: self.host.cvar(c"sv_gravity").max(1.0),
             rj_extra: self.host.cvar(c"rj"),
+            accel: self.host.cvar(c"sv_accelerate").max(1.0),
+            maxspeed: self.host.cvar(c"sv_maxspeed").max(1.0),
+            friction: self.host.cvar(c"sv_friction").max(0.0),
+            stopspeed: self.host.cvar(c"sv_stopspeed").max(0.0),
+            cost_scale: self.rtx_cvar_f32("rtx_rj_cost_scale").max(0.0),
         });
+        // Built-in patches are pinned to the exact generator inputs, not merely to a map name.
+        // Carry this snapshot beside the worker result: cvars may change while a long build runs,
+        // and the applicability decision must describe the graph that was actually generated.
+        let patch_source_config =
+            navmesh::NavPatchSourceConfig::from_build_inputs(stock, hooks, double_jump, speed_jump, rocket_jump);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(navmesh::build_navmesh(
+            let graph = navmesh::build_navmesh(
                 &bsp,
                 plats,
                 teleports,
@@ -213,7 +229,8 @@ impl GameState {
                 double_jump,
                 speed_jump,
                 rocket_jump,
-            ));
+            );
+            let _ = tx.send((graph, patch_source_config));
         });
         self.nav.pending = Some(rx);
         self.host.dprint(c"rtx: navmesh: building in background...\n");
@@ -227,8 +244,8 @@ impl GameState {
         let Some(rx) = self.nav.pending.as_ref() else {
             return;
         };
-        let graph = match rx.try_recv() {
-            Ok(graph) => graph,
+        let (mut graph, patch_source_config) = match rx.try_recv() {
+            Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => return, // still building
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.nav.pending = None;
@@ -236,6 +253,51 @@ impl GameState {
             }
         };
         self.nav.pending = None;
+        match navmesh::apply_builtin_patch(
+            &self.level.mapname,
+            self.nav.bsp_sha256,
+            patch_source_config,
+            &mut graph,
+        ) {
+            Ok(navmesh::BuiltinPatchOutcome::Applied(report)) => {
+                let msg = cstring(&format!(
+                    "rtx: navmesh: applied built-in patch {} source={} patched={} removed={} added={} total={} active={}\n",
+                    report.id,
+                    report.source_graph_sha256,
+                    report.patched_graph_sha256,
+                    report.removed_links,
+                    report.added_links,
+                    report.total_links,
+                    report.active_links,
+                ));
+                self.host.dprint(&msg);
+                self.nav.patch = Some(report);
+                self.nav.patch_error = None;
+            }
+            Ok(navmesh::BuiltinPatchOutcome::Skipped(skip)) => {
+                let msg = cstring(&format!(
+                    "rtx: navmesh: skipped built-in patch {} manifest={} for source config: {}; using unpatched graph\n",
+                    skip.id, skip.manifest_sha256, skip.reason,
+                ));
+                self.host.dprint(&msg);
+                self.nav.patch = None;
+                self.nav.patch_error = None;
+            }
+            Ok(navmesh::BuiltinPatchOutcome::NotApplicable) => {
+                self.nav.patch = None;
+                self.nav.patch_error = None;
+            }
+            Err(error) => {
+                let error = error.to_string();
+                let msg = cstring(&format!(
+                    "rtx: navmesh: built-in patch FAILED CLOSED; bots disabled: {error}\n"
+                ));
+                self.host.dprint(&msg);
+                self.nav.patch = None;
+                self.nav.patch_error = Some(error);
+                return;
+            }
+        }
         let counts = graph.summary();
         let goals = self.collect_goals(&graph);
         let (lclusters, lportals, ledges, lreach) = graph.lod_stats();
@@ -275,31 +337,38 @@ impl GameState {
     }
 
     /// Build the static item-goal catalog: every spawned pickup (weapons, health, armor, ammo,
-    /// powerups) paired with the navmesh cell nearest it. Items don't move, so this is computed
-    /// once with the navmesh; [`GameState::select_item_goal`] reads live availability per query.
+    /// powerups) paired with every navmesh cell whose standing player origin overlaps its pickup
+    /// trigger. Items don't move, so this is computed once with the navmesh;
+    /// [`GameState::select_item_goal`] reads live availability per query.
     fn collect_goals(&self, graph: &navmesh::NavGraph) -> Vec<(u32, navmesh::CellId)> {
-        self.entities
-            .iter()
-            .enumerate()
-            .filter_map(|(i, ent)| {
-                let cn = ent.classname()?;
-                // `in_use` matters: a freed slot keeps its classname until something reuses it, and
-                // an item that failed `droptofloor` at load was deleted for having fallen out of the
-                // level. Cataloguing it anyway would send bots to stand forever where an item isn't.
-                if i == 0 || !ent.in_use || !bot_goals::is_goal_classname(cn) {
-                    return None;
-                }
-                // Resolve to a cell the item is collectable *from* (Z-aware), not merely the nearest
-                // floor — a ledge/pedestal item must not alias to the ground under it, or a bot parks
-                // beneath it forever. Fall back to the plain nearest when no cell is close enough
-                // (better an imperfect goal than a silently dropped item; the runtime `gdz` telemetry
-                // surfaces any residual aliasing).
-                let cell = graph
-                    .nearest_collectable(ent.v.origin)
-                    .or_else(|| graph.nearest(ent.v.origin))?;
-                Some((i as u32, cell))
-            })
-            .collect()
+        let cells = || {
+            graph
+                .cells
+                .iter()
+                .enumerate()
+                .map(|(cell, c)| (cell as navmesh::CellId, c.origin))
+        };
+        let mut goals = Vec::new();
+        for (i, ent) in self.entities.iter().enumerate() {
+            let Some(cn) = ent.classname() else {
+                continue;
+            };
+            // `in_use` matters: a freed slot keeps its classname until something reuses it, and an
+            // item that failed `droptofloor` at load was deleted for having fallen out of the level.
+            // Cataloguing it anyway would send bots to stand forever where an item isn't.
+            if i == 0 || !ent.in_use || !bot_goals::is_goal_classname(cn) {
+                continue;
+            }
+            let terminals = collect_touch_terminals(cells(), ent);
+            if terminals.is_empty() {
+                eprintln!(
+                    "rtx: navmesh: no touch-valid terminal for {cn} edict {i} at {:?}",
+                    ent.v.origin
+                );
+            }
+            goals.extend(terminals.into_iter().map(|cell| (i as u32, cell)));
+        }
+        goals
     }
 
     /// Gather the [`PlatInfo`](crate::navmesh::PlatInfo) for every spawned `func_plat`: the
@@ -317,6 +386,7 @@ impl GameState {
                 navmesh::PlatInfo {
                     board: Vec3::new(cx, cy, pos2.z + maxs.z + 24.0),
                     exit: Vec3::new(cx, cy, pos1.z + maxs.z + 24.0),
+                    speed: ent.mover.speed.max(1.0),
                     entity: e.0,
                     // World-XY footprint of the brush (XY is the same at pos1/pos2 — travel is Z-only).
                     fp_min: glam::Vec2::new(pos1.x + mins.x, pos1.y + mins.y),
@@ -419,5 +489,99 @@ impl GameState {
             }
         }
         None
+    }
+}
+
+/// Player-origin nav cells that already overlap an item's pickup trigger. A route ending on one of
+/// these cells completes the pickup by standing there; it never relies on a final beeline through
+/// nearby geometry to the entity origin.
+pub(crate) fn collect_touch_terminals(
+    cells: impl IntoIterator<Item = (navmesh::CellId, Vec3)>,
+    item: &crate::entity::Entity,
+) -> Vec<navmesh::CellId> {
+    cells
+        .into_iter()
+        .filter_map(|(cell, origin)| crate::bot::item_terminal_touches(origin, item).then_some(cell))
+        .collect()
+}
+
+#[cfg(all(test, feature = "netclient"))]
+mod tests {
+    use super::*;
+    use crate::defs::{Bits, Items, Solid};
+    use crate::entity::{Entity, Touch};
+    use crate::netclient::host::NetHost;
+    use std::path::PathBuf;
+
+    fn armor_entity(classname: &str, origin: Vec3) -> Entity {
+        let mut armor = Entity::default();
+        armor.in_use = true;
+        armor.classname = Some(classname.into());
+        armor.v.origin = origin;
+        armor.v.mins = Vec3::new(-16.0, -16.0, 0.0);
+        armor.v.maxs = Vec3::new(16.0, 16.0, 56.0);
+        armor
+    }
+
+    fn assert_armor_take(classname: &str, item_origin: Vec3, terminal: Vec3) {
+        let host: &'static NetHost = Box::leak(Box::new(NetHost::new(PathBuf::from("/nonexistent"))));
+        host.set("maxclients", "8");
+        let mut game = GameState::new_client(host);
+        let (player, armor) = (EntId(1), EntId(32));
+        {
+            let ent = &mut game.entities[player];
+            ent.in_use = true;
+            ent.classname = Some("player".into());
+            ent.v.health = 100.0;
+            ent.v.origin = terminal;
+        }
+        let mut armor_ent = armor_entity(classname, item_origin);
+        armor_ent.v.solid = Solid::Trigger;
+        armor_ent.set_touch(Touch::ItemArmor);
+        game.entities[armor] = armor_ent;
+
+        // This is the engine's touch-dispatch gate: only overlapping linked trigger/player hulls
+        // dispatch GAME_EDICT_TOUCH. The dispatch itself is the production server-side armor path.
+        assert!(crate::bot::item_terminal_touches(terminal, &game.entities[armor]));
+        game.run_touch(armor, player);
+
+        assert!(
+            game.entities[player].v.armorvalue > 0.0,
+            "terminal arrival must execute an armor take"
+        );
+        assert!(
+            game.entities[player].v.items.has(Items::ARMOR2 | Items::ARMOR3),
+            "the take must change armor inventory, not merely satisfy a selector"
+        );
+        assert_eq!(
+            game.entities[armor].v.solid,
+            Solid::Not,
+            "the server-side pickup handler consumed it"
+        );
+    }
+
+    fn armor_take_from_terminal(classname: &str, item_origin: Vec3, bad_endpoint: Vec3) {
+        let valid_endpoint = item_origin + Vec3::new(0.0, 0.0, 24.0);
+        let cells = [(7, bad_endpoint), (8, valid_endpoint)];
+        let armor = armor_entity(classname, item_origin);
+        let terminals = collect_touch_terminals(cells, &armor);
+
+        assert_eq!(
+            terminals,
+            vec![8],
+            "the observed stall cell must not catalogue as a pickup terminal"
+        );
+        assert!(
+            !crate::bot::item_terminal_touches(bad_endpoint, &armor),
+            "the observed endpoint must fail the same hull-overlap gate that dispatches server touch"
+        );
+        assert_armor_take(classname, item_origin, valid_endpoint);
+    }
+
+    #[test]
+    fn armor_endpoint_catalog_rebinds_to_a_real_take() {
+        for classname in ["item_armorInv", "item_armor2"] {
+            armor_take_from_terminal(classname, Vec3::ZERO, Vec3::new(96.0, 0.0, 64.0));
+        }
     }
 }

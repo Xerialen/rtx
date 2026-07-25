@@ -81,6 +81,11 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // is clear, glide toward it instead of the next 32u cell centre (smooths the residual grid
         // zigzag on plain walk legs). On by default; inert when `rtx_bot_nearfield` is 0.
         ("rtx_bot_glide", Bool(true)),
+        // Seconds of speed-scaled route corridor used as the bhop steering look-ahead. Longer values
+        // expose broad bends earlier; the distance remains capped in the steering core.
+        ("rtx_bot_bhop_lookahead", Float(0.9)),
+        // Maximum corridor distance exposed by the speed-scaled bhop look-ahead.
+        ("rtx_bot_bhop_lookahead_cap", Float(448.0)),
         // Predictive hop planning on ledge corridors (a spiral staircase's inner edge): roll the pmove
         // a hop ahead and take only hops whose predicted landing stays on the route, so the bot bhops a
         // curved walkway at speed instead of edge-braking or carrying off it. Gated to ledge-flagged
@@ -133,6 +138,9 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // default), `ffa` (open free-for-all), or a team format `1on1`/`duel`/`2on2`/`2on2on2`/…
         // (a locked N×M match). `ra` ignores this (its 1v1 round queue is fixed). See `crate::mode`.
         ("rtx_match", Str("")),
+        // Non-empty: the first bot is named this (e.g. the experiment/route label)
+        // instead of the rotating roster name; later bots keep the rotation.
+        ("rtx_bot_label", Str("")),
         // Rocket Arena: seconds of spawn-protected countdown before "FIGHT". (Always a 1v1 duel.)
         ("rtx_ra_countdown", Float(3.0)),
         // Team match (`rtx_match 1on1`/`2on2`/…): seconds of spawn-protected countdown after the
@@ -158,6 +166,9 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // Navmesh bots: how many to keep on the server (0 = none), and their skill. Bots only spawn
         // once a map's navmesh is built.
         ("rtx_bot_count", Float(0.0)),
+        // Optional scoreboard label for the first server-side bot. Additional bots receive a
+        // deterministic numeric suffix; empty keeps the rotating stock labels.
+        ("rtx_bot_name", Str("")),
         ("rtx_bot_skill", Float(3.0)),
         // Keep bots on the server even with no humans connected (default off).
         ("rtx_bot_alone", Bool(true)),
@@ -193,10 +204,16 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // Costs health, so a bot only plans one when it clearly beats the walk and it's fit to fly it
         // (has the RL, a rocket, and the health). On by default.
         ("rtx_bot_rocketjump", Bool(true)),
+        // Build-time multiplier for certified RJ travel cost. `1` preserves the conservative
+        // health-priced policy; route labs can opt into aggressive traversal without weakening
+        // fitness, damage, or robustness gates. Requires a map rebuild.
+        ("rtx_rj_cost_scale", Float(1.0)),
         // Rocket-jump test harness: a TCP control channel (localhost) an external driver connects to
         // for scripted bot puppetry (go to a spot, fly a specific RJ link, read back telemetry). `0`
         // (default) = disabled — no socket is bound. See [`crate::control`].
         ("rtx_control_port", Float(0.0)),
+        // Movement-lab authoritative per-frame pmove stream over the control channel; `0` = off.
+        ("rtx_telemetry", Float(0.0)),
         // Rocket-jump driver knobs, read live each frame and threaded into the driver so the harness
         // can tune them without a rebuild. Each default mirrors the constant it replaces, so live
         // behaviour is unchanged until a knob is set. See [`crate::bot::rj`] / [`crate::bot`].
@@ -225,6 +242,13 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // All default to today's behavior.
         ("rtx_jump_curl_hold", Float(0.0)),
         ("rtx_jump_curl_gain", Float(0.0)),
+        // Optional two-phase profile copied into a hand-planted SpeedJump by `planlink`.
+        // A positive switch distance enables it; zero keeps the historical single-target curl.
+        ("rtx_jump_curl_entry_x", Float(0.0)),
+        ("rtx_jump_curl_entry_y", Float(0.0)),
+        ("rtx_jump_curl_switch_dist", Float(0.0)),
+        ("rtx_jump_curl_landing_x", Float(0.0)),
+        ("rtx_jump_curl_landing_y", Float(0.0)),
         // Minimum run-up speed toward the waypoint (fraction of sv_maxspeed) before a plain jump leg
         // fires — 0.5 (160 ups, ~4 ticks of ground accel) kills the useless standstill pogo without
         // stalling short approaches (a jump within JUMP_NOW_DIST of the lip fires regardless). 0 = off.

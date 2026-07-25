@@ -29,6 +29,8 @@
 //!
 //! [msgpack]: https://msgpack.org/
 
+mod item_trial;
+
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
@@ -45,6 +47,8 @@ use crate::entity::EntId;
 use crate::game::{cstring, GameState, MAX_EDICTS};
 use crate::math::wrap180;
 use crate::navmesh::LinkKind;
+
+use self::item_trial::{poll_sng_mega, start_sng_mega};
 
 /// A goto is "arrived" once within this XY radius of the target (matches the bot's own arrival gate)
 /// or after a bounded finish-plane crossing, and within [`GOTO_ARRIVE_Z`] in Z. This stays independent
@@ -157,6 +161,9 @@ pub(crate) fn frame_end(game: &mut GameState) {
                 }
                 poll_fly(game, e, i, link, now);
             }
+        }
+        if game.entities[e].bot.puppet.item_trial.is_some() {
+            poll_sng_mega(game, e, i, now);
         }
     }
 }
@@ -303,6 +310,14 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
         Cmd::Fly { bot, link } => do_fly(game, bot, link),
         Cmd::Hold { bot } => do_order(game, bot, ControlOrder::Hold),
         Cmd::Stop { bot } => do_stop(game, bot),
+        Cmd::SngMega {
+            bot,
+            scenario,
+            start,
+            mega,
+            rockets,
+            max_secs,
+        } => start_sng_mega(game, id, bot, scenario, v3(start), v3(mega), v3(rockets), max_secs).map(Resp::SngMega),
         Cmd::Set { name, value } => do_set(game, &name, &value),
         Cmd::Get { name } => do_get(game, &name),
         Cmd::RunCmd { raw } => {
@@ -327,6 +342,7 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
             tgt,
             v_req,
         } => plant_link_resp(game, v3(from), v3(takeoff), v3(tgt), v_req).map(Resp::PlanLink),
+        Cmd::Unlink { link } => unlink_resp(game, link),
     };
     reply(game, conn, id, result);
 }
@@ -667,6 +683,17 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
         cells,
         links,
         rj_links,
+        nav_patch: game.nav.patch.as_ref().map(|patch| proto::NavPatchStatus {
+            id: patch.id.clone(),
+            manifest_sha256: patch.manifest_sha256.clone(),
+            source_graph_sha256: patch.source_graph_sha256.clone(),
+            patched_graph_sha256: patch.patched_graph_sha256.clone(),
+            removed_links: patch.removed_links,
+            added_links: patch.added_links,
+            total_links: patch.total_links,
+            active_links: patch.active_links,
+        }),
+        nav_patch_error: game.nav.patch_error.clone(),
         match_: match_info(game),
         oracle: oracle_info(game),
         bots,
@@ -759,7 +786,9 @@ fn links_resp(game: &GameState) -> Result<Vec<proto::RjLink>, String> {
         links.push(proto::RjLink {
             link: li,
             src: a3(g.cell_origin(g.link_source(li))),
+            launch: a3(tr.launch),
             tgt: a3(g.cell_origin(g.link_target(li))),
+            run_velocity: a3(tr.run_velocity),
             fire_pitch: tr.fire_angles.x,
             fire_yaw: tr.fire_angles.y,
             fire_delay: tr.fire_delay,
@@ -881,6 +910,23 @@ fn route_resp(game: &GameState, bot: u32) -> Result<proto::RouteResp, String> {
         route_pos: b.route_pos as u32,
         origin: a3(game.entities[e].v.origin),
         legs,
+    })
+}
+
+fn unlink_resp(game: &mut GameState, link: u32) -> Result<Resp, String> {
+    let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+    let graph = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+    if link as usize >= graph.links.len() {
+        return Err(format!("link {link} out of range (0..{})", graph.links.len()));
+    }
+    let src = a3(graph.cell_origin(graph.link_source(link)));
+    let tgt = a3(graph.cell_origin(graph.link_target(link)));
+    let removed = graph.unlink(link);
+    Ok(Resp::Unlink {
+        link,
+        removed,
+        src,
+        tgt,
     })
 }
 
@@ -1047,12 +1093,31 @@ fn plant_link_resp(
     // +1.0 charged to a modeled speed jump). Run-up is the `from`→lip distance at the mean build speed.
     let runup = (takeoff.xy() - g.cell_origin(from_cell).xy()).length();
     let cost = runup / 400.0 + airtime + 0.3;
+    // The manifest sets these immediately before PlanLink. Preserve its two-stage execution
+    // contract in the typed-msgpack path just as the former text control path did; zero values keep
+    // an unprofiled hand plant on the legacy single-bearing pursuit.
+    let curl_switch_dist = game.host.cvar(c"rtx_jump_curl_switch_dist");
+    let curl_entry_aim = Vec3::new(
+        game.host.cvar(c"rtx_jump_curl_entry_x"),
+        game.host.cvar(c"rtx_jump_curl_entry_y"),
+        takeoff.z,
+    );
+    let curl_landing_aim = Vec3::new(
+        game.host.cvar(c"rtx_jump_curl_landing_x"),
+        game.host.cvar(c"rtx_jump_curl_landing_y"),
+        g.cell_origin(to_cell).z,
+    );
     let tr = SpeedJumpTraversal {
         takeoff,
         v_req,
         airtime,
+        landing_speed_lo: 0.0,
         chained: false,
         curl_gain,
+        curl_entry_aim,
+        curl_switch_dist,
+        curl_landing_aim,
+        ground_turn: None,
     };
     let li = g.plant_speed_jump(from_cell, to_cell, cost, tr);
     // Refresh the reachability + LOD tables so the new link is visible to steer's O(1) reachable()
@@ -1104,7 +1169,9 @@ fn probe_resp(game: &GameState, takeoff: Vec3, tgt: Vec3, psi0: f32, runway: f32
             miss_z: (land.z - tgt.z).abs(),
         })
         .collect();
-    let certified = probe.certified.map(|(v_req, gain)| proto::Cert { v_req, gain });
+    let certified = probe
+        .certified
+        .map(|(v_req, gain, _landing_speed_lo)| proto::Cert { v_req, gain });
     Ok(proto::ProbeResp {
         v_deliver: probe.v_deliver,
         certified,
@@ -1384,7 +1451,7 @@ fn rj_result(
         origin: a3(p.origin),
         view: [p.view.x, p.view.y],
         aim_err: p.aim_err,
-        stance_off_xy: (p.origin.xy() - t.src.xy()).length(),
+        stance_off_xy: (p.origin.xy() - t.launch.xy()).length(),
     });
     let fire = t.fire.map(|f| proto::RjFire {
         t: f.t,
@@ -1405,6 +1472,7 @@ fn rj_result(
         link,
         outcome: name.to_string(),
         src: a3(t.src),
+        launch: a3(t.launch),
         tgt: a3(t.tgt),
         solved: proto::RjSolved {
             pitch: t.solved_angles.x,
@@ -1412,6 +1480,7 @@ fn rj_result(
             delay: t.solved_delay,
             airtime: t.airtime,
             self_damage: t.self_damage,
+            run_velocity: a3(t.run_velocity),
             v0: a3(v0),
             blast: a3(blast),
             pos_blast: a3(pos_blast),
@@ -1433,11 +1502,11 @@ mod tests {
 
     #[test]
     fn fast_goto_crossing_stops_inside_bounded_finish_corridor() {
-        let traj = vec![(0.0, Vec3::new(224.0, 1440.0, 24.0), Vec3::ZERO)];
-        let target = Vec3::new(224.0, 2992.0, 24.0);
-        assert!(goto_crossed_finish(&traj, Vec3::new(280.0, 3008.0, 48.0), target));
-        assert!(!goto_crossed_finish(&traj, Vec3::new(330.0, 3008.0, 48.0), target));
-        assert!(!goto_crossed_finish(&traj, Vec3::new(224.0, 2970.0, 48.0), target));
+        let traj = vec![(0.0, Vec3::new(0.0, 0.0, 24.0), Vec3::ZERO)];
+        let target = Vec3::new(0.0, 100.0, 24.0);
+        assert!(goto_crossed_finish(&traj, Vec3::new(56.0, 116.0, 48.0), target));
+        assert!(!goto_crossed_finish(&traj, Vec3::new(106.0, 116.0, 48.0), target));
+        assert!(!goto_crossed_finish(&traj, Vec3::new(0.0, 78.0, 48.0), target));
     }
 
     #[test]

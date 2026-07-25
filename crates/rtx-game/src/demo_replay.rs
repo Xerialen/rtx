@@ -10,15 +10,21 @@
 //!   controller along the human's path through the same sim and confirm it covers the run at least
 //!   as fast as the human (who is deliberately non-pro — the bots should be much better).
 //!
-//! Fixtures are the `*.csv` files `qwd_dump.py --raw` emits next to the `.qwd` demos (columns:
-//! `event,file,time,…,forwardmove,sidemove,upmove,buttons,pitch,yaw,mv_*`). Both tests are skipped
-//! (vacuously green) unless `RTX_TEST_DEMOS` (the demo/CSV dir) and `RTX_TEST_MAPS` (the `.bsp` dir)
-//! are set — the same opt-in idiom as `RTX_TEST_BSP`. Run with:
+//! Fixtures are the `*.csv` files `qwd_dump.py --raw` emits (columns:
+//! `event,file,time,…,forwardmove,sidemove,upmove,buttons,pitch,yaw,mv_*`). Corpus selection and
+//! technique windows live outside crate source in a SHA-bound manifest. Both tests are skipped
+//! unless `RTX_TEST_DEMOS` (the content-addressed CSV dir), `RTX_TEST_MAPS` (the `.bsp` dir), and
+//! `RTX_TEST_DEMO_MANIFEST` are set.
 //!
 //! ```text
-//! RTX_TEST_DEMOS=~/Development/home/rtx-demos RTX_TEST_MAPS=~/Games/Quake2/id1/2/maps \
+//! RTX_TEST_DEMOS=/path/to/corpus RTX_TEST_MAPS=/path/to/maps \
+//! RTX_TEST_DEMO_MANIFEST=/path/to/manifest \
 //!   cargo test -p rtx-game --lib demo_replay -- --nocapture
 //! ```
+//!
+//! Manifest rows are whitespace-delimited:
+//! `fidelity <sha256> <map>` or `segment <sha256> <map> <t0> <t1> <bhop|rj>`. CSV files are named
+//! `<sha256>.csv`, so every corpus reference is content-addressed rather than embedded here.
 
 use glam::{Vec2, Vec3, Vec3Swizzles};
 
@@ -247,6 +253,64 @@ fn maps_dir() -> Option<String> {
     std::env::var("RTX_TEST_MAPS").ok()
 }
 
+struct DemoFixture {
+    sha256: String,
+    map: String,
+}
+
+struct DemoManifest {
+    fidelity: Vec<DemoFixture>,
+    segments: Vec<Seg>,
+}
+
+fn valid_sha256(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn demo_manifest() -> Option<DemoManifest> {
+    let path = std::env::var("RTX_TEST_DEMO_MANIFEST").ok()?;
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let mut fidelity = Vec::new();
+    let mut segments = Vec::new();
+    for (line_no, raw) in text.lines().enumerate() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let fields: Vec<_> = line.split_whitespace().collect();
+        match fields.as_slice() {
+            ["fidelity", sha256, map] if valid_sha256(sha256) => fidelity.push(DemoFixture {
+                sha256: (*sha256).to_string(),
+                map: (*map).to_string(),
+            }),
+            ["segment", sha256, map, t0, t1, kind] if valid_sha256(sha256) => {
+                let kind = match *kind {
+                    "bhop" => SegKind::Bhop,
+                    "rj" => SegKind::RjBallistic,
+                    _ => panic!("{path}:{}: invalid segment kind", line_no + 1),
+                };
+                segments.push(Seg {
+                    sha256: (*sha256).to_string(),
+                    map: (*map).to_string(),
+                    t0: t0
+                        .parse::<f32>()
+                        .unwrap_or_else(|_| panic!("{path}:{}: invalid t0", line_no + 1)),
+                    t1: t1
+                        .parse::<f32>()
+                        .unwrap_or_else(|_| panic!("{path}:{}: invalid t1", line_no + 1)),
+                    kind,
+                });
+            }
+            _ => panic!("{path}:{}: invalid manifest row", line_no + 1),
+        }
+    }
+    Some(DemoManifest { fidelity, segments })
+}
+
+fn demo_csv(dir: &str, sha256: &str) -> String {
+    format!("{dir}/{sha256}.csv")
+}
+
 fn load_bsp(map: &str) -> Bsp {
     let dir = maps_dir().unwrap();
     let path = format!("{dir}/{map}.bsp");
@@ -266,46 +330,11 @@ enum SegKind {
 }
 
 struct Seg {
-    map: &'static str,
-    csv: &'static str,
+    map: String,
+    sha256: String,
     t0: f32,
     t1: f32,
     kind: SegKind,
-}
-
-/// The demo fixtures and the technique window in each. Windows are chosen inside the moving portion
-/// and away from water (dm3/dm4 hop routes are dry).
-fn segments() -> Vec<Seg> {
-    vec![
-        Seg {
-            map: "dm3",
-            csv: "curl_mid",
-            t0: 321.8,
-            t1: 327.5,
-            kind: SegKind::Bhop,
-        },
-        Seg {
-            map: "dm4",
-            csv: "dm4jump",
-            t0: 392.6,
-            t1: 396.9,
-            kind: SegKind::Bhop,
-        },
-        Seg {
-            map: "dm3",
-            csv: "bridge_rl",
-            t0: 276.6,
-            t1: 284.4,
-            kind: SegKind::Bhop,
-        },
-        Seg {
-            map: "dm3",
-            csv: "rl_jump",
-            t0: 349.66,
-            t1: 350.75,
-            kind: SegKind::RjBallistic,
-        },
-    ]
 }
 
 /// Frames of a demo within `[t0, t1]`.
@@ -369,15 +398,14 @@ fn pct(errs: &mut [f32], p: f32) -> f32 {
 
 #[test]
 fn replay_tracks_recorded_origins() {
-    let (Some(_), Some(_)) = (demo_dir(), maps_dir()) else {
-        eprintln!("RTX_TEST_DEMOS / RTX_TEST_MAPS not set; skipping");
+    let (Some(dir), Some(_), Some(manifest)) = (demo_dir(), maps_dir(), demo_manifest()) else {
+        eprintln!("RTX_TEST_DEMOS / RTX_TEST_MAPS / RTX_TEST_DEMO_MANIFEST not set; skipping");
         return;
     };
-    let dir = demo_dir().unwrap();
-    // One representative dry run per map. (rl_jump is validated separately as an RJ segment.)
-    for (csv, map) in [("bridge_rl", "dm3"), ("curl_mid", "dm3"), ("dm4jump", "dm4")] {
-        let demo = load_demo(&format!("{dir}/{csv}.csv"));
-        let bsp = load_bsp(map);
+    for fixture in manifest.fidelity {
+        let csv = fixture.sha256;
+        let demo = load_demo(&demo_csv(&dir, &csv));
+        let bsp = load_bsp(&fixture.map);
         let p = demo.movevars.params();
         let fr = &demo.frames;
 
@@ -470,17 +498,18 @@ fn replay_tracks_recorded_origins() {
 
 #[test]
 fn bot_matches_or_beats_human() {
-    let (Some(dir), Some(_)) = (demo_dir(), maps_dir()) else {
-        eprintln!("RTX_TEST_DEMOS / RTX_TEST_MAPS not set; skipping");
+    let (Some(dir), Some(_), Some(manifest)) = (demo_dir(), maps_dir(), demo_manifest()) else {
+        eprintln!("RTX_TEST_DEMOS / RTX_TEST_MAPS / RTX_TEST_DEMO_MANIFEST not set; skipping");
         return;
     };
     const DT: f32 = 1.0 / 77.0;
-    for seg in segments() {
-        let demo = load_demo(&format!("{dir}/{}.csv", seg.csv));
-        let bsp = load_bsp(seg.map);
+    for seg in manifest.segments {
+        let csv = &seg.sha256;
+        let demo = load_demo(&demo_csv(&dir, csv));
+        let bsp = load_bsp(&seg.map);
         let p = demo.movevars.params();
         let frames = window(&demo.frames, seg.t0, seg.t1);
-        assert!(frames.len() > 10, "{}: empty segment window", seg.csv);
+        assert!(frames.len() > 10, "{csv}: empty segment window");
         let human_time = frames.last().unwrap().time - frames[0].time;
 
         match seg.kind {
@@ -493,7 +522,7 @@ fn bot_matches_or_beats_human() {
                 // start speed, movevars, and window duration, so the comparison stays honest.
                 let (a, b) = straight_window(&frames);
                 let win = &frames[a..=b];
-                assert!(win.len() > 12, "{}: no straight fast corridor found", seg.csv);
+                assert!(win.len() > 12, "{csv}: no straight fast corridor found");
                 let human_dt = win[win.len() - 1].time - win[0].time;
                 let human_dist = (win[win.len() - 1].origin.xy() - win[0].origin.xy()).length();
                 let v_start = frame_vel(&frames, a).xy().length();
@@ -530,8 +559,11 @@ fn bot_matches_or_beats_human() {
                         committed: true,
                         carry: true,
                         hold_jump: false,
+                        defer_jump: false,
+                        phase_defer_frames: None,
                         takeoff_speed: 0.0, // gait bench, not a speed-jump takeoff
                         curl_gain: 0.0,
+                        launch_yaw_tol: 0.0,
                         guide_gain: 0.0,
                         clear: f32::INFINITY, // flat-plane gait bench — no walls
                         now: t,
@@ -555,7 +587,7 @@ fn bot_matches_or_beats_human() {
                 eprintln!(
                     "{}: {human_dt:.2}s window — bot went {bot_dist:.0}u vs human {human_dist:.0}u, end speed \
                      bot {v_bot_end:.0} vs human {v_human_end:.0} (start {v_start:.0}, hops {}, {fph:.1} flips/hop)",
-                    seg.csv, bh.hops
+                    csv, bh.hops
                 );
                 // Primary claim: the bot's flat-ground gait ends at least as fast as the human did
                 // over the same span from the same start speed — it moves at least as well. (The
@@ -565,19 +597,19 @@ fn bot_matches_or_beats_human() {
                 assert!(
                     v_bot_end >= v_human_end - 8.0,
                     "{}: bot end speed {v_bot_end:.0} below human {v_human_end:.0}",
-                    seg.csv
+                    csv
                 );
                 assert!(
                     v_bot_end >= v_start * 0.95,
                     "{}: gait bled speed on flat ground: {v_start:.0} -> {v_bot_end:.0}",
-                    seg.csv
+                    csv
                 );
                 assert!(
                     bot_dist >= human_dist * 0.92,
                     "{}: bot covered {bot_dist:.0}u < human {human_dist:.0}u in {human_dt:.2}s",
-                    seg.csv
+                    csv
                 );
-                assert!(fph <= 2.0, "{}: {fph:.1} flips/hop — not the smooth gait", seg.csv);
+                assert!(fph <= 2.0, "{csv}: {fph:.1} flips/hop — not the smooth gait");
             }
             SegKind::RjBallistic => {
                 // Seed just after the blast (the recorded velocity carries the launch impulse the
@@ -609,17 +641,17 @@ fn bot_matches_or_beats_human() {
                         break;
                     }
                 }
-                let landed = landed.unwrap_or_else(|| panic!("{}: RJ arc never landed", seg.csv));
+                let landed = landed.unwrap_or_else(|| panic!("{csv}: RJ arc never landed"));
                 let miss = (st.origin.xy() - land.xy()).length();
                 eprintln!(
                     "{}: RJ ballistic landed {miss:.0}u from target in {landed:.2}s (human airtime {human_time:.2}s)",
-                    seg.csv
+                    csv
                 );
-                assert!(miss < 48.0, "{}: RJ landing missed by {miss:.0}u", seg.csv);
+                assert!(miss < 48.0, "{csv}: RJ landing missed by {miss:.0}u");
                 assert!(
                     landed <= human_time * 1.15 + 0.1,
                     "{}: RJ arc took {landed:.2}s vs {human_time:.2}s",
-                    seg.csv
+                    csv
                 );
             }
         }

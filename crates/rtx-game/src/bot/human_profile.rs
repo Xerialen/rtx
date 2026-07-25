@@ -48,7 +48,7 @@ impl HumanMovementProfile {
             // scheduler makes three reversals per hop; this remains the fallback/error scale.
             lobe_deadband: 29.0,
             error_gain: 6.0,
-            zigzag_band_cap: 15.0,
+            zigzag_band_cap: 5.0,
             phase_locked_flips: true,
         }
     }
@@ -66,7 +66,7 @@ impl HumanMovementProfile {
             omega_base: 140.0,
             lobe_deadband: 34.0,
             error_gain: 6.0,
-            zigzag_band_cap: 15.0,
+            zigzag_band_cap: 5.0,
             phase_locked_flips: false,
         }
     }

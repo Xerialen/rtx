@@ -66,12 +66,14 @@ pub fn manage_population(game: &mut GameState) {
         None => return, // structured match live — don't add or trim (would bench noise / drop a rostered bot)
     };
 
-    // Build the navmesh on demand the first time bots are actually wanted.
-    if want > 0 {
+    // Build the navmesh on demand the first time bots are actually wanted — or unconditionally on
+    // a lab server (control port configured): control verbs (cell/route/graph dump) and the
+    // movement-lab live bridge need the mesh even on a bot-less server monitoring a human.
+    if want > 0 || host.cvar(c"rtx_control_port") > 0.0 {
         game.ensure_navmesh();
-        if !game.nav.is_loaded() {
-            return;
-        }
+    }
+    if want > 0 && !game.nav.is_loaded() {
+        return;
     }
 
     // Queue at most one population change per frame; `vmMain` applies it via `drain_roster` once
@@ -92,7 +94,12 @@ pub fn manage_population(game: &mut GameState) {
 /// [`drain_roster`] and [`crate::game::GameState::pending_roster`].
 pub(crate) enum RosterOp {
     /// Add a fake client with this name/colours (skin is always `"base"`).
-    Add { name: CString, bottom: i32, top: i32 },
+    Add {
+        name: CString,
+        display: String,
+        bottom: i32,
+        top: i32,
+    },
     /// Remove the fake client at edict `slot` (its engine client id is `client`).
     Remove { client: i32, slot: EntId },
 }
@@ -119,18 +126,27 @@ pub(crate) unsafe fn drain_roster(game: *mut GameState) {
         return;
     };
     match op {
-        // `add_bot` sets the bot's name in userinfo and broadcasts it — don't re-set "name"
-        // afterwards (that renamed the bot to an empty string and kept it off the scoreboard). Tag
-        // the edict as bot-driven only after the trap returns.
-        RosterOp::Add { name, bottom, top } => {
+        // The trap normally seeds userinfo before its re-entrant `ClientConnect`, but some mvdsv
+        // builds expose an empty name during that callback. Preserve the intended display string
+        // across the trap and restore the edict's engine-visible netname afterwards; FTE/QTV sync
+        // the scoreboard from this field every frame.
+        RosterOp::Add {
+            name,
+            display,
+            bottom,
+            top,
+        } => {
             let client = host.add_bot(&name, bottom, top, c"base");
             if client > 0 {
                 let g = &mut *game;
-                g.entities[EntId(client as u32)].bot = BotState {
+                let slot = EntId(client as u32);
+                g.entities[slot].bot = BotState {
                     is_bot: true,
                     client,
                     ..Default::default() // goal_cell None, route empty, etc. — a fresh blackboard
                 };
+                g.entities[slot].netname = Some(display.as_str().into());
+                g.set_netname(slot, &display);
             }
         }
         RosterOp::Remove { client, slot } => {
@@ -169,10 +185,25 @@ pub(super) fn bot_target(
 fn queue_add_bot(game: &mut GameState, index: i32) {
     // Build the name from latin-1 bytes, not `cstring` (which is UTF-8): `bot_display_name` carries
     // high-half conchars, and the engine stores the `CString`'s bytes verbatim into the netname.
-    let display = bot_display_name(bot_name(index));
+    // `rtx_bot_label` (when set) names bots after their experiment/route: a comma-separated
+    // list assigns per-index labels ("a,b,c"); indices past the list fall back to the rotation.
+    let mut label_buf = [0u8; 256];
+    let label = game.host.cvar_string(c"rtx_bot_label", &mut label_buf);
+    let label = label
+        .split(',')
+        .nth(index as usize)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| bot_name(index));
+    let display = bot_display_name(label);
     let name = CString::new(crate::text::latin1_bytes(&display)).unwrap_or_default();
     let (bottom, top) = bot_colors(index);
-    game.pending_roster = Some(RosterOp::Add { name, bottom, top });
+    game.pending_roster = Some(RosterOp::Add {
+        name,
+        display,
+        bottom,
+        top,
+    });
 }
 
 /// Recreate a fake client dropped by mvdsv's match-start map reload with its exact locked name, so
@@ -180,7 +211,12 @@ fn queue_add_bot(game: &mut GameState, index: i32) {
 fn queue_add_named_bot(game: &mut GameState, display: &str, index: i32) {
     let name = CString::new(crate::text::latin1_bytes(display)).unwrap_or_default();
     let (bottom, top) = bot_colors(index);
-    game.pending_roster = Some(RosterOp::Add { name, bottom, top });
+    game.pending_roster = Some(RosterOp::Add {
+        name,
+        display: display.to_string(),
+        bottom,
+        top,
+    });
 }
 
 /// A bot's on-scoreboard name: a coloured `bot` tag, the coloured dot, then `label` in plain white
