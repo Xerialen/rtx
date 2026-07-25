@@ -190,6 +190,10 @@ impl BuildOpts {
 /// steps and slopes without reaching across a room.
 const HOVER_MAX_DIST: f32 = 64.0;
 
+/// Default window size. **Physical** pixels, not logical: 1080p worth of actual framebuffer whatever
+/// the display's scale factor is, rather than a window that balloons past the screen at 150% DPI.
+const DEFAULT_WINDOW: winit::dpi::PhysicalSize<u32> = winit::dpi::PhysicalSize::new(1920, 1080);
+
 /// Base fly speed (units/sec); Shift multiplies it.
 const MOVE_SPEED: f32 = 320.0;
 const FAST_MULT: f32 = 4.0;
@@ -526,7 +530,9 @@ impl ApplicationHandler<UserEvent> for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title("navview — drop a .bsp");
+        let attrs = Window::default_attributes()
+            .with_title("navview — drop a .bsp")
+            .with_inner_size(DEFAULT_WINDOW);
         let window = Arc::new(el.create_window(attrs).expect("create window"));
         self.gpu = Some(Gpu::new(window.clone()));
         self.egui_state = Some(egui_winit::State::new(
