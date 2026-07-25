@@ -1286,12 +1286,32 @@ impl NavGraph {
         // treat ballistic and air candidates uniformly.
         self.air_rocket_jumps_from(bsp, from, params, &pm, useful_apex, &mut best);
 
-        // Keep the cheapest few per cell. Break cost ties by target cell then dedup key, so the
-        // survivors don't depend on `HashMap` iteration order (randomized per instance — and under
-        // parallel building a tie would otherwise resolve differently run to run).
+        // Keep a few per cell — but rank by what the jump *buys* before what it costs. A cell's RJ
+        // budget is tiny (`RJ_MAX_PER_CELL`), and cost alone spends it on whatever is cheapest, which
+        // is systematically the short hop to a ledge the bot could already walk to. The jump that
+        // opens a region nothing else reaches is always the pricier one (it climbs further), so pure
+        // cost ranking evicts exactly the link that mattered.
+        //
+        // Concretely, on aerowalk at stock cvars: two +48-rise hops (cost 4.55 each) filled both slots
+        // of the launch cell and dropped the +160 jump onto the red-armour shelf — the only way in,
+        // leaving the RA unreachable for bots. Double jump being *off* is what made those hops qualify
+        // as useful in the first place, which is why the map ends up with more rocket-jump links overall
+        // and still can't get to the armour.
+        //
+        // So: candidates whose target isn't reachable any other way come first, then cheapest. Ties
+        // break by target cell then dedup key, so survivors don't depend on `HashMap` iteration order
+        // (randomized per instance — under parallel building a tie would otherwise resolve differently
+        // run to run). `reachable` reads the pre-RJ table built above, identical for every cell in this
+        // pass, so the ranking stays deterministic.
         let mut chosen: Vec<_> = best.into_iter().collect();
-        chosen
-            .sort_by(|(ak, (ac, al, _)), (bk, (bc, bl, _))| ac.total_cmp(bc).then(al.to.cmp(&bl.to)).then(ak.cmp(bk)));
+        chosen.sort_by(|(ak, (ac, al, _)), (bk, (bc, bl, _))| {
+            let opens = |l: &Link| !self.reachable(from, l.to);
+            opens(bl)
+                .cmp(&opens(al))
+                .then(ac.total_cmp(bc))
+                .then(al.to.cmp(&bl.to))
+                .then(ak.cmp(bk))
+        });
         chosen.truncate(RJ_MAX_PER_CELL);
         out.extend(chosen.into_iter().map(|(_, (_, link, tr))| (link, tr)));
     }
@@ -1817,6 +1837,12 @@ pub fn build_navmesh(
                     maxspeed: s.maxspeed,
                 },
             );
+            // Reachability over the *pre-rocket-jump* graph, so the per-cell RJ budget can tell a jump
+            // that opens a region no other movement reaches from one that merely shortcuts a ledge
+            // already a walk away (see `solve_rocket_jumps_from`). Without this the table is absent and
+            // `reachable` answers a blanket true, collapsing that distinction. Recomputed for real at
+            // the end of the build, once the RJ/plat/teleport/gate splices have all landed.
+            graph.build_reachability();
             graph.add_rocket_jumps(bsp, params, pm, double_jump);
         }
         graph.add_plats(bsp, &plats);
