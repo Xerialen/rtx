@@ -5,6 +5,10 @@
 //! link kinds drawn as their true arcs. Load a map by passing it as `argv[1]` or by dropping a `.bsp`
 //! onto the window. A noclip-style fly camera moves with WASD + Space/C and looks with the right
 //! mouse button held.
+//!
+//! The mesh is built with the game's **stock loadout**, so the overlay is the one bots navigate; the
+//! arcade movement options the game ships disabled (double jump, grapple) are opt-in and rebuild the
+//! navmesh when ticked — see [`BUILD_GATED`].
 
 mod geom;
 mod gpu;
@@ -17,7 +21,9 @@ use std::time::Instant;
 
 use glam::{Mat4, Vec3};
 use rtx_nav::bsp::Bsp;
-use rtx_nav::navmesh::{build_navmesh, NavGraph, RocketJumpParams, SpeedJumpParams};
+use rtx_nav::navmesh::{
+    build_navmesh, HookParams, LinkKind, NavGraph, RocketJumpParams, SpeedJumpParams, HOOK_PULL_BASE, HOOK_THROW_BASE,
+};
 
 use geom::NUM_LINK_KINDS;
 use winit::application::ApplicationHandler;
@@ -97,14 +103,14 @@ struct App {
     pending_path: Option<PathBuf>,
     /// The most recently built navmesh, kept with its BSP so the overlay can be regenerated when a
     /// path-type toggle changes without rebuilding the graph (the BSP is needed to trim each cell's
-    /// filled tile to its hull-1-supported footprint in [`geom::nav_surface`]).
+    /// filled tile to its hull-1-supported footprint in [`geom::nav_clusters`]). Also what
+    /// [`Self::rebuild_navmesh`] re-solves from when a build-gated path type is toggled.
     nav: Option<(Arc<Bsp>, NavGraph)>,
     /// Per-`LinkKind` visibility (indexed by `geom::kind_index`); `Walk` gates the filled surface.
+    /// For the [`BUILD_GATED`] kinds this doubles as the build switch — see [`BuildOpts`].
     visible: [bool; NUM_LINK_KINDS],
-    /// Tint the walkable surface by LOD cluster instead of the flat walk color — the hierarchy overlay.
-    clusters: bool,
-    /// Draw the per-cell wireframe grid over the filled walkable surface.
-    cells: bool,
+    /// Optional movement solvers the live navmesh was built with; toggling one rebuilds it.
+    build_opts: BuildOpts,
     /// Mapname (no extension) of the currently loaded BSP, so a repeated control-channel BSP fetch
     /// (e.g. after a reconnect) skips rebuilding the navmesh for a map we already have.
     loaded_map: Option<String>,
@@ -120,6 +126,34 @@ struct App {
     egui_state: Option<egui_winit::State>,
 }
 
+/// Path types the viewer only generates **on request**: the arcade movement options the game ships
+/// disabled (`rtx_doublejump 0`, no grapple). Their checkboxes drive the *build*, not just line
+/// visibility — a solver that never ran leaves no lines to unhide — so ticking one re-runs the
+/// navmesh with that solver on.
+///
+/// They default off so the overlay matches the mesh bots actually navigate. Building them by default
+/// was actively misleading: with double jump on, aerowalk grew a rocket jump onto the red-armour
+/// shelf that the stock build has no way to reach, so the viewer showed a route the bots didn't have.
+const BUILD_GATED: [LinkKind; 2] = [LinkKind::DoubleJump, LinkKind::Hook];
+
+/// Which optional movement solvers the current navmesh was built with (see [`BUILD_GATED`]).
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct BuildOpts {
+    double_jump: bool,
+    hook: bool,
+}
+
+impl BuildOpts {
+    /// The build flag a path-type checkbox drives, or `None` for a kind that's pure display.
+    fn slot(&mut self, kind: LinkKind) -> Option<&mut bool> {
+        match kind {
+            LinkKind::DoubleJump => Some(&mut self.double_jump),
+            LinkKind::Hook => Some(&mut self.hook),
+            _ => None,
+        }
+    }
+}
+
 /// Base fly speed (units/sec); Shift multiplies it.
 const MOVE_SPEED: f32 = 320.0;
 const FAST_MULT: f32 = 4.0;
@@ -128,6 +162,11 @@ const PITCH_LIMIT: f32 = 1.55; // just under 90°
 
 impl App {
     fn new(proxy: EventLoopProxy<UserEvent>, pending_path: Option<PathBuf>) -> Self {
+        // Everything visible except the build-gated kinds, which start unticked to match a stock build.
+        let mut visible = [true; NUM_LINK_KINDS];
+        for kind in BUILD_GATED {
+            visible[geom::kind_index(kind)] = false;
+        }
         App {
             window: None,
             gpu: None,
@@ -140,9 +179,8 @@ impl App {
             generation: 0,
             pending_path,
             nav: None,
-            visible: [true; NUM_LINK_KINDS],
-            clusters: false,
-            cells: true,
+            visible,
+            build_opts: BuildOpts::default(),
             loaded_map: None,
             pending_bsp: None,
             live_mode: false,
@@ -154,23 +192,21 @@ impl App {
 
     /// Regenerate and upload the navmesh overlay (filled walkable surface + colored link lines) from
     /// the current graph and path-type visibility. Cheap enough to redo on every toggle change.
+    ///
+    /// The walkable surface is always tinted by LOD cluster and always wears the per-cell wireframe —
+    /// both used to be toggles, but they're the readable default and nothing wanted them off.
     fn rebuild_overlay(&mut self) {
         let (Some(gpu), Some((bsp, graph))) = (self.gpu.as_mut(), self.nav.as_ref()) else {
             return;
         };
-        if !self.visible[geom::kind_index(rtx_nav::navmesh::LinkKind::Walk)] {
-            gpu.set_surface(&[]);
-        } else if self.clusters {
+        if self.visible[geom::kind_index(LinkKind::Walk)] {
             gpu.set_surface(&geom::nav_clusters(graph, bsp));
-        } else {
-            gpu.set_surface(&geom::nav_surface(graph, bsp));
-        }
-        gpu.set_lines(&geom::nav_lines(graph, &self.visible));
-        if self.cells {
             gpu.set_cellwire(&geom::nav_cell_wire(graph));
         } else {
+            gpu.set_surface(&[]);
             gpu.set_cellwire(&[]);
         }
+        gpu.set_lines(&geom::nav_lines(graph, &self.visible));
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -211,21 +247,27 @@ impl App {
         let raw_input = self.egui_state.as_mut().unwrap().take_egui_input(&window);
         let ctx = self.egui_ctx.clone();
         let mut visible = self.visible;
-        let mut clusters = self.clusters;
-        let mut cells = self.cells;
         let live = self.live_mode.then_some(self.live_connected);
-        let full = ctx.run_ui(raw_input, |ui| {
-            build_panel(ui, &mut visible, &mut clusters, &mut cells, live)
-        });
+        let full = ctx.run_ui(raw_input, |ui| build_panel(ui, &mut visible, live));
         self.egui_state
             .as_mut()
             .unwrap()
             .handle_platform_output(&window, full.platform_output);
 
-        if visible != self.visible || clusters != self.clusters || cells != self.cells {
+        if visible != self.visible {
             self.visible = visible;
-            self.clusters = clusters;
-            self.cells = cells;
+            // A build-gated kind changed: its solver has to run (or stop running) before there are
+            // any lines to show, so re-solve the navmesh instead of just redrawing the overlay.
+            let mut opts = self.build_opts;
+            for kind in BUILD_GATED {
+                if let Some(slot) = opts.slot(kind) {
+                    *slot = visible[geom::kind_index(kind)];
+                }
+            }
+            if opts != self.build_opts {
+                self.build_opts = opts;
+                self.rebuild_navmesh();
+            }
             self.rebuild_overlay();
         }
 
@@ -284,20 +326,43 @@ impl App {
             self.set_title(&format!("navview — {name}: BSP parse failed"));
             return;
         };
-        // Build the navmesh off-thread (a big map takes seconds with all solvers enabled). Standard
-        // DM loadout: double-jump + speed-jump (bhop) + rocket-jump at stock physics; hooks off, and
-        // plats/teleports/gates need live entities we don't have offline (empty vecs).
+        self.spawn_build(bsp);
+    }
+
+    /// Re-solve the current map's navmesh under the current [`BuildOpts`] — what a build-gated
+    /// path-type checkbox triggers. No-op before the first map loads.
+    fn rebuild_navmesh(&mut self) {
+        let Some((bsp, _)) = self.nav.as_ref() else { return };
+        let bsp = bsp.clone();
+        let name = self.loaded_map.clone().unwrap_or_default();
+        self.set_title(&format!("navview — {name} (rebuilding navmesh…)"));
+        self.spawn_build(bsp);
+    }
+
+    /// Kick off a background navmesh build for `bsp` at the current [`BuildOpts`], superseding any
+    /// build already in flight (the generation counter makes a stale worker's result get dropped).
+    ///
+    /// Stock-DM loadout: speed jumps (bhop, curl on) and rocket jumps at stock physics, always on
+    /// because they need no cvar. Double jump and the grapple are opt-in via [`BUILD_GATED`], matching
+    /// the game's shipped defaults. Plats/teleports/gates need live entities we don't have offline
+    /// (empty vecs), so those links are simply absent here.
+    fn spawn_build(&mut self, bsp: Arc<Bsp>) {
         self.generation += 1;
         let generation = self.generation;
         let proxy = self.proxy.clone();
+        let opts = self.build_opts;
         std::thread::spawn(move || {
             let graph = build_navmesh(
                 &bsp,
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
-                None,
-                true,
+                opts.hook.then_some(HookParams {
+                    gravity: 800.0,
+                    pull: HOOK_PULL_BASE,
+                    throw: HOOK_THROW_BASE,
+                }),
+                opts.double_jump,
                 Some(SpeedJumpParams {
                     gravity: 800.0,
                     accel: 10.0,
@@ -501,13 +566,10 @@ impl ApplicationHandler<UserEvent> for App {
 
 /// The path-type toggle panel: a checkbox per `LinkKind`, labelled and swatched in that kind's
 /// overlay color. `Walk` toggles the filled walkable surface; the rest toggle their colored lines.
-fn build_panel(
-    ui: &mut egui::Ui,
-    visible: &mut [bool; NUM_LINK_KINDS],
-    clusters: &mut bool,
-    cells: &mut bool,
-    live: Option<bool>,
-) {
+///
+/// The [`BUILD_GATED`] kinds are marked with a `*` and a tooltip: their solver is off by default (the
+/// game's stock loadout), so ticking one re-runs the navmesh build rather than just unhiding lines.
+fn build_panel(ui: &mut egui::Ui, visible: &mut [bool; NUM_LINK_KINDS], live: Option<bool>) {
     egui::Window::new("Path types")
         .default_pos([12.0, 12.0])
         .resizable(false)
@@ -515,14 +577,20 @@ fn build_panel(
             for kind in geom::LINK_KINDS {
                 let [r, g, b] = geom::link_color(kind);
                 let swatch = egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
+                let gated = BUILD_GATED.contains(&kind);
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut visible[geom::kind_index(kind)], "");
-                    ui.colored_label(swatch, geom::kind_label(kind));
+                    let label = if gated {
+                        format!("{} *", geom::kind_label(kind))
+                    } else {
+                        geom::kind_label(kind).to_string()
+                    };
+                    let resp = ui.colored_label(swatch, label);
+                    if gated {
+                        resp.on_hover_text("Off in the game's stock loadout — toggling rebuilds the navmesh");
+                    }
                 });
             }
-            ui.separator();
-            ui.checkbox(clusters, "LOD clusters");
-            ui.checkbox(cells, "Cell grid");
             // Live overlay status (only when started with `--live`): the current route is drawn as
             // red cells, ballistic legs as thick red arcs, and the bot as a yellow bounding box.
             if let Some(connected) = live {

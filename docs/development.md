@@ -46,6 +46,14 @@ cargo run -p rtx-nav-view -- --live    # ... attached to a running game (BSP + l
 cargo run -p rtx-mcp --quiet           # the MCP bridge (normally launched via .mcp.json)
 ```
 
+The viewer builds the navmesh with the **game's stock loadout** — bhop speed jumps and rocket jumps
+on, double jump and the grapple off — so what you inspect is the mesh bots actually navigate. Those
+two arcade options are opt-in: their path-type checkboxes (marked `*`) re-run the build with that
+solver enabled rather than merely unhiding lines, since a solver that never ran leaves nothing to
+show. Keep that in mind before reading a link off the overlay as something the bots have: with
+double jump on, aerowalk grows a rocket jump onto the red-armour shelf that the stock mesh reaches
+no other way.
+
 The `netclient` cargo feature on `rtx-game` is default-off and purely additive: it adds the
 `netclient` module plus the `rtx-proto` and HTTP-download dependencies. The default build —
 and the game module — are unaffected either way.

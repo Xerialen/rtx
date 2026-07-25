@@ -534,7 +534,7 @@ const DIR_DIM: f32 = 0.25;
 /// Build the navmesh **line** overlay: one colored polyline per non-`Walk` link (a true parabola for
 /// the ballistic kinds, a straight segment otherwise), emitted as `LineList` pairs shaded dim→bright
 /// from `from` to `to` so the travel direction is visible. `Walk` links are the flat-ground
-/// connectivity and are shown as the filled surface ([`nav_surface`]) instead. Links whose kind isn't
+/// connectivity and are shown as the filled surface ([`nav_clusters`]) instead. Links whose kind isn't
 /// in `visible` are skipped, so a viewer can toggle path types.
 pub fn nav_lines(graph: &NavGraph, visible: &[bool; NUM_LINK_KINDS]) -> Vec<LineVertex> {
     let mut out: Vec<LineVertex> = Vec::new();
@@ -573,48 +573,6 @@ pub fn nav_lines(graph: &NavGraph, visible: &[bool; NUM_LINK_KINDS]) -> Vec<Line
 /// Number of sub-quads per axis a cell tile is divided into when trimming it to the supported
 /// footprint — 4 = 8u sub-quads at the 32u grid pitch.
 const SURF_SUB: i32 = 4;
-
-/// Build the filled **walkable surface**: green quads on the floor under each cell, lifted 1u to avoid
-/// z-fighting the world mesh. Each 32u cell tile is subdivided into `SURF_SUB`² sub-quads and only the
-/// sub-quads whose centre is genuinely standable are emitted — floor within a step below the origin
-/// (hull-1 solid) and open at origin height (not buried in a wall/riser). This is the same physical
-/// test the build's `ground_along` enforces, so the surface stops at the real hull footprint (≤16u of
-/// honest overhang past a visual ledge) instead of padding out a full grid tile. `TriangleList`,
-/// translucent.
-pub fn nav_surface(graph: &NavGraph, bsp: &Bsp) -> Vec<LineVertex> {
-    let color = link_color(LinkKind::Walk);
-    let full = GRID * 0.5; // tile half-extent
-    let sub = GRID / SURF_SUB as f32; // sub-quad side
-    let hs = sub * 0.5; // sub-quad half-extent
-    let mut out: Vec<LineVertex> = Vec::with_capacity(graph.cells.len() * 6);
-    for cell in &graph.cells {
-        let o = cell.origin;
-        let z = o.z - FEET_DROP + 1.0;
-        for iy in 0..SURF_SUB {
-            for ix in 0..SURF_SUB {
-                let cx = o.x - full + hs + ix as f32 * sub;
-                let cy = o.y - full + hs + iy as f32 * sub;
-                let supported = bsp.is_solid(Vec3::new(cx, cy, o.z - (STEP_HEIGHT + 4.0)))
-                    && !bsp.is_solid(Vec3::new(cx, cy, o.z + 1.0));
-                if !supported {
-                    continue;
-                }
-                let corner = |dx: f32, dy: f32| LineVertex {
-                    pos: [cx + dx * hs, cy + dy * hs, z],
-                    color,
-                };
-                let (a, b, c, d) = (
-                    corner(-1.0, -1.0),
-                    corner(1.0, -1.0),
-                    corner(1.0, 1.0),
-                    corner(-1.0, 1.0),
-                );
-                out.extend_from_slice(&[a, b, c, a, c, d]);
-            }
-        }
-    }
-    out
-}
 
 // --- live overlay (the running game's current route + bot, via the control channel) ------------
 
@@ -791,9 +749,15 @@ fn cluster_color(id: u32) -> [f32; 3] {
     [chan(0), chan(8), chan(16)]
 }
 
-/// The LOD-overlay surface: the same walkable tiles as [`nav_surface`], but each cell tinted by its
-/// coarse cluster ([`NavGraph::cluster_of`]) so the hierarchy's block/connectivity partition is
-/// visible. Falls back to a flat grey where the LOD layer isn't built.
+/// The filled **walkable surface**: quads on the floor under each cell, lifted 1u to avoid z-fighting
+/// the world mesh, each tinted by its coarse LOD cluster ([`NavGraph::cluster_of`]) so the hierarchy's
+/// block/connectivity partition is visible (flat grey where the LOD layer isn't built).
+///
+/// Each 32u cell tile is subdivided into `SURF_SUB`² sub-quads and only the sub-quads whose centre is
+/// genuinely standable are emitted — floor within a step below the origin (hull-1 solid) and open at
+/// origin height (not buried in a wall/riser). That's the same physical test the build's `ground_along`
+/// enforces, so the surface stops at the real hull footprint (≤16u of honest overhang past a visual
+/// ledge) instead of padding out a full grid tile. `TriangleList`, translucent.
 pub fn nav_clusters(graph: &NavGraph, bsp: &Bsp) -> Vec<LineVertex> {
     let full = GRID * 0.5;
     let sub = GRID / SURF_SUB as f32;
@@ -994,7 +958,7 @@ mod tests {
             }
         }
 
-        let surface = nav_surface(&graph, &bsp);
+        let surface = nav_clusters(&graph, &bsp);
         // Each cell emits 0..=SURF_SUB² supported sub-quads, 6 verts (2 triangles) each.
         assert!(
             surface.len().is_multiple_of(6),
@@ -1010,8 +974,8 @@ mod tests {
             "surface can't exceed a full SURF_SUB² tiling per cell"
         );
         assert!(
-            surface.iter().all(|v| v.color == link_color(LinkKind::Walk)),
-            "surface tiles are Walk-green"
+            surface.iter().all(|v| v.color.iter().all(|c| (0.0..=1.0).contains(c))),
+            "cluster tints are in-gamut"
         );
 
         let all_visible = [true; NUM_LINK_KINDS];
