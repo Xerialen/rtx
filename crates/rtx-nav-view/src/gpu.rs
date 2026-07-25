@@ -242,6 +242,11 @@ impl Gpu {
         self.config.width as f32 / self.config.height as f32
     }
 
+    /// Surface size in physical pixels — the frame cursor coordinates are measured against.
+    pub fn size(&self) -> (f32, f32) {
+        (self.config.width as f32, self.config.height as f32)
+    }
+
     /// Replace the world-mesh vertex buffer (grey triangles).
     pub fn set_mesh(&mut self, verts: &[MeshVertex]) {
         self.mesh_vbuf = self.upload(bytemuck::cast_slice(verts), verts.len() as u32, "mesh");

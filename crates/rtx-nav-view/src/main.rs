@@ -69,6 +69,28 @@ impl FlyCamera {
         proj * Mat4::look_to_rh(self.pos, self.dir(), Vec3::Z)
     }
 
+    /// Unproject a cursor position (physical pixels) into a world ray `(origin, unit direction)`.
+    /// `None` for a degenerate viewport or a camera basis that can't be inverted.
+    ///
+    /// The projection is `Mat4::perspective_rh`, so clip depth runs 0 (near) to 1 (far) — wgpu's
+    /// convention, not OpenGL's −1..1 — and the two unprojected points bracket the ray.
+    fn pick_ray(&self, aspect: f32, size: (f32, f32), cursor: (f32, f32)) -> Option<(Vec3, Vec3)> {
+        let (w, h) = size;
+        if w < 1.0 || h < 1.0 {
+            return None;
+        }
+        let inv = self.view_proj(aspect).inverse();
+        if !inv.is_finite() {
+            return None;
+        }
+        let ndc_x = 2.0 * cursor.0 / w - 1.0;
+        let ndc_y = 1.0 - 2.0 * cursor.1 / h; // window Y grows downward, NDC Y upward
+        let near = inv.project_point3(Vec3::new(ndc_x, ndc_y, 0.0));
+        let far = inv.project_point3(Vec3::new(ndc_x, ndc_y, 1.0));
+        let dir = (far - near).try_normalize()?;
+        Some((near, dir))
+    }
+
     /// Frame the whole map: stand back from a high corner and look at the center.
     fn frame(&mut self, mins: Vec3, maxs: Vec3) {
         let center = (mins + maxs) * 0.5;
@@ -121,6 +143,11 @@ struct App {
     live_mode: bool,
     /// Whether the live control-channel poller is currently connected to a running game.
     live_connected: bool,
+    /// Destination channel into the live poller: a left-click in the 3D view sends the picked world
+    /// point, which the poller turns into a `Goto` order. `None` unless started with `--live`.
+    goto_tx: Option<std::sync::mpsc::Sender<rtx_ctlproto::Vec3>>,
+    /// Last known cursor position in physical pixels — the pick ray's screen origin.
+    cursor: (f32, f32),
     egui_ctx: egui::Context,
     /// egui's winit input translator; created with the window in `resumed`.
     egui_state: Option<egui_winit::State>,
@@ -185,9 +212,39 @@ impl App {
             pending_bsp: None,
             live_mode: false,
             live_connected: false,
+            goto_tx: None,
+            cursor: (0.0, 0.0),
             egui_ctx: egui::Context::default(),
             egui_state: None,
         }
+    }
+
+    /// Order the live bot to the world point under the cursor — the `--live` left-click command.
+    ///
+    /// The click is unprojected into a world ray and traced against the map's **point** hull, so the
+    /// hit is the surface actually drawn under the cursor rather than wherever a player bounding box
+    /// would jam. That point is then snapped to the nearest nav cell and the cell's origin is what
+    /// gets sent: clicking anywhere on a floor picks the cell you meant, instead of a spot 24u under
+    /// it that the game would have to re-snap blind.
+    fn goto_under_cursor(&mut self) {
+        let (Some(tx), Some(gpu), Some((bsp, graph))) = (self.goto_tx.as_ref(), self.gpu.as_ref(), self.nav.as_ref())
+        else {
+            return;
+        };
+        let Some((from, dir)) = self.camera.pick_ray(gpu.aspect(), gpu.size(), self.cursor) else {
+            return;
+        };
+        // The far plane's distance: anything the camera can see is within it.
+        let hit = bsp.hull0_trace(from, from + dir * 32768.0);
+        if hit.fraction >= 1.0 || hit.start_solid {
+            return; // clicked the void, or the camera is buried in geometry
+        }
+        // Lift off the struck surface before snapping, so a floor click resolves to the cell standing
+        // on it rather than to whatever sits below a thin brush.
+        let target = graph
+            .nearest(hit.endpos + hit.plane_normal)
+            .map_or(hit.endpos, |c| graph.cell_origin(c));
+        let _ = tx.send(target.to_array());
     }
 
     /// Regenerate and upload the navmesh overlay (filled walkable surface + colored link lines) from
@@ -469,6 +526,9 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::DroppedFile(path) => self.load(&path),
             WindowEvent::RedrawRequested => self.draw(),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = (position.x as f32, position.y as f32);
+            }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Right,
@@ -476,6 +536,14 @@ impl ApplicationHandler<UserEvent> for App {
             } => {
                 self.set_looking(state == ElementState::Pressed);
             }
+            // Left click in the 3D view orders the live bot to the spot under the cursor. Clicks on
+            // the egui panel never reach here (consumed above), and while the right button holds the
+            // cursor for looking there's no meaningful screen position to pick from.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if !self.looking => self.goto_under_cursor(),
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     let pressed = event.state == ElementState::Pressed;
@@ -601,6 +669,9 @@ fn build_panel(ui: &mut egui::Ui, visible: &mut [bool; NUM_LINK_KINDS], live: Op
                     (egui::Color32::GRAY, "live: waiting for game…")
                 };
                 ui.colored_label(col, txt);
+                if connected {
+                    ui.weak("left-click the map to send the bot there");
+                }
             }
         });
 }
@@ -632,7 +703,70 @@ fn main() {
     let mut app = App::new(proxy.clone(), pending_path);
     if let Some(port) = live_port {
         app.live_mode = true;
-        live::spawn(proxy, port);
+        app.goto_tx = Some(live::spawn(proxy, port));
     }
     event_loop.run_app(&mut app).expect("run app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cam() -> FlyCamera {
+        FlyCamera {
+            pos: Vec3::new(100.0, -200.0, 64.0),
+            yaw: 0.7,
+            pitch: -0.4,
+        }
+    }
+
+    /// A click dead centre unprojects to the camera's own view direction — the sanity check that the
+    /// NDC mapping and the 0..1 (not -1..1) clip-depth convention are the right way round.
+    #[test]
+    fn centre_click_rays_along_the_view_direction() {
+        let c = cam();
+        let (w, h) = (1280.0, 720.0);
+        let (from, dir) = c.pick_ray(w / h, (w, h), (w * 0.5, h * 0.5)).expect("ray");
+        assert!(
+            dir.dot(c.dir()) > 0.9999,
+            "centre ray should follow the look direction (dot {})",
+            dir.dot(c.dir())
+        );
+        // The origin sits on the near plane, just ahead of the eye and along that same direction.
+        let off = from - c.pos;
+        assert!(
+            off.length() < 8.0,
+            "near-plane origin is ~4u ahead, got {}",
+            off.length()
+        );
+        assert!(
+            off.normalize_or_zero().dot(c.dir()) > 0.99,
+            "and lies in front of the eye"
+        );
+    }
+
+    /// Off-centre clicks must lean the correct way: right of centre yaws toward the camera's right,
+    /// above centre tilts up. Catches a flipped NDC axis, which a centre-only test can't see.
+    #[test]
+    fn off_centre_clicks_lean_the_right_way() {
+        let c = cam();
+        let (w, h) = (800.0, 600.0);
+        let fwd = c.dir();
+        let right = fwd.cross(Vec3::Z).normalize();
+        let ray = |x: f32, y: f32| c.pick_ray(w / h, (w, h), (x, y)).expect("ray").1;
+
+        assert!(ray(w * 0.9, h * 0.5).dot(right) > 0.0, "clicking right leans right");
+        assert!(ray(w * 0.1, h * 0.5).dot(right) < 0.0, "clicking left leans left");
+        // Window Y grows downward, so the top of the screen must aim higher than the bottom.
+        assert!(
+            ray(w * 0.5, h * 0.1).z > ray(w * 0.5, h * 0.9).z,
+            "the top of the window aims above the bottom"
+        );
+    }
+
+    /// A zero-sized viewport (a minimised window) has no ray rather than a NaN one.
+    #[test]
+    fn degenerate_viewport_has_no_ray() {
+        assert!(cam().pick_ray(1.0, (0.0, 0.0), (0.0, 0.0)).is_none());
+    }
 }

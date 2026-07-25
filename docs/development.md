@@ -46,6 +46,11 @@ cargo run -p rtx-nav-view -- --live    # ... attached to a running game (BSP + l
 cargo run -p rtx-mcp --quiet           # the MCP bridge (normally launched via .mcp.json)
 ```
 
+With `--live`, **left-clicking the map orders the bot there**: the click is unprojected into a world
+ray, traced against the map's point hull, and the hit snapped to the nearest nav cell, whose origin
+goes out as a `Goto` on the control channel. The bot's new route shows up in the red overlay on the
+next poll (~100ms). Right-drag still looks around, and clicks on the panel don't count as map clicks.
+
 The viewer builds the navmesh with the **game's stock loadout** — bhop speed jumps and rocket jumps
 on, double jump and the grapple off — so what you inspect is the mesh bots actually navigate. Those
 two arcade options are opt-in: their path-type checkboxes (marked `*`) re-run the build with that

@@ -8,6 +8,7 @@
 
 use std::io::{self, Write};
 use std::net::TcpStream;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
 use rtx_ctlproto::{self as proto, Cmd, Msg, Request, Resp};
@@ -19,11 +20,17 @@ use crate::UserEvent;
 const RECONNECT: Duration = Duration::from_secs(5);
 
 /// Spawn the poller thread. `port` is the game's `rtx_control_port` (default 27950).
-pub fn spawn(proxy: EventLoopProxy<UserEvent>, port: u16) {
-    std::thread::spawn(move || run(&proxy, port));
+///
+/// The returned sender carries world points the viewer wants the bot ordered to — a click in the 3D
+/// view. Sending is non-blocking and safe at any time: the poller only picks them up while a session
+/// is live, so clicks made with the game down are dropped rather than replayed late.
+pub fn spawn(proxy: EventLoopProxy<UserEvent>, port: u16) -> Sender<proto::Vec3> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || run(&proxy, port, &rx));
+    tx
 }
 
-fn run(proxy: &EventLoopProxy<UserEvent>, port: u16) {
+fn run(proxy: &EventLoopProxy<UserEvent>, port: u16, goto_rx: &Receiver<proto::Vec3>) {
     let mut next_id: i64 = 1;
     loop {
         if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
@@ -33,7 +40,7 @@ fn run(proxy: &EventLoopProxy<UserEvent>, port: u16) {
                 return;
             }
             // Poll until any I/O error (the game closed / was restarted), then drop out to reconnect.
-            let _ = session(proxy, &mut stream, &mut next_id);
+            let _ = session(proxy, &mut stream, &mut next_id, goto_rx);
             if proxy.send_event(UserEvent::LiveConnected(false)).is_err() {
                 return;
             }
@@ -44,9 +51,22 @@ fn run(proxy: &EventLoopProxy<UserEvent>, port: u16) {
     }
 }
 
+/// Take the most recent queued destination, discarding any older ones — a click supersedes the last,
+/// and anything queued while disconnected is stale by the time we reconnect.
+fn latest_goto(goto_rx: &Receiver<proto::Vec3>) -> Option<proto::Vec3> {
+    goto_rx.try_iter().last()
+}
+
 /// Poll one connection: resolve the first bot from `status`, then stream its `route` until an I/O
 /// error ends the session (a bad-bot reply just re-resolves — the bot may have died/respawned).
-fn session(proxy: &EventLoopProxy<UserEvent>, stream: &mut TcpStream, next_id: &mut i64) -> io::Result<()> {
+fn session(
+    proxy: &EventLoopProxy<UserEvent>,
+    stream: &mut TcpStream,
+    next_id: &mut i64,
+    goto_rx: &Receiver<proto::Vec3>,
+) -> io::Result<()> {
+    // Whatever piled up while we were down describes a game state that no longer exists.
+    latest_goto(goto_rx);
     // Fetch the map BSP once up front so the viewer renders the exact map the game is running —
     // no local `.bsp` needed, and it works even for maps that live only inside a `.pak` (the game
     // serves it through the engine filesystem). A game-side error just leaves the viewer mapless.
@@ -61,6 +81,16 @@ fn session(proxy: &EventLoopProxy<UserEvent>, stream: &mut TcpStream, next_id: &
             }
             if bot.is_none() {
                 std::thread::sleep(Duration::from_millis(300));
+                continue;
+            }
+        }
+        // A clicked destination goes out ahead of the route poll, so the very next poll already
+        // reflects the new route. `Goto` returns as soon as the order is accepted; the arrival (or
+        // stall) arrives later as an event, which `request` skips past on our behalf.
+        if let Some(pos) = latest_goto(goto_rx) {
+            if request(stream, next_id, Cmd::Goto { bot: bot.unwrap(), pos })?.is_err() {
+                // Stale bot id — re-resolve and poll afresh; the next click will land.
+                bot = None;
                 continue;
             }
         }
