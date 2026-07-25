@@ -1624,8 +1624,11 @@ mod sim {
             pm_frame(&mut w, &cmd, false);
         }
         let launch_yaw = takeoff.expect("unprofiled legacy curl never launched");
+        // Union baseline a293067 deliberately keeps main's friction-aware prestrafe and calibrated
+        // HumanMovementProfile. With no launch profile, the new yaw gate must be inert and reproduce
+        // that main trace exactly (the pre-union side branch traced -55.627052 under its older policy).
         assert!(
-            (launch_yaw - -55.627052).abs() < 0.001,
+            (launch_yaw - -40.946144).abs() < 0.001,
             "missing profile must preserve the old launch trace exactly: {launch_yaw}"
         );
         assert_eq!(b.launch_vetoes, 0, "missing profile must never enable the new veto");
