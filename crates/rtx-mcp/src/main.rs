@@ -766,6 +766,9 @@ struct TeleportArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct GotoArgs {
     bot: Option<u32>,
+    /// Include the full per-frame trajectory in the reply (default false). It is thousands of rows on
+    /// a long run — ask for it when you mean to read the path, not to check the outcome.
+    traj: Option<bool>,
     /// A navmesh cell id to run to. Takes precedence over x/y/z, which may then be omitted.
     cell: Option<u32>,
     x: Option<f32>,
@@ -1203,11 +1206,23 @@ impl RtxMcp {
                 None => [a.x.unwrap_or(0.0), a.y.unwrap_or(0.0), a.z.unwrap_or(0.0)],
             };
             let timeout = Duration::from_secs_f32(a.timeout.unwrap_or(30.0));
+            let want_traj = a.traj.unwrap_or(false);
             let conn = self.conn().await?;
             let rx = conn.events.subscribe();
             self.req(Cmd::Goto { bot, pos }, SHORT).await?;
-            conn.await_event(rx, |v| is_ev(v, "arrived", bot) || is_ev(v, "goto_stall", bot), timeout)
-                .await
+            let mut ev = conn
+                .await_event(rx, |v| is_ev(v, "arrived", bot) || is_ev(v, "goto_stall", bot), timeout)
+                .await?;
+            // The per-frame path is thousands of rows on a long run. Drop it unless asked for, so the
+            // common "did it get there" call stays readable.
+            if !want_traj {
+                if let Some(m) = ev.as_object_mut() {
+                    if let Some(n) = m.remove("traj").and_then(|t| t.as_array().map(|a| a.len())) {
+                        m.insert("traj_frames".into(), json!(n));
+                    }
+                }
+            }
+            Ok(ev)
         }
         .await;
         finish(r)

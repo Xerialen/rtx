@@ -553,6 +553,10 @@ pub struct Puppet {
     /// when it last improved. No improvement for a while ⇒ the target is (currently) inaccessible.
     pub best_dist: f32,
     pub best_since: f32,
+    /// Where the bot was when the stall clock last reset, so "is it making progress" can be answered
+    /// by *movement* rather than by beating a record. A detour that temporarily increases the distance
+    /// to the target is still progress; only a bot that has stopped moving is stuck.
+    pub anchor: Vec3,
     /// Highest altitude the goto seeker has reached — a vertical climb (a spiral to a target above)
     /// holds XY distance near-constant while ascending correctly, so a rise counts as progress and
     /// resets the stall clock. Rebased to `-inf` when the goto order is (re)issued.

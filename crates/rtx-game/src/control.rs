@@ -507,6 +507,7 @@ fn reset_nav_state(bot: &mut crate::bot::state::BotState, at: Vec3, now: f32) {
 fn do_goto(game: &mut GameState, bot: u32, pos: Vec3) -> Result<Resp, String> {
     let e = valid_bot(game, bot)?;
     let now = game.time();
+    let start = game.entities[e].v.origin;
     let b = &mut game.entities[e].bot;
     b.rj = RjState::default();
     b.route.clear();
@@ -516,6 +517,7 @@ fn do_goto(game: &mut GameState, bot: u32, pos: Vec3) -> Result<Resp, String> {
     b.puppet.best_dist = f32::INFINITY;
     b.puppet.best_z = f32::NEG_INFINITY;
     b.puppet.best_since = now;
+    b.puppet.anchor = start;
     Ok(Resp::Goto { bot, target: a3(pos) })
 }
 
@@ -1402,18 +1404,25 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, now: f32) {
         );
         return;
     }
-    let (best_dist, best_since, best_z) = {
+    let (best_dist, best_since, best_z, anchor) = {
         let p = &game.entities[e].bot.puppet;
-        (p.best_dist, p.best_since, p.best_z)
+        (p.best_dist, p.best_since, p.best_z, p.anchor)
     };
     // A climb toward a target above (a spiral staircase) holds XY distance near-constant while
     // ascending correctly, so gaining altitude counts as progress and keeps the stall clock from
     // false-tripping on the only way up — mirrors the bot's own route watchdog.
     let climbed = origin.z > best_z + GOTO_CLIMB_EPS;
-    if dxy < best_dist - STALL_EPS || climbed {
+    // Progress is *movement*, not a new record closest approach. The old rule compared against a
+    // high-water mark that only ever fell, so once the bot had been close, every later frame was
+    // judged against its best ever — and any route that must first go the wrong way (around an
+    // obstacle, back up after a fall, the long way round a wall) burned the clock while running at
+    // full speed. A bot that is genuinely stuck does not move at all, which is what this asks.
+    let travelled = (origin - anchor).length();
+    if travelled > STALL_EPS || climbed {
         let p = &mut game.entities[e].bot.puppet;
-        p.best_dist = dxy.min(p.best_dist);
+        p.best_dist = dxy.min(p.best_dist); // still reported, as the closest it ever got
         p.best_z = p.best_z.max(origin.z);
+        p.anchor = origin;
         p.best_since = now;
     } else if now - best_since > STALL_SECS {
         let traj = traj_rows(&std::mem::take(&mut game.entities[e].bot.puppet.traj));
