@@ -28,6 +28,10 @@ const SAMPLE_SLACK: usize = 2;
 const SAMPLE_LIMIT_MAX: usize = 4096;
 const CONTRACT_SLOP: f32 = 8.0;
 const SPAWN_SLOP: f32 = 0.125;
+/// Let a Hold usercmd cross the engine/program boundary before installing the measured fresh body.
+/// This is part of every trial (not a discarded warm-up attempt), and measured time starts only
+/// after the second reset at the end of this fence.
+const ARM_SECS: f32 = 0.1;
 
 fn scenario_label(scenario: proto::SngMegaScenario) -> &'static str {
     match scenario {
@@ -58,6 +62,33 @@ fn reset_trial_bot_state(bot: &mut BotState, at: Vec3, now: f32) {
     bot.watchdog.stuck_origin = at;
     bot.watchdog.stuck_since = now;
     bot.repath_time = now;
+}
+
+fn configure_trial_body(game: &mut GameState, e: EntId, at: Vec3, angles: Vec3, now: f32) {
+    game.configure_fresh_player_body(e);
+    game.place_fresh_player_body_at(e, at, angles);
+    reset_trial_bot_state(&mut game.entities[e].bot, at, now);
+    {
+        let ent = &mut game.entities[e];
+        ent.v.armorvalue = 0.0;
+        ent.v.armortype = 0.0;
+        ent.v.items = (Items::AXE | Items::SHOTGUN).as_f32();
+        ent.v.weapon = Weapon::Shotgun;
+        ent.v.ammo_shells = 25.0;
+        ent.v.ammo_nails = 0.0;
+        ent.v.ammo_rockets = 0.0;
+        ent.v.ammo_cells = 0.0;
+    }
+    game.w_set_current_ammo(e);
+}
+
+fn set_trial_waypoint_goal(state: &mut BotState, waypoint_item: u32, waypoint_terminal: u32, now: f32, deadline: f32) {
+    state.goal.set_item(waypoint_item);
+    state.goal.item_cell = waypoint_terminal;
+    state.goal.commit = GoalCommit::Pickup;
+    state.goal.since = now;
+    state.goal.next_pick = deadline + 1.0;
+    state.goal.magnet_item = 0;
 }
 
 fn exact_item(game: &GameState, classname: &str, contract: Vec3, label: &str) -> Result<EntId, String> {
@@ -216,32 +247,16 @@ pub(super) fn start_sng_mega(
 
     let at = start + Vec3::new(0.0, 0.0, 1.0);
     let start_angles = game.entities[spawn].v.angles;
-    game.configure_fresh_player_body(e);
-    game.place_fresh_player_body_at(e, at, start_angles);
-    reset_trial_bot_state(&mut game.entities[e].bot, at, now);
-    {
-        let ent = &mut game.entities[e];
-        ent.v.armorvalue = 0.0;
-        ent.v.armortype = 0.0;
-        ent.v.items = (Items::AXE | Items::SHOTGUN).as_f32();
-        ent.v.weapon = Weapon::Shotgun;
-        ent.v.ammo_shells = 25.0;
-        ent.v.ammo_nails = 0.0;
-        ent.v.ammo_rockets = 0.0;
-        ent.v.ammo_cells = 0.0;
-    }
-    game.w_set_current_ammo(e);
+    configure_trial_body(game, e, at, start_angles, now);
 
     let deadline = now + max_secs;
     let limit = sample_limit(max_secs);
     {
         let state = &mut game.entities[e].bot;
-        state.goal.set_item(rockets.0);
-        state.goal.item_cell = waypoint_terminal;
-        state.goal.commit = GoalCommit::Pickup;
-        state.goal.since = now;
-        state.goal.next_pick = deadline + 1.0;
-        state.goal.magnet_item = 0;
+        set_trial_waypoint_goal(state, rockets.0, waypoint_terminal, now, deadline);
+        // `set_bot_cmd` controls the following engine movement step. Hold across that seam before
+        // the measured reset so a command emitted before this request cannot contaminate attempt 1.
+        state.puppet.order = Some(ControlOrder::Hold);
         state.puppet.item_trial = Some(ItemTrial {
             request_id,
             item: mega.0,
@@ -250,6 +265,8 @@ pub(super) fn start_sng_mega(
             waypoint_done: false,
             scenario: scenario_label(scenario),
             start_hint: start,
+            arm_at: now + ARM_SECS,
+            start_angles,
             started: now,
             deadline,
             start_origin: at,
@@ -301,6 +318,38 @@ pub(super) fn poll_sng_mega(game: &mut GameState, e: EntId, bot: u32, now: f32) 
     let Some(mut trial) = game.entities[e].bot.puppet.item_trial.take() else {
         return;
     };
+
+    if trial.arm_at > 0.0 {
+        if now < trial.arm_at {
+            game.entities[e].bot.puppet.item_trial = Some(trial);
+            return;
+        }
+
+        // The Hold usercmd has crossed the engine boundary. Install a second fresh body at the
+        // contract pose and start the measured interval now; this is still the same requested
+        // attempt, with no route execution or result discarded during the fence.
+        let max_secs = trial.deadline - trial.started;
+        let waypoint_terminal = trial.move_frame.terminal;
+        configure_trial_body(game, e, trial.start_origin, trial.start_angles, now);
+        trial.arm_at = 0.0;
+        trial.started = now;
+        trial.deadline = now + max_secs;
+        trial.last_origin = trial.start_origin;
+        trial.last_velocity = Vec3::ZERO;
+        trial.last_t = now;
+        trial.motion_anchor = trial.start_origin;
+        trial.motion_since = now;
+        set_trial_waypoint_goal(
+            &mut game.entities[e].bot,
+            trial.waypoint_item,
+            waypoint_terminal,
+            now,
+            trial.deadline,
+        );
+        game.entities[e].bot.puppet.item_trial = Some(trial);
+        return;
+    }
+
     let origin = game.entities[e].v.origin;
     let velocity = game.entities[e].v.velocity;
     let on_ground = game.entities[e].v.flags.has(Flags::ONGROUND);

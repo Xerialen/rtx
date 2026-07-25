@@ -888,6 +888,12 @@ pub struct ItemTrial {
     pub waypoint_done: bool,
     pub scenario: &'static str,
     pub start_hint: Vec3,
+    /// Absolute server time at which the fresh body is installed for the measured run. Until then
+    /// a Hold usercmd drains the command submitted before the control request; without this fence,
+    /// that stale command can move the newly teleported body on a fresh server's first trial.
+    /// Zero once armed.
+    pub arm_at: f32,
+    pub start_angles: Vec3,
     pub started: f32,
     pub deadline: f32,
     pub start_origin: Vec3,
