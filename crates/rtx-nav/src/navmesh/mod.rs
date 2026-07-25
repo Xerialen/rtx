@@ -489,6 +489,8 @@ impl NavGraph {
         };
         graph.link_cells(bsp);
         graph.flag_ledges(bsp);
+        // Ledges first: `plant_cell` reads that flag, and the bridge below plants.
+        graph.bridge_grid_phase_gaps(bsp);
         graph
     }
 
@@ -596,6 +598,60 @@ impl NavGraph {
             }
             prev_solid = solid;
             z += SCAN_DZ;
+        }
+    }
+
+    /// Reconnect passages the sampling grid's *phase* cut in two.
+    ///
+    /// Cells are carved on a fixed 32u lattice, so a doorway is only sampled where the lattice happens
+    /// to cross it. Where a passage is narrower than the lattice pitch and sits out of phase with it,
+    /// every sample in the opening lands in solid and no cell is made — leaving the cells either side
+    /// two grid steps apart, which is past the reach of a grounded link, and the passage simply does
+    /// not exist to the planner. dm3 has one west of the yellow armour: the doorway is a perfectly
+    /// ordinary 46 units wide, but a player's centre may only be within `y -944..-930` there, and the
+    /// lattice samples `y -928` — missing it by two units.
+    ///
+    /// So where two cells sit exactly two steps apart with nothing between them and no link, probe
+    /// across the gap for the opening and plant a cell at its **centre**. The centre matters: it is
+    /// the furthest point from both walls, which is the same reason cells are held off walls in the
+    /// first place — a cell in a 46u doorway centre stands 23u from each face, more clearance than the
+    /// lattice point that failed would have had.
+    ///
+    /// Naturally self-limiting: on open floor the midpoint column is carved like any other, so the
+    /// "nothing between them" test fails and nothing is planted. It fires only where the carve missed.
+    fn bridge_grid_phase_gaps(&mut self, bsp: &Bsp) {
+        /// How far off the lattice line to look for the opening — half a step each way covers every
+        /// phase offset the lattice can be wrong by.
+        const SEARCH: f32 = GRID / 2.0;
+        /// Sampling pitch across the gap. Fine enough to find a slot a player barely fits through.
+        const PITCH: f32 = 2.0;
+
+        let mut plant: Vec<Vec3> = Vec::new();
+        for a in 0..self.cells.len() as CellId {
+            let ao = self.cells[a as usize].origin;
+            // Only the positive directions: every pair is symmetric, so this visits each once.
+            for (dx, dy) in [(2.0 * GRID, 0.0), (0.0, 2.0 * GRID)] {
+                let Some(b) = self.nearest_within(Vec3::new(ao.x + dx, ao.y + dy, ao.z), 8.0, STEP_HEIGHT) else {
+                    continue;
+                };
+                if self.has_direct_link(a, b) {
+                    continue;
+                }
+                let bo = self.cells[b as usize].origin;
+                let mid = Vec3::new(ao.x + dx / 2.0, ao.y + dy / 2.0, (ao.z + bo.z) * 0.5);
+                // Something already carved between them means this is not a phase gap.
+                if self.nearest_within(mid, GRID * 0.75, STEP_HEIGHT).is_some() {
+                    continue;
+                }
+                // Look across the gap, not along it.
+                let across = if dx > 0.0 { Vec3::Y } else { Vec3::X };
+                if let Some(p) = opening_centre(&|q| bsp.is_solid(q), mid, across, SEARCH, PITCH) {
+                    plant.push(p);
+                }
+            }
+        }
+        for p in plant {
+            self.plant_cell(bsp, p);
         }
     }
 
@@ -2123,6 +2179,59 @@ mod tests {
             Vec3::new(0.0, 0.0, 24.0),
             Vec3::new(64.0, 0.0, 24.0)
         ));
+    }
+
+    /// The phase-gap bridge against a real map (`RTX_TEST_BSP`, expected to be dm3): the doorway west
+    /// of the yellow armour, which the 32u lattice steps over because the opening sits between two of
+    /// its sample lines. Without the bridge the cells either side are two steps apart with no link and
+    /// the passage does not exist to the planner.
+    #[test]
+    fn bridges_the_dm3_doorway() {
+        let Ok(path) = std::env::var("RTX_TEST_BSP") else {
+            eprintln!("RTX_TEST_BSP unset - skipping");
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read bsp");
+        let bsp = Bsp::parse(&bytes).expect("parse bsp");
+        let g = NavGraph::build(&bsp);
+
+        // The two cells the lattice did carve, a full two steps apart.
+        let west = g.nearest(Vec3::new(1344.0, -928.0, -24.0)).expect("west cell");
+        let east = g.nearest(Vec3::new(1408.0, -928.0, -24.0)).expect("east cell");
+        assert!(
+            (g.cell_origin(west).x - 1344.0).abs() < 1.0 && (g.cell_origin(east).x - 1408.0).abs() < 1.0,
+            "expected the carved pair either side of the doorway"
+        );
+
+        // The lattice line through the doorway is solid — that is the whole problem.
+        assert!(
+            bsp.is_solid(Vec3::new(1376.0, -928.0, -24.0)),
+            "the doorway is only missed because the lattice line lands in solid"
+        );
+
+        // The bridge planted a cell in the opening, off-lattice and clear of both walls.
+        let bridge = g
+            .nearest_within(Vec3::new(1376.0, -937.0, -24.0), 12.0, 12.0)
+            .expect("a cell planted in the doorway");
+        let o = g.cell_origin(bridge);
+        assert!(
+            !bsp.is_solid(o) && (o.y + 937.0).abs() < 8.0,
+            "planted at the opening centre, not on the lattice line: {o:?}"
+        );
+
+        // And it joins the two, in both directions, so a route can cross.
+        for (from, to) in [(bridge, west), (west, bridge), (bridge, east), (east, bridge)] {
+            assert!(
+                g.adjacency[from as usize]
+                    .iter()
+                    .any(|&li| g.links[li as usize].to == to),
+                "expected a link {from} -> {to} through the doorway"
+            );
+        }
+        assert!(
+            g.find_path(east, west, &LinkCosts::default()).is_some(),
+            "the doorway routes"
+        );
     }
 
     /// The plant API against a real map (`RTX_TEST_BSP`, expected to be dm3): the shelf west of SNG

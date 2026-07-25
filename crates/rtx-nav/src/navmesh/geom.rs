@@ -296,3 +296,43 @@ pub(super) const JUMP_ELEV_BANDS: usize = (MAX_DROP / JUMP_ELEV_SPAN) as usize +
 pub(super) fn jump_elev_band(dz: f32) -> usize {
     (((dz / JUMP_ELEV_SPAN).round() as i32) + JUMP_ELEV_BANDS as i32 - 1).clamp(0, JUMP_ELEV_BANDS as i32 - 1) as usize
 }
+
+/// The centre of the walkable opening nearest `mid`, searched `reach` either way along `across`.
+///
+/// Returns the midpoint of the longest run of positions a player's centre may occupy, or `None` when
+/// the whole span is solid. Used to place a cell in a doorway the sampling lattice stepped over — the
+/// centre of the run is the furthest the body can be from either wall, which is what makes the cell
+/// safe to stand on rather than merely legal. See `NavGraph::bridge_grid_phase_gaps`.
+pub(super) fn opening_centre(
+    is_solid: &impl Fn(Vec3) -> bool,
+    mid: Vec3,
+    across: Vec3,
+    reach: f32,
+    pitch: f32,
+) -> Option<Vec3> {
+    let steps = (reach / pitch).ceil() as i32;
+    let (mut best, mut run): (Option<(f32, f32)>, Option<f32>) = (None, None);
+    // Walk the whole span once, tracking the current open run and keeping the longest.
+    for i in -steps..=steps {
+        let t = i as f32 * pitch;
+        let open = !is_solid(mid + across * t);
+        match (open, run) {
+            (true, None) => run = Some(t),
+            (false, Some(start)) => {
+                let prev = t - pitch;
+                if best.is_none_or(|(bs, be)| prev - start > be - bs) {
+                    best = Some((start, prev));
+                }
+                run = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = run {
+        let end = steps as f32 * pitch;
+        if best.is_none_or(|(bs, be)| end - start > be - bs) {
+            best = Some((start, end));
+        }
+    }
+    best.map(|(s, e)| mid + across * ((s + e) * 0.5))
+}
