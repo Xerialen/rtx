@@ -1444,6 +1444,12 @@ impl NavGraph {
         (self.links.len() - 1) as u32
     }
 
+    /// Bounded [`nearest`](Self::nearest): the closest cell within `horiz` XY and `vert` Z of `p`, or
+    /// `None`. Use where snapping to a far-away cell would be a silent error rather than a fallback.
+    pub fn cell_within(&self, p: Vec3, horiz: f32, vert: f32) -> Option<CellId> {
+        self.nearest_within(p, horiz, vert)
+    }
+
     /// Hand-plant a standing cell post-build (harness / bring-up), returning its id.
     ///
     /// The column carve samples one column per [`GRID`] step of XY and records the floor it finds, so a
@@ -1456,19 +1462,29 @@ impl NavGraph {
     /// wedges. Planting the cell gives it an honest position; planting a
     /// [`Drop`](LinkKind::Drop) off it with [`plant_grounded`](Self::plant_grounded) gives it a way down.
     ///
-    /// Deliberately additive and inert: a planted cell has **no inbound links** unless the caller plants
-    /// those too, so the planner can never route a bot *through* it — it only serves bots that are
-    /// already standing there. Call [`rebuild_derived`](Self::rebuild_derived) once the links are in.
+    /// Idempotent: planting a position that already resolves to a cell returns that cell with zero new
+    /// links, so a client retry after a lost reply cannot grow the graph. There is no unplant, and each
+    /// call costs a [`rebuild_derived`](Self::rebuild_derived) at the caller, so this matters.
+    ///
+    /// The cell is wired to genuinely walkable same-height neighbours **in both directions** through the
+    /// build's own `classify_grounded`, so where such neighbours exist the planner may route through it.
+    /// A shelf with nothing at its own height gets none, and is then reachable only by whatever the
+    /// caller plants — but do not mistake that special case for a guarantee.
     pub fn plant_cell(&mut self, bsp: &Bsp, pos: Vec3) -> Option<(CellId, usize)> {
         const TRACE_UP: f32 = 8.0;
         const TRACE_DOWN: f32 = GRID * 4.0;
+        /// How close an existing cell has to be to count as "already planted here".
+        const SAME_SPOT_XY: f32 = 8.0;
+        const SAME_SPOT_Z: f32 = 8.0;
 
         // Snap to the floor the caller is pointing at rather than trusting `pos.z`: a coordinate read
         // off a live bot's origin, a demo sample or a map screenshot is never exactly the standing
         // height, and a cell planted a few units off sits inside the floor or hovers over it.
         let start = pos + Vec3::Z * TRACE_UP;
         let trace = bsp.hull1_trace(start, pos - Vec3::Z * TRACE_DOWN);
-        if trace.start_solid || trace.fraction >= 1.0 || trace.plane_normal.z <= 0.0 {
+        // The surface must be one pmove would actually call ground. Anything shallower is a slope the
+        // player slides off, and a cell there claims a standing spot that does not exist.
+        if trace.start_solid || trace.fraction >= 1.0 || trace.plane_normal.z < crate::pmove::GROUND_NORMAL_Z {
             return None;
         }
         let origin = trace.endpos;
@@ -1476,14 +1492,18 @@ impl NavGraph {
         if bsp.is_solid(origin) || bsp.is_liquid_at(feet) {
             return None;
         }
+        if let Some(already) = self.nearest_within(origin, SAME_SPOT_XY, SAME_SPOT_Z) {
+            return Some((already, 0));
+        }
 
-        // Wire the new cell to whatever is genuinely walkable beside it, both ways, through the same
-        // `classify_grounded` the automatic build uses — so a planted cell on an edge strip rejoins the
-        // floor it belongs to instead of floating. A shelf with nothing at its own height (dm3's SNG
-        // ledge) simply gets none, which is correct: the only way off it is a `Drop`, and that is the
-        // caller's to plant.
         let existing = self.cells_near(origin.xy(), GRID * 1.5);
         let id = self.add_cell(origin);
+        // `add_cell` seeds the ledge flag `false` because it has no BSP; here we do, and the surfaces
+        // worth planting are exactly the narrow ones beside a drop. Leaving it false would deny the
+        // runtime the bhop/steering caution the build gives every carved cell in the same spot.
+        if !self.ledge.is_empty() {
+            self.ledge[id as usize] = ledge_beside(&|p| bsp.is_solid(p), origin);
+        }
         let mut links_created = 0;
         for other in existing {
             if (self.cells[other as usize].origin.z - origin.z).abs() > STEP_HEIGHT {
@@ -1499,15 +1519,23 @@ impl NavGraph {
         Some((id, links_created))
     }
 
-    /// Hand-plant a plain grounded link (`Walk`/`Step`/`Drop`) post-build, priced by the same
-    /// [`link_cost`] the automatic build uses so A\* weighs it against generated links on equal terms.
-    /// The runtime steers a planted grounded link exactly like a generated one — for a `Drop` that means
-    /// walking off the lip and falling, which is the whole point of planting one.
-    pub fn plant_grounded(&mut self, from: CellId, to: CellId, kind: LinkKind) -> u32 {
-        let (a, b) = (self.cells[from as usize].origin, self.cells[to as usize].origin);
-        let cost = link_cost(kind, (b.xy() - a.xy()).length(), b.z - a.z);
-        self.push_link(Link { from, to, kind, cost });
-        (self.links.len() - 1) as u32
+    /// Hand-plant a `Drop` off a planted shelf, post-build. Returns the new link index, or `None` when
+    /// the descent is not one the automatic build would itself emit.
+    ///
+    /// Validation is delegated wholesale to `classify_grounded` and the result required to be exactly
+    /// [`LinkKind::Drop`], so a planted drop carries the identical invariants a generated one does —
+    /// descending, within `MAX_DROP`, genuinely off a lip (`has_ground_near`), hull fits down
+    /// (`descent_clear`), corridor clear (`path_clear`) — and is priced by the same `link_cost`, so A\*
+    /// weighs it against generated links on equal terms. Without this a typo'd target resolves through
+    /// `nearest` to some cell across the map and installs a cheap edge through solid rock, permanently:
+    /// there is no unplant.
+    pub fn plant_drop(&mut self, bsp: &Bsp, from: CellId, to: CellId) -> Option<u32> {
+        let link = self.classify_grounded(bsp, from, to)?;
+        if link.kind != LinkKind::Drop {
+            return None;
+        }
+        self.push_link(link);
+        Some((self.links.len() - 1) as u32)
     }
 
     /// Rebuild the derived tables — the reachability closure and the LOD hierarchy — after a post-build
@@ -1594,7 +1622,8 @@ impl NavGraph {
         self.nearest_within(p, GRID * 5.0, 48.0)
     }
 
-    /// Nearest cell to `p` within `horiz` XY and `vert` Z of it, by 3D distance.
+    /// Nearest cell to `p` within `horiz` XY and `vert` Z of it, by 3D distance. Public as
+    /// [`cell_within`](Self::cell_within) for callers that must fail rather than snap.
     fn nearest_within(&self, p: Vec3, horiz: f32, vert: f32) -> Option<CellId> {
         let (gx, gy) = (floor_grid(p.x), floor_grid(p.y));
         let r = (horiz / GRID).ceil() as i32;
@@ -2057,6 +2086,69 @@ mod tests {
             Vec3::new(0.0, 0.0, 24.0),
             Vec3::new(64.0, 0.0, 24.0)
         ));
+    }
+
+    /// The plant API against a real map (`RTX_TEST_BSP`, expected to be dm3): the shelf west of SNG
+    /// that the 32u column carve cannot sample. Covers the four things the review asked for — the
+    /// ground-normal gate, idempotency, the ledge flag, and that a planted `Drop` carries the same
+    /// invariants a generated one does, including refusing the ones it should.
+    #[test]
+    fn plants_the_dm3_sng_shelf() {
+        let Ok(path) = std::env::var("RTX_TEST_BSP") else {
+            eprintln!("RTX_TEST_BSP unset - skipping");
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read bsp");
+        let bsp = Bsp::parse(&bytes).expect("parse bsp");
+        let mut g = NavGraph::build(&bsp);
+        let (cells0, links0) = (g.cells.len(), g.links.len());
+
+        // Before: the shelf is not in the mesh, and `nearest` answers with the floor far below.
+        let on_shelf = Vec3::new(-872.0, -42.0, 88.0);
+        let low = g.nearest(on_shelf).expect("some cell");
+        assert!(
+            g.cell_origin(low).z < 0.0,
+            "unplanted, the shelf should resolve to the floor beneath it, got {:?}",
+            g.cell_origin(low)
+        );
+        assert!(
+            g.cell_within(on_shelf, 8.0, 8.0).is_none(),
+            "the carve should not have sampled the shelf"
+        );
+
+        // Plant: snaps to the shelf, flags it as the ledge it is, and finds no same-height neighbour.
+        let (shelf, links) = g.plant_cell(&bsp, on_shelf).expect("shelf is standable");
+        assert!((g.cell_origin(shelf).z - 88.0).abs() < 2.0, "snapped to the shelf");
+        assert_eq!(links, 0, "nothing else sits at the shelf's height");
+        assert!(g.is_ledge(shelf), "a 12u shelf over a 104u drop is a ledge");
+        assert_eq!(g.nearest(on_shelf), Some(shelf), "now localises honestly");
+
+        // Idempotent: planting it again must not grow the graph.
+        let (again, links_again) = g.plant_cell(&bsp, on_shelf).expect("still standable");
+        assert_eq!((again, links_again), (shelf, 0), "second plant returns the same cell");
+        assert_eq!(g.cells.len(), cells0 + 1, "exactly one cell added in total");
+        assert_eq!(g.links.len(), links0, "no links added in total");
+
+        // A valid drop off the north lip is accepted and priced as a Drop.
+        let floor = g.nearest(Vec3::new(-864.0, 0.0, -16.0)).expect("floor cell");
+        let li = g.plant_drop(&bsp, shelf, floor).expect("the lip drop is real");
+        assert_eq!(g.link_kind(li), LinkKind::Drop);
+        assert_eq!(g.link_source(li), shelf);
+        assert_eq!(g.link_target(li), floor);
+
+        // And the ones that are not drops are refused, leaving the graph untouched.
+        let n = g.links.len();
+        assert!(g.plant_drop(&bsp, floor, shelf).is_none(), "upward is not a drop");
+        let far = g.nearest(Vec3::new(1232.0, -904.0, -48.0)).expect("YA cell");
+        assert!(g.plant_drop(&bsp, shelf, far).is_none(), "across the map is not a drop");
+        assert_eq!(g.links.len(), n, "a refused plant must not mutate");
+
+        // The planted topology survives the derived rebuild and is routable.
+        g.rebuild_derived();
+        assert!(
+            g.find_path(shelf, floor, &LinkCosts::default()).is_some(),
+            "a bot on the shelf can now path down"
+        );
     }
 
     /// Build the navmesh from a real map (`RTX_TEST_BSP`) and sanity-check it: cells and links

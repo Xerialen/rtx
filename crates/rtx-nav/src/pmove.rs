@@ -72,7 +72,7 @@ pub struct PmState {
 /// Overbounce for movement clipping (slide exactly along the plane, no bounce).
 const OVERBOUNCE: f32 = 1.0;
 /// A surface counts as ground when its normal tilts up at least this much (QW's `0.7`).
-const GROUND_NORMAL_Z: f32 = 0.7;
+pub const GROUND_NORMAL_Z: f32 = 0.7;
 /// Above this rising speed the player is considered airborne regardless of a floor below (jumping).
 const ONGROUND_MAX_VZ: f32 = 180.0;
 

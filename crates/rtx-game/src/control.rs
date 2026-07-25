@@ -1026,14 +1026,25 @@ fn plant_cell_resp(game: &mut GameState, pos: Vec3) -> Result<proto::PlanCellRes
 /// and the link is a no-op between two floor cells. The reply carries both resolved origins so the
 /// caller can assert it attached where it meant to.
 fn plant_drop_resp(game: &mut GameState, from: Vec3, to: Vec3) -> Result<proto::PlanDropResp, String> {
+    /// Endpoint resolution is bounded, unlike bare `nearest`: a position with nothing near it must be
+    /// an error, not a silent snap to whatever cell happens to be closest somewhere else on the map.
+    const REACH_XY: f32 = 48.0;
+    const REACH_Z: f32 = 48.0;
+    let bsp = game.nav.bsp.clone().ok_or("no bsp")?;
     let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
     let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
-    let from_cell = g.nearest(from).ok_or("no cell near from")?;
-    let to_cell = g.nearest(to).ok_or("no cell near to")?;
+    let resolve = |g: &rtx_nav::navmesh::NavGraph, p: Vec3, what: &str| {
+        g.cell_within(p, REACH_XY, REACH_Z)
+            .ok_or_else(|| format!("no cell within {REACH_XY}/{REACH_Z} of {what} {p:?}"))
+    };
+    let from_cell = resolve(g, from, "from")?;
+    let to_cell = resolve(g, to, "to")?;
     if from_cell == to_cell {
         return Err("from and to resolved to the same cell".into());
     }
-    let link = g.plant_grounded(from_cell, to_cell, rtx_nav::navmesh::LinkKind::Drop);
+    let link = g
+        .plant_drop(&bsp, from_cell, to_cell)
+        .ok_or("not a drop the build would emit (needs a descent off a lip, hull-clear, within MAX_DROP)")?;
     g.rebuild_derived();
     let (fo, to_o) = (g.cell_origin(from_cell), g.cell_origin(to_cell));
     Ok(proto::PlanDropResp {
