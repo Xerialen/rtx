@@ -769,7 +769,7 @@ pub fn nav_clusters(graph: &NavGraph, bsp: &Bsp) -> Vec<LineVertex> {
 
 /// Highlight color for the cell under the cursor — bright cyan, unused by the cluster hash (whose
 /// channels all floor at 0.35 and so never reach this saturation) and clear of the live route's red.
-pub const HOVER_COLOR: [f32; 3] = [0.15, 1.0, 1.0];
+const HOVER_COLOR: [f32; 3] = [0.15, 1.0, 1.0];
 
 /// Lift of the hover tile above the walkable surface. The surface pipeline doesn't depth-test against
 /// itself in a helpful order here, so a coplanar highlight would z-fight the tile it highlights.

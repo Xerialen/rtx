@@ -681,9 +681,17 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
-/// The hovered-cell readout, pinned to the bottom-left corner: the cell id and its world origin,
-/// matching the cyan tile highlighted in the 3D view. Nothing is drawn when nothing is hovered, so
-/// the corner stays clean while flying around.
+/// Axis tints for the origin readout — the near-universal X=red, Y=green, Z=blue convention, each
+/// lightened enough to stay legible on the popup's dark backing (a full-strength blue does not).
+const AXIS_COLORS: [egui::Color32; 3] = [
+    egui::Color32::from_rgb(255, 96, 96),
+    egui::Color32::from_rgb(120, 224, 120),
+    egui::Color32::from_rgb(120, 168, 255),
+];
+
+/// The hovered-cell readout, pinned to the bottom-left corner: the cell id in white, then the world
+/// origin with each component tinted by its axis. Nothing is drawn when nothing is hovered, so the
+/// corner stays clean while flying around.
 fn hover_readout(ui: &mut egui::Ui, hover: Option<(u32, Vec3)>) {
     let Some((cell, o)) = hover else { return };
     egui::Area::new(egui::Id::new("hover-readout"))
@@ -691,10 +699,16 @@ fn hover_readout(ui: &mut egui::Ui, hover: Option<(u32, Vec3)>) {
         .interactable(false)
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                let [r, g, b] = geom::HOVER_COLOR;
-                let col = egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
-                // Origins land on the 32u grid in XY but carry a fractional Z from the floor trace.
-                ui.colored_label(col, format!("cell {cell}   {:.0} {:.0} {:.1}", o.x, o.y, o.z));
+                // An anchored area offers no width to lay out against, so the default wrap mode would
+                // break the readout at every space — one word per line. Size to the content instead.
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::WHITE, format!("cell {cell}"));
+                    // Origins land on the 32u grid in XY but carry a fractional Z from the floor trace.
+                    for (v, col) in [o.x, o.y, o.z].into_iter().zip(AXIS_COLORS) {
+                        ui.colored_label(col, format!("{v:.1}"));
+                    }
+                });
             });
         });
 }
