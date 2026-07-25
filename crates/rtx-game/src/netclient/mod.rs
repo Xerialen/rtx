@@ -76,7 +76,6 @@ pub(crate) mod mirror;
 pub(crate) mod modes;
 pub(crate) mod nq_frames;
 pub(crate) mod nq_session;
-pub(crate) mod pak;
 pub(crate) mod senses;
 pub(crate) mod session;
 pub(crate) mod world;

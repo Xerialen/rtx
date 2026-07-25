@@ -46,6 +46,9 @@ mod nav_build;
 #[cfg(feature = "netclient")]
 pub mod netclient;
 mod obituary;
+/// Reading Quake `.pak` archives — where a stock install keeps its maps. Used by the control
+/// channel's map listing, and by the `netclient` feature's filesystem.
+pub(crate) mod pak;
 mod plats;
 mod player;
 mod pmove_sim;

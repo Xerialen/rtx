@@ -267,6 +267,10 @@ impl GameState {
             GameCommand::LoadEntities => self.load_entities(),
             GameCommand::StartFrame => self.start_frame(arg0, arg1),
             GameCommand::Shutdown => {
+                // Before anything else: the engine reloads this module on every map change, and a
+                // control channel left running would strand its listener on the port (see
+                // `control::shutdown`).
+                crate::control::shutdown(self);
                 self.oracle.shutdown();
                 // Join the bot pool's workers before the engine unloads us — dropping the pool only
                 // signals them (see `bot::par`). Idempotent and a no-op when the pool was never built.

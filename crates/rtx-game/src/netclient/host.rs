@@ -28,10 +28,10 @@ use glam::Vec3;
 use rtx_nav::bsp::Bsp;
 use rtx_proto::svc::MoveVars;
 
-use super::pak;
 use crate::cvars::RTX_CVAR_DEFAULTS;
 use crate::entity::EntId;
 use crate::host::ClientHost;
+use crate::pak;
 
 /// A usercmd the brain emitted this frame, waiting to be packed into a `clc_move`.
 #[derive(Clone, Copy, Debug)]
@@ -233,7 +233,7 @@ impl NetHost {
     ///
     /// Both halves of that order are the engine's rather than the intuitive one, and both matter for
     /// the same reason: the map we read is the map we checksum at `prespawn`, and a checksum of a
-    /// different copy is a connection dropped without a word. See [`super::pak`] for why paks come
+    /// different copy is a connection dropped without a word. See [`crate::pak`] for why paks come
     /// first — briefly, `FS_AddPathHandle` prepends a directory and then prepends each of its paks on
     /// top.
     fn find(&self, rel: &str) -> Option<Vec<u8>> {

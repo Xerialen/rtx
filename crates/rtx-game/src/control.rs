@@ -32,6 +32,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -67,9 +68,15 @@ const GOTO_CLIMB_EPS: f32 = 8.0;
 /// A FlyLink attempt gives up after this long with no touchdown (see `poll_fly`).
 const FLY_TIMEOUT: f32 = 8.0;
 
-/// The control channel's live state, carried on [`GameState`]. Persists across map loads (the socket
-/// binds once); `started` guards against re-binding. All fields stay untouched — the whole harness is
-/// inert — until `rtx_control_port` is set to a real port and the first frame binds the listener.
+/// The control channel's live state, carried on [`GameState`].
+///
+/// **This does not survive a map change.** The engine unloads and reloads the game module on every
+/// level change, which resets the module's statics and builds a fresh [`GameState`] — so `started`
+/// comes back `false` and the listener binds again. What does *not* reset is the threads the previous
+/// image spawned: an orphaned accept loop keeps winning connections and posting them to a channel
+/// whose receiver died with the old state, so every client is accepted and then never answered, for
+/// good. [`shutdown`] is what prevents that, by taking the sockets and threads down while the code
+/// they run is still mapped.
 #[derive(Default)]
 pub(crate) struct ControlState {
     /// Whether the listener has been (attempted to be) bound. Set once, so a bind is tried at most once.
@@ -82,6 +89,57 @@ pub(crate) struct ControlState {
     /// Outbound encoded [`Msg`] frames plus their delivery target. The writer thread owns the receiving
     /// half and the client table.
     out_tx: Option<Sender<(Target, Vec<u8>)>>,
+    /// Raised by [`shutdown`] to tell the accept loop to stop.
+    stop: Option<Arc<AtomicBool>>,
+    /// The port the listener bound, so [`shutdown`] can poke a blocked `accept` awake.
+    port: u16,
+    /// The live client table, shared with the writer thread — [`shutdown`] closes these sockets so the
+    /// reader threads fall out of `read_frame`.
+    clients: Option<Arc<Mutex<HashMap<u64, TcpStream>>>>,
+    /// Accept and writer loops, joined by [`shutdown`] before the module image goes away.
+    threads: Vec<std::thread::JoinHandle<()>>,
+    /// One clone per live reader thread; [`shutdown`] waits for the count to fall back to its own.
+    readers: Option<Arc<()>>,
+}
+
+/// Take the control channel down and wait for its threads to leave our code — called from
+/// `GAME_SHUTDOWN`, just before the engine unloads the module on a level change.
+///
+/// Skipping this is what breaks the channel permanently after a `map` command: the replacement image
+/// binds a second listener while the previous one is still queued on the same port, and connections
+/// that land on the stale one are never served. Joining here also keeps the threads from running code
+/// that has been unmapped underneath them.
+pub(crate) fn shutdown(game: &mut GameState) {
+    let Some(stop) = game.control.stop.take() else {
+        return; // never started
+    };
+    stop.store(true, Ordering::SeqCst);
+    // Close every client socket so the reader threads leave their blocking `read_frame`.
+    if let Some(clients) = game.control.clients.take() {
+        if let Ok(m) = clients.lock() {
+            for s in m.values() {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+        }
+    }
+    // Dropping these ends the writer loop (`recv` fails) and makes the readers' sends fail.
+    game.control.out_tx = None;
+    game.control.requests_rx = None;
+    // `accept` blocks until a connection arrives, so knock on the door to let it see `stop`.
+    let _ = TcpStream::connect((Ipv4Addr::LOCALHOST, game.control.port));
+    for h in std::mem::take(&mut game.control.threads) {
+        let _ = h.join();
+    }
+    // Reader threads aren't individually tracked; wait for the last clone of the token to drop.
+    if let Some(token) = game.control.readers.take() {
+        for _ in 0..200 {
+            if Arc::strong_count(&token) == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    game.control.started = false;
 }
 
 /// Where an outbound frame goes: a reply to the one client that asked, or an event broadcast to all.
@@ -161,6 +219,10 @@ pub(crate) fn frame_end(game: &mut GameState) {
     }
 }
 
+/// How long a single outbound write may stall before the client is treated as gone. See where it's
+/// applied in [`listener_loop`].
+const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Bind the localhost listener and spawn the socket threads (see the module docs). Called once; on
 /// bind failure it logs and leaves the channel down (`events_tx` stays `None`, so `frame_end` no-ops).
 fn start_listener(game: &mut GameState, port: u16) {
@@ -174,6 +236,8 @@ fn start_listener(game: &mut GameState, port: u16) {
             return;
         }
     };
+    let stop = Arc::new(AtomicBool::new(false));
+    let readers = Arc::new(());
     let (requests_tx, requests_rx) = std::sync::mpsc::channel::<(u64, Vec<u8>)>();
     let (out_tx, out_rx) = std::sync::mpsc::channel::<(Target, Vec<u8>)>();
     // The live client table (write halves keyed by connection id), shared by the writer thread and the
@@ -181,10 +245,18 @@ fn start_listener(game: &mut GameState, port: u16) {
     // navview viewer — with replies routed by id and events broadcast to all.
     let clients: Arc<Mutex<HashMap<u64, TcpStream>>> = Arc::new(Mutex::new(HashMap::new()));
     let wclients = clients.clone();
-    std::thread::spawn(move || writer_loop(out_rx, wclients));
-    std::thread::spawn(move || listener_loop(listener, requests_tx, clients));
+    let writer = std::thread::spawn(move || writer_loop(out_rx, wclients));
+    let lstop = stop.clone();
+    let lreaders = readers.clone();
+    let lclients = clients.clone();
+    let accept = std::thread::spawn(move || listener_loop(listener, requests_tx, lclients, lstop, lreaders));
     game.control.requests_rx = Some(requests_rx);
     game.control.out_tx = Some(out_tx);
+    game.control.stop = Some(stop);
+    game.control.port = port;
+    game.control.clients = Some(clients);
+    game.control.threads = vec![accept, writer];
+    game.control.readers = Some(readers);
     game.host
         .conprint(&cstring(&format!("rtx: control: listening on 127.0.0.1:{port}\n")));
 }
@@ -195,20 +267,31 @@ fn listener_loop(
     listener: TcpListener,
     requests_tx: Sender<(u64, Vec<u8>)>,
     clients: Arc<Mutex<HashMap<u64, TcpStream>>>,
+    stop: Arc<AtomicBool>,
+    readers: Arc<()>,
 ) {
     let mut next_id: u64 = 0;
     for stream in listener.incoming().flatten() {
+        if stop.load(Ordering::SeqCst) {
+            break; // shutting down: drop the listener so the port is free for the next module image
+        }
         let _ = stream.set_nodelay(true);
         let id = next_id;
         next_id += 1;
         if let Ok(wr) = stream.try_clone() {
+            // A client that stops draining must not stall the writer indefinitely: past this, the
+            // write fails and the connection is dropped, which is the recoverable outcome. Generous,
+            // because a legitimately slow reader taking a multi-megabyte BSP is not a dead one.
+            let _ = wr.set_write_timeout(Some(WRITE_TIMEOUT));
             if let Ok(mut m) = clients.lock() {
                 m.insert(id, wr);
             }
         }
         let tx = requests_tx.clone();
         let clients = clients.clone();
+        let alive = readers.clone(); // dropped when this reader returns; `shutdown` waits on the count
         std::thread::spawn(move || {
+            let _alive = alive;
             let mut stream = stream;
             loop {
                 match proto::read_frame(&mut stream) {
@@ -232,24 +315,38 @@ fn listener_loop(
 /// table (a reconnecting client resyncs via `status`).
 fn writer_loop(out_rx: Receiver<(Target, Vec<u8>)>, clients: Arc<Mutex<HashMap<u64, TcpStream>>>) {
     while let Ok((target, frame)) = out_rx.recv() {
-        let Ok(mut m) = clients.lock() else { continue };
-        match target {
-            Target::One(id) => {
-                if let Some(stream) = m.get_mut(&id) {
-                    if stream.write_all(&frame).is_err() {
-                        m.remove(&id);
-                    } else {
-                        let _ = stream.flush();
-                    }
-                }
+        // Pick the recipients under the lock, then **release it before writing**. `write_all` blocks
+        // once the peer stops draining — a multi-megabyte BSP overruns a socket buffer several times
+        // over — and holding the table across that wedges the whole channel: `listener_loop` needs
+        // the same lock to register a connection, so even a freshly restarted client would sit there
+        // accepted but never served, looking for all the world like the server had died.
+        let targets: Vec<(u64, TcpStream)> = {
+            let Ok(m) = clients.lock() else { continue };
+            match target {
+                Target::One(id) => m
+                    .get(&id)
+                    .and_then(|s| s.try_clone().ok())
+                    .map(|s| (id, s))
+                    .into_iter()
+                    .collect(),
+                // `try_clone` dups the handle, so the clone writes to the same connection.
+                Target::All => m
+                    .iter()
+                    .filter_map(|(&id, s)| Some((id, s.try_clone().ok()?)))
+                    .collect(),
             }
-            Target::All => {
-                m.retain(|_, stream| {
-                    stream
-                        .write_all(&frame)
-                        .map(|_| stream.flush().is_ok())
-                        .unwrap_or(false)
-                });
+        };
+        let mut dead = Vec::new();
+        for (id, mut stream) in targets {
+            if stream.write_all(&frame).and_then(|()| stream.flush()).is_err() {
+                dead.push(id);
+            }
+        }
+        if !dead.is_empty() {
+            if let Ok(mut m) = clients.lock() {
+                for id in dead {
+                    m.remove(&id);
+                }
             }
         }
     }
@@ -314,6 +411,7 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
         Cmd::Audit { bot, lines } => audit_resp(game, bot, lines as usize).map(Resp::Audit),
         Cmd::Curls => curls_resp(game).map(Resp::Curls),
         Cmd::Bsp => bsp_resp(game).map(|b| Resp::Bsp(Box::new(b))),
+        Cmd::Maps => Ok(Resp::Maps(maps_resp(game))),
         Cmd::Probe {
             takeoff,
             tgt,
@@ -1121,6 +1219,41 @@ fn bsp_resp(game: &GameState) -> Result<proto::BspResp, String> {
         map: game.level.mapname.clone(),
         bytes,
     })
+}
+
+/// Every map this server could load, lowercased, deduped and sorted.
+///
+/// The engine exposes no directory listing to a game module (`G_FSOpenFile` opens a *named* file), so
+/// this walks the filesystem itself. That's sound because the module runs inside the server process:
+/// its working directory is the server's, and the gamedirs are the ones the engine is searching. The
+/// order mirrors `FS_AddPathHandle` — the active gamedir plus `id1` underneath it — and each is
+/// checked for both loose `maps/*.bsp` and `maps/*.bsp` inside its `.pak`s, since a stock install
+/// keeps every map in `pak0.pak` and has no `maps/` directory at all.
+///
+/// Best-effort by design: an unreadable directory or a damaged pak contributes nothing rather than
+/// failing the listing, so a client always gets a usable (if shorter) picker.
+fn maps_resp(game: &GameState) -> Vec<String> {
+    let mut buf = [0u8; 64];
+    // mvdsv publishes the active gamedir as the `*gamedir` serverinfo key; `qw` is the stock default.
+    let gamedir = match game.host.infokey(EntId::WORLD, c"*gamedir", &mut buf) {
+        "" => "qw".to_string(),
+        g => g.to_string(),
+    };
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for dir in [gamedir.as_str(), "id1"] {
+        let dir = std::path::Path::new(dir);
+        if let Ok(entries) = std::fs::read_dir(dir.join("maps")) {
+            let stems = entries.flatten().map(|e| e.path()).filter(|p| {
+                p.extension()
+                    .is_some_and(|x| x.eq_ignore_ascii_case(std::ffi::OsStr::new("bsp")))
+            });
+            names.extend(stems.filter_map(|p| Some(p.file_stem()?.to_str()?.to_ascii_lowercase())));
+        }
+        for pak in crate::pak::paks_in(dir) {
+            names.extend(pak.map_names().map(str::to_string));
+        }
+    }
+    names.into_iter().collect()
 }
 
 /// List every generated curl link (SpeedJump with `curl_gain > 0`).

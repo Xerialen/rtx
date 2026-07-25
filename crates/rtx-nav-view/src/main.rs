@@ -49,6 +49,8 @@ enum UserEvent {
     Bsp(Box<rtx_ctlproto::BspResp>),
     /// The live control-channel connection came up (`true`) or dropped (`false`).
     LiveConnected(bool),
+    /// Every map the connected server could load, for the map picker.
+    Maps(Vec<String>),
 }
 
 /// A noclip fly camera: a position plus yaw/pitch look angles (Quake Z-up, right-handed).
@@ -143,9 +145,11 @@ struct App {
     live_mode: bool,
     /// Whether the live control-channel poller is currently connected to a running game.
     live_connected: bool,
-    /// Destination channel into the live poller: a left-click in the 3D view sends the picked world
-    /// point, which the poller turns into a `Goto` order. `None` unless started with `--live`.
-    goto_tx: Option<std::sync::mpsc::Sender<rtx_ctlproto::Vec3>>,
+    /// Order channel into the live poller — a click's destination, or a map change. `None` unless
+    /// started with `--live`.
+    orders: Option<std::sync::mpsc::Sender<live::Order>>,
+    /// Maps the connected server can load, for the picker. Empty until the list arrives.
+    maps: Vec<String>,
     /// Last known cursor position in physical pixels — the pick ray's screen origin.
     cursor: (f32, f32),
     /// The nav cell under the cursor: highlighted in the 3D view and read out in the corner.
@@ -225,7 +229,8 @@ impl App {
             pending_bsp: None,
             live_mode: false,
             live_connected: false,
-            goto_tx: None,
+            orders: None,
+            maps: Vec::new(),
             cursor: (0.0, 0.0),
             hovered: None,
             egui_ctx: egui::Context::default(),
@@ -280,11 +285,11 @@ impl App {
     /// cell's *origin*, so the game gets a standing position rather than a point on the floor 24u
     /// below it that it would have to re-snap blind. A click not over a cell does nothing.
     fn goto_under_cursor(&mut self) {
-        let (Some(tx), Some(cell), Some((_, graph))) = (self.goto_tx.as_ref(), self.pick_cell(), self.nav.as_ref())
+        let (Some(tx), Some(cell), Some((_, graph))) = (self.orders.as_ref(), self.pick_cell(), self.nav.as_ref())
         else {
             return;
         };
-        let _ = tx.send(graph.cell_origin(cell).to_array());
+        let _ = tx.send(live::Order::Goto(graph.cell_origin(cell).to_array()));
     }
 
     /// Regenerate and upload the navmesh overlay (filled walkable surface + colored link lines) from
@@ -351,10 +356,17 @@ impl App {
         let ctx = self.egui_ctx.clone();
         let mut visible = self.visible;
         let live = self.live_mode.then_some(self.live_connected);
+        let (maps, current_map) = (std::mem::take(&mut self.maps), self.loaded_map.clone());
+        let mut pick_map = None;
         let full = ctx.run_ui(raw_input, |ui| {
-            build_panel(ui, &mut visible, live);
+            build_panel(ui, &mut visible, live, &maps, current_map.as_deref(), &mut pick_map);
             hover_readout(ui, hover);
         });
+        self.maps = maps;
+        if let (Some(name), Some(tx)) = (pick_map, self.orders.as_ref()) {
+            let _ = tx.send(live::Order::Map(name.clone()));
+            self.set_title(&format!("navview — switching to {name}…"));
+        }
         self.egui_state
             .as_mut()
             .unwrap()
@@ -411,6 +423,7 @@ impl App {
     fn load_bytes(&mut self, bytes: &[u8], name: &str) {
         let Some(gpu) = self.gpu.as_mut() else { return };
         let Some(mesh) = geom::parse_render_mesh(bytes) else {
+            eprintln!("navview: {name}: render lumps unreadable ({} bytes)", bytes.len());
             self.set_title(&format!("navview — {name}: not a supported BSP"));
             return;
         };
@@ -429,6 +442,7 @@ impl App {
         // Parse the BSP once on the main thread; the worker shares it (`Arc`) to build, and it rides
         // back with the graph for the overlay's liquid/hull queries.
         let Some(bsp) = Bsp::parse(bytes).map(Arc::new) else {
+            eprintln!("navview: {name}: BSP parse failed ({} bytes)", bytes.len());
             self.set_title(&format!("navview — {name}: BSP parse failed"));
             return;
         };
@@ -640,11 +654,19 @@ impl ApplicationHandler<UserEvent> for App {
                     graph.cells.len(),
                     graph.links.len()
                 ));
+                eprintln!("TRACE NavBuilt cells={} links={}", graph.cells.len(), graph.links.len());
                 self.nav = Some((bsp, graph));
                 self.rebuild_overlay();
             }
             UserEvent::Live(route) => self.apply_live(&route),
             UserEvent::Bsp(bsp) => {
+                eprintln!(
+                    "TRACE Bsp event map={:?} bytes={} loaded_map={:?} gpu={}",
+                    bsp.map,
+                    bsp.bytes.len(),
+                    self.loaded_map,
+                    self.gpu.is_some()
+                );
                 // Skip if we already have this map (e.g. a refetch after a reconnect); otherwise load
                 // now, or stash it for `resumed` if the renderer isn't up yet.
                 if self.loaded_map.as_deref() == Some(bsp.map.as_str()) {
@@ -662,6 +684,7 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
             }
+            UserEvent::Maps(maps) => self.maps = maps,
         }
         if let Some(w) = &self.window {
             w.request_redraw();
@@ -724,7 +747,14 @@ fn hover_readout(ui: &mut egui::Ui, hover: Option<(u32, Vec3)>) {
 ///
 /// The [`BUILD_GATED`] kinds are marked with a `*` and a tooltip: their solver is off by default (the
 /// game's stock loadout), so ticking one re-runs the navmesh build rather than just unhiding lines.
-fn build_panel(ui: &mut egui::Ui, visible: &mut [bool; NUM_LINK_KINDS], live: Option<bool>) {
+fn build_panel(
+    ui: &mut egui::Ui,
+    visible: &mut [bool; NUM_LINK_KINDS],
+    live: Option<bool>,
+    maps: &[String],
+    current_map: Option<&str>,
+    pick_map: &mut Option<String>,
+) {
     egui::Window::new("Path types")
         .default_pos([12.0, 12.0])
         .resizable(false)
@@ -759,6 +789,24 @@ fn build_panel(ui: &mut egui::Ui, visible: &mut [bool; NUM_LINK_KINDS], live: Op
                 if connected {
                     ui.weak("left-click the map to send the bot there");
                 }
+                // The map picker: the server's own list of loadable maps, current one selected.
+                // Choosing another changes level, which the poller then follows.
+                if connected && !maps.is_empty() {
+                    let shown = current_map.unwrap_or("—");
+                    egui::ComboBox::from_id_salt("map-picker")
+                        .selected_text(shown)
+                        .show_ui(ui, |ui| {
+                            for name in maps {
+                                // `selectable_label` rather than `selectable_value`: the selection is
+                                // owned by the server, so a click is a *request*, not a local change.
+                                if ui.selectable_label(current_map == Some(name.as_str()), name).clicked()
+                                    && current_map != Some(name.as_str())
+                                {
+                                    *pick_map = Some(name.clone());
+                                }
+                            }
+                        });
+                }
             }
         });
 }
@@ -790,7 +838,7 @@ fn main() {
     let mut app = App::new(proxy.clone(), pending_path);
     if let Some(port) = live_port {
         app.live_mode = true;
-        app.goto_tx = Some(live::spawn(proxy, port));
+        app.orders = Some(live::spawn(proxy, port));
     }
     event_loop.run_app(&mut app).expect("run app");
 }

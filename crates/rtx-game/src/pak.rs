@@ -38,6 +38,8 @@ const NAME_SIZE: usize = 56;
 /// else), so the cost of reopening it is nothing next to the cost of an open handle that has to be
 /// kept valid across a level change.
 pub(crate) struct Pak {
+    /// Only needed to re-open the file for [`Pak::read`]; the map listing stops at the directory.
+    #[cfg_attr(not(feature = "netclient"), allow(dead_code))]
     path: PathBuf,
     /// Lowercased name → (offset, length). Quake's names are case-insensitive; a map referenced as
     /// `maps/DM4.bsp` is the same file.
@@ -83,7 +85,17 @@ impl Pak {
         })
     }
 
-    /// Read one file out of the pak.
+    /// The map names inside this pak — every `maps/<name>.bsp` entry, stem only. A stock install
+    /// keeps all of id's maps here rather than as loose files, so this is where `dm3` comes from.
+    pub(crate) fn map_names(&self) -> impl Iterator<Item = &str> {
+        self.entries
+            .keys()
+            .filter_map(|n| n.strip_prefix("maps/")?.strip_suffix(".bsp"))
+    }
+
+    /// Read one file out of the pak. Only the `netclient` filesystem pulls bytes back out; the
+    /// control channel's map listing reads the directory and stops there.
+    #[cfg_attr(not(feature = "netclient"), allow(dead_code))]
     pub(crate) fn read(&self, name: &str) -> Option<Vec<u8>> {
         let &(offset, length) = self.entries.get(&name.to_ascii_lowercase())?;
         let mut f = std::fs::File::open(&self.path).ok()?;
@@ -153,6 +165,30 @@ mod tests {
         d
     }
 
+    /// The map listing picks out `maps/*.bsp` and nothing else — a stock install keeps every map in
+    /// a pak, so this is the only way `dm3` reaches a client's map picker.
+    #[test]
+    fn lists_only_the_maps() {
+        let d = tmp("maps");
+        let p = write(
+            &d,
+            "pak0.pak",
+            &make_pak(&[
+                ("maps/DM4.bsp", b"the bad place"),
+                ("maps/e1m2.bsp", b"castle"),
+                ("maps/b_batt0.bsp", b"a brush model, but still a map entry"),
+                ("progs/player.mdl", b"IDPO"),
+                ("maps/dm4.lit", b"lightmap, not a map"),
+                ("sound/misc/menu1.wav", b"RIFF"),
+            ]),
+        );
+        let pak = Pak::open(&p).expect("a pak");
+        let mut names: Vec<&str> = pak.map_names().collect();
+        names.sort_unstable();
+        // Names are lowercased on the way in, so `maps/DM4.bsp` lists as `dm4`.
+        assert_eq!(names, ["b_batt0", "dm4", "e1m2"]);
+    }
+
     /// The whole of the format, on a pak we built ourselves.
     #[test]
     fn reads_a_paks_directory_and_its_files() {
@@ -199,6 +235,8 @@ mod tests {
     /// right bytes" and "will this connection work" are the same question. And it has a free oracle:
     /// ezQuake's authors hardcode the id originals' values, computed independently, and one byte
     /// wrong anywhere in the pak reader moves the number.
+    // Drives the `netclient` filesystem end to end, so it only exists in that build.
+    #[cfg(feature = "netclient")]
     #[test]
     fn reads_a_real_install_well_enough_for_a_server_to_accept() {
         let Ok(base) = std::env::var("RTX_TEST_BASEDIR") else {

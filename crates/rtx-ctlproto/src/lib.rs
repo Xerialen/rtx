@@ -122,6 +122,9 @@ pub enum Cmd {
     Curls,
     /// Fetch the current map's raw BSP file, so a viewer can render the world without a local copy.
     Bsp,
+    /// Every map the server could load — loose `.bsp` plus the ones inside its `.pak`s. Lets a client
+    /// offer a map picker without guessing where the server's gamedirs live on disk.
+    Maps,
     /// Probe the build-time curl certifier.
     Probe {
         takeoff: Vec3,
@@ -203,6 +206,8 @@ pub enum Resp {
     Curl(CurlResp),
     PlanLink(PlanLinkResp),
     Bsp(Box<BspResp>),
+    /// Loadable map names, lowercased and sorted (see [`Cmd::Maps`]).
+    Maps(Vec<String>),
 }
 
 /// The current map's raw BSP file plus its name, so a viewer can parse the render lumps and draw the
