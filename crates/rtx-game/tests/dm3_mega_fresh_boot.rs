@@ -13,6 +13,8 @@
 //! RTX_DM3_FRESH_BOOT_QWPROGS=/path/to/qwprogs.so
 //! cargo test -p rtx-game --test dm3_mega_fresh_boot -- --ignored --nocapture
 //! ```
+//!
+//! For the supported one-command wrapper, see `scripts/test-dm3-mega-fresh-boot.sh`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
@@ -32,6 +34,7 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(12 * 60);
 #[derive(Debug, Deserialize)]
 struct PatchContract {
     id: String,
+    bsp_sha256: String,
     source_graph_sha256: String,
     patched_graph_sha256: String,
     counts: Counts,
@@ -40,6 +43,10 @@ struct PatchContract {
 
 #[derive(Debug, Deserialize)]
 struct Counts {
+    source_cells: u32,
+    source_links: u32,
+    removed_links: u32,
+    added_links: u32,
     patched_links: u32,
     patched_active_links: u32,
 }
@@ -199,6 +206,11 @@ fn copy(source: &Path, target: &Path) {
         .unwrap_or_else(|error| panic!("copy {} -> {}: {error}", source.display(), target.display()));
 }
 
+fn file_sha256(path: &Path) -> String {
+    let bytes = fs::read(path).unwrap_or_else(|error| panic!("read {} for SHA-256: {error}", path.display()));
+    rtx_nav::navmesh::hex_digest(&rtx_nav::navmesh::sha256_bytes(&bytes))
+}
+
 fn fresh_root() -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -288,10 +300,17 @@ fn assert_zero_cvar(control: &mut Control, name: &str) {
 #[ignore = "requires mvdsv, pak0.pak, dm3.bsp, and a freshly-built qwprogs module"]
 fn dm3_mega_patch_survives_fresh_boot_and_40_item_trials() {
     let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PATCH_PATH);
-    let contract: PatchContract =
-        serde_json::from_slice(&fs::read(&manifest_path).expect("read DM3 patch")).expect("parse DM3 patch");
+    let manifest_bytes = fs::read(&manifest_path).expect("read DM3 patch");
+    let manifest_sha256 = rtx_nav::navmesh::hex_digest(&rtx_nav::navmesh::sha256_bytes(&manifest_bytes));
+    let contract: PatchContract = serde_json::from_slice(&manifest_bytes).expect("parse DM3 patch");
     assert_eq!(contract.verification.attempts, 40);
     assert_eq!(contract.verification.scenarios.len(), 2);
+    let bsp_sha256 = file_sha256(&required_path("RTX_DM3_FRESH_BOOT_BSP"));
+    let qwprogs_sha256 = file_sha256(&required_path("RTX_DM3_FRESH_BOOT_QWPROGS"));
+    assert_eq!(
+        bsp_sha256, contract.bsp_sha256,
+        "runtime BSP does not match patch contract"
+    );
 
     let control_port = free_tcp_port();
     let game_port = free_udp_port();
@@ -316,10 +335,14 @@ fn dm3_mega_patch_survives_fresh_boot_and_40_item_trials() {
         .as_ref()
         .expect("DM3 status has built-in patch provenance");
     assert_eq!(patch.id, contract.id);
+    assert_eq!(patch.manifest_sha256, manifest_sha256);
     assert_eq!(patch.source_graph_sha256, contract.source_graph_sha256);
     assert_eq!(patch.patched_graph_sha256, contract.patched_graph_sha256);
+    assert_eq!(patch.removed_links, contract.counts.removed_links);
+    assert_eq!(patch.added_links, contract.counts.added_links);
     assert_eq!(patch.total_links, contract.counts.patched_links);
     assert_eq!(patch.active_links, contract.counts.patched_active_links);
+    assert_eq!(ready.cells, contract.counts.source_cells);
     assert_eq!(ready.links, contract.counts.patched_links);
     assert_zero_cvar(&mut control, "rtx_walljump");
     assert_zero_cvar(&mut control, "rtx_doublejump");
@@ -369,8 +392,15 @@ fn dm3_mega_patch_survives_fresh_boot_and_40_item_trials() {
     let report = serde_json::json!({
         "schema": "rtx-dm3-mega-fresh-boot-report/1",
         "patch_id": contract.id,
+        "manifest_sha256": manifest_sha256,
+        "bsp_sha256": bsp_sha256,
+        "qwprogs_sha256": qwprogs_sha256,
         "source_graph_sha256": contract.source_graph_sha256,
         "patched_graph_sha256": contract.patched_graph_sha256,
+        "source_cells": contract.counts.source_cells,
+        "source_links": contract.counts.source_links,
+        "removed_links": patch.removed_links,
+        "added_links": patch.added_links,
         "total_links": ready.links,
         "active_links": patch.active_links,
         "attempts": contract.verification.attempts,
@@ -382,12 +412,14 @@ fn dm3_mega_patch_survives_fresh_boot_and_40_item_trials() {
         "walljump": 0,
         "doublejump": 0
     });
+    let report_path = server.root.join("fresh-boot-report.json");
     fs::write(
-        server.root.join("fresh-boot-report.json"),
+        &report_path,
         serde_json::to_vec_pretty(&report).expect("encode fresh-boot report"),
     )
     .expect("write fresh-boot report");
     eprintln!("{report}");
+    eprintln!("fresh-boot report: {}", report_path.display());
     assert!(
         successes >= contract.verification.minimum_successes,
         "mega acceptance failed: {successes}/{} < {}/{}",

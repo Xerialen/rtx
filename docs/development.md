@@ -71,6 +71,8 @@ One workflow, `.github/workflows/build.yml`:
   human QuakeWorld demos (dm3/dm4) to check the pmove simulation's fidelity and that the bhop
   bot matches or beats the human line.
 - **Navmesh** — unit and integration tests in `crates/rtx-nav`.
+- **DM3 mega fresh boot** — the [baked-navpatch provenance and one-command real-server
+  gate](dm3-mega-navpatch.md) verify a clean nav build and 40 typed-msgpack item trials.
 
 ## The control channel
 
