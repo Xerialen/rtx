@@ -36,6 +36,8 @@ pub struct Gpu {
     /// red rocket-/speed-jump arcs plus the bot's bounding-box cube (both the line pipeline). `None`
     /// until a live route arrives / after disconnect.
     path_vbuf: Option<(wgpu::Buffer, u32)>,
+    /// The cell under the cursor, highlighted with the surface pipeline over everything else.
+    hover_vbuf: Option<(wgpu::Buffer, u32)>,
     arc_vbuf: Option<(wgpu::Buffer, u32)>,
     bot_vbuf: Option<(wgpu::Buffer, u32)>,
     /// Opaque bot-cube faces (surf-cube pipeline) and the per-cell wireframe grid (line pipeline).
@@ -216,6 +218,7 @@ impl Gpu {
             camera_buf,
             camera_bind,
             mesh_vbuf: None,
+            hover_vbuf: None,
             water_vbuf: None,
             surf_vbuf: None,
             line_vbuf: None,
@@ -272,11 +275,17 @@ impl Gpu {
         self.line_vbuf = None;
         self.surf_vbuf = None;
         self.cellwire_vbuf = None;
+        self.hover_vbuf = None;
     }
 
     /// Replace the per-cell wireframe grid overlay.
     pub fn set_cellwire(&mut self, verts: &[LineVertex]) {
         self.cellwire_vbuf = self.upload(bytemuck::cast_slice(verts), verts.len() as u32, "cellwire");
+    }
+
+    /// Replace the hovered-cell highlight buffer (cyan filled quads); empty clears it.
+    pub fn set_hover(&mut self, verts: &[LineVertex]) {
+        self.hover_vbuf = self.upload(bytemuck::cast_slice(verts), verts.len() as u32, "hover");
     }
 
     /// Replace the live route-tile buffer (red filled quads).
@@ -405,6 +414,13 @@ impl Gpu {
             // The live route tiles ride the same translucent surface pipeline, drawn after (so red
             // sits over green).
             if let Some((buf, count)) = &self.path_vbuf {
+                pass.set_pipeline(&self.surf_pipeline);
+                pass.set_vertex_buffer(0, buf.slice(..));
+                pass.draw(0..*count, 0..1);
+            }
+            // The hover highlight last of the translucent tiles, so it reads over both the walkable
+            // surface and any route tile sharing the cell.
+            if let Some((buf, count)) = &self.hover_vbuf {
                 pass.set_pipeline(&self.surf_pipeline);
                 pass.set_vertex_buffer(0, buf.slice(..));
                 pass.draw(0..*count, 0..1);

@@ -148,6 +148,8 @@ struct App {
     goto_tx: Option<std::sync::mpsc::Sender<rtx_ctlproto::Vec3>>,
     /// Last known cursor position in physical pixels — the pick ray's screen origin.
     cursor: (f32, f32),
+    /// The nav cell under the cursor: highlighted in the 3D view and read out in the corner.
+    hovered: Option<u32>,
     egui_ctx: egui::Context,
     /// egui's winit input translator; created with the window in `resumed`.
     egui_state: Option<egui_winit::State>,
@@ -180,6 +182,13 @@ impl BuildOpts {
         }
     }
 }
+
+/// How far a picked surface point may sit from a cell's origin and still count as hovering it.
+/// `NavGraph::nearest` searches several grid columns out, so without a cutoff, pointing at a bare
+/// wall would light up whatever cell happens to be nearest. A legitimate floor hit is at most half a
+/// tile out horizontally and a feet-drop down (`√(16² + 16² + 24²) ≈ 33`), so this leaves room for
+/// steps and slopes without reaching across a room.
+const HOVER_MAX_DIST: f32 = 64.0;
 
 /// Base fly speed (units/sec); Shift multiplies it.
 const MOVE_SPEED: f32 = 320.0;
@@ -214,37 +223,64 @@ impl App {
             live_connected: false,
             goto_tx: None,
             cursor: (0.0, 0.0),
+            hovered: None,
             egui_ctx: egui::Context::default(),
             egui_state: None,
         }
     }
 
-    /// Order the live bot to the world point under the cursor — the `--live` left-click command.
+    /// The nav cell under the cursor, if any — the basis of both the hover highlight and the
+    /// `--live` click-to-goto order.
     ///
-    /// The click is unprojected into a world ray and traced against the map's **point** hull, so the
+    /// The cursor is unprojected into a world ray and traced against the map's **point** hull, so the
     /// hit is the surface actually drawn under the cursor rather than wherever a player bounding box
-    /// would jam. That point is then snapped to the nearest nav cell and the cell's origin is what
-    /// gets sent: clicking anywhere on a floor picks the cell you meant, instead of a spot 24u under
-    /// it that the game would have to re-snap blind.
-    fn goto_under_cursor(&mut self) {
-        let (Some(tx), Some(gpu), Some((bsp, graph))) = (self.goto_tx.as_ref(), self.gpu.as_ref(), self.nav.as_ref())
-        else {
-            return;
-        };
-        let Some((from, dir)) = self.camera.pick_ray(gpu.aspect(), gpu.size(), self.cursor) else {
-            return;
-        };
+    /// would jam. The hit is lifted off its plane (a floor click should resolve to the cell standing
+    /// on it, not to whatever sits below a thin brush) and snapped to the nearest cell.
+    ///
+    /// `nearest` searches a few grid columns out and will happily answer for a click on a bare wall,
+    /// so the result is rejected past [`HOVER_MAX_DIST`] — pointing at nothing highlights nothing.
+    fn pick_cell(&self) -> Option<u32> {
+        if self.looking {
+            return None; // the pointer is grabbed for looking; its position means nothing
+        }
+        let (gpu, (bsp, graph)) = (self.gpu.as_ref()?, self.nav.as_ref()?);
+        let (from, dir) = self.camera.pick_ray(gpu.aspect(), gpu.size(), self.cursor)?;
         // The far plane's distance: anything the camera can see is within it.
         let hit = bsp.hull0_trace(from, from + dir * 32768.0);
         if hit.fraction >= 1.0 || hit.start_solid {
-            return; // clicked the void, or the camera is buried in geometry
+            return None; // pointing at the void, or the camera is buried in geometry
         }
-        // Lift off the struck surface before snapping, so a floor click resolves to the cell standing
-        // on it rather than to whatever sits below a thin brush.
-        let target = graph
-            .nearest(hit.endpos + hit.plane_normal)
-            .map_or(hit.endpos, |c| graph.cell_origin(c));
-        let _ = tx.send(target.to_array());
+        let at = hit.endpos + hit.plane_normal;
+        let cell = graph.nearest(at)?;
+        (graph.cell_origin(cell).distance(at) <= HOVER_MAX_DIST).then_some(cell)
+    }
+
+    /// Re-pick the hovered cell and, when it changed, swap the highlight tiles on the GPU. Runs every
+    /// frame rather than only on cursor motion, so flying the camera past a cell updates it too.
+    fn update_hover(&mut self) {
+        let want = self.pick_cell();
+        if want == self.hovered {
+            return;
+        }
+        self.hovered = want;
+        let verts = match (want, self.nav.as_ref()) {
+            (Some(cell), Some((bsp, graph))) => geom::cell_highlight(graph, bsp, cell),
+            _ => Vec::new(),
+        };
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.set_hover(&verts);
+        }
+    }
+
+    /// Order the live bot to the cell under the cursor — the `--live` left-click command. Sends the
+    /// cell's *origin*, so the game gets a standing position rather than a point on the floor 24u
+    /// below it that it would have to re-snap blind. A click not over a cell does nothing.
+    fn goto_under_cursor(&mut self) {
+        let (Some(tx), Some(cell), Some((_, graph))) = (self.goto_tx.as_ref(), self.pick_cell(), self.nav.as_ref())
+        else {
+            return;
+        };
+        let _ = tx.send(graph.cell_origin(cell).to_array());
     }
 
     /// Regenerate and upload the navmesh overlay (filled walkable surface + colored link lines) from
@@ -301,11 +337,20 @@ impl App {
             return;
         }
 
+        // Re-pick before the UI runs, so the highlight and the corner readout agree this frame.
+        self.update_hover();
+        let hover = self
+            .hovered
+            .and_then(|c| self.nav.as_ref().map(|(_, g)| (c, g.cell_origin(c))));
+
         let raw_input = self.egui_state.as_mut().unwrap().take_egui_input(&window);
         let ctx = self.egui_ctx.clone();
         let mut visible = self.visible;
         let live = self.live_mode.then_some(self.live_connected);
-        let full = ctx.run_ui(raw_input, |ui| build_panel(ui, &mut visible, live));
+        let full = ctx.run_ui(raw_input, |ui| {
+            build_panel(ui, &mut visible, live);
+            hover_readout(ui, hover);
+        });
         self.egui_state
             .as_mut()
             .unwrap()
@@ -528,6 +573,10 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as f32, position.y as f32);
+                // The hover pick happens in `draw`; ask for the frame that will run it.
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
             }
             WindowEvent::MouseInput {
                 state,
@@ -630,6 +679,24 @@ impl ApplicationHandler<UserEvent> for App {
             ControlFlow::Poll
         });
     }
+}
+
+/// The hovered-cell readout, pinned to the bottom-left corner: the cell id and its world origin,
+/// matching the cyan tile highlighted in the 3D view. Nothing is drawn when nothing is hovered, so
+/// the corner stays clean while flying around.
+fn hover_readout(ui: &mut egui::Ui, hover: Option<(u32, Vec3)>) {
+    let Some((cell, o)) = hover else { return };
+    egui::Area::new(egui::Id::new("hover-readout"))
+        .anchor(egui::Align2::LEFT_BOTTOM, [12.0, -12.0])
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                let [r, g, b] = geom::HOVER_COLOR;
+                let col = egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
+                // Origins land on the 32u grid in XY but carry a fractional Z from the floor trace.
+                ui.colored_label(col, format!("cell {cell}   {:.0} {:.0} {:.1}", o.x, o.y, o.z));
+            });
+        });
 }
 
 /// The path-type toggle panel: a checkbox per `LinkKind`, labelled and swatched in that kind's

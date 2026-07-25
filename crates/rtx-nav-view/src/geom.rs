@@ -759,38 +759,64 @@ fn cluster_color(id: u32) -> [f32; 3] {
 /// enforces, so the surface stops at the real hull footprint (≤16u of honest overhang past a visual
 /// ledge) instead of padding out a full grid tile. `TriangleList`, translucent.
 pub fn nav_clusters(graph: &NavGraph, bsp: &Bsp) -> Vec<LineVertex> {
-    let full = GRID * 0.5;
-    let sub = GRID / SURF_SUB as f32;
-    let hs = sub * 0.5;
     let mut out: Vec<LineVertex> = Vec::with_capacity(graph.cells.len() * 6);
     for (i, cell) in graph.cells.iter().enumerate() {
         let color = graph.cluster_of(i as u32).map_or([0.3, 0.3, 0.3], cluster_color);
-        let o = cell.origin;
-        let z = o.z - FEET_DROP + 1.0;
-        for iy in 0..SURF_SUB {
-            for ix in 0..SURF_SUB {
-                let cx = o.x - full + hs + ix as f32 * sub;
-                let cy = o.y - full + hs + iy as f32 * sub;
-                let supported = bsp.is_solid(Vec3::new(cx, cy, o.z - (STEP_HEIGHT + 4.0)))
-                    && !bsp.is_solid(Vec3::new(cx, cy, o.z + 1.0));
-                if !supported {
-                    continue;
-                }
-                let corner = |dx: f32, dy: f32| LineVertex {
-                    pos: [cx + dx * hs, cy + dy * hs, z],
-                    color,
-                };
-                let (a, b, c, d) = (
-                    corner(-1.0, -1.0),
-                    corner(1.0, -1.0),
-                    corner(1.0, 1.0),
-                    corner(-1.0, 1.0),
-                );
-                out.extend_from_slice(&[a, b, c, a, c, d]);
-            }
-        }
+        push_cell_tile(&mut out, bsp, cell.origin, color, 0.0);
     }
     out
+}
+
+/// Highlight color for the cell under the cursor — bright cyan, unused by the cluster hash (whose
+/// channels all floor at 0.35 and so never reach this saturation) and clear of the live route's red.
+pub const HOVER_COLOR: [f32; 3] = [0.15, 1.0, 1.0];
+
+/// Lift of the hover tile above the walkable surface. The surface pipeline doesn't depth-test against
+/// itself in a helpful order here, so a coplanar highlight would z-fight the tile it highlights.
+const HOVER_LIFT: f32 = 1.0;
+
+/// The highlight tiles for a single cell — the same footprint [`nav_clusters`] draws for it, in
+/// [`HOVER_COLOR`] and lifted clear of it. Empty if `cell` is out of range.
+pub fn cell_highlight(graph: &NavGraph, bsp: &Bsp, cell: u32) -> Vec<LineVertex> {
+    let Some(c) = graph.cells.get(cell as usize) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity((SURF_SUB * SURF_SUB * 6) as usize);
+    push_cell_tile(&mut out, bsp, c.origin, HOVER_COLOR, HOVER_LIFT);
+    out
+}
+
+/// Tessellate one cell's standable footprint into `out` as `TriangleList` quads at `color`, raised
+/// `lift` above the floor plane. Shared by the cluster surface and the hover highlight so a cell's
+/// highlight covers exactly the tiles its surface drew — see [`nav_clusters`] for the standability
+/// test and why the footprint is sub-divided rather than a flat grid tile.
+fn push_cell_tile(out: &mut Vec<LineVertex>, bsp: &Bsp, o: Vec3, color: [f32; 3], lift: f32) {
+    let full = GRID * 0.5;
+    let sub = GRID / SURF_SUB as f32;
+    let hs = sub * 0.5;
+    let z = o.z - FEET_DROP + 1.0 + lift;
+    for iy in 0..SURF_SUB {
+        for ix in 0..SURF_SUB {
+            let cx = o.x - full + hs + ix as f32 * sub;
+            let cy = o.y - full + hs + iy as f32 * sub;
+            let supported = bsp.is_solid(Vec3::new(cx, cy, o.z - (STEP_HEIGHT + 4.0)))
+                && !bsp.is_solid(Vec3::new(cx, cy, o.z + 1.0));
+            if !supported {
+                continue;
+            }
+            let corner = |dx: f32, dy: f32| LineVertex {
+                pos: [cx + dx * hs, cy + dy * hs, z],
+                color,
+            };
+            let (a, b, c, d) = (
+                corner(-1.0, -1.0),
+                corner(1.0, -1.0),
+                corner(1.0, 1.0),
+                corner(-1.0, 1.0),
+            );
+            out.extend_from_slice(&[a, b, c, a, c, d]);
+        }
+    }
 }
 
 /// Emit a polyline as `LineList` pairs, shading each vertex from `DIR_DIM`·color at the start to full
@@ -976,6 +1002,27 @@ mod tests {
         assert!(
             surface.iter().all(|v| v.color.iter().all(|c| (0.0..=1.0).contains(c))),
             "cluster tints are in-gamut"
+        );
+
+        // The hover highlight covers exactly the tiles that cell's own surface drew, one lift above
+        // them, so it reads as the cell rather than as a floating quad.
+        let hot = (0..graph.cells.len() as u32).find(|&c| !cell_highlight(&graph, &bsp, c).is_empty());
+        let hot = hot.expect("some cell has a standable footprint to highlight");
+        let hl = cell_highlight(&graph, &bsp, hot);
+        assert!(hl.len().is_multiple_of(6), "highlight verts are 2-triangle sub-quads");
+        assert!(
+            hl.iter().all(|v| v.color == HOVER_COLOR),
+            "the highlight is drawn in HOVER_COLOR"
+        );
+        let want_z = graph.cell_origin(hot).z - FEET_DROP + 1.0 + HOVER_LIFT;
+        assert!(
+            hl.iter().all(|v| (v.pos[2] - want_z).abs() < 1e-3),
+            "the highlight sits HOVER_LIFT above the surface plane"
+        );
+        // An out-of-range cell id yields nothing rather than panicking.
+        assert!(
+            cell_highlight(&graph, &bsp, graph.cells.len() as u32).is_empty(),
+            "an out-of-range cell highlights nothing"
         );
 
         let all_visible = [true; NUM_LINK_KINDS];
