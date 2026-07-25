@@ -138,6 +138,12 @@ pub enum Cmd {
         tgt: Vec3,
         v_req: f32,
     },
+    /// Hand-plant a standing cell at `pos` — a walkable surface the column carve's XY pitch cannot
+    /// sample (see `NavGraph::plant_cell`). Inert on its own: nothing routes into it.
+    PlanCell { pos: Vec3 },
+    /// Hand-plant a `Drop` link from the cell nearest `from` to the cell nearest `to`, so a bot standing
+    /// on a planted shelf has a way off it.
+    PlanDrop { from: Vec3, to: Vec3 },
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -202,6 +208,8 @@ pub enum Resp {
     Probe(ProbeResp),
     Curl(CurlResp),
     PlanLink(PlanLinkResp),
+    PlanCell(PlanCellResp),
+    PlanDrop(PlanDropResp),
     Bsp(Box<BspResp>),
 }
 
@@ -536,6 +544,29 @@ pub struct PlanLinkResp {
     pub cost: f32,
 }
 
+/// A planted standing cell: its new id and the origin it was indexed at.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlanCellResp {
+    pub cell: u32,
+    /// Where it actually landed after the floor snap — not the `pos` that was asked for.
+    pub origin: Vec3,
+    /// Walk/step links wired to neighbours at the same height, both ways. `0` is normal for a shelf
+    /// that has nothing at its own level; the way off such a cell is a `PlanDrop`.
+    pub links_created: u32,
+}
+
+/// A planted `Drop`: the new link plus the cells it actually resolved to, so the caller can verify it
+/// attached to the shelf it meant and not to a floor underneath it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlanDropResp {
+    pub link: u32,
+    pub from_cell: u32,
+    pub to_cell: u32,
+    pub from: Vec3,
+    pub tgt: Vec3,
+    pub cost: f32,
+}
+
 // ---------------------------------------------------------------------------------------------------
 // Events (game -> MCP, async)
 // ---------------------------------------------------------------------------------------------------
@@ -647,6 +678,48 @@ pub struct FlyResult {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn plan_cell_cmd_roundtrips() {
+        let cmd = Cmd::PlanCell {
+            pos: [-880.0, -42.0, 88.0],
+        };
+        let bytes = rmp_serde::to_vec_named(&cmd).unwrap();
+        assert_eq!(rmp_serde::from_slice::<Cmd>(&bytes).unwrap(), cmd);
+    }
+
+    #[test]
+    fn plan_drop_cmd_roundtrips() {
+        let cmd = Cmd::PlanDrop {
+            from: [-880.0, -42.0, 88.0],
+            to: [-864.0, -32.0, -16.0],
+        };
+        let bytes = rmp_serde::to_vec_named(&cmd).unwrap();
+        assert_eq!(rmp_serde::from_slice::<Cmd>(&bytes).unwrap(), cmd);
+    }
+
+    #[test]
+    fn plan_cell_and_drop_resps_roundtrip() {
+        let cell = Resp::PlanCell(PlanCellResp {
+            cell: 4602,
+            origin: [-880.0, -42.0, 88.0],
+            links_created: 0,
+        });
+        let bytes = rmp_serde::to_vec_named(&cell).unwrap();
+        assert_eq!(rmp_serde::from_slice::<Resp>(&bytes).unwrap(), cell);
+
+        let drop = Resp::PlanDrop(PlanDropResp {
+            link: 37600,
+            from_cell: 4602,
+            to_cell: 109,
+            from: [-880.0, -42.0, 88.0],
+            tgt: [-864.0, -32.0, -16.0],
+            cost: 0.62,
+        });
+        let bytes = rmp_serde::to_vec_named(&drop).unwrap();
+        assert_eq!(rmp_serde::from_slice::<Resp>(&bytes).unwrap(), drop);
+    }
+
     use super::*;
 
     fn roundtrip<T>(v: &T) -> T

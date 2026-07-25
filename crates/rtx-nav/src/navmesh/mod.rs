@@ -29,6 +29,7 @@ mod rocketjump;
 mod sidetable;
 mod splice;
 
+use crate::qphys::ORIGIN_TO_FEET;
 pub use geom::arc_point;
 use geom::*;
 pub use hook::arc_land;
@@ -1443,6 +1444,72 @@ impl NavGraph {
         (self.links.len() - 1) as u32
     }
 
+    /// Hand-plant a standing cell post-build (harness / bring-up), returning its id.
+    ///
+    /// The column carve samples one column per [`GRID`] step of XY and records the floor it finds, so a
+    /// walkable surface narrower than that pitch *and* out of phase with it is invisible to the
+    /// automatic build however the crawl is seeded — no re-run finds it. dm3's shelf west of SNG is the
+    /// worked example: 12 units wide in y, sitting between the y=-64 sample row (inside the wall) and
+    /// the y=-32 one (already out over the drop). A bot that lands on such a surface still resolves
+    /// through [`nearest`](Self::nearest), which has no "no cell here" answer and hands back whatever is
+    /// closest in 3D — a floor 104 units below it — so every route it plans from there is fiction and it
+    /// wedges. Planting the cell gives it an honest position; planting a
+    /// [`Drop`](LinkKind::Drop) off it with [`plant_grounded`](Self::plant_grounded) gives it a way down.
+    ///
+    /// Deliberately additive and inert: a planted cell has **no inbound links** unless the caller plants
+    /// those too, so the planner can never route a bot *through* it — it only serves bots that are
+    /// already standing there. Call [`rebuild_derived`](Self::rebuild_derived) once the links are in.
+    pub fn plant_cell(&mut self, bsp: &Bsp, pos: Vec3) -> Option<(CellId, usize)> {
+        const TRACE_UP: f32 = 8.0;
+        const TRACE_DOWN: f32 = GRID * 4.0;
+
+        // Snap to the floor the caller is pointing at rather than trusting `pos.z`: a coordinate read
+        // off a live bot's origin, a demo sample or a map screenshot is never exactly the standing
+        // height, and a cell planted a few units off sits inside the floor or hovers over it.
+        let start = pos + Vec3::Z * TRACE_UP;
+        let trace = bsp.hull1_trace(start, pos - Vec3::Z * TRACE_DOWN);
+        if trace.start_solid || trace.fraction >= 1.0 || trace.plane_normal.z <= 0.0 {
+            return None;
+        }
+        let origin = trace.endpos;
+        let feet = origin - Vec3::Z * (ORIGIN_TO_FEET - 1.0);
+        if bsp.is_solid(origin) || bsp.is_liquid_at(feet) {
+            return None;
+        }
+
+        // Wire the new cell to whatever is genuinely walkable beside it, both ways, through the same
+        // `classify_grounded` the automatic build uses — so a planted cell on an edge strip rejoins the
+        // floor it belongs to instead of floating. A shelf with nothing at its own height (dm3's SNG
+        // ledge) simply gets none, which is correct: the only way off it is a `Drop`, and that is the
+        // caller's to plant.
+        let existing = self.cells_near(origin.xy(), GRID * 1.5);
+        let id = self.add_cell(origin);
+        let mut links_created = 0;
+        for other in existing {
+            if (self.cells[other as usize].origin.z - origin.z).abs() > STEP_HEIGHT {
+                continue;
+            }
+            for (from, to) in [(other, id), (id, other)] {
+                if let Some(link) = self.classify_grounded(bsp, from, to) {
+                    self.push_link(link);
+                    links_created += 1;
+                }
+            }
+        }
+        Some((id, links_created))
+    }
+
+    /// Hand-plant a plain grounded link (`Walk`/`Step`/`Drop`) post-build, priced by the same
+    /// [`link_cost`] the automatic build uses so A\* weighs it against generated links on equal terms.
+    /// The runtime steers a planted grounded link exactly like a generated one — for a `Drop` that means
+    /// walking off the lip and falling, which is the whole point of planting one.
+    pub fn plant_grounded(&mut self, from: CellId, to: CellId, kind: LinkKind) -> u32 {
+        let (a, b) = (self.cells[from as usize].origin, self.cells[to as usize].origin);
+        let cost = link_cost(kind, (b.xy() - a.xy()).length(), b.z - a.z);
+        self.push_link(Link { from, to, kind, cost });
+        (self.links.len() - 1) as u32
+    }
+
     /// Rebuild the derived tables — the reachability closure and the LOD hierarchy — after a post-build
     /// topology mutation such as [`plant_speed_jump`](Self::plant_speed_jump). The automatic build runs
     /// these once at the end over the final link set; a hand-planted link (harness bring-up) must
@@ -1483,6 +1550,27 @@ impl NavGraph {
         self.cells.push(Cell { origin, gx, gy });
         self.adjacency.push(Vec::new());
         self.grid.entry((gx, gy)).or_default().push(id);
+        // Extend every per-cell side vector that is already populated, with the same defaults their
+        // accessors read for an absent entry. The build's own plat splice calls this *before*
+        // `flag_water`/`flag_hazards` fill them, so they are empty then and this is a no-op — but a
+        // post-build plant lands after, and a short vector is not merely a wrong answer: the water
+        // check on a link's target indexes directly (`self.water[l.to]`), so the first route touching
+        // the new cell panics out of the game module.
+        if !self.water.is_empty() {
+            self.water.push(false);
+        }
+        if !self.breathable.is_empty() {
+            self.breathable.push(true);
+        }
+        if !self.hazard.is_empty() {
+            self.hazard.push(None);
+        }
+        if !self.under_plat.is_empty() {
+            self.under_plat.push(None);
+        }
+        if !self.ledge.is_empty() {
+            self.ledge.push(false);
+        }
         id
     }
 

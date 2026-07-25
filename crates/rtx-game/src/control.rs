@@ -327,6 +327,8 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
             tgt,
             v_req,
         } => plant_link_resp(game, v3(from), v3(takeoff), v3(tgt), v_req).map(Resp::PlanLink),
+        Cmd::PlanCell { pos } => plant_cell_resp(game, v3(pos)).map(Resp::PlanCell),
+        Cmd::PlanDrop { from, to } => plant_drop_resp(game, v3(from), v3(to)).map(Resp::PlanDrop),
     };
     reply(game, conn, id, result);
 }
@@ -994,6 +996,53 @@ fn curl_resp(game: &GameState, src: Vec3, tgt: Vec3) -> Result<proto::CurlResp, 
             miss_xy: 0.0,
             land: [0.0; 3],
         },
+    })
+}
+
+/// Hand-plant a standing cell at `pos`: index a walkable surface the column carve's XY pitch cannot
+/// sample, so a bot standing there resolves to *it* instead of to whatever floor happens to be nearest
+/// in 3D. Additive and inert on its own — nothing links into a planted cell unless the caller plants
+/// that too — so this cannot change any route a bot already takes. Pair it with `PlanDrop` to give the
+/// surface a way off.
+fn plant_cell_resp(game: &mut GameState, pos: Vec3) -> Result<proto::PlanCellResp, String> {
+    let bsp = game.nav.bsp.clone().ok_or("no bsp")?;
+    let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+    let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+    let (cell, links_created) = g
+        .plant_cell(&bsp, pos)
+        .ok_or("cell position is not standable dry floor")?;
+    // Refresh reachability + LOD for the same reason `PlanLink` does: without it the O(1) `reachable`
+    // gate and the coarse router keep answering for the pre-plant graph.
+    g.rebuild_derived();
+    Ok(proto::PlanCellResp {
+        cell,
+        origin: a3(g.cell_origin(cell)),
+        links_created: links_created as u32,
+    })
+}
+
+/// Hand-plant a `Drop` from the cell nearest `from` to the cell nearest `to`. Resolution goes through
+/// `nearest`, so plant the shelf cell *first* — otherwise `from` resolves to the floor below the shelf
+/// and the link is a no-op between two floor cells. The reply carries both resolved origins so the
+/// caller can assert it attached where it meant to.
+fn plant_drop_resp(game: &mut GameState, from: Vec3, to: Vec3) -> Result<proto::PlanDropResp, String> {
+    let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+    let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+    let from_cell = g.nearest(from).ok_or("no cell near from")?;
+    let to_cell = g.nearest(to).ok_or("no cell near to")?;
+    if from_cell == to_cell {
+        return Err("from and to resolved to the same cell".into());
+    }
+    let link = g.plant_grounded(from_cell, to_cell, rtx_nav::navmesh::LinkKind::Drop);
+    g.rebuild_derived();
+    let (fo, to_o) = (g.cell_origin(from_cell), g.cell_origin(to_cell));
+    Ok(proto::PlanDropResp {
+        link,
+        from_cell,
+        to_cell,
+        from: a3(fo),
+        tgt: a3(to_o),
+        cost: g.link_cost(link),
     })
 }
 
