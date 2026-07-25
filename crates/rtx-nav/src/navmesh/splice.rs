@@ -228,6 +228,9 @@ impl NavGraph {
     /// the engine warps it; a separate displacement check then re-paths from the landing spot.
     /// Teleporters whose destination doesn't reach any floor cell are skipped.
     pub fn add_teleports(&mut self, bsp: &Bsp, teles: &[TeleportInfo]) {
+        // Record every trigger volume, wired or not: steering has to avoid walking into one whether or
+        // not the planner found a cell to hang its link from.
+        self.tele_volumes.extend(teles.iter().map(|t| (t.tmin, t.tmax)));
         for t in teles {
             // The cell a teleporter drops you onto. A dest is always a standable pad — players
             // materialise there — but the grid doesn't always sample a cell right on it: the pad can
@@ -389,6 +392,12 @@ impl NavGraph {
                 self.gates.tag(li, idx);
             }
         }
+    }
+
+    /// Every `trigger_teleport` volume on the map — what steering must keep clear of when it is not
+    /// deliberately entering one. See [`NavGraph::tele_volumes`].
+    pub fn tele_volumes(&self) -> &[(Vec3, Vec3)] {
+        &self.tele_volumes
     }
 
     pub fn gate_count(&self) -> usize {

@@ -140,8 +140,9 @@ const RJ_MAX_PER_CELL: usize = 2;
 /// viewer can tile each cell's walkable footprint at the true grid pitch.
 pub const GRID: f32 = 32.0;
 /// Player hull half-width (the QW player box is ±16 in X/Y). Used to grow obstacles by the agent
-/// radius so a bot doesn't clip geometry its path's centre-line technically clears.
-pub(crate) const PLAYER_HALF_WIDTH: f32 = 16.0;
+/// radius so a bot doesn't clip geometry its path's centre-line technically clears. Public because
+/// the runtime grows the same obstacles for the same reason — see the near-field's teleport stamping.
+pub const PLAYER_HALF_WIDTH: f32 = 16.0;
 /// Vertical sweep step when scanning a column for floors (refined by bisection after).
 const SCAN_DZ: f32 = 8.0;
 /// Spacing of the floor-continuity samples along a grounded link (see [`geom::ground_along`]).
@@ -274,6 +275,14 @@ pub struct NavGraph {
     /// geometry" core, so pathfinding can price a link by its door's live state (see
     /// [`find_path`](Self::find_path)). Empty until [`add_gates`](Self::add_gates) runs.
     gates: SideTable<Gate>,
+    /// Every `trigger_teleport` brush volume on the map, in world coordinates.
+    ///
+    /// Kept because a teleporter is a hazard to *walk past*, not only a way to travel: its trigger is
+    /// a solid-looking region the clip hull passes straight through, so a route that merely runs
+    /// alongside one can clip the corner and be teleported away mid-leg. Steering needs the boxes to
+    /// keep a body's width clear of the ones it isn't trying to use (see the near-field's `blocked`
+    /// list), which means the geometry has to outlive the splice that consumed it.
+    tele_volumes: Vec<(Vec3, Vec3)>,
     /// How to fly each [`LinkKind::Hook`] link (its solved [`HookTraversal`]).
     hooks: SideTable<HookTraversal>,
     /// The takeoff point + required entry speed for each speed-jump link, for the bot executor.
@@ -469,6 +478,7 @@ impl NavGraph {
             ledge: Vec::new(),       // filled by flag_ledges below (pure geometry too)
             grid: cells_grid.1,
             gates: SideTable::default(),
+            tele_volumes: Vec::new(),
             hooks: SideTable::default(),
             speed_jumps: SideTable::default(),
             rocket_jumps: SideTable::default(),
@@ -505,6 +515,7 @@ impl NavGraph {
             ledge: Vec::new(),
             grid: GridIndex::default(),
             gates: SideTable::default(),
+            tele_volumes: Vec::new(),
             hooks: SideTable::default(),
             speed_jumps: SideTable::default(),
             rocket_jumps: SideTable::default(),

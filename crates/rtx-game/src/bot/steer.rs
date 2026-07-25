@@ -100,6 +100,37 @@ fn nearfield_gates<'a>(graph: &'a NavGraph, gate_closed: &'a [bool], origin: Vec
     })
 }
 
+/// The teleporter trigger volumes near `origin` that the bot is *not* trying to enter — the near-field
+/// stamps these unwalkable so a leg running past one can't clip it.
+///
+/// A teleporter is a hole in the floor that doesn't look like one: the trigger is invisible to the
+/// clip hull, so nothing in the ordinary steering stops a bot from brushing it. Where a walk corridor
+/// runs alongside a trigger the clearance can be nil — aerowalk's y=416 corridor passes exactly one
+/// half-width from the trigger face — and the slightest wobble throws the bot across the map, after
+/// which it re-paths back into the same trigger, for ever.
+///
+/// The exception is the point of the exception: a volume containing the current waypoint is one the
+/// route means to step into, and blocking that would make every teleporter unusable.
+fn nearfield_teleports<'a>(graph: &'a NavGraph, origin: Vec3, waypoint: Vec3) -> impl Iterator<Item = usize> + 'a {
+    let reach = nearfield::NEAR_HALF + nearfield::NEAR_RECENTER;
+    graph
+        .tele_volumes()
+        .iter()
+        .enumerate()
+        .filter(move |(_, &(lo, hi))| {
+            let nearest = origin.xy().clamp(lo.xy(), hi.xy());
+            (nearest - origin.xy()).length() <= reach && !inside_box(waypoint, lo, hi)
+        })
+        .map(|(i, _)| i)
+}
+
+/// Whether `p` is within a box grown by the player's half-width — the same slack `nearfield::blocks`
+/// applies, so "the waypoint is in this trigger" agrees with "this trigger blocks that column".
+fn inside_box(p: Vec3, lo: Vec3, hi: Vec3) -> bool {
+    let m = crate::navmesh::PLAYER_HALF_WIDTH;
+    p.x >= lo.x - m && p.x <= hi.x + m && p.y >= lo.y - m && p.y <= hi.y + m && p.z >= lo.z - 32.0 && p.z <= hi.z + 32.0
+}
+
 /// The lip is "right here" — inside this distance the takeoff jump must fire *now* or the bot wedges
 /// against the step face; beyond it the run-up gate applies.
 const JUMP_NOW_DIST: f32 = 40.0;
@@ -983,13 +1014,17 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     let nf_active = nf_locomotion && host.cvar_bool(c"rtx_bot_nearfield");
     if nf_active && on_ground {
         if let Some(bsp) = bsp {
-            let key = nearfield_gates(graph, gate_closed, origin).fold(0u32, |k, gi| k | (1u32 << gi.min(31)));
+            // Low half of the key is gates, high half teleporters, so either changing forces a rebuild.
+            // Both id spaces are small (single-digit gates; a handful of teleporters per map).
+            let key = nearfield_gates(graph, gate_closed, origin).fold(0u32, |k, gi| k | (1u32 << gi.min(15)))
+                | nearfield_teleports(graph, origin, waypoint).fold(0u32, |k, ti| k | (1u32 << (16 + ti.min(15))));
             if bot.near.as_ref().is_none_or(|nf| !nf.valid_for(origin, key)) {
                 let boxes: Vec<(Vec3, Vec3)> = nearfield_gates(graph, gate_closed, origin)
                     .map(|gi| {
                         let g = graph.gate(gi);
                         (g.closed_min, g.closed_max)
                     })
+                    .chain(nearfield_teleports(graph, origin, waypoint).map(|ti| graph.tele_volumes()[ti]))
                     .collect();
                 // Liquid oracle: flush lava/slime is invisible to the clip hull, so classify it from the
                 // render hull's `pointcontents` (our own parsed BSP — no syscall). Gated on the map having
