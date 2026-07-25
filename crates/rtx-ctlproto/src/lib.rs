@@ -246,9 +246,25 @@ pub struct StatusResp {
     pub cells: u32,
     pub links: u32,
     pub rj_links: u32,
+    /// Repo-owned post-build patch provenance. `None` for maps without a built-in patch.
+    pub nav_patch: Option<NavPatchStatus>,
+    /// Fail-closed reason when a required built-in patch was rejected and no graph was installed.
+    pub nav_patch_error: Option<String>,
     pub match_: MatchInfo,
     pub oracle: OracleInfo,
     pub bots: Vec<BotStatus>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NavPatchStatus {
+    pub id: String,
+    pub manifest_sha256: String,
+    pub source_graph_sha256: String,
+    pub patched_graph_sha256: String,
+    pub removed_links: u32,
+    pub added_links: u32,
+    pub total_links: u32,
+    pub active_links: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

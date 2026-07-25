@@ -22,6 +22,7 @@ mod geom;
 mod hook;
 mod jumps;
 mod lod;
+mod patch;
 mod physics;
 mod query;
 mod reach;
@@ -44,6 +45,7 @@ pub use jumps::{
 };
 use lod::Lod;
 pub use lod::{CoarseCosts, Corridor};
+pub use patch::{apply_builtin_patch, graph_sha256, hex_digest, sha256_bytes, BuiltinPatchReport, NavPatchError};
 use physics::*;
 pub use physics::{
     attainable_speed, band_of, bhop_k, prestrafe_delivered_from, BAND_EDGES, BAND_FLOOR, BAND_V_MAX, BHOP_EFF,
@@ -2466,8 +2468,15 @@ pub struct NavState {
     /// (`GameState::load_map_bsp`, at entity load); populated even on a bot-free server so world
     /// queries (sky/liquid tests, world traces) have geometry to read.
     pub bsp: Option<Arc<Bsp>>,
+    /// SHA-256 of the exact BSP bytes parsed into [`Self::bsp`]. Built-in map patches bind to this
+    /// value before they touch a graph; a missing/mismatched digest leaves the graph uninstalled.
+    pub bsp_sha256: Option<[u8; 32]>,
     /// The built navigation graph. `None` until [`NavGraph::build`] runs (bots stay disabled).
     pub graph: Option<Arc<NavGraph>>,
+    /// Provenance of an automatically-applied, repo-owned nav patch. `None` on unpatched maps.
+    pub patch: Option<BuiltinPatchReport>,
+    /// A built-in patch contract failure. The graph remains `None` when this is populated.
+    pub patch_error: Option<String>,
     /// Whether a build has been kicked off for this map (so a failed BSP read doesn't retry every
     /// frame). Reset when a new map loads.
     pub attempted: bool,

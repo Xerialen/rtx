@@ -104,9 +104,13 @@ impl GameState {
             self.host.dprint(c"rtx: navmesh: could not read map BSP\n");
             return;
         };
+        self.nav.bsp_sha256 = Some(navmesh::sha256_bytes(&bytes));
         match crate::bsp::Bsp::parse(&bytes) {
             Some(bsp) => self.nav.bsp = Some(std::sync::Arc::new(bsp)),
-            None => self.host.dprint(c"rtx: navmesh: unsupported/malformed BSP\n"),
+            None => {
+                self.nav.bsp_sha256 = None;
+                self.host.dprint(c"rtx: navmesh: unsupported/malformed BSP\n");
+            }
         }
     }
 
@@ -234,7 +238,7 @@ impl GameState {
         let Some(rx) = self.nav.pending.as_ref() else {
             return;
         };
-        let graph = match rx.try_recv() {
+        let mut graph = match rx.try_recv() {
             Ok(graph) => graph,
             Err(std::sync::mpsc::TryRecvError::Empty) => return, // still building
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -243,6 +247,35 @@ impl GameState {
             }
         };
         self.nav.pending = None;
+        match navmesh::apply_builtin_patch(&self.level.mapname, self.nav.bsp_sha256, &mut graph) {
+            Ok(report) => {
+                if let Some(report) = report.as_ref() {
+                    let msg = cstring(&format!(
+                        "rtx: navmesh: applied built-in patch {} source={} patched={} removed={} added={} total={} active={}\n",
+                        report.id,
+                        report.source_graph_sha256,
+                        report.patched_graph_sha256,
+                        report.removed_links,
+                        report.added_links,
+                        report.total_links,
+                        report.active_links,
+                    ));
+                    self.host.dprint(&msg);
+                }
+                self.nav.patch = report;
+                self.nav.patch_error = None;
+            }
+            Err(error) => {
+                let error = error.to_string();
+                let msg = cstring(&format!(
+                    "rtx: navmesh: built-in patch FAILED CLOSED; bots disabled: {error}\n"
+                ));
+                self.host.dprint(&msg);
+                self.nav.patch = None;
+                self.nav.patch_error = Some(error);
+                return;
+            }
+        }
         let counts = graph.summary();
         let goals = self.collect_goals(&graph);
         let (lclusters, lportals, ledges, lreach) = graph.lod_stats();

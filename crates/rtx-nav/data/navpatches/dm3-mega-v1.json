@@ -1,0 +1,2868 @@
+{
+  "schema": "rtx-nav-postbuild-patch/1",
+  "id": "dm3-mega-m2-v1",
+  "map": "dm3",
+  "bsp_sha256": "aec9edbb727c0a206edc2c0688775ce8242c0d51e1ee7583c7126c76f7c3b2f1",
+  "source_graph_sha256": "5c15ad55f1af87914ca70ccb125d9170deb6079cc0c7b86b648b0a30aebc3836",
+  "patched_graph_sha256": "af319dbea3bc7a4eb448475b3ab770885004393fa5f01dc3288dde3d6ca7935c",
+  "counts": {
+    "source_cells": 4631,
+    "source_links": 50993,
+    "removed_links": 199,
+    "added_links": 12,
+    "patched_links": 51005,
+    "patched_active_links": 50806
+  },
+  "physics": {
+    "gravity": 800.0,
+    "runup_speed": 400.0,
+    "commit_cost": 0.3
+  },
+  "removes": [
+    {
+      "kind": "speedjump",
+      "from": [
+        -32.0,
+        -416.0,
+        -48.0
+      ],
+      "to": [
+        0.0,
+        -768.0,
+        -16.0
+      ],
+      "expected_matches": 3
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        64.0,
+        -544.0,
+        -16.0
+      ],
+      "to": [
+        64.0,
+        -864.0,
+        8.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        64.0,
+        -544.0,
+        -16.0
+      ],
+      "to": [
+        96.0,
+        -832.0,
+        8.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        32.0,
+        -544.0,
+        -16.0
+      ],
+      "to": [
+        128.0,
+        -864.0,
+        16.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        64.0,
+        -544.0,
+        -16.0
+      ],
+      "to": [
+        256.0,
+        -800.0,
+        -16.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        448.0,
+        -800.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -576.0,
+        88.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        448.0,
+        -768.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -576.0,
+        88.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        480.0,
+        -768.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -576.0,
+        88.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        480.0,
+        -736.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -576.0,
+        88.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        480.0,
+        -704.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -576.0,
+        88.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        480.0,
+        -800.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -576.0,
+        88.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        448.0,
+        -864.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -576.0,
+        88.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        480.0,
+        -864.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -576.0,
+        88.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        448.0,
+        -768.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -544.0,
+        88.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        448.0,
+        -736.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -544.0,
+        88.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        480.0,
+        -736.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -544.0,
+        88.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        480.0,
+        -704.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -544.0,
+        88.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        480.0,
+        -672.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -544.0,
+        88.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        480.0,
+        -768.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -544.0,
+        88.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        448.0,
+        -864.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -544.0,
+        88.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        480.0,
+        -864.0,
+        56.0
+      ],
+      "to": [
+        288.0,
+        -544.0,
+        88.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        0.0,
+        -832.0,
+        152.0
+      ],
+      "to": [
+        288.0,
+        -544.0,
+        264.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        480.0,
+        -832.0,
+        56.0
+      ],
+      "to": [
+        320.0,
+        -576.0,
+        72.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        480.0,
+        -800.0,
+        56.0
+      ],
+      "to": [
+        320.0,
+        -576.0,
+        72.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        448.0,
+        -800.0,
+        56.0
+      ],
+      "to": [
+        320.0,
+        -576.0,
+        72.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        448.0,
+        -832.0,
+        56.0
+      ],
+      "to": [
+        320.0,
+        -576.0,
+        72.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        416.0,
+        -864.0,
+        48.0
+      ],
+      "to": [
+        320.0,
+        -576.0,
+        72.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        384.0,
+        -864.0,
+        48.0
+      ],
+      "to": [
+        320.0,
+        -576.0,
+        72.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -32.0,
+        -864.0,
+        152.0
+      ],
+      "to": [
+        320.0,
+        -576.0,
+        264.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        480.0,
+        -768.0,
+        56.0
+      ],
+      "to": [
+        320.0,
+        -544.0,
+        72.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        448.0,
+        -800.0,
+        56.0
+      ],
+      "to": [
+        320.0,
+        -544.0,
+        72.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        416.0,
+        -864.0,
+        48.0
+      ],
+      "to": [
+        320.0,
+        -544.0,
+        72.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        384.0,
+        -864.0,
+        48.0
+      ],
+      "to": [
+        320.0,
+        -544.0,
+        72.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        0.0,
+        -832.0,
+        152.0
+      ],
+      "to": [
+        320.0,
+        -544.0,
+        264.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -32.0,
+        -864.0,
+        152.0
+      ],
+      "to": [
+        352.0,
+        -576.0,
+        264.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        0.0,
+        -832.0,
+        152.0
+      ],
+      "to": [
+        352.0,
+        -544.0,
+        264.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -32.0,
+        -864.0,
+        152.0
+      ],
+      "to": [
+        384.0,
+        -608.0,
+        264.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -64.0,
+        -864.0,
+        152.0
+      ],
+      "to": [
+        384.0,
+        -608.0,
+        264.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -896.0,
+        544.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        736.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -896.0,
+        576.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        736.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -896.0,
+        608.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        736.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -896.0,
+        640.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        736.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -896.0,
+        672.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        736.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "walk",
+      "from": [
+        -896.0,
+        704.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        736.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "walk",
+      "from": [
+        -896.0,
+        736.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        736.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "walk",
+      "from": [
+        -896.0,
+        736.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        768.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "walk",
+      "from": [
+        -896.0,
+        768.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        736.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "walk",
+      "from": [
+        -896.0,
+        768.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        768.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "walk",
+      "from": [
+        -896.0,
+        768.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        800.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "walk",
+      "from": [
+        -896.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        768.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "walk",
+      "from": [
+        -896.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        800.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "walk",
+      "from": [
+        -896.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -864.0,
+        800.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -832.0,
+        256.0,
+        184.0
+      ],
+      "to": [
+        -832.0,
+        128.0,
+        184.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -576.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -544.0,
+        672.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -544.0,
+        416.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        352.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -544.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -544.0,
+        672.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -544.0,
+        256.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -512.0,
+        256.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -480.0,
+        256.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -576.0,
+        256.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -512.0,
+        224.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -480.0,
+        224.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -576.0,
+        320.0,
+        184.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -512.0,
+        320.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -512.0,
+        416.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        352.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -512.0,
+        416.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        352.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -512.0,
+        256.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -480.0,
+        256.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -448.0,
+        256.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -544.0,
+        256.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -480.0,
+        224.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -448.0,
+        224.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -480.0,
+        416.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        352.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -480.0,
+        416.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        352.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -480.0,
+        416.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        352.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -480.0,
+        448.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        352.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -480.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        352.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -480.0,
+        256.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -448.0,
+        256.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -512.0,
+        256.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "to": [
+        -448.0,
+        224.0,
+        176.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -448.0,
+        320.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -448.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        352.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -448.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -416.0,
+        352.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "jump",
+      "from": [
+        -416.0,
+        320.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -576.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -576.0,
+        576.0,
+        -16.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -576.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -576.0,
+        544.0,
+        -16.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -576.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        608.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -544.0,
+        576.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        640.0,
+        120.0
+      ],
+      "to": [
+        -320.0,
+        320.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -704.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -960.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -736.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -960.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -704.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -960.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -704.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -960.0,
+        576.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -736.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -928.0,
+        384.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -704.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -928.0,
+        480.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -704.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -928.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -736.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -928.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -736.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -928.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -704.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -928.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -704.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -928.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -736.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -928.0,
+        576.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -736.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -896.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -736.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -896.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -704.0,
+        800.0,
+        120.0
+      ],
+      "to": [
+        -896.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -736.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -896.0,
+        576.0,
+        120.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -704.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -896.0,
+        576.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -608.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -608.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -608.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -576.0,
+        480.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -576.0,
+        480.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -608.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -576.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -576.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -960.0,
+        736.0,
+        120.0
+      ],
+      "to": [
+        -576.0,
+        832.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -960.0,
+        704.0,
+        120.0
+      ],
+      "to": [
+        -576.0,
+        832.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -608.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -544.0,
+        480.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -544.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -608.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -544.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -544.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -960.0,
+        704.0,
+        120.0
+      ],
+      "to": [
+        -544.0,
+        832.0,
+        120.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -704.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -672.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -640.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -736.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        608.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -320.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        480.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -960.0,
+        672.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        832.0,
+        120.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -960.0,
+        704.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        864.0,
+        120.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -448.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        544.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -704.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -640.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -384.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -352.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -736.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -320.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        608.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        640.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        576.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -960.0,
+        640.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        832.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -960.0,
+        672.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        864.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -480.0,
+        544.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -672.0,
+        448.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -608.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -640.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -384.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -736.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -640.0,
+        544.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        608.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        288.0,
+        144.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -448.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -416.0,
+        512.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        832.0,
+        120.0
+      ],
+      "to": [
+        -416.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        864.0,
+        120.0
+      ],
+      "to": [
+        -416.0,
+        544.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -480.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -384.0,
+        288.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -448.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -352.0,
+        288.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -576.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -352.0,
+        288.0,
+        120.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -480.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -352.0,
+        288.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -480.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -352.0,
+        288.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -352.0,
+        288.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -352.0,
+        288.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -544.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -320.0,
+        288.0,
+        120.0
+      ],
+      "expected_matches": 2
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -448.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -320.0,
+        288.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -512.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -320.0,
+        288.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -480.0,
+        512.0,
+        120.0
+      ],
+      "to": [
+        -320.0,
+        288.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -480.0,
+        480.0,
+        120.0
+      ],
+      "to": [
+        -320.0,
+        288.0,
+        120.0
+      ],
+      "expected_matches": 1
+    },
+    {
+      "kind": "speedjump",
+      "from": [
+        -448.0,
+        544.0,
+        120.0
+      ],
+      "to": [
+        -320.0,
+        288.0,
+        120.0
+      ],
+      "expected_matches": 1
+    }
+  ],
+  "adds": [
+    {
+      "kind": "SpeedJump",
+      "from": [
+        162.0,
+        -528.0,
+        152.0
+      ],
+      "takeoff": [
+        144.5,
+        -567.7,
+        152.0
+      ],
+      "to": [
+        49.0,
+        -880.0,
+        168.0
+      ],
+      "v_req": 446.2,
+      "curl_gain": 12.0,
+      "curl_entry_aim": [
+        0.0,
+        0.0,
+        152.0
+      ],
+      "curl_switch_dist": 0.0,
+      "curl_landing_aim": [
+        0.0,
+        0.0,
+        168.0
+      ]
+    },
+    {
+      "kind": "SpeedJump",
+      "from": [
+        464.0,
+        -487.8,
+        56.0
+      ],
+      "takeoff": [
+        385.1,
+        -528.9,
+        56.0
+      ],
+      "to": [
+        135.8,
+        -528.4,
+        152.0
+      ],
+      "v_req": 328.2,
+      "curl_gain": 12.0,
+      "curl_entry_aim": [
+        0.0,
+        0.0,
+        56.0
+      ],
+      "curl_switch_dist": 0.0,
+      "curl_landing_aim": [
+        0.0,
+        0.0,
+        152.0
+      ]
+    },
+    {
+      "kind": "SpeedJump",
+      "from": [
+        -928.0,
+        320.0,
+        120.0
+      ],
+      "takeoff": [
+        -911.0,
+        633.0,
+        120.0
+      ],
+      "to": [
+        -710.0,
+        845.0,
+        120.0
+      ],
+      "v_req": 460.0,
+      "curl_gain": 12.0,
+      "curl_entry_aim": [
+        0.0,
+        0.0,
+        120.0
+      ],
+      "curl_switch_dist": 0.0,
+      "curl_landing_aim": [
+        0.0,
+        0.0,
+        120.0
+      ]
+    },
+    {
+      "kind": "SpeedJump",
+      "from": [
+        -512.0,
+        480.0,
+        120.0
+      ],
+      "takeoff": [
+        -508.0,
+        434.0,
+        120.0
+      ],
+      "to": [
+        -480.0,
+        288.0,
+        144.0
+      ],
+      "v_req": 340.0,
+      "curl_gain": 12.0,
+      "curl_entry_aim": [
+        0.0,
+        0.0,
+        120.0
+      ],
+      "curl_switch_dist": 0.0,
+      "curl_landing_aim": [
+        0.0,
+        0.0,
+        144.0
+      ]
+    },
+    {
+      "kind": "SpeedJump",
+      "from": [
+        -512.0,
+        288.0,
+        144.0
+      ],
+      "takeoff": [
+        -517.0,
+        281.0,
+        144.0
+      ],
+      "to": [
+        -576.0,
+        256.0,
+        176.0
+      ],
+      "v_req": 240.0,
+      "curl_gain": 12.0,
+      "curl_entry_aim": [
+        0.0,
+        0.0,
+        144.0
+      ],
+      "curl_switch_dist": 0.0,
+      "curl_landing_aim": [
+        0.0,
+        0.0,
+        176.0
+      ]
+    },
+    {
+      "kind": "SpeedJump",
+      "from": [
+        -864.0,
+        320.0,
+        184.0
+      ],
+      "takeoff": [
+        -866.0,
+        264.0,
+        184.0
+      ],
+      "to": [
+        -832.0,
+        128.0,
+        184.0
+      ],
+      "v_req": 360.0,
+      "curl_gain": 12.0,
+      "curl_entry_aim": [
+        0.0,
+        0.0,
+        184.0
+      ],
+      "curl_switch_dist": 0.0,
+      "curl_landing_aim": [
+        0.0,
+        0.0,
+        184.0
+      ]
+    },
+    {
+      "kind": "SpeedJump",
+      "from": [
+        -832.0,
+        128.0,
+        184.0
+      ],
+      "takeoff": [
+        -828.0,
+        108.0,
+        184.0
+      ],
+      "to": [
+        -736.0,
+        96.0,
+        184.0
+      ],
+      "v_req": 380.0,
+      "curl_gain": 12.0,
+      "curl_entry_aim": [
+        0.0,
+        0.0,
+        184.0
+      ],
+      "curl_switch_dist": 0.0,
+      "curl_landing_aim": [
+        0.0,
+        0.0,
+        184.0
+      ]
+    },
+    {
+      "kind": "SpeedJump",
+      "from": [
+        -672.0,
+        864.0,
+        120.0
+      ],
+      "takeoff": [
+        -582.0,
+        798.0,
+        120.0
+      ],
+      "to": [
+        -512.0,
+        512.0,
+        120.0
+      ],
+      "v_req": 470.0,
+      "curl_gain": 12.0,
+      "curl_entry_aim": [
+        0.0,
+        0.0,
+        120.0
+      ],
+      "curl_switch_dist": 0.0,
+      "curl_landing_aim": [
+        0.0,
+        0.0,
+        120.0
+      ]
+    },
+    {
+      "kind": "SpeedJump",
+      "from": [
+        352.0,
+        -192.0,
+        56.0
+      ],
+      "takeoff": [
+        440.0,
+        -201.0,
+        56.0
+      ],
+      "to": [
+        733.0,
+        -225.0,
+        56.0
+      ],
+      "v_req": 445.0,
+      "curl_gain": 12.0,
+      "curl_entry_aim": [
+        560.0,
+        -190.0,
+        56.0
+      ],
+      "curl_switch_dist": 140.0,
+      "curl_landing_aim": [
+        733.0,
+        -225.0,
+        56.0
+      ]
+    },
+    {
+      "kind": "SpeedJump",
+      "from": [
+        768.0,
+        -192.0,
+        56.0
+      ],
+      "takeoff": [
+        704.0,
+        -209.0,
+        56.0
+      ],
+      "to": [
+        407.0,
+        -193.0,
+        56.0
+      ],
+      "v_req": 445.0,
+      "curl_gain": 12.0,
+      "curl_entry_aim": [
+        560.0,
+        -200.0,
+        56.0
+      ],
+      "curl_switch_dist": 140.0,
+      "curl_landing_aim": [
+        410.0,
+        -195.0,
+        56.0
+      ]
+    },
+    {
+      "kind": "SpeedJump",
+      "from": [
+        352.0,
+        128.0,
+        56.0
+      ],
+      "takeoff": [
+        440.0,
+        133.0,
+        56.0
+      ],
+      "to": [
+        733.0,
+        150.0,
+        56.0
+      ],
+      "v_req": 445.0,
+      "curl_gain": 12.0,
+      "curl_entry_aim": [
+        560.0,
+        138.0,
+        56.0
+      ],
+      "curl_switch_dist": 140.0,
+      "curl_landing_aim": [
+        733.0,
+        150.0,
+        56.0
+      ]
+    },
+    {
+      "kind": "SpeedJump",
+      "from": [
+        832.0,
+        128.0,
+        56.0
+      ],
+      "takeoff": [
+        750.0,
+        139.0,
+        56.0
+      ],
+      "to": [
+        444.0,
+        144.0,
+        56.0
+      ],
+      "v_req": 450.0,
+      "curl_gain": 12.0,
+      "curl_entry_aim": [
+        616.0,
+        141.0,
+        56.0
+      ],
+      "curl_switch_dist": 140.0,
+      "curl_landing_aim": [
+        444.0,
+        144.0,
+        56.0
+      ]
+    }
+  ],
+  "verification": {
+    "attempts": 40,
+    "minimum_successes": 38,
+    "max_secs": 20.0,
+    "mega": [
+      -720.0,
+      80.0,
+      160.0
+    ],
+    "rockets": [
+      -752.0,
+      464.0,
+      96.0
+    ],
+    "scenarios": [
+      {
+        "name": "sng_mega_w",
+        "wire": "West",
+        "start": [
+          -880.0,
+          -232.0,
+          -16.0
+        ]
+      },
+      {
+        "name": "sng_mega_s",
+        "wire": "South",
+        "start": [
+          -632.0,
+          -680.0,
+          -16.0
+        ]
+      }
+    ]
+  }
+}
