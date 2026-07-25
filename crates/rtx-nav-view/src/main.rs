@@ -654,19 +654,11 @@ impl ApplicationHandler<UserEvent> for App {
                     graph.cells.len(),
                     graph.links.len()
                 ));
-                eprintln!("TRACE NavBuilt cells={} links={}", graph.cells.len(), graph.links.len());
                 self.nav = Some((bsp, graph));
                 self.rebuild_overlay();
             }
             UserEvent::Live(route) => self.apply_live(&route),
             UserEvent::Bsp(bsp) => {
-                eprintln!(
-                    "TRACE Bsp event map={:?} bytes={} loaded_map={:?} gpu={}",
-                    bsp.map,
-                    bsp.bytes.len(),
-                    self.loaded_map,
-                    self.gpu.is_some()
-                );
                 // Skip if we already have this map (e.g. a refetch after a reconnect); otherwise load
                 // now, or stash it for `resumed` if the renderer isn't up yet.
                 if self.loaded_map.as_deref() == Some(bsp.map.as_str()) {

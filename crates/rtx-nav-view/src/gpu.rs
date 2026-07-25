@@ -10,7 +10,7 @@ use glam::Mat4;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use crate::geom::{LineVertex, MeshVertex};
+use crate::geom::{LineVertex, MeshVertex, MAX_CELL_TILE_VERTS};
 
 pub struct Gpu {
     surface: wgpu::Surface<'static>,
@@ -36,8 +36,11 @@ pub struct Gpu {
     /// red rocket-/speed-jump arcs plus the bot's bounding-box cube (both the line pipeline). `None`
     /// until a live route arrives / after disconnect.
     path_vbuf: Option<(wgpu::Buffer, u32)>,
-    /// The cell under the cursor, highlighted with the surface pipeline over everything else.
-    hover_vbuf: Option<(wgpu::Buffer, u32)>,
+    /// The cell under the cursor, highlighted with the surface pipeline over everything else. The
+    /// buffer is allocated once at its maximum size and rewritten; `hover_count` is how much of it
+    /// is live this frame (0 = nothing hovered).
+    hover_vbuf: Option<wgpu::Buffer>,
+    hover_count: u32,
     arc_vbuf: Option<(wgpu::Buffer, u32)>,
     bot_vbuf: Option<(wgpu::Buffer, u32)>,
     /// Opaque bot-cube faces (surf-cube pipeline) and the per-cell wireframe grid (line pipeline).
@@ -219,6 +222,7 @@ impl Gpu {
             camera_bind,
             mesh_vbuf: None,
             hover_vbuf: None,
+            hover_count: 0,
             water_vbuf: None,
             surf_vbuf: None,
             line_vbuf: None,
@@ -275,7 +279,7 @@ impl Gpu {
         self.line_vbuf = None;
         self.surf_vbuf = None;
         self.cellwire_vbuf = None;
-        self.hover_vbuf = None;
+        self.hover_count = 0; // keep the buffer; it is reused across maps
     }
 
     /// Replace the per-cell wireframe grid overlay.
@@ -283,9 +287,28 @@ impl Gpu {
         self.cellwire_vbuf = self.upload(bytemuck::cast_slice(verts), verts.len() as u32, "cellwire");
     }
 
-    /// Replace the hovered-cell highlight buffer (cyan filled quads); empty clears it.
+    /// Replace the hovered-cell highlight (cyan filled quads); empty hides it.
+    ///
+    /// Unlike the other overlays this changes with the cursor — many times a second while the mouse
+    /// moves — so it writes into one buffer allocated up front rather than creating a new one each
+    /// time. The highlight is a single cell, so [`MAX_CELL_TILE_VERTS`] is a hard bound on what
+    /// it can ever need.
     pub fn set_hover(&mut self, verts: &[LineVertex]) {
-        self.hover_vbuf = self.upload(bytemuck::cast_slice(verts), verts.len() as u32, "hover");
+        let count = verts.len().min(MAX_CELL_TILE_VERTS);
+        if count == 0 {
+            self.hover_count = 0;
+            return;
+        }
+        let buf = self.hover_vbuf.get_or_insert_with(|| {
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hover"),
+                size: (MAX_CELL_TILE_VERTS * std::mem::size_of::<LineVertex>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        });
+        self.queue.write_buffer(buf, 0, bytemuck::cast_slice(&verts[..count]));
+        self.hover_count = count as u32;
     }
 
     /// Replace the live route-tile buffer (red filled quads).
@@ -420,10 +443,10 @@ impl Gpu {
             }
             // The hover highlight last of the translucent tiles, so it reads over both the walkable
             // surface and any route tile sharing the cell.
-            if let Some((buf, count)) = &self.hover_vbuf {
+            if let (Some(buf), 1..) = (&self.hover_vbuf, self.hover_count) {
                 pass.set_pipeline(&self.surf_pipeline);
                 pass.set_vertex_buffer(0, buf.slice(..));
-                pass.draw(0..*count, 0..1);
+                pass.draw(0..self.hover_count, 0..1);
             }
             // The opaque bot cube (depth-writing) before the lines, so its edges/wireframes compose on
             // top of the solid faces.

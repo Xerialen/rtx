@@ -574,6 +574,10 @@ pub fn nav_lines(graph: &NavGraph, visible: &[bool; NUM_LINK_KINDS]) -> Vec<Line
 /// footprint — 4 = 8u sub-quads at the 32u grid pitch.
 const SURF_SUB: i32 = 4;
 
+/// Most vertices one cell's tiles can produce: every sub-quad supported, 6 vertices each. The hover
+/// highlight is exactly one cell, so this bounds its buffer (see `Gpu::set_hover`).
+pub const MAX_CELL_TILE_VERTS: usize = (SURF_SUB * SURF_SUB * 6) as usize;
+
 // --- live overlay (the running game's current route + bot, via the control channel) ------------
 
 /// Bright red for the bot's current path.
