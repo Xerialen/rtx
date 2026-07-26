@@ -640,6 +640,34 @@ pub enum Event {
     /// consumer's heartbeat, proof this build supports telemetry, so a tool started before
     /// the human connects does not fall back to polling.
     Pmove(PmoveEvent),
+    /// A steering watchdog fired: the bot noticed it is not getting anywhere on its current leg.
+    ///
+    /// One event per firing, from every watchdog in the bot's steering core (displacement,
+    /// route progress, the speed-jump run-up, the air commitment, the curl prestrafe deficit).
+    /// Everything here is a copy of what the watchdog already had in hand, so a consumer can
+    /// attribute a stall to a map spot, a route leg and a link kind without a follow-up query.
+    BotStall {
+        bot: u32,
+        t: f32,
+        /// Which watchdog fired: `displacement`, `progress`, `speedjump_stall`,
+        /// `air_commit_off`, `air_commit_timeout`, `prestrafe_deficit`.
+        reason: String,
+        origin: Vec3,
+        /// The nav cell the bot stands on, and the one it is routing toward.
+        cell: u32,
+        goal_cell: u32,
+        goal_dist: f32,
+        /// The route leg (link index) in force when the watchdog fired; `u32::MAX` when off-route.
+        link: u32,
+        /// That leg's `LinkKind`, as its `Debug` name; empty when off-route.
+        kind: String,
+        speed: f32,
+        /// The route as it stood *before* the watchdog cleared it, and the bot's leg within it.
+        route_len: u32,
+        route_pos: u32,
+        /// What the watchdog did about it: `force_jump` or `penalize+repath`.
+        action: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -814,6 +842,48 @@ mod tests {
             t: 12.5,
             players: Vec::new(),
         }));
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn bot_stall_event_roundtrips() {
+        let msg = Msg::Event(Event::BotStall {
+            bot: 3,
+            t: 91.25,
+            reason: "displacement".to_string(),
+            origin: [1874.5, -32.6, -127.0],
+            cell: 412,
+            goal_cell: 77,
+            goal_dist: 638.5,
+            link: 1901,
+            kind: "SpeedJump".to_string(),
+            speed: 118.0,
+            route_len: 9,
+            route_pos: 4,
+            action: "penalize+repath".to_string(),
+        });
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn off_route_bot_stall_roundtrips() {
+        // Off-route the watchdog has no leg to name: `u32::MAX` link and an empty kind must
+        // survive the wire, so a consumer can tell "no leg" from "leg 0".
+        let msg = Msg::Event(Event::BotStall {
+            bot: 1,
+            t: 4.0,
+            reason: "progress".to_string(),
+            origin: [0.0, 0.0, 0.0],
+            cell: 0,
+            goal_cell: 0,
+            goal_dist: 0.0,
+            link: u32::MAX,
+            kind: String::new(),
+            speed: 0.0,
+            route_len: 0,
+            route_pos: 0,
+            action: "penalize+repath".to_string(),
+        });
         assert_eq!(roundtrip(&msg), msg);
     }
 

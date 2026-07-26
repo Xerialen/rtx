@@ -187,6 +187,29 @@ pub(crate) fn frame_end(game: &mut GameState) {
         if !game.entities[e].bot.is_bot || !game.entities[e].in_use {
             continue;
         }
+        // Steering-watchdog firings the bot parked this frame (see `bot::state::StallRecord`).
+        // Drained ahead of the puppet-order match below, and for *every* bot: a stall is a fact
+        // about autonomous play, which by definition runs without an order.
+        for rec in std::mem::take(&mut game.entities[e].bot.stall_events) {
+            send_event(
+                game,
+                Event::BotStall {
+                    bot: i,
+                    t: rec.t,
+                    reason: rec.reason.to_string(),
+                    origin: a3(rec.origin),
+                    cell: rec.cell,
+                    goal_cell: rec.goal_cell,
+                    goal_dist: rec.goal_dist,
+                    link: rec.link.unwrap_or(u32::MAX),
+                    kind: rec.kind.map(|k| format!("{k:?}")).unwrap_or_default(),
+                    speed: rec.speed,
+                    route_len: rec.route_len,
+                    route_pos: rec.route_pos,
+                    action: rec.action.to_string(),
+                },
+            );
+        }
         match game.entities[e].bot.puppet.order {
             None | Some(ControlOrder::Hold) => {}
             Some(ControlOrder::Goto { target }) => {
