@@ -16,13 +16,13 @@
 //! so the rollout is a statement about what the bot will really do. `None` means nothing tracks from
 //! here — the predicted boxed state, and the one case the ledge brakes are for.
 //!
-//! The lane offset is not a refinement, it is the point. A route is a chain of 32u cell centres, and
-//! where one crosses a staircase diagonally the straight line between centres **cuts each step's
-//! corner** — off the end of the tread there is air. dm3's 724 lane does this at every riser, and the
-//! measured consequence is that no centred look-ahead certifies it at *any* speed from 120 ups up: the
-//! bot walks off, slowly or quickly. Tracking that line harder was never going to work, which is worth
-//! knowing before reaching for gains and gates. Half a cell to the inside there is continuous tread,
-//! and the fan finds it from the physics without being told where the drop is.
+//! The policy carries a lane offset as well as a look-ahead, for the case where the route's own line
+//! is not quite the line to walk. That mattered a great deal before cell origins were seated on real
+//! floor (`NavGraph::seat_on_real_floor`): origins sat in the clip hull's 16u skirt, so the line
+//! between cell centres left the tread at every riser and dm3's 724 lane could not be certified
+//! centred at *any* speed. With the mesh describing the surface honestly the centred line certifies,
+//! and the offsets are what remain for genuinely awkward ground rather than for mesh error. Worth
+//! remembering which of those two a failure is, before reaching for gains and gates.
 //!
 //! The plan is a *policy parameter*, not a fixed aim point: prediction and execution both evaluate
 //! [`aim_point`] against the same route-anchored polyline, locating the bot on it by projection, so
@@ -96,14 +96,13 @@ pub enum WalkRollout {
     Blocked,
 }
 
-/// Lateral offsets tried for the pursuit point, centred line first. A route's cell centres sit on the
-/// 32u lattice, and on a staircase crossed diagonally the straight line between them **cuts each
-/// step's corner** — where the tread ends there is air, so the centred line is not merely rough, it
-/// leaves the floor. dm3's 724 lane does this at every riser, which is why no centred look-ahead
-/// certifies there at any speed. Offering the pursuit a lane a half-cell to either side lets the
-/// rollout find the one that stays on tread, the same way [`plan_hop`](super::hopsim::plan_hop) fans
-/// offsets to discover a human's outer-wall line on a curve. Which side is the safe one depends on
-/// where the drop is, so both are tried and the geometry decides.
+/// Lateral offsets tried for the pursuit point, centred line first — so a straight route is walked
+/// straight, and an offset is only taken when the centre provably does not hold. Offering the pursuit
+/// a lane a half-cell to either side lets the rollout find ground the route's own line misses, the
+/// same way [`plan_hop`](super::hopsim::plan_hop) fans offsets to discover a human's outer-wall line
+/// on a curve. Which side is the safe one depends on where the drop is, so both are tried and the
+/// geometry decides. Note a persistent need for an offset on ordinary ground is a signal the *mesh*
+/// is off, not the ground: that is what dm3's 724 lane looked like before cell origins were seated.
 pub const LATERALS: [f32; 5] = [0.0, 16.0, -16.0, 32.0, -32.0];
 
 /// A certified pursuit policy: steer at the corridor point this far ahead along the route, shifted
@@ -363,17 +362,17 @@ mod tests {
     /// synthetic hull: cells 1014 -> 977 -> 938 -> 895, the 45-degree diagonal beside a fatal drop
     /// that the reactive brakes fumbled.
     ///
-    /// Two things are asserted, and the second is the interesting one. A *centred* pursuit cannot
-    /// hold this lane at any speed — the straight line between cell centres cuts each step's corner,
-    /// where there is air, so the bot walks off however fast or slow it goes. That is a fact about
-    /// the route, not about control, and it is why tracking the cell-centre polyline harder was never
-    /// going to fix this. What does hold it is a lane offset half a cell toward the inside, which the
-    /// fan finds on its own from the physics.
+    /// This began life asserting the opposite: that a *centred* pursuit could not hold this lane at
+    /// any speed, because the straight line between cell centres cut each step's corner where there
+    /// was air. That was true, and it was a fact about the mesh rather than about control — the cell
+    /// origins were sitting in the clip hull's 16u skirt, off the real tread. Seating them on render
+    /// floor (`NavGraph::seat_on_real_floor`) removed the cause, so the centred line now tracks and
+    /// the lane offset is no longer needed. Kept, inverted, as the regression guard for that.
     ///
     /// Needs the map: set `RTX_TEST_MAPS` to a directory holding `dm3.bsp` (`playground/qw/maps`).
     /// Vacuously green otherwise, the same opt-in idiom as [`crate::demo_replay`].
     #[test]
-    fn dm3_stair_lane_certifies_an_offset_lane_but_never_the_centre() {
+    fn dm3_stair_lane_certifies_on_the_centred_line() {
         let Some(dir) = std::env::var("RTX_TEST_MAPS").ok() else {
             eprintln!("RTX_TEST_MAPS not set; skipping");
             return;
@@ -418,22 +417,19 @@ mod tests {
                 on_ground: true,
                 jump_held: false,
             };
-            // The centred line leaves the floor at every look-ahead — the corner cuts, not the speed.
-            for &la in &LOOKAHEADS {
-                assert_ne!(
-                    roll_walk(&bsp, &no_hazard, &[], &pts, st, straight(la), &p),
-                    WalkRollout::Held,
-                    "the centred line should not certify at {spd} ups, look-ahead {la}"
-                );
-            }
-            // An offset lane does, and it is the one away from the drop (which lies on the +perp
-            // side here, so the certified offset must be negative).
+            // The lane certifies, and the *centred* line is what does it. That is the whole point of
+            // seating cell origins on real floor: before that, the line between cell centres ran
+            // through the clip hull's skirt and left the tread at every riser, so only an offset lane
+            // could be certified. The centred line certifying now is the mesh finally describing the
+            // surface the feet are on — if this regresses to needing an offset, the seating is broken.
+            assert_eq!(
+                roll_walk(&bsp, &no_hazard, &[], &pts, st, straight(LOOKAHEADS[0]), &p),
+                WalkRollout::Held,
+                "the centred line should track the seated stair lane at {spd} ups"
+            );
             let plan = plan_walk(&bsp, &no_hazard, &[], &pts, st, &p)
                 .unwrap_or_else(|| panic!("dm3's stair lane should certify at {spd} ups"));
-            assert!(
-                plan.lateral < 0.0,
-                "should hug the inside, away from the drop: {plan:?}"
-            );
+            assert_eq!(plan.lateral, 0.0, "no lane offset should be needed now: {plan:?}");
             assert_eq!(roll_walk(&bsp, &no_hazard, &[], &pts, st, plan, &p), WalkRollout::Held);
         }
     }

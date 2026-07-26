@@ -638,7 +638,7 @@ impl NavGraph {
         }
         let (cx, cy) = (sx / n as f32, sy / n as f32);
         // Re-derive the resting height at the seated spot: the same clip-hull column scan, keeping the
-        // floor nearest the height this cell was carved at so a recentre can't hop it to another storey.
+        // floor nearest the height this cell was carved at.
         let mut best = origin.z;
         let mut gap = f32::INFINITY;
         Self::column_floors(bsp, cx, cy, |z| {
@@ -647,6 +647,18 @@ impl NavGraph {
                 best = z;
             }
         });
+        // A seat is a correction of *where on this surface* the cell sits, never a move to a different
+        // one. The clip column at the centroid can refuse to agree: hugging a real edge is exactly when
+        // the centroid sits inside some neighbouring wall's 16u skirt, and the nearest clip floor there
+        // reads a storey away. dm3's cell 497 is the canonical case — the landing of the jump gap the
+        // route west depends on seats onto a shelf corner whose clip column is filled by the raised
+        // walkway beside it, and taking the clip height would hoist the cell 64u upward. The support
+        // samples themselves cannot be fooled that way: `held` only accepts render floor within a step
+        // below the carved feet, so the centroid is on this surface no matter what the clip says. Keep
+        // the carved height and seat horizontally.
+        if gap > STEP_HEIGHT {
+            return Vec3::new(cx, cy, origin.z);
+        }
         Vec3::new(cx, cy, best)
     }
 

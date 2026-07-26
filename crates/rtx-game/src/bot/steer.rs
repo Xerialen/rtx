@@ -216,9 +216,12 @@ const WINDING_LOOKAHEAD: usize = 4;
 const WINDING_LIMIT: f32 = 60.0;
 
 /// Total absolute heading change (degrees) of the route over the next [`WINDING_LOOKAHEAD`] legs,
-/// measured from `origin` through each leg's target cell. Drives the drop from a bhop to a precise
-/// walk before a tight bend the hop would overshoot (a spiral staircase, a hairpin).
-fn route_turn(graph: &NavGraph, route: &[u32], pos: usize, origin: Vec3) -> f32 {
+/// measured from `origin` through each leg's target cell. The conservative measure: it counts every
+/// kink — including the bot's own approach onto the first target, which is what reads dm3's stair
+/// crest (approach north, route west) before the hop is airborne — so it errs toward walking. Gates
+/// bhop *entry* only: a chain not yet started loses nothing by waiting a few cells for a corner to
+/// resolve, while a chain in flight is judged by the steadier [`route_turn`].
+fn route_turn_sum(graph: &NavGraph, route: &[u32], pos: usize, origin: Vec3) -> f32 {
     let mut prev = origin.xy();
     let mut last_dir: Option<Vec2> = None;
     let mut total = 0.0f32;
@@ -235,6 +238,52 @@ fn route_turn(graph: &NavGraph, route: &[u32], pos: usize, origin: Vec3) -> f32 
         prev = tgt;
     }
     total.to_degrees()
+}
+
+/// Largest heading deviation (degrees) of the route over the next [`WINDING_LOOKAHEAD`] legs: the
+/// bot's travel direction and each inter-cell segment, measured against the first inter-cell
+/// direction. Gates *sustaining* a live hop chain across a landing, where [`route_turn_sum`] is too
+/// jumpy to be trusted: summing successive turns reads a lattice dogleg — the two 45° kinks where
+/// A* reconciles grid columns on an arrow-straight runway — as a 90° hairpin, and that verdict
+/// lands exactly when the 0.4s repath has re-anchored the route mid-run, dumping a full-speed hop
+/// chain onto ground friction for nothing. Any single segment of the dogleg deviates at most 45°
+/// from the corridor's own heading, while a hairpin (~180°), a zigzag weave (90°), and a spiral's
+/// steadily rotating treads (past 60° within the window) all still trip the gate.
+///
+/// The approach term is the *velocity*, not origin→first-target: the cursor's current cell can sit
+/// nearly abeam of a slaloming bot (9u ahead, 30u aside was measured live), and the line to it then
+/// points sideways off a perfectly straight corridor. Velocity heading stays within the slalom's
+/// ±45° envelope on a straight run, and still betrays a hairpin sitting right at the bot's feet
+/// (the remaining window points back against the travel direction).
+fn route_turn(graph: &NavGraph, route: &[u32], pos: usize, v_xy: Vec2) -> f32 {
+    // Only directions between two cell origins count — the origin-anchored first segment is the
+    // abeam-noise this function exists to ignore, so it seeds `prev` and nothing else.
+    let mut prev: Option<Vec2> = None;
+    let mut reference: Option<Vec2> = None;
+    let mut max_dev = 0.0f32;
+    for &leg in route.iter().skip(pos).take(WINDING_LOOKAHEAD) {
+        let tgt = graph.cell_origin(graph.link_target(leg)).xy();
+        let Some(p) = prev else {
+            prev = Some(tgt);
+            continue;
+        };
+        let dir = (tgt - p).normalize_or_zero();
+        if dir == Vec2::ZERO {
+            continue;
+        }
+        prev = Some(tgt);
+        match reference {
+            None => {
+                reference = Some(dir);
+                let travel = v_xy.normalize_or_zero();
+                if travel != Vec2::ZERO {
+                    max_dev = travel.dot(dir).clamp(-1.0, 1.0).acos();
+                }
+            }
+            Some(r) => max_dev = max_dev.max(r.dot(dir).clamp(-1.0, 1.0).acos()),
+        }
+    }
+    max_dev.to_degrees()
 }
 
 pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> SteerOut {
@@ -897,15 +946,21 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // risers, or a hairpin): a hop at full speed overshoots the bend and weaves off the narrow path,
     // so drop to the walk — its near-field glide tracks the curve. `ascent_ahead` alone misses this,
     // since the winding legs are flat (no riser); the curvature gate catches them.
-    let winding_ahead = route_turn(graph, &bot.route, bot.route_pos, origin) > WINDING_LIMIT;
+    let winding_ahead = route_turn(graph, &bot.route, bot.route_pos, v_xy) > WINDING_LIMIT;
     let carry = (planned_band >= 1 || bot.route_bands.get(bot.route_pos + 1).copied().unwrap_or(0) >= 1)
         && !ascent_ahead
         && !winding_ahead;
+    // Entry stays behind the conservative cumulative-turn reading: a chain not yet started loses
+    // nothing by walking a few more cells while a corner resolves, and a hop begun *at* a corner
+    // flies uncertified (the walk certifier is gated off on air frames). dm3's stair crest is the
+    // measured case: entry admitted on the deviation measure alone hops the crest and corner-cuts
+    // the notch beyond it.
+    let winding_entry = winding_ahead || route_turn_sum(graph, &bot.route, bot.route_pos, origin) > WINDING_LIMIT;
     let bhop_entry = !final_leg
         && matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
         && (goal_dist > 300.0 || planned_band >= 1)
         && runway_dist >= bhop::RUNWAY_ENGAGE
-        && !winding_ahead
+        && !winding_entry
         // Run up first: don't start the hop cycle from a standstill — accelerate on the ground until
         // we're actually moving, then leap into the circle-jump (a human never hops from a stop).
         && speed >= bhop::RUN_UP_SPEED;
