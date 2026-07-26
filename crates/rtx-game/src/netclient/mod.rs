@@ -593,7 +593,12 @@ impl Client {
         //     `emit_event` drops the event on the floor then.
         if now.duration_since(self.heartbeat_at) >= HEARTBEAT_INTERVAL {
             self.heartbeat_at = now;
-            self.emit_heartbeats(now);
+            // The same opt-in as the server's telemetry: a pre-branch consumer on this control
+            // port would drop the connection on the unknown variant, so the seat only reports in
+            // when asked to (`+set rtx_telemetry 1`).
+            if self.game.host().cvar(c"rtx_telemetry") > 0.0 {
+                self.emit_heartbeats(now);
+            }
         }
 
         // 7. Send. Once a bot is embodied this carries its usercmd; until then it is the keepalive

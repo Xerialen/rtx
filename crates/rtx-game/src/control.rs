@@ -32,7 +32,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -89,6 +89,10 @@ pub(crate) struct ControlState {
     /// Outbound encoded [`Msg`] frames plus their delivery target. The writer thread owns the receiving
     /// half and the client table.
     out_tx: Option<Sender<(Target, Vec<u8>)>>,
+    /// Frames queued on `out_tx` that the writer has not yet picked up. Events stop being queued once
+    /// this passes [`EVENT_BACKLOG_MAX`] — one wedged client must not grow the queue without bound.
+    /// Replies are always queued: a request/response pair is bounded by the requester itself.
+    out_backlog: Arc<AtomicUsize>,
     /// Raised by [`shutdown`] to tell the accept loop to stop.
     stop: Option<Arc<AtomicBool>>,
     /// The port the listener bound, so [`shutdown`] can poke a blocked `accept` awake.
@@ -179,7 +183,12 @@ pub(crate) fn frame_end(game: &mut GameState) {
     }
     let now = game.time();
     let maxclients = game.host.cvar(c"maxclients").max(0.0) as u32;
-    if game.host.cvar(c"rtx_telemetry") > 0.0 {
+    // One switch for the whole new observability surface (`Pmove`, `BotStall`, the client heartbeat):
+    // pre-branch typed consumers cannot decode an unknown enum variant — the deployed nav viewer
+    // treats that as a dead connection — so nothing new goes on the wire until the operator opts
+    // this server in with `rtx_telemetry 1`.
+    let telemetry = game.host.cvar(c"rtx_telemetry") > 0.0;
+    if telemetry {
         send_event(game, Event::Pmove(pmove_event(game, now, maxclients)));
     }
     for i in 1..=maxclients {
@@ -189,8 +198,14 @@ pub(crate) fn frame_end(game: &mut GameState) {
         }
         // Steering-watchdog firings the bot parked this frame (see `bot::state::StallRecord`).
         // Drained ahead of the puppet-order match below, and for *every* bot: a stall is a fact
-        // about autonomous play, which by definition runs without an order.
-        for rec in std::mem::take(&mut game.entities[e].bot.stall_events) {
+        // about autonomous play, which by definition runs without an order. `pop_front` — not
+        // `mem::take` — so the deque keeps its capacity and the watchdog path never re-allocates.
+        // Behind the telemetry switch like everything else; undrained records self-bound at
+        // [`crate::bot::state::STALL_BUF_CAP`].
+        while telemetry {
+            let Some(rec) = game.entities[e].bot.stall_events.pop_front() else {
+                break;
+            };
             send_event(
                 game,
                 Event::BotStall {
@@ -271,13 +286,16 @@ fn start_listener(game: &mut GameState, port: u16) {
     // navview viewer — with replies routed by id and events broadcast to all.
     let clients: Arc<Mutex<HashMap<u64, TcpStream>>> = Arc::new(Mutex::new(HashMap::new()));
     let wclients = clients.clone();
-    let writer = std::thread::spawn(move || writer_loop(out_rx, wclients));
+    let backlog = Arc::new(AtomicUsize::new(0));
+    let wbacklog = backlog.clone();
+    let writer = std::thread::spawn(move || writer_loop(out_rx, wclients, wbacklog));
     let lstop = stop.clone();
     let lreaders = readers.clone();
     let lclients = clients.clone();
     let accept = std::thread::spawn(move || listener_loop(listener, requests_tx, lclients, lstop, lreaders));
     game.control.requests_rx = Some(requests_rx);
     game.control.out_tx = Some(out_tx);
+    game.control.out_backlog = backlog;
     game.control.stop = Some(stop);
     game.control.port = port;
     game.control.clients = Some(clients);
@@ -339,8 +357,13 @@ fn listener_loop(
 /// Writer loop: drain outbound msgpack frames to their targets. A reply goes to the one client that
 /// asked; an event broadcasts to every connected client. A write error drops that client from the
 /// table (a reconnecting client resyncs via `status`).
-fn writer_loop(out_rx: Receiver<(Target, Vec<u8>)>, clients: Arc<Mutex<HashMap<u64, TcpStream>>>) {
+fn writer_loop(
+    out_rx: Receiver<(Target, Vec<u8>)>,
+    clients: Arc<Mutex<HashMap<u64, TcpStream>>>,
+    backlog: Arc<AtomicUsize>,
+) {
     while let Ok((target, frame)) = out_rx.recv() {
+        backlog.fetch_sub(1, Ordering::Relaxed);
         // Pick the recipients under the lock, then **release it before writing**. `write_all` blocks
         // once the peer stops draining — a multi-megabyte BSP overruns a socket buffer several times
         // over — and holding the table across that wedges the whole channel: `listener_loop` needs
@@ -381,12 +404,23 @@ fn writer_loop(out_rx: Receiver<(Target, Vec<u8>)>, clients: Arc<Mutex<HashMap<u
 /// Queue one outbound [`Msg`] to a target, encoded to a wire frame. A no-op when the channel is down.
 fn send_to(game: &GameState, target: Target, msg: Msg) {
     if let Some(tx) = game.control.out_tx.as_ref() {
+        game.control.out_backlog.fetch_add(1, Ordering::Relaxed);
         let _ = tx.send((target, proto::to_frame(&msg)));
     }
 }
 
-/// Queue one async lifecycle [`Event`] to every connected client.
+/// Ceiling on queued-but-unwritten frames before *events* stop being queued (replies always are).
+/// ~6 s of per-frame telemetry at 77 Hz — far above any healthy writer's backlog, small enough that
+/// a wedged client caps the queue at a few hundred kilobytes instead of the whole heap.
+const EVENT_BACKLOG_MAX: usize = 512;
+
+/// Queue one async lifecycle [`Event`] to every connected client — unless the writer is drowning
+/// (see [`EVENT_BACKLOG_MAX`]). An event is a broadcast fact about a moment already gone; stale
+/// facts are droppable in a way replies never are.
 fn send_event(game: &GameState, ev: Event) {
+    if game.control.out_backlog.load(Ordering::Relaxed) >= EVENT_BACKLOG_MAX {
+        return;
+    }
     send_to(game, Target::All, Msg::Event(ev));
 }
 
