@@ -1613,12 +1613,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         Vec3::ZERO
     };
 
-    // Glide look-ahead: on a grounded walk/step leg, if the near-field certifies a straight chord to a
-    // point ~96u down the corridor stays on clear floor, aim the feet at *that* instead of the raw 32u
-    // next cell — straightening the grid's constant 45° zigzag. Everything else still keys on the raw
-    // waypoint (leg advancement, `wish_scale`, the magnet, the watchdogs): the chord follows the leg
-    // polyline, so it passes within `ARRIVE_RADIUS` of each cell centre, exactly the magnet's argument.
-    // Off on the final approach (home straight on the target) and whenever the chord isn't clear.
+    // Where the feet aim: the certified pursuit when one is live, else the near-field glide.
     let heading = if let Some((w, pts)) = bot.walk.zip(walk_route_pts(graph, bot, origin)) {
         // The certified policy, re-evaluated at the live state: `aim_point` off the same polyline
         // construction the rollout proved, so the bot pursues exactly the point that was certified —
@@ -1628,6 +1623,12 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // about the same ground is what used to drop the smoothing exactly where a stair needed it.
         walksim::aim_point(&pts, 0.0, w.plan).xy() - origin.xy()
     } else {
+        // Glide look-ahead: on a grounded walk/step leg, if the near-field certifies a straight chord
+        // to a point ~96u down the corridor stays on clear floor, aim the feet at *that* instead of the
+        // raw 32u next cell — straightening the grid's constant 45° zigzag. Everything else still keys
+        // on the raw waypoint (leg advancement, `wish_scale`, the magnet, the watchdogs): the chord
+        // follows the leg polyline, so it passes within `ARRIVE_RADIUS` of each cell centre, exactly
+        // the magnet's argument. Off on the final approach and whenever the chord isn't clear.
         let want_glide = nf_ground
             && nf_active
             && host.cvar_bool(c"rtx_bot_glide")
