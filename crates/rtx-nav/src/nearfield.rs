@@ -186,9 +186,20 @@ impl NearField {
                 let col = if blocks(c, cz, blocked) {
                     Col::Wall // a shut gate's volume — invisible to the world hull, stamped here
                 } else {
+                    // A wall or drop at a step's reach can still be a walkable pair of risers inside
+                    // this one 8u stride; give those a second look before letting them end the flood.
+                    let probed = match probe_column(is_solid, c.x, c.y, cz) {
+                        found @ (Col::Wall | Col::Drop) => {
+                            match tread_rescue(is_solid, col_center(i, j, cz), c.x, c.y, cz) {
+                                Some(f) => Col::Walk(f),
+                                None => found,
+                            }
+                        }
+                        found => found,
+                    };
                     // Walkable footing over lava/slime (the liquid-blind clip hull can't tell) becomes
                     // a repelling Hazard, tested only on the columns geometry already calls walkable.
-                    match probe_column(is_solid, c.x, c.y, cz) {
+                    match probed {
                         Col::Walk(f) if is_hazard(Vec3::new(c.x, c.y, f)) => Col::Hazard,
                         other => other,
                     }
@@ -379,6 +390,56 @@ fn probe_column(is_solid: &impl Fn(Vec3) -> bool, x: f32, y: f32, z_ref: f32) ->
     }
 }
 
+/// The floor nearest `z_ref` at `(x, y)` within `reach` either way, or `None` when the window holds
+/// none. This is [`probe_column`]'s scan, factored out so [`tread_rescue`] can run it wider.
+fn floor_near(is_solid: &impl Fn(Vec3) -> bool, x: f32, y: f32, z_ref: f32, reach: f32) -> Option<f32> {
+    let at = |z: f32| is_solid(Vec3::new(x, y, z));
+    let (lo, hi) = (z_ref - reach, z_ref + reach);
+    let mut best: Option<f32> = None;
+    let mut prev = at(lo);
+    let mut z = lo;
+    while z < hi {
+        z += SCAN_DZ;
+        let solid = at(z);
+        if prev && !solid {
+            let f = bisect(is_solid, x, y, z - SCAN_DZ, z);
+            if best.is_none_or(|b| (f - z_ref).abs() < (b - z_ref).abs()) {
+                best = Some(f);
+            }
+        }
+        prev = solid;
+    }
+    best
+}
+
+/// Second opinion on a column [`probe_column`] called a wall or a drop: the floor there may be a whole
+/// **pair** of risers from `z_ref`, which pmove walks one at a time but a single step-reach probe reads
+/// as unclimbable. It happens wherever treads get shallower than the 8u column pitch — the narrow end
+/// of a spiral's wedge treads, a steep flight — and it is not a cosmetic misread: a `Wall`/`Drop`
+/// doesn't extend the flood frontier, so one bad column kills the staircase and everything past it
+/// stays `Unknown`, which the repulsion then reads as more wall. The lane the bot is walking ends up
+/// painted as a ledge.
+///
+/// This is [`steppable_rise`](crate::navmesh::geom) at the near-field's scale: accept a floor up to two
+/// steps away only if a tread actually sits between the two columns, within a step of each. Anything
+/// with no intermediate tread — a real wall, a real ledge — still fails, so genuine hazards classify
+/// exactly as before. Runs only on columns already rejected, so open floor pays nothing.
+fn tread_rescue(is_solid: &impl Fn(Vec3) -> bool, from: Vec3, x: f32, y: f32, z_ref: f32) -> Option<f32> {
+    let f = floor_near(is_solid, x, y, z_ref, 2.0 * STEP_HEIGHT + SCAN_DZ)?;
+    let rise = f - z_ref;
+    if rise.abs() <= STEP_HEIGHT || rise.abs() > 2.0 * STEP_HEIGHT {
+        return None; // a step (already walkable) or too far for one tread to bridge
+    }
+    let mid = floor_near(
+        is_solid,
+        (from.x + x) * 0.5,
+        (from.y + y) * 0.5,
+        z_ref,
+        STEP_HEIGHT + SCAN_DZ,
+    )?;
+    ((mid - z_ref).abs() <= STEP_HEIGHT && (f - mid).abs() <= STEP_HEIGHT).then_some(f)
+}
+
 /// Bisect the resting-origin height between a solid sample below and an empty one above (four
 /// halvings pin an 8u stride under 1u). Mirrors [`crate::navmesh`]'s build-time `bisect_floor`.
 fn bisect(is_solid: &impl Fn(Vec3) -> bool, x: f32, y: f32, z_solid: f32, z_empty: f32) -> f32 {
@@ -521,6 +582,41 @@ mod tests {
         // 96u along the stair (three steps up, ~54u) is still on walkable floor connected to the bot.
         let up = nf.col_at(Vec3::new(96.0, 0.0, 60.0)).expect("on footprint");
         assert!(up.walkable(), "staircase should flood walkable, got {up:?}");
+    }
+
+    #[test]
+    fn wedge_riser_pair_floods_walkable() {
+        // Treads shallower than the 8u column pitch — 16u risers every 4u of +x, the geometry at the
+        // narrow end of a spiral's wedge treads. Every column stride crosses *two* risers, so a
+        // step-reach probe calls each one an unmountable wall and the flood dies on the first. pmove
+        // walks it a riser at a time, so the near-field has to as well.
+        let solid = |p: Vec3| p.z <= 16.0 * (p.x / 4.0).floor().max(0.0);
+        let nf = build(&solid);
+        let up = nf.col_at(Vec3::new(32.0, 0.0, 1.0)).expect("on footprint");
+        assert!(up.walkable(), "a wedge tread pair should flood walkable, got {up:?}");
+        // And the flood carries past it rather than leaving the lane beyond `Unknown`.
+        let far = nf.col_at(Vec3::new(64.0, 0.0, 1.0)).expect("on footprint");
+        assert!(far.walkable(), "the flood should continue up the stair, got {far:?}");
+    }
+
+    #[test]
+    fn single_tall_riser_still_a_wall() {
+        // One 40u riser with no tread inside it: more than two steps, nothing to bridge it. Still a
+        // wall — the rescue must not turn genuine geometry into a climb.
+        let solid = |p: Vec3| if p.x > 16.0 { p.z <= 40.0 } else { p.z <= 0.0 };
+        let nf = build(&solid);
+        let wall = nf.col_at(Vec3::new(32.0, 0.0, 1.0)).expect("on footprint");
+        assert!(!wall.walkable(), "a 40u riser is not walkable, got {wall:?}");
+    }
+
+    #[test]
+    fn two_step_drop_without_a_tread_is_still_a_drop() {
+        // Floor drops 36u in one go past x = 16 — within the rescue's two-step window, but with no
+        // intermediate tread between the columns, so it stays the ledge it is.
+        let solid = |p: Vec3| if p.x > 16.0 { p.z <= -36.0 } else { p.z <= 0.0 };
+        let nf = build(&solid);
+        let drop = nf.col_at(Vec3::new(32.0, 0.0, 1.0)).expect("on footprint");
+        assert!(!drop.walkable(), "a 36u sheer drop is not a step, got {drop:?}");
     }
 
     #[test]
