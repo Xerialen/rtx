@@ -668,6 +668,30 @@ pub enum Event {
         /// What the watchdog did about it: `force_jump` or `penalize+repath`.
         action: String,
     },
+    /// One second of life from one `rtx-client` seat.
+    ///
+    /// A seat that connected and then went nowhere is indistinguishable from a working one in
+    /// every other line a client prints. This is the periodic proof of the opposite: how far it
+    /// has actually travelled, how the link is behaving, how stale its last snapshot is, and
+    /// whether it is far enough along to be playing at all.
+    SeatHeartbeat {
+        /// The name the seat connected under — the same string the server's scoreboard shows.
+        seat: String,
+        t: f32,
+        /// Distance covered since the seat connected. Flat across heartbeats = a stuck seat.
+        travelled: f32,
+        rtt_ms: f32,
+        /// Frames the server withheld to stay inside our rate, cumulative.
+        chokes: u32,
+        /// Seconds since this connection's entity snapshot last advanced.
+        snapshot_age: f32,
+        /// How far through connecting the seat is (`Active` once it is playing).
+        signon: String,
+        /// Whether the navmesh finished building. Without it the brain does nothing at all, so a
+        /// seat that stands still with `nav_ready: false` is waiting, not broken.
+        nav_ready: bool,
+        alive: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -883,6 +907,22 @@ mod tests {
             route_len: 0,
             route_pos: 0,
             action: "penalize+repath".to_string(),
+        });
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn seat_heartbeat_roundtrips() {
+        let msg = Msg::Event(Event::SeatHeartbeat {
+            seat: "bot\u{2022}rex".to_string(),
+            t: 128.0,
+            travelled: 14203.5,
+            rtt_ms: 12.5,
+            chokes: 3,
+            snapshot_age: 0.013,
+            signon: "Active".to_string(),
+            nav_ready: true,
+            alive: true,
         });
         assert_eq!(roundtrip(&msg), msg);
     }

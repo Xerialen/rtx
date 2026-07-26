@@ -390,6 +390,19 @@ fn send_event(game: &GameState, ev: Event) {
     send_to(game, Target::All, Msg::Event(ev));
 }
 
+/// Broadcast an event raised outside the frame hooks — the client's per-seat heartbeat (see
+/// `crate::netclient`). Silently drops it when the channel never came up, the same way
+/// [`frame_end`] declines to do any work at all in that case.
+///
+/// Gated on the feature that owns its only caller: a `qwprogs` build has no seats to report.
+#[cfg(feature = "netclient")]
+pub(crate) fn emit_event(game: &GameState, ev: Event) {
+    if game.control.out_tx.is_none() {
+        return;
+    }
+    send_event(game, ev);
+}
+
 /// Whether a cvar name is safe to splice into a `set` localcmd (guards the console tokenizer): a
 /// non-empty run of `[A-Za-z0-9_]`. rtx cvars are all of this form.
 fn valid_cvar_name(name: &str) -> bool {

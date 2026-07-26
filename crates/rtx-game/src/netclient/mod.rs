@@ -87,6 +87,7 @@ pub use config::{parse as parse_args, Config, Protocol, USAGE};
 use frames::EntityState;
 use mirror::{Mirror, Squad, WorldMirror};
 use nq_session::NqSession;
+use rtx_ctlproto::Event;
 use rtx_proto::info::UserinfoBuilder;
 use rtx_proto::svc::SvcEvent;
 use session::{Session, Signon};
@@ -103,6 +104,11 @@ const DEFAULT_MAXFPS: f32 = 72.0;
 /// it the bot is guessing, and a guess that lands 100 units in front of a strafing player is worse
 /// than aiming where it can see. Also a NaN/garbage stop, since this multiplies a velocity.
 const MAX_LEAD: f32 = 0.25;
+
+/// How often each seat reports for duty on the control channel. One second: the numbers it carries
+/// (travelled, chokes, snapshot age) are all trends, and a per-frame version of them would be a
+/// second telemetry stream rather than a liveness check.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
 /// One bot: its wire, its view of the world, and the odometer that proves it's playing.
 ///
@@ -198,7 +204,6 @@ impl AnySession {
         }
     }
 
-    #[cfg(test)]
     fn name(&self) -> &str {
         match self {
             AnySession::Qw(s) => s.name(),
@@ -318,6 +323,8 @@ pub struct Client {
     /// The map the shadow world was built for, and which incarnation of the server built it — so a
     /// level change is noticed, and so is a restart onto the same level.
     world_map: (String, i32),
+    /// When the seats last reported in — see [`HEARTBEAT_INTERVAL`].
+    heartbeat_at: Instant,
 }
 
 impl Client {
@@ -367,6 +374,7 @@ impl Client {
             config,
             last_tick: Instant::now(),
             world_map: (String::new(), 0),
+            heartbeat_at: Instant::now(),
         }
     }
 
@@ -579,10 +587,45 @@ impl Client {
         }
         crate::control::frame_end(&mut self.game);
 
+        // 6b. Report the squad in, once a second. A seat that connected and then stood in a corner
+        //     produces exactly the same output as one playing a full match; these are the numbers
+        //     that separate them. Costs nothing when no harness bound the control channel —
+        //     `emit_event` drops the event on the floor then.
+        if now.duration_since(self.heartbeat_at) >= HEARTBEAT_INTERVAL {
+            self.heartbeat_at = now;
+            self.emit_heartbeats(now);
+        }
+
         // 7. Send. Once a bot is embodied this carries its usercmd; until then it is the keepalive
         //    that stops the server timing us out, and the carrier the netchan needs to get the
         //    reliable signon messages out.
         self.send_moves()
+    }
+
+    /// One [`Event::SeatHeartbeat`] per seat — the tick loop's step 6b.
+    ///
+    /// `nav_ready` is squad-wide because the navmesh is: without it `run_bots` returns before doing
+    /// anything, so it is the difference between a seat that is stuck and one that is still waiting.
+    fn emit_heartbeats(&self, now: Instant) {
+        let t = self.game.time();
+        let nav_ready = self.game.nav.is_loaded();
+        for bot in &self.bots {
+            let own = &self.game.entities[bot.mirror.own()];
+            crate::control::emit_event(
+                &self.game,
+                Event::SeatHeartbeat {
+                    seat: bot.session.name().to_string(),
+                    t,
+                    travelled: bot.travelled,
+                    rtt_ms: bot.session.rtt() * 1000.0,
+                    chokes: bot.session.chokes(),
+                    snapshot_age: now.duration_since(bot.session.frames_at()).as_secs_f32(),
+                    signon: format!("{:?}", bot.session.signon()),
+                    nav_ready,
+                    alive: own.in_use && own.is_alive(),
+                },
+            );
+        }
     }
 
     /// Put this frame's decisions on the wire, one packet per connection.
