@@ -1619,12 +1619,14 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // waypoint (leg advancement, `wish_scale`, the magnet, the watchdogs): the chord follows the leg
     // polyline, so it passes within `ARRIVE_RADIUS` of each cell centre, exactly the magnet's argument.
     // Off on the final approach (home straight on the target) and whenever the chord isn't clear.
-    let heading = if let Some(w) = bot.walk {
-        // The certified policy, re-evaluated at the live state: aim down the corridor at the distance
-        // the rollout proved trackable. Deliberately raw — no `chord_clear` veto, because the rollout
-        // *is* the certificate, and a stricter 8u-grid opinion about the same ground is what used to
-        // drop the smoothing exactly where a stair diagonal needed it.
-        corridor_point(graph, &bot.route, bot.route_pos, origin, w.plan.lookahead).xy() - origin.xy()
+    let heading = if let Some((w, pts)) = bot.walk.zip(walk_route_pts(graph, bot, origin)) {
+        // The certified policy, re-evaluated at the live state: `aim_point` off the same polyline
+        // construction the rollout proved, so the bot pursues exactly the point that was certified —
+        // including the lateral lane offset, which on a diagonal staircase is what keeps the feet on
+        // tread instead of over the corner the cell-centre line cuts. Deliberately raw: no
+        // `chord_clear` veto, because the rollout *is* the certificate, and a stricter 8u-grid opinion
+        // about the same ground is what used to drop the smoothing exactly where a stair needed it.
+        walksim::aim_point(&pts, 0.0, w.plan).xy() - origin.xy()
     } else {
         let want_glide = nf_ground
             && nf_active

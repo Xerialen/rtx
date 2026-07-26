@@ -10,18 +10,26 @@
 //! speed that would have carried it across, and fumbles the one leg that needed an exact line.
 //!
 //! [`plan_walk`] rolls the [`pmove`](crate::pmove_sim) forward under the **pursuit policy the steerer
-//! actually runs** — aim at the point a fixed distance ahead along the route polyline, full wish, no
-//! jump — and accepts a look-ahead distance only if the rolled-out path stays inside a tube around the
-//! route for the whole horizon. The steerer then flies exactly that policy, so the rollout is a
-//! statement about what the bot will really do. `None` means no look-ahead tracks from here — the
-//! predicted boxed state, and the one case the ledge brakes are for.
+//! actually runs** — aim at a point a fixed distance ahead along the route polyline, optionally shifted
+//! into a lane beside it, full wish, no jump — and accepts a policy only if the rolled-out path stays
+//! inside a tube around the route for the whole horizon. The steerer then flies exactly that policy,
+//! so the rollout is a statement about what the bot will really do. `None` means nothing tracks from
+//! here — the predicted boxed state, and the one case the ledge brakes are for.
 //!
-//! The plan is a *policy parameter*, not a fixed aim point: the rollout pursues `point_on(polyline,
-//! cursor + L)` while the live steerer pursues `corridor_point(origin, L)`. The two coincide when the
-//! bot sits on the line and diverge by order of its lateral offset otherwise — which certification
-//! bounds to [`LATERAL_TOL`] and the caller's per-frame deviation check keeps bounded. Re-deriving the
-//! aim from the live origin each frame is what makes the policy self-correcting rather than a
-//! dead-reckoned path the bot drifts off; it is the same trade [`hopsim`](super::hopsim) accepts.
+//! The lane offset is not a refinement, it is the point. A route is a chain of 32u cell centres, and
+//! where one crosses a staircase diagonally the straight line between centres **cuts each step's
+//! corner** — off the end of the tread there is air. dm3's 724 lane does this at every riser, and the
+//! measured consequence is that no centred look-ahead certifies it at *any* speed from 120 ups up: the
+//! bot walks off, slowly or quickly. Tracking that line harder was never going to work, which is worth
+//! knowing before reaching for gains and gates. Half a cell to the inside there is continuous tread,
+//! and the fan finds it from the physics without being told where the drop is.
+//!
+//! The plan is a *policy parameter*, not a fixed aim point: prediction and execution both evaluate
+//! [`aim_point`] against a polyline anchored at the bot, so they pursue the same point by construction
+//! rather than by agreement. Re-deriving it from the live origin each frame is what makes the policy
+//! self-correcting instead of a dead-reckoned path the bot drifts off; the residual divergence is
+//! bounded by the same [`LATERAL_TOL`] tube the caller re-checks every frame. Same trade
+//! [`hopsim`](super::hopsim) accepts.
 
 use glam::{Vec3, Vec3Swizzles};
 
@@ -50,13 +58,15 @@ pub const LATERAL_TOL: f32 = 32.0;
 /// …and how far it may sit above or below the matched segment. A riser plus grid quantization slack:
 /// deeper than this under the line means the bot left the staircase rather than walked down it.
 pub const Z_TOL: f32 = 48.0;
-/// How many ticks in a row the roll may spend off the floor before it counts as a fall rather than a
-/// stride. Walking a staircase barely leaves the ground at all — pmove's step-down trace reaches a
-/// riser within the same tick — so this needs no slack for stairs, while a genuine walk off a lip is
-/// airborne from the moment it happens. Catching a fall *here* rather than waiting for the drop to
-/// show up in z is what lets a 40-tick horizon reject a lip it has only just crossed: the bot is over
-/// the void long before it is 48u below the route.
-const AIR_TICKS_MAX: usize = 8;
+/// How far below an airborne bot the roll looks for floor before calling it a fall. Running a real
+/// staircase at speed is *not* a grounded affair: each riser launches the bot and it skims several
+/// treads before settling, so counting airborne ticks cannot tell a stair from a cliff — on dm3's
+/// 724 lane the bot is off the floor for a third of the flight while tracking the line exactly. What
+/// separates the two is whether there is anything underneath. A skim always has a tread within a
+/// step or two; a walk off a lip has the void. Probing this directly also means a fall is caught the
+/// moment it starts, instead of waiting the ~25 ticks free-fall needs to show up as depth. Matches
+/// [`hopsim`](super::hopsim)'s `MAX_FALL`, the same "past this it's an edge, not a step down".
+const VOID_PROBE: f32 = 64.0;
 /// Ticks between arc-progress checks.
 const PROGRESS_WINDOW: usize = 15;
 /// Arc-length the cursor must gain per [`PROGRESS_WINDOW`] (≈40 ups average) or the roll is wedged —
@@ -84,10 +94,34 @@ pub enum WalkRollout {
     Blocked,
 }
 
-/// A certified pursuit policy: steer at the corridor point this far ahead along the route.
+/// Lateral offsets tried for the pursuit point, centred line first. A route's cell centres sit on the
+/// 32u lattice, and on a staircase crossed diagonally the straight line between them **cuts each
+/// step's corner** — where the tread ends there is air, so the centred line is not merely rough, it
+/// leaves the floor. dm3's 724 lane does this at every riser, which is why no centred look-ahead
+/// certifies there at any speed. Offering the pursuit a lane a half-cell to either side lets the
+/// rollout find the one that stays on tread, the same way [`plan_hop`](super::hopsim::plan_hop) fans
+/// offsets to discover a human's outer-wall line on a curve. Which side is the safe one depends on
+/// where the drop is, so both are tried and the geometry decides.
+pub const LATERALS: [f32; 5] = [0.0, 16.0, -16.0, 32.0, -32.0];
+
+/// A certified pursuit policy: steer at the corridor point this far ahead along the route, shifted
+/// this far to the side of it.
 #[derive(Clone, Copy, Debug)]
 pub struct WalkPlan {
     pub lookahead: f32,
+    pub lateral: f32,
+}
+
+/// The point this policy aims at from arc-position `s` along `pts`. Shared by the rollout and the
+/// live steerer so prediction and execution pursue exactly the same point.
+pub fn aim_point(pts: &[Vec3], s: f32, plan: WalkPlan) -> Vec3 {
+    let base = point_on(pts, s + plan.lookahead);
+    if plan.lateral.abs() < 1e-3 {
+        return base;
+    }
+    let ahead = point_on(pts, s + plan.lookahead + 16.0);
+    let dir = (ahead.xy() - base.xy()).normalize_or_zero();
+    base + Vec3::new(-dir.y * plan.lateral, dir.x * plan.lateral, 0.0)
 }
 
 /// Height mismatch a match absorbs for free before the level penalty bites. A route leg over a
@@ -166,6 +200,14 @@ pub fn off_line(pts: &[Vec3], p: Vec3) -> Option<Offset> {
     (pts.len() >= 2).then(|| track(pts, f32::NEG_INFINITY, p).off)
 }
 
+/// Whether nothing solid sits within [`VOID_PROBE`] under `p` — the bot is over open air rather than
+/// skimming a tread. A trace that starts inside solid reports no contact too, so that case is excluded
+/// explicitly; it is not a void.
+fn over_void(hull: &impl Hull, p: Vec3) -> bool {
+    let t = hull.trace(p, p - Vec3::Z * VOID_PROBE);
+    t.fraction >= 1.0 && !t.all_solid && !t.start_solid
+}
+
 /// Whether `p` sits inside any blocked AABB, grown by the player half-width in XY and by a step in z
 /// below the box (the same slack the near-field stamps such volumes with, so a rollout and the
 /// clearance grid agree on where a shut door starts).
@@ -194,15 +236,14 @@ pub fn roll_walk(
     blocked: &[(Vec3, Vec3)],
     route_pts: &[Vec3],
     mut st: PmState,
-    lookahead: f32,
+    plan: WalkPlan,
     p: &PmParams,
 ) -> WalkRollout {
     let total: f32 = route_pts.windows(2).map(|w| (w[1].xy() - w[0].xy()).length()).sum();
     let mut s = 0.0;
     let mut mark = 0.0;
-    let mut air = 0;
     for tick in 0..MAX_TICKS {
-        let target = point_on(route_pts, s + lookahead);
+        let target = aim_point(route_pts, s, plan);
         let cmd = Cmd {
             view_yaw: yaw_of(target.xy() - st.origin.xy()),
             forward: MOVE_SPEED,
@@ -211,8 +252,7 @@ pub fn roll_walk(
         };
         pm_step(hull, &mut st, &cmd, p, DT);
 
-        air = if st.on_ground { 0 } else { air + 1 };
-        if air > AIR_TICKS_MAX {
+        if !st.on_ground && over_void(hull, st.origin) {
             return WalkRollout::Fell;
         }
         let t = track(route_pts, s, st.origin);
@@ -241,11 +281,12 @@ pub fn roll_walk(
 
 /// Certify a pursuit policy for the grounded state `st` against `route_pts` — the leg-target polyline
 /// **starting at the bot's own position**, so arc-distances measure from here and match the live
-/// `corridor_point` the steerer will aim down. Tries the [`LOOKAHEADS`] longest-first and returns the
-/// first that tracks the corridor for the whole horizon; a longer look-ahead cuts corners more
-/// smoothly, a shorter one hugs the line, so this yields the smoothest policy that provably stays on.
-/// `None` when none of them do — nothing about this stretch can be walked at the bot's current speed,
-/// which is exactly when the fallback brakes should own the frame.
+/// `corridor_point` the steerer will aim down. Sweeps [`LOOKAHEADS`] longest-first and, within each,
+/// [`LATERALS`] centred-line-first, returning the first policy that tracks the corridor for the whole
+/// horizon: a longer look-ahead cuts corners more smoothly, a shorter one hugs the line, and an offset
+/// one buys a lane the cell centres don't describe — so this yields the smoothest, straightest policy
+/// that provably stays on the floor. `None` when none do, which is exactly when the fallback brakes
+/// should own the frame.
 ///
 /// Note this cannot judge whether the bot is *already* off its route: the polyline starts under its
 /// feet by construction, so tick zero is always on the line. That question belongs to the caller,
@@ -263,8 +304,8 @@ pub fn plan_walk(
     }
     LOOKAHEADS
         .iter()
-        .find(|&&lookahead| roll_walk(hull, is_hazard, blocked, route_pts, st, lookahead, p) == WalkRollout::Held)
-        .map(|&lookahead| WalkPlan { lookahead })
+        .flat_map(|&lookahead| LATERALS.iter().map(move |&lateral| WalkPlan { lookahead, lateral }))
+        .find(|&plan| roll_walk(hull, is_hazard, blocked, route_pts, st, plan, p) == WalkRollout::Held)
 }
 
 #[cfg(test)]
@@ -274,6 +315,14 @@ mod tests {
 
     fn no_hazard(_: Vec3) -> bool {
         false
+    }
+
+    /// A centred pursuit at this look-ahead — the policy shape most of these fixtures exercise.
+    fn straight(lookahead: f32) -> WalkPlan {
+        WalkPlan {
+            lookahead,
+            lateral: 0.0,
+        }
     }
 
     /// A diagonal staircase whose treads are shallow enough that a single 8u near-field column can
@@ -301,6 +350,85 @@ mod tests {
             .collect()
     }
 
+    /// The lane this whole module exists for, against the **real** dm3 geometry rather than a
+    /// synthetic hull: cells 1014 -> 977 -> 938 -> 895, the 45-degree diagonal beside a fatal drop
+    /// that the reactive brakes fumbled.
+    ///
+    /// Two things are asserted, and the second is the interesting one. A *centred* pursuit cannot
+    /// hold this lane at any speed — the straight line between cell centres cuts each step's corner,
+    /// where there is air, so the bot walks off however fast or slow it goes. That is a fact about
+    /// the route, not about control, and it is why tracking the cell-centre polyline harder was never
+    /// going to fix this. What does hold it is a lane offset half a cell toward the inside, which the
+    /// fan finds on its own from the physics.
+    ///
+    /// Needs the map: set `RTX_TEST_MAPS` to a directory holding `dm3.bsp` (`playground/qw/maps`).
+    /// Vacuously green otherwise, the same opt-in idiom as [`crate::demo_replay`].
+    #[test]
+    fn dm3_stair_lane_certifies_an_offset_lane_but_never_the_centre() {
+        let Some(dir) = std::env::var("RTX_TEST_MAPS").ok() else {
+            eprintln!("RTX_TEST_MAPS not set; skipping");
+            return;
+        };
+        let Ok(bytes) = std::fs::read(std::path::Path::new(&dir).join("dm3.bsp")) else {
+            eprintln!("no dm3.bsp in RTX_TEST_MAPS; skipping");
+            return;
+        };
+        let bsp = crate::bsp::Bsp::parse(&bytes).expect("parse dm3");
+        let graph = rtx_nav::navmesh::build_navmesh(
+            &bsp,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            false,
+            Some(rtx_nav::navmesh::SpeedJumpParams {
+                gravity: 800.0,
+                accel: 10.0,
+                maxspeed: 320.0,
+                friction: 4.0,
+                stopspeed: 100.0,
+                curl: true,
+            }),
+            None,
+        );
+        let costs = rtx_nav::navmesh::LinkCosts::default();
+        let start = graph.nearest(Vec3::new(-64.0, 640.0, 56.0)).expect("start cell");
+        let goal = graph.nearest(Vec3::new(-160.0, 736.0, 120.0)).expect("goal cell");
+        let route = graph.find_path(start, goal, &costs).expect("a route up the stairs");
+        let origin = graph.cell_origin(start);
+        let pts: Vec<Vec3> = std::iter::once(origin)
+            .chain(route.iter().map(|&l| graph.cell_origin(graph.link_target(l))))
+            .collect();
+        let p = PmParams::default();
+
+        for spd in [160.0f32, 240.0, 320.0] {
+            let d = (pts[1].xy() - origin.xy()).normalize() * spd;
+            let st = PmState {
+                origin,
+                vel: Vec3::new(d.x, d.y, 0.0),
+                on_ground: true,
+                jump_held: false,
+            };
+            // The centred line leaves the floor at every look-ahead — the corner cuts, not the speed.
+            for &la in &LOOKAHEADS {
+                assert_ne!(
+                    roll_walk(&bsp, &no_hazard, &[], &pts, st, straight(la), &p),
+                    WalkRollout::Held,
+                    "the centred line should not certify at {spd} ups, look-ahead {la}"
+                );
+            }
+            // An offset lane does, and it is the one away from the drop (which lies on the +perp
+            // side here, so the certified offset must be negative).
+            let plan = plan_walk(&bsp, &no_hazard, &[], &pts, st, &p)
+                .unwrap_or_else(|| panic!("dm3's stair lane should certify at {spd} ups"));
+            assert!(
+                plan.lateral < 0.0,
+                "should hug the inside, away from the drop: {plan:?}"
+            );
+            assert_eq!(roll_walk(&bsp, &no_hazard, &[], &pts, st, plan, &p), WalkRollout::Held);
+        }
+    }
+
     /// The target case: a 45° diagonal traverse across risers, beside a fatal drop. A certified
     /// pursuit tracks it at speed — the whole point being that the physics is determined, so the line
     /// is holdable and no brake is needed.
@@ -318,19 +446,20 @@ mod tests {
         };
         let plan = plan_walk(&hull, &no_hazard, &[], &route, st, &p).expect("the stair lane should certify");
         assert_eq!(
-            roll_walk(&hull, &no_hazard, &[], &route, st, plan.lookahead, &p),
+            roll_walk(&hull, &no_hazard, &[], &route, st, plan, &p),
             WalkRollout::Held,
             "flying the certified policy must track the lane"
         );
         // …and it certifies the *smoothest* policy, not merely the tightest one that scrapes through.
         assert_eq!(plan.lookahead, LOOKAHEADS[0]);
+        assert_eq!(plan.lateral, 0.0);
 
         // Re-fly it by hand to check what "held" actually bought: the bot climbs several risers, keeps
         // walking speed the whole way (no reverse, no brake-to-a-crawl), and never leaves the lane.
         let mut fly = st;
         let mut s = 0.0;
         for _ in 0..MAX_TICKS {
-            let target = point_on(&route, s + plan.lookahead);
+            let target = aim_point(&route, s, plan);
             let cmd = Cmd {
                 view_yaw: yaw_of(target.xy() - fly.origin.xy()),
                 forward: MOVE_SPEED,
@@ -394,7 +523,7 @@ mod tests {
             jump_held: false,
         };
         assert_eq!(
-            roll_walk(&hull, &no_hazard, &[], &route, st, 96.0, &p),
+            roll_walk(&hull, &no_hazard, &[], &route, st, straight(96.0), &p),
             WalkRollout::Stalled
         );
     }
@@ -416,12 +545,12 @@ mod tests {
         };
         let gate = [(Vec3::new(150.0, -64.0, 0.0), Vec3::new(170.0, 64.0, 80.0))];
         assert_eq!(
-            roll_walk(&hull, &no_hazard, &gate, &route, st, 96.0, &p),
+            roll_walk(&hull, &no_hazard, &gate, &route, st, straight(96.0), &p),
             WalkRollout::Blocked
         );
         // …and with the gate open the same walk tracks fine, so the box is what rejected it.
         assert_eq!(
-            roll_walk(&hull, &no_hazard, &[], &route, st, 96.0, &p),
+            roll_walk(&hull, &no_hazard, &[], &route, st, straight(96.0), &p),
             WalkRollout::Held
         );
     }
