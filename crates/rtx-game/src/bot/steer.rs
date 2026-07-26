@@ -255,13 +255,13 @@ fn route_turn_sum(graph: &NavGraph, route: &[u32], pos: usize, origin: Vec3) -> 
 /// points sideways off a perfectly straight corridor. Velocity heading stays within the slalom's
 /// ±45° envelope on a straight run, and still betrays a hairpin sitting right at the bot's feet
 /// (the remaining window points back against the travel direction).
-fn route_turn(graph: &NavGraph, route: &[u32], pos: usize, v_xy: Vec2) -> f32 {
+fn route_turn(graph: &NavGraph, route: &[u32], pos: usize, v_xy: Vec2, look: usize) -> f32 {
     // Only directions between two cell origins count — the origin-anchored first segment is the
     // abeam-noise this function exists to ignore, so it seeds `prev` and nothing else.
     let mut prev: Option<Vec2> = None;
     let mut reference: Option<Vec2> = None;
     let mut max_dev = 0.0f32;
-    for &leg in route.iter().skip(pos).take(WINDING_LOOKAHEAD) {
+    for &leg in route.iter().skip(pos).take(look) {
         let tgt = graph.cell_origin(graph.link_target(leg)).xy();
         let Some(p) = prev else {
             prev = Some(tgt);
@@ -972,7 +972,20 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             LinkKind::JumpGap | LinkKind::DoubleJump | LinkKind::SpeedJump
         )
     };
-    let jump_at_hand = cur_leg.is_some_and(&is_jump) || bot.route.get(bot.route_pos + 1).is_some_and(|&l| is_jump(l));
+    // ...but only when the leap lies along the travel direction. A jump leg that departs sideways
+    // off the current run (dm3: the westbound RA-ramp run whose next leg is the southbound gap jump
+    // onto the shelf) is not a run-up — the bot must first shed speed and turn, which is exactly the
+    // room the ledge policy exists to make. Exempting it let the ground zigzag pump the run to 490
+    // ups straight past a lip the runup gate (correctly) refused to jump perpendicular to.
+    let jump_along_travel = |l: u32| {
+        let d = (graph.cell_origin(graph.link_target(l)).xy() - graph.cell_origin(graph.link_source(l)).xy())
+            .normalize_or_zero();
+        let v = v_xy.normalize_or_zero();
+        v == Vec2::ZERO || d == Vec2::ZERO || d.dot(v) > 0.5
+    };
+    let is_jump_at_hand = |l: u32| is_jump(l) && jump_along_travel(l);
+    let jump_at_hand = cur_leg.is_some_and(&is_jump_at_hand)
+        || bot.route.get(bot.route_pos + 1).is_some_and(|&l| is_jump_at_hand(l));
     let on_ledge = graph.is_ledge(bot_cell) && !jump_at_hand;
     let bhop_veto = !host.cvar_bool(c"rtx_bot_bhop")
         || combat_view
@@ -1002,7 +1015,13 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // risers, or a hairpin): a hop at full speed overshoots the bend and weaves off the narrow path,
     // so drop to the walk — its near-field glide tracks the curve. `ascent_ahead` alone misses this,
     // since the winding legs are flat (no riser); the curvature gate catches them.
-    let winding_ahead = route_turn(graph, &bot.route, bot.route_pos, v_xy) > WINDING_LIMIT;
+    // The carry gate must see as far as the bot needs to *stop* caring: at 490 ups four legs is a
+    // quarter second, and a hairpin past that horizon is reached before friction can shed a single
+    // band. A chain also needs a grounded stretch to die on: the last hop in flight is ~100u by
+    // itself. Scale the window with speed (~0.85 s of travel at 32u legs); slow chains keep the tight
+    // window that made the dogleg reading trustworthy.
+    let turn_look = ((v_xy.length() * 0.85 / 32.0).ceil() as usize).clamp(WINDING_LOOKAHEAD, 20);
+    let winding_ahead = route_turn(graph, &bot.route, bot.route_pos, v_xy, turn_look) > WINDING_LIMIT;
     let carry = (planned_band >= 1 || bot.route_bands.get(bot.route_pos + 1).copied().unwrap_or(0) >= 1)
         && !ascent_ahead
         && !winding_ahead;
