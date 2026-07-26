@@ -574,14 +574,80 @@ impl NavGraph {
         let mut grid: GridIndex = HashMap::new();
         for (gx, gy, origin_z) in rows.into_iter().flatten() {
             let id = cells.len() as CellId;
+            let lattice = Vec3::new(gx as f32 * GRID, gy as f32 * GRID, origin_z);
             cells.push(Cell {
-                origin: Vec3::new(gx as f32 * GRID, gy as f32 * GRID, origin_z),
+                origin: Self::seat_on_real_floor(bsp, lattice),
                 gx,
                 gy,
             });
             grid.entry((gx, gy)).or_default().push(id);
         }
         (cells, grid)
+    }
+
+    /// Move a lattice cell origin onto floor that is *actually there*.
+    ///
+    /// The carve finds floors with [`Bsp::is_solid`], the clip hull — the world grown by the player's
+    /// half-width. That is the right test for "can the hull rest here", but it means every ledge wears
+    /// a 16u skirt of phantom standable space, and the 32u lattice cheerfully samples a column in it.
+    /// The resulting cell's origin hangs over the void, supported only by the far corner of a hull that
+    /// overhangs the real edge. dm3 has 104 such cells; three of them (153/155/157) are the walk
+    /// neighbours of the ledge at cell 194, which is why every approach to it walked into thin air.
+    ///
+    /// A cell origin is not just a label — it is where jumps aim, where routes measure from, and where
+    /// steering points the feet. So seat it on the real surface: sample the cell's own footprint
+    /// against the **render** hull at foot height and shift the origin to the centroid of the samples
+    /// with genuine floor under them, then re-derive the resting height there. Cells keep their
+    /// identity and their links (dropping them would sever narrow walkways that are traversable, just
+    /// badly described); they simply stop advertising a position the geometry does not offer.
+    ///
+    /// Unchanged when the footprint is solidly supported, which is 87% of dm3 — the common case pays
+    /// 25 point queries and moves nothing.
+    fn seat_on_real_floor(bsp: &Bsp, origin: Vec3) -> Vec3 {
+        const STRIDE: f32 = 8.0;
+        const HALF: i32 = 2; // 5×5 samples across the 32u footprint
+        let feet = origin.z - ORIGIN_TO_FEET;
+        // Real floor under a sample means render-hull solid within a step below the feet. Deeper than
+        // that is a different surface the hull is merely overhanging, not the one holding it up.
+        let held = |x: f32, y: f32| {
+            let mut d = 1.0;
+            while d <= STEP_HEIGHT + 2.0 {
+                if bsp.is_point_solid(Vec3::new(x, y, feet - d)) {
+                    return true;
+                }
+                d += 3.0;
+            }
+            false
+        };
+        let (mut sx, mut sy, mut n) = (0.0, 0.0, 0u32);
+        for iy in -HALF..=HALF {
+            for ix in -HALF..=HALF {
+                let (x, y) = (origin.x + ix as f32 * STRIDE, origin.y + iy as f32 * STRIDE);
+                if held(x, y) {
+                    sx += x;
+                    sy += y;
+                    n += 1;
+                }
+            }
+        }
+        // Nothing real anywhere under the footprint: a pure skirt column, or a surface the render hull
+        // can't see (a mover's resting place). Leave it — severing it here would strand whatever the
+        // splices later hang off it, and the link generator's own probes still get a say.
+        if n == 0 {
+            return origin;
+        }
+        let (cx, cy) = (sx / n as f32, sy / n as f32);
+        // Re-derive the resting height at the seated spot: the same clip-hull column scan, keeping the
+        // floor nearest the height this cell was carved at so a recentre can't hop it to another storey.
+        let mut best = origin.z;
+        let mut gap = f32::INFINITY;
+        Self::column_floors(bsp, cx, cy, |z| {
+            if (z - origin.z).abs() < gap {
+                gap = (z - origin.z).abs();
+                best = z;
+            }
+        });
+        Vec3::new(cx, cy, best)
     }
 
     /// Scan one column bottom-to-top; for each solid→empty transition (a floor with headroom
