@@ -197,6 +197,10 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // for scripted bot puppetry (go to a spot, fly a specific RJ link, read back telemetry). `0`
         // (default) = disabled — no socket is bound. See [`crate::control`].
         ("rtx_control_port", Float(0.0)),
+        // Per-frame player movement events on the control channel (movement lab).
+        // Off by default: it is pure observability, and a server nobody is measuring
+        // should not pay for a per-frame event.
+        ("rtx_telemetry", Float(0.0)),
         // Rocket-jump driver knobs, read live each frame and threaded into the driver so the harness
         // can tune them without a rebuild. Each default mirrors the constant it replaces, so live
         // behaviour is unchanged until a knob is set. See [`crate::bot::rj`] / [`crate::bot`].

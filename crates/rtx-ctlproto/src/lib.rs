@@ -245,6 +245,25 @@ pub struct StatusResp {
     pub match_: MatchInfo,
     pub oracle: OracleInfo,
     pub bots: Vec<BotStatus>,
+    /// Connected human clients. A separate array from `bots` on purpose: every existing
+    /// consumer that iterates `bots` keeps its bots-only contract, and a movement-lab tool
+    /// that wants the human reads this one. Empty on a server nobody has joined.
+    #[serde(default)]
+    pub players: Vec<PlayerStatus>,
+}
+
+/// One connected human client, as much of it as a movement lab needs to attribute a position
+/// to a navmesh cell. Deliberately much smaller than [`BotStatus`]: no goal, no route, no
+/// puppet order — a human has none of those.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlayerStatus {
+    pub ent: u32,
+    pub name: String,
+    pub origin: Vec3,
+    pub health: f32,
+    pub on_ground: bool,
+    pub alive: bool,
+    pub speed: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -613,6 +632,30 @@ pub enum Event {
     RjResult(Box<RjResult>),
     /// A fly-link attempt finished (landed, timed out, …).
     FlyResult(FlyResult),
+    /// One server frame of authoritative player movement, while `rtx_telemetry` is on.
+    ///
+    /// This is the movement lab's input: engine-truth ground flag, the full 3-D velocity and
+    /// the ground entity, at the rate the server actually runs — none of which a 15 Hz
+    /// `status` poll can reconstruct. Emitted even with zero players: the empty event is the
+    /// consumer's heartbeat, proof this build supports telemetry, so a tool started before
+    /// the human connects does not fall back to polling.
+    Pmove(PmoveEvent),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PmoveEvent {
+    pub t: f32,
+    pub players: Vec<PmovePlayer>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PmovePlayer {
+    pub ent: u32,
+    pub origin: Vec3,
+    pub vel: Vec3,
+    pub on_ground: bool,
+    /// The entity being stood on, or -1 for none/invalid.
+    pub ground_ent: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -746,6 +789,46 @@ mod tests {
         let n = u32::from_le_bytes(frame[..4].try_into().unwrap()) as usize;
         assert_eq!(n, frame.len() - 4);
         decode(&frame[4..]).unwrap()
+    }
+
+    #[test]
+    fn pmove_event_roundtrips() {
+        let msg = Msg::Event(Event::Pmove(PmoveEvent {
+            t: 12.5,
+            players: vec![PmovePlayer {
+                ent: 1,
+                origin: [1.0, 2.0, 3.0],
+                vel: [191.0, -197.0, 62.0],
+                on_ground: false,
+                ground_ent: -1,
+            }],
+        }));
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn empty_pmove_event_roundtrips() {
+        // The zero-player heartbeat is load-bearing: a consumer started before anyone
+        // connects uses it to learn the build supports telemetry at all.
+        let msg = Msg::Event(Event::Pmove(PmoveEvent {
+            t: 12.5,
+            players: Vec::new(),
+        }));
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn status_players_roundtrip() {
+        let players = vec![PlayerStatus {
+            ent: 1,
+            name: "Xerial".to_string(),
+            origin: [1874.5, -32.6, -127.0],
+            health: 100.0,
+            on_ground: false,
+            alive: true,
+            speed: 274.9,
+        }];
+        assert_eq!(roundtrip(&players), players);
     }
 
     #[test]

@@ -179,6 +179,9 @@ pub(crate) fn frame_end(game: &mut GameState) {
     }
     let now = game.time();
     let maxclients = game.host.cvar(c"maxclients").max(0.0) as u32;
+    if game.host.cvar(c"rtx_telemetry") > 0.0 {
+        send_event(game, Event::Pmove(pmove_event(game, now, maxclients)));
+    }
     for i in 1..=maxclients {
         let e = EntId(i);
         if !game.entities[e].bot.is_bot || !game.entities[e].in_use {
@@ -703,6 +706,40 @@ fn match_info(game: &GameState) -> proto::MatchInfo {
     }
 }
 
+/// One frame of authoritative human movement for [`Event::Pmove`].
+///
+/// Bots are excluded: their state already travels in `status.bots` every frame a harness asks
+/// for it, and the lab is about what a *person* did. An empty player list is still emitted by
+/// the caller — see the event's own documentation for why the heartbeat matters.
+fn pmove_event(game: &GameState, now: f32, maxclients: u32) -> proto::PmoveEvent {
+    let mut players = Vec::new();
+    for i in 1..=maxclients {
+        let ent = &game.entities[EntId(i)];
+        if !ent.in_use || !ent.is_player() || ent.bot.is_bot {
+            continue;
+        }
+        // groundentity is a raw prog reference: only trust it if it round-trips to a real edict.
+        let ground_ent = if ent.v.groundentity < 0 {
+            -1
+        } else {
+            let ground = EntId::from_prog(ent.v.groundentity);
+            if ground.index() < MAX_EDICTS && ground.to_prog() == ent.v.groundentity {
+                ground.0 as i32
+            } else {
+                -1
+            }
+        };
+        players.push(proto::PmovePlayer {
+            ent: i,
+            origin: a3(ent.v.origin),
+            vel: a3(ent.v.velocity),
+            on_ground: ent.v.flags.has(Flags::ONGROUND),
+            ground_ent,
+        });
+    }
+    proto::PmoveEvent { t: now, players }
+}
+
 fn status_resp(game: &GameState) -> proto::StatusResp {
     let (navmesh, cells, links, rj_links) = match game.nav.graph.as_ref() {
         Some(g) => (
@@ -761,6 +798,24 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
             bhop_peak: b.bhop.peak,
         });
     }
+    // Human clients, for movement-lab monitoring. A separate array from `bots` on purpose:
+    // every existing consumer that iterates `bots` keeps its bots-only contract.
+    let mut players = Vec::new();
+    for i in 1..=maxclients {
+        let ent = &game.entities[EntId(i)];
+        if ent.bot.is_bot || !ent.in_use || !ent.is_player() {
+            continue;
+        }
+        players.push(proto::PlayerStatus {
+            ent: i,
+            name: game.netname_of(EntId(i)),
+            origin: a3(ent.v.origin),
+            health: ent.v.health,
+            on_ground: ent.v.flags.has(Flags::ONGROUND),
+            alive: ent.is_alive(),
+            speed: ent.v.velocity.xy().length(),
+        });
+    }
     proto::StatusResp {
         map: game.level.mapname.clone(),
         time: game.time(),
@@ -771,6 +826,7 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
         match_: match_info(game),
         oracle: oracle_info(game),
         bots,
+        players,
     }
 }
 
