@@ -200,6 +200,13 @@ pub fn off_line(pts: &[Vec3], p: Vec3) -> Option<Offset> {
     (pts.len() >= 2).then(|| track(pts, f32::NEG_INFINITY, p).off)
 }
 
+/// How far along `pts` the point `p` sits. The live steerer's counterpart to the rollout's cursor:
+/// both locate the bot on the same route-anchored line before taking [`aim_point`] from it, which is
+/// what makes the flown policy the certified one.
+pub fn arc_at(pts: &[Vec3], p: Vec3) -> f32 {
+    track(pts, f32::NEG_INFINITY, p).s
+}
+
 /// Whether nothing solid sits within [`VOID_PROBE`] under `p` — the bot is over open air rather than
 /// skimming a tread. A trace that starts inside solid reports no contact too, so that case is excluded
 /// explicitly; it is not a void.
@@ -222,14 +229,17 @@ fn blocked_at(p: Vec3, blocked: &[(Vec3, Vec3)]) -> bool {
     })
 }
 
-/// Roll the pursuit policy forward from `st` (a live grounded frame) chasing a point `lookahead` along
-/// `route_pts` — the leg-target polyline **starting at the bot's own position**, so arc-distances
-/// measure from here. Every tick re-aims at the cursor's look-ahead point and drives a full forward
-/// wish, exactly what the steerer emits; the roll ends the moment the path leaves the tube, burns,
-/// enters a blocked volume, or stops advancing.
+/// Roll the pursuit policy forward from `st` (a live grounded frame) along `route_pts` — the route
+/// polyline, anchored at the **current leg's source cell**, not at the bot. That anchoring matters:
+/// the lateral offset is measured from the route, so the line it is measured against has to be one
+/// the bot's own position cannot move. A polyline starting under the bot's feet bends to wherever the
+/// bot already is, and offsetting from *that* makes the bot chase its own displacement a little
+/// further out every frame. Here the reference is fixed, the bot's arc position is found by
+/// projection, and the offset lane stays where the geometry put it.
 ///
-/// Brief airborne ticks are *not* a failure: walking down a staircase leaves the floor for a few ticks
-/// per riser. The tube is what governs — a real fall exits it in z long before it lands.
+/// Every tick re-aims at the cursor's look-ahead point and drives a full forward wish, exactly what
+/// the steerer emits; the roll ends the moment the path leaves the tube, falls, burns, enters a
+/// blocked volume, or stops advancing.
 pub fn roll_walk(
     hull: &impl Hull,
     is_hazard: &impl Fn(Vec3) -> bool,
@@ -240,8 +250,9 @@ pub fn roll_walk(
     p: &PmParams,
 ) -> WalkRollout {
     let total: f32 = route_pts.windows(2).map(|w| (w[1].xy() - w[0].xy()).length()).sum();
-    let mut s = 0.0;
-    let mut mark = 0.0;
+    // Where the bot already sits along the route — the cursor starts there, not at the line's head.
+    let mut s = track(route_pts, f32::NEG_INFINITY, st.origin).s;
+    let mut mark = s;
     for tick in 0..MAX_TICKS {
         let target = aim_point(route_pts, s, plan);
         let cmd = Cmd {
@@ -279,18 +290,14 @@ pub fn roll_walk(
     WalkRollout::Held
 }
 
-/// Certify a pursuit policy for the grounded state `st` against `route_pts` — the leg-target polyline
-/// **starting at the bot's own position**, so arc-distances measure from here and match the live
-/// `corridor_point` the steerer will aim down. Sweeps [`LOOKAHEADS`] longest-first and, within each,
+/// Certify a pursuit policy for the grounded state `st` against `route_pts` — the route polyline
+/// anchored at the current leg's source (see [`roll_walk`] for why not at the bot). Sweeps
+/// [`LOOKAHEADS`] longest-first and, within each,
 /// [`LATERALS`] centred-line-first, returning the first policy that tracks the corridor for the whole
 /// horizon: a longer look-ahead cuts corners more smoothly, a shorter one hugs the line, and an offset
 /// one buys a lane the cell centres don't describe — so this yields the smoothest, straightest policy
 /// that provably stays on the floor. `None` when none do, which is exactly when the fallback brakes
 /// should own the frame.
-///
-/// Note this cannot judge whether the bot is *already* off its route: the polyline starts under its
-/// feet by construction, so tick zero is always on the line. That question belongs to the caller,
-/// which has the current leg's source to measure against.
 pub fn plan_walk(
     hull: &impl Hull,
     is_hazard: &impl Fn(Vec3) -> bool,

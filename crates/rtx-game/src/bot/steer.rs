@@ -136,22 +136,16 @@ fn inside_box(p: Vec3, lo: Vec3, hi: Vec3) -> bool {
 /// what ends the roll.
 const WALK_ROUTE_LEGS: usize = 12;
 
-/// The polyline a walk rollout is certified against: the bot's own position, then the leading ground
-/// leg targets. Starting at the bot makes arc-distances measure from here, so the rollout's pursuit
-/// point and the live [`corridor_point`] read the same corridor. Truncated at the first non-ground leg
-/// (unlike the hop planner's raw leg walk) — pursuing a point past a plat, teleport or jump target
-/// would drag the feet at ground the bot must not walk toward. `None` when there's no corridor left to
-/// certify.
-fn walk_route_pts(graph: &NavGraph, bot: &BotState, origin: Vec3) -> Option<Vec<Vec3>> {
-    let pts: Vec<Vec3> = std::iter::once(origin)
-        .chain(ground_leg_targets(graph, &bot.route, bot.route_pos).take(WALK_ROUTE_LEGS))
-        .collect();
-    (pts.len() >= 2).then_some(pts)
-}
-
-/// The same corridor anchored at the **current leg's source** instead of the bot, which is what makes
-/// it a yardstick for how far off its route the bot has drifted. [`walk_route_pts`] cannot answer that
-/// — its first point is under the bot's feet by construction, so the bot is always on it.
+/// The route polyline a walk plan is certified against and then flown along: the current leg's source
+/// cell, then the leading ground leg targets. Truncated at the first non-ground leg (unlike the hop
+/// planner's raw leg walk) — pursuing a point past a plat, teleport or jump target would drag the feet
+/// at ground the bot must not walk toward.
+///
+/// Anchored at the leg source rather than at the bot, deliberately, and everything downstream depends
+/// on it. It is what lets the caller measure how far *off* its route the bot has drifted — a line
+/// starting under the bot's feet says it is always on it — and it is what keeps the plan's lateral
+/// offset meaningful: a self-anchored line bends to follow the bot, so offsetting from it walks the
+/// bot steadily further out, chasing its own displacement. `None` when there's no ground corridor.
 fn walk_line_pts(graph: &NavGraph, bot: &BotState, cur_leg: Option<u32>) -> Option<Vec<Vec3>> {
     let src = graph.cell_origin(graph.link_source(cur_leg?));
     let pts: Vec<Vec3> = std::iter::once(src)
@@ -1528,7 +1522,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             // the brakes are inert down there too). Otherwise re-roll, unless a fan just came back
             // boxed and the back-off hasn't lapsed.
             if speed > LEDGE_MIN_SPEED && now >= bot.walk_retry {
-                if let (Some(bsp), Some(route_pts)) = (bsp, walk_route_pts(graph, bot, origin)) {
+                if let (Some(bsp), Some(route_pts)) = (bsp, walk_line_pts(graph, bot, cur_leg)) {
                     let cvf = |name: &std::ffi::CStr, d: f32| {
                         let v = host.cvar(name);
                         if v > 0.0 {
@@ -1614,14 +1608,16 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     };
 
     // Where the feet aim: the certified pursuit when one is live, else the near-field glide.
-    let heading = if let Some((w, pts)) = bot.walk.zip(walk_route_pts(graph, bot, origin)) {
-        // The certified policy, re-evaluated at the live state: `aim_point` off the same polyline
-        // construction the rollout proved, so the bot pursues exactly the point that was certified —
-        // including the lateral lane offset, which on a diagonal staircase is what keeps the feet on
-        // tread instead of over the corner the cell-centre line cuts. Deliberately raw: no
-        // `chord_clear` veto, because the rollout *is* the certificate, and a stricter 8u-grid opinion
-        // about the same ground is what used to drop the smoothing exactly where a stair needed it.
-        walksim::aim_point(&pts, 0.0, w.plan).xy() - origin.xy()
+    let heading = if let Some((w, pts)) = bot.walk.zip(walk_line_pts(graph, bot, cur_leg)) {
+        // The certified policy, re-evaluated at the live state: project onto the same route-anchored
+        // line the rollout used and take `aim_point` from there, so the bot pursues exactly the point
+        // that was certified — including the lateral lane offset, which on a diagonal staircase is
+        // what keeps the feet on tread instead of over the corner the cell-centre line cuts.
+        // Deliberately raw: no `chord_clear` veto, because the rollout *is* the certificate, and a
+        // stricter 8u-grid opinion about the same ground is what used to drop the smoothing exactly
+        // where a stair needed it.
+        let s = walksim::arc_at(&pts, origin);
+        walksim::aim_point(&pts, s, w.plan).xy() - origin.xy()
     } else {
         // Glide look-ahead: on a grounded walk/step leg, if the near-field certifies a straight chord
         // to a point ~96u down the corridor stays on clear floor, aim the feet at *that* instead of the
