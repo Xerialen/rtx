@@ -472,6 +472,11 @@ pub struct CellResp {
     pub cell: u32,
     pub origin: Vec3,
     pub hazard: String,
+    /// Whether the cell sits beside a fatal drop — the edge lane of a staircase or walkway. Purely
+    /// descriptive: it does not price the cell's links. What it *does* drive is the runtime movement
+    /// policy, which drops off the bunnyhop and hands the leg to the predictive planners here, so this
+    /// is what explains a bot walking a stretch it would otherwise hop.
+    pub ledge: bool,
     pub out: Vec<CellLinkOut>,
     pub incoming: Vec<CellLinkIn>,
 }

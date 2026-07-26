@@ -948,6 +948,7 @@ fn describe_cell(g: &NavGraph, cell: u32) -> proto::CellResp {
         cell,
         origin: a3(g.cell_origin(cell)),
         hazard: format!("{:?}", g.cell_hazard(cell)),
+        ledge: g.is_ledge(cell),
         out,
         incoming,
     }
