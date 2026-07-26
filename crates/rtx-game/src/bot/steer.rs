@@ -19,7 +19,7 @@ use crate::defs::{Weapon, BOT_MOVE_SPEED as MOVE_SPEED, BUTTON_ATTACK, BUTTON_JU
 use crate::game::cstring;
 use crate::math::{angle_vectors, angles_to, yaw_of};
 use crate::nav_build::PlatStatus;
-use crate::navmesh::{CellId, Corridor, LinkCosts, LinkKind, NavGraph};
+use crate::navmesh::{CellId, Corridor, LinkCosts, LinkKind, NavGraph, RJ_UNFIT_PENALTY};
 use crate::nearfield;
 use rtx_nav::qphys::ORIGIN_TO_FEET;
 
@@ -63,10 +63,26 @@ fn corridor_to(graph: &NavGraph, from: CellId, goal: CellId, costs: &LinkCosts, 
         .flatten()
 }
 
+/// Whether `route` crosses a link this bot is *priced out of* rather than merely charged for. The
+/// capability penalties ([`RJ_UNFIT_PENALTY`], `CLOSED_GATE_PENALTY`) are deliberately finite so a
+/// planner with no other option still returns something rather than stranding the bot — but that only
+/// works when the caller can tell "expensive" from "cannot". Inside a cluster window there may be no
+/// other option *in the window* while the map at large has a perfectly ordinary walk, so a finite wall
+/// gets crossed on paper and then refused by the driver, every frame, forever.
+fn priced_out(graph: &NavGraph, route: &[u32], costs: &LinkCosts) -> bool {
+    costs.rocket_jump_extra >= RJ_UNFIT_PENALTY && route.iter().any(|&l| graph.link_kind(l) == LinkKind::RocketJump)
+}
+
 /// A plain (unbanded) route from `from` to `target`, restricted to the corridor `window` when present.
-/// The abstract corridor is a real in-window fine path, so the restricted search normally succeeds; if
-/// it somehow comes up empty it falls back to an unrestricted search to the (near) interim, bounded by
-/// its proximity. This is the one fallback ladder the main repath and the gate errand both use.
+/// The abstract corridor is a real in-window fine path, so the restricted search normally succeeds.
+///
+/// Two results are treated as failures of the window rather than answers. An **empty** one is the
+/// obvious case. The other is a route that only exists by crossing a capability wall the bot cannot
+/// pay — an unfit bot handed a rocket-jump leg. Both mean "this window has nothing this bot can walk",
+/// and both fall back to the unrestricted search, which on dm3 finds the ordinary 43-leg walk west.
+/// Without the second case the bot flies a route its own driver refuses on arrival, clearing and
+/// rebuilding the identical plan every other frame: a standstill that no watchdog breaks, because the
+/// rocket-jump leg exempts the bot from the stuck and progress detectors while it lasts.
 fn windowed_route(
     graph: &NavGraph,
     from: CellId,
@@ -79,7 +95,7 @@ fn windowed_route(
         None => graph.find_path(from, target, costs),
     };
     let r = plain.unwrap_or_default();
-    if r.is_empty() && window.is_some() {
+    if window.is_some() && (r.is_empty() || priced_out(graph, &r, costs)) {
         return graph.find_path(from, target, costs).unwrap_or_default();
     }
     r
@@ -441,7 +457,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 None => graph.find_path_banded(bot_cell, search_target, speed, &costs),
             })
             .flatten();
-        let (route, mut bands) = match banded {
+        let (mut route, mut bands) = match banded {
             Some(r) => (r.links, r.bands),
             // Banded came back empty ⇒ band-infeasible (a route that only exists through a speed-jump
             // chain the carried speed can't satisfy) or bands off; the plain A* ignores bands and finds
@@ -451,6 +467,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 Vec::new(),
             ),
         };
+        // A window whose only answer crosses a capability wall the bot cannot pay is a window with
+        // nothing this bot can walk — re-ask unrestricted, and at the *real* target rather than the
+        // corridor's interim, since the interim is the choice the bad window made and reusing it walks
+        // straight back into the trap. The banded search needs the same guard as the plain one: it is
+        // the arm that actually runs, and it has no idea the driver will refuse what it planned.
+        if priced_out(graph, &route, &costs) {
+            route = graph.find_path(bot_cell, target, &costs).unwrap_or_default();
+            bands = Vec::new();
+        }
         // Keep `route_bands` parallel to `route`: zero-fill when unbanded (or on any length mismatch).
         if bands.len() != route.len() {
             bands = vec![0u8; route.len()];

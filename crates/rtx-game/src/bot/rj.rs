@@ -173,6 +173,12 @@ pub(crate) fn drive_rj(graph: &NavGraph, bot: &mut BotState, c: RjCtx) -> RjDriv
                         bot.rj.telem.src = src;
                         bot.rj.telem.tgt = tgt;
                         bot.rj.telem.outcome = Some(RjOutcome::Unfit);
+                        // Strike the leg, as every other give-up does. A* is deterministic, so without
+                        // a penalty the rebuild after this bail hands back the identical route and the
+                        // bot refuses it again — a planner-offers / driver-refuses loop that stands the
+                        // bot still, with the rocket-jump leg itself exempting it from the stuck and
+                        // progress watchdogs that would otherwise break out.
+                        crate::bot::penalize_link(bot, leg, now);
                         failed = true;
                     } else {
                         bot.rj.phase = RjPhase::Stance;
