@@ -195,7 +195,6 @@ impl NqSession {
     pub(crate) fn chokes(&self) -> u32 {
         0
     }
-    #[cfg(test)]
     pub(crate) fn name(&self) -> &str {
         &self.name
     }

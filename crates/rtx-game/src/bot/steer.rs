@@ -13,7 +13,7 @@
 use glam::{Vec2, Vec3, Vec3Swizzles};
 
 use super::*;
-use crate::bot::state::{AirCommit, Commit, GateErrand, PlatWait};
+use crate::bot::state::{AirCommit, Commit, GateErrand, PlatWait, StallRecord};
 use crate::bsp::Bsp;
 use crate::defs::{Weapon, BOT_MOVE_SPEED as MOVE_SPEED, BUTTON_ATTACK, BUTTON_JUMP};
 use crate::game::cstring;
@@ -284,6 +284,43 @@ fn route_turn(graph: &NavGraph, route: &[u32], pos: usize, v_xy: Vec2) -> f32 {
         }
     }
     max_dev.to_degrees()
+}
+/// The per-frame constants every stall record shares, snapshotted once in [`steer`] so the five
+/// watchdogs can log a firing by copying — no watchdog computes anything it wouldn't otherwise.
+struct StallFrame {
+    now: f32,
+    origin: Vec3,
+    cell: CellId,
+    goal_cell: CellId,
+    goal_dist: f32,
+    speed: f32,
+}
+
+/// Park a watchdog firing on the bot (see [`StallRecord`]). Call it *before* clearing the route:
+/// the record is meant to say which leg of which route failed, not what was left afterwards.
+fn note_stall(
+    bot: &mut BotState,
+    f: &StallFrame,
+    reason: &'static str,
+    action: &'static str,
+    link: Option<u32>,
+    kind: Option<LinkKind>,
+) {
+    let (route_len, route_pos) = (bot.route.len() as u32, bot.route_pos as u32);
+    bot.push_stall(StallRecord {
+        t: f.now,
+        reason,
+        action,
+        origin: f.origin,
+        cell: f.cell,
+        goal_cell: f.goal_cell,
+        goal_dist: f.goal_dist,
+        link,
+        kind,
+        speed: f.speed,
+        route_len,
+        route_pos,
+    });
 }
 
 pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> SteerOut {
@@ -810,6 +847,16 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     };
 
     let goal_dist = (target_origin.xy() - origin.xy()).length();
+    // Everything the watchdogs below report about a stall, gathered once from values this frame
+    // already produced. See [`StallFrame`].
+    let stall_frame = StallFrame {
+        now,
+        origin,
+        cell: bot_cell,
+        goal_cell,
+        goal_dist,
+        speed,
+    };
 
     // Stuck detection. Suppressed mid-hook: standing in the throw stance, reeling, and riding the
     // parabola all look "stuck" to it, and a force-jump/repath there would wreck the traversal — the
@@ -837,6 +884,14 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         force_jump = !toward_edge;
         // Penalize the leg we're wedged on so the forced re-path actually *diverts* — without this
         // the deterministic A* hands back the identical route and the bot re-wedges every 0.7s.
+        // Both branches penalize+repath; the force-jump is the extra unwedge, so name it when it
+        // actually fired.
+        let action = if force_jump {
+            "force_jump"
+        } else {
+            "penalize+repath"
+        };
+        note_stall(bot, &stall_frame, "displacement", action, cur_leg, kind);
         penalize_leg(bot, cur_leg, kind, now);
         bot.repath_time = now; // re-path next frame
         bot.watchdog.stuck_since = now;
@@ -877,6 +932,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             progress_metric,
             now,
         ) {
+            note_stall(bot, &stall_frame, "progress", "penalize+repath", cur_leg, kind);
             penalize_leg(bot, cur_leg, kind, now);
             bot.route.clear();
             bot.repath_time = now;
@@ -995,6 +1051,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // built speed) abandon it and re-path rather than wedging on the runway forever. Penalize the
         // leg so the deterministic A* actually diverts instead of handing back the same run-up.
         if bot.sj.is_some_and(|c| now - c.since > 4.0) {
+            note_stall(bot, &stall_frame, "speedjump_stall", "penalize+repath", cur_leg, kind);
             penalize_leg(bot, cur_leg, kind, now);
             bot.sj = None;
             bot.route.clear();
@@ -1019,17 +1076,35 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         match air_commit_decision(on_ground, committed.airborne, now - committed.since) {
             AirRelease::Keep => {}
             AirRelease::Land => {
+                let leg_kind = graph.link_kind(committed.leg);
                 let target = graph.cell_origin(committed.target);
                 let on_target = (origin.xy() - target.xy()).length() <= 2.0 * ARRIVE_RADIUS;
                 if !on_target {
-                    penalize_leg(bot, Some(committed.leg), Some(graph.link_kind(committed.leg)), now);
+                    note_stall(
+                        bot,
+                        &stall_frame,
+                        "air_commit_off",
+                        "penalize+repath",
+                        Some(committed.leg),
+                        Some(leg_kind),
+                    );
+                    penalize_leg(bot, Some(committed.leg), Some(leg_kind), now);
                     bot.route.clear();
                     bot.repath_time = now;
                 }
                 bot.air = None;
             }
             AirRelease::Timeout => {
-                penalize_leg(bot, Some(committed.leg), Some(graph.link_kind(committed.leg)), now);
+                let leg_kind = graph.link_kind(committed.leg);
+                note_stall(
+                    bot,
+                    &stall_frame,
+                    "air_commit_timeout",
+                    "penalize+repath",
+                    Some(committed.leg),
+                    Some(leg_kind),
+                );
+                penalize_leg(bot, Some(committed.leg), Some(leg_kind), now);
                 bot.air = None;
                 bot.route.clear();
                 bot.repath_time = now;
@@ -1084,6 +1159,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             cv(c"sv_stopspeed", 100.0),
         );
         if predicted < v_req * 0.85 {
+            note_stall(bot, &stall_frame, "prestrafe_deficit", "penalize+repath", cur_leg, kind);
             penalize_leg(bot, cur_leg, kind, now);
             bot.sj = None;
             bot.route.clear();
