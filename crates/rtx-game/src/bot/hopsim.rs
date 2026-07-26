@@ -169,8 +169,9 @@ pub fn plan_hop(
     None
 }
 
-/// The point at XY arc-distance `d` along polyline `pts` (clamped to its ends).
-fn point_on(pts: &[Vec3], d: f32) -> Vec3 {
+/// The point at XY arc-distance `d` along polyline `pts` (clamped to its ends). Shared with
+/// [`walksim`](super::walksim), whose grounded rollout aims down the same polyline.
+pub(super) fn point_on(pts: &[Vec3], d: f32) -> Vec3 {
     let mut acc = 0.0;
     for w in pts.windows(2) {
         let seg = (w[1].xy() - w[0].xy()).length();

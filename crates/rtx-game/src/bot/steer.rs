@@ -131,6 +131,35 @@ fn inside_box(p: Vec3, lo: Vec3, hi: Vec3) -> bool {
     p.x >= lo.x - m && p.x <= hi.x + m && p.y >= lo.y - m && p.y <= hi.y + m && p.z >= lo.z - 32.0 && p.z <= hi.z + 32.0
 }
 
+/// How many legs of ground corridor a walk certification rolls over. Twelve 32u legs is ~380u, well
+/// past the ~130u a 40-tick rollout at walk speed can cover, so the horizon — not the polyline — is
+/// what ends the roll.
+const WALK_ROUTE_LEGS: usize = 12;
+
+/// The polyline a walk rollout is certified against: the bot's own position, then the leading ground
+/// leg targets. Starting at the bot makes arc-distances measure from here, so the rollout's pursuit
+/// point and the live [`corridor_point`] read the same corridor. Truncated at the first non-ground leg
+/// (unlike the hop planner's raw leg walk) — pursuing a point past a plat, teleport or jump target
+/// would drag the feet at ground the bot must not walk toward. `None` when there's no corridor left to
+/// certify.
+fn walk_route_pts(graph: &NavGraph, bot: &BotState, origin: Vec3) -> Option<Vec<Vec3>> {
+    let pts: Vec<Vec3> = std::iter::once(origin)
+        .chain(ground_leg_targets(graph, &bot.route, bot.route_pos).take(WALK_ROUTE_LEGS))
+        .collect();
+    (pts.len() >= 2).then_some(pts)
+}
+
+/// The same corridor anchored at the **current leg's source** instead of the bot, which is what makes
+/// it a yardstick for how far off its route the bot has drifted. [`walk_route_pts`] cannot answer that
+/// — its first point is under the bot's feet by construction, so the bot is always on it.
+fn walk_line_pts(graph: &NavGraph, bot: &BotState, cur_leg: Option<u32>) -> Option<Vec<Vec3>> {
+    let src = graph.cell_origin(graph.link_source(cur_leg?));
+    let pts: Vec<Vec3> = std::iter::once(src)
+        .chain(ground_leg_targets(graph, &bot.route, bot.route_pos).take(WALK_ROUTE_LEGS))
+        .collect();
+    (pts.len() >= 2).then_some(pts)
+}
+
 /// The lip is "right here" — inside this distance the takeoff jump must fire *now* or the bot wedges
 /// against the step face; beyond it the run-up gate applies.
 const JUMP_NOW_DIST: f32 = 40.0;
@@ -633,18 +662,18 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // cell centers (untouched above), so this can't trip the progress watchdog. Left active under a
     // powerup commit on purpose: a ≤48u step costs far under the bridge slack, and grabbing armour on
     // the quad walk is the whole point.
-    let waypoint = match o.magnet {
-        Some(item)
-            if matches!(kind, Some(LinkKind::Walk | LinkKind::Step) | None)
-                && !on_air
-                && plat_hold.is_none()
-                && bot.gate.errand.is_none()
-                && bot.bhop.phase == bhop::Phase::Off
-                && magnet_on_corridor(origin.xy(), waypoint.xy(), item.xy()) =>
-        {
-            item
-        }
-        _ => waypoint,
+    let magnet_bend = o.magnet.is_some_and(|item| {
+        matches!(kind, Some(LinkKind::Walk | LinkKind::Step) | None)
+            && !on_air
+            && plat_hold.is_none()
+            && bot.gate.errand.is_none()
+            && bot.bhop.phase == bhop::Phase::Off
+            && magnet_on_corridor(origin.xy(), waypoint.xy(), item.xy())
+    });
+    let waypoint = if magnet_bend {
+        o.magnet.unwrap_or(waypoint)
+    } else {
+        waypoint
     };
     // Plat-wait timeout: keyed on the plat index (not the leg, which the 0.4s repath churn rebuilds),
     // give up on a lift that never descends — a camped one, or a targeted plat only its own trigger
@@ -1462,7 +1491,107 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         && !hook_engaged
         && !rj_engaged
         && dist > ARRIVE_RADIUS;
-    let edge_push = if nf_ground {
+    // Certified walk tracking (see `walksim`) — the grounded sibling of the hop planner above. On a
+    // walk/step leg, only a pursuit line the pmove rollout *proved* stays on the floor may own the
+    // wish; while one does, the edge margin, the glide's chord veto and both ledge brakes below stand
+    // down. They exist for the case the rollout reports boxed, and firing them under a proven line is
+    // what made a bot brake mid-stride on a stair diagonal. Skipped whenever another driver owns the
+    // feet (bhop/speed-jump/hook/rj/airborne), in water (pmove models none of it), or on a magnet
+    // detour, which deliberately steps off the line the rollout would certify.
+    let walk_corridor = host.cvar_bool(c"rtx_bot_walkplan")
+        && !on_air
+        && !in_water
+        && bot.bhop.phase == bhop::Phase::Off
+        && !bhop_active
+        && !sj_active
+        && !hook_engaged
+        && !rj_engaged
+        && !magnet_bend
+        && matches!(kind, Some(LinkKind::Walk | LinkKind::Step));
+    if !walk_corridor {
+        bot.walk = None; // another driver owns the frame, or this isn't ground to certify
+    } else if on_ground {
+        // The certificate holds while it's fresh, still describes the route we're on, and the bot is
+        // still inside the tube the rollout enforced — being shoved off the line (a body, a blast)
+        // voids it, because the policy was only ever proven from on it.
+        let fresh = bot.walk.is_some_and(|w| {
+            now - w.since <= WALK_RECERT
+                && cur_leg.is_some_and(|l| w.legs[..w.n as usize].contains(&l))
+                && walk_line_pts(graph, bot, cur_leg).is_some_and(|pts| {
+                    walksim::off_line(&pts, origin)
+                        .is_some_and(|off| off.lateral <= walksim::LATERAL_TOL && off.dz.abs() <= walksim::Z_TOL)
+                })
+        });
+        if !fresh {
+            bot.walk = None;
+            // Too slow to be carried anywhere by a frame of wish, so nothing needs certifying (and
+            // the brakes are inert down there too). Otherwise re-roll, unless a fan just came back
+            // boxed and the back-off hasn't lapsed.
+            if speed > LEDGE_MIN_SPEED && now >= bot.walk_retry {
+                if let (Some(bsp), Some(route_pts)) = (bsp, walk_route_pts(graph, bot, origin)) {
+                    let cvf = |name: &std::ffi::CStr, d: f32| {
+                        let v = host.cvar(name);
+                        if v > 0.0 {
+                            v
+                        } else {
+                            d
+                        }
+                    };
+                    let pm = crate::pmove_sim::PmParams {
+                        gravity: cvf(c"sv_gravity", 800.0),
+                        accel: cvf(c"sv_accelerate", 10.0),
+                        friction: cvf(c"sv_friction", 4.0),
+                        stopspeed: 100.0,
+                        maxspeed: cvf(c"sv_maxspeed", 320.0),
+                    };
+                    // Shut gates and foreign teleport triggers are invisible to the clip hull, so the
+                    // rollout would happily certify a walk straight through one. Same volumes the
+                    // near-field stamps unwalkable, for the same reason.
+                    let boxes: Vec<(Vec3, Vec3)> = nearfield_gates(graph, gate_closed, origin)
+                        .map(|gi| {
+                            let g = graph.gate(gi);
+                            (g.closed_min, g.closed_max)
+                        })
+                        .chain(nearfield_teleports(graph, origin, waypoint).map(|ti| graph.tele_volumes()[ti]))
+                        .collect();
+                    let has_haz = graph.has_hazards();
+                    let is_hazard = |p: Vec3| {
+                        has_haz && {
+                            let c = bsp.pointcontents(p);
+                            c == crate::bsp::CONTENTS_LAVA || c == crate::bsp::CONTENTS_SLIME
+                        }
+                    };
+                    let st = crate::pmove_sim::PmState {
+                        origin,
+                        vel: Vec3::new(v_xy.x, v_xy.y, 0.0),
+                        on_ground: true,
+                        jump_held: false,
+                    };
+                    match walksim::plan_walk(bsp, &is_hazard, &boxes, &route_pts, st, &pm) {
+                        Some(plan) => {
+                            let tail = &bot.route[bot.route_pos..];
+                            let n = tail.len().min(state::WALK_LEGS);
+                            let mut legs = [0u32; state::WALK_LEGS];
+                            legs[..n].copy_from_slice(&tail[..n]);
+                            bot.walk = Some(state::WalkGuide {
+                                plan,
+                                since: now,
+                                legs,
+                                n: n as u8,
+                            });
+                        }
+                        // Boxed: nothing tracks from here, so the brakes own until the back-off lapses.
+                        None => bot.walk_retry = now + WALK_RETRY,
+                    }
+                }
+            }
+        }
+    }
+    // Airborne frames inside the corridor leave the latch alone: walking down a staircase leaves the
+    // floor for a few ticks a riser, and the rollout already certified those gaps.
+    let walk_live = bot.walk.is_some();
+
+    let edge_push = if nf_ground && !walk_live {
         let near_push = nf_active.then(|| bot.near.as_ref()?.steer_push(origin)).flatten();
         near_push.unwrap_or_else(|| {
             // No field → today's drop-only probe, which only runs on a real Walk/Step leg.
@@ -1490,7 +1619,13 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // waypoint (leg advancement, `wish_scale`, the magnet, the watchdogs): the chord follows the leg
     // polyline, so it passes within `ARRIVE_RADIUS` of each cell centre, exactly the magnet's argument.
     // Off on the final approach (home straight on the target) and whenever the chord isn't clear.
-    let heading = {
+    let heading = if let Some(w) = bot.walk {
+        // The certified policy, re-evaluated at the live state: aim down the corridor at the distance
+        // the rollout proved trackable. Deliberately raw — no `chord_clear` veto, because the rollout
+        // *is* the certificate, and a stricter 8u-grid opinion about the same ground is what used to
+        // drop the smoothing exactly where a stair diagonal needed it.
+        corridor_point(graph, &bot.route, bot.route_pos, origin, w.plan.lookahead).xy() - origin.xy()
+    } else {
         let want_glide = nf_ground
             && nf_active
             && host.cvar_bool(c"rtx_bot_glide")
@@ -1659,7 +1794,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // jump run-up (`jump_at_hand`) — the bot needs that speed to clear the gap — and inert on open
     // ground, where `edge_ahead` finds no edge. `nf_active` already limits it to grounded walk/step/
     // approach legs (a Drop leg descends; a jump leg leaps), and the near-field grid is built there.
-    if nf_active && on_ground && !jump_at_hand && speed > LEDGE_MIN_SPEED {
+    // Also off while a walk plan is live: the rollout proved this line keeps its feet on the floor for
+    // longer than the certificate is trusted, and the deviation check above re-arms this the very frame
+    // that proof stops covering the ground under the bot.
+    if nf_active && on_ground && !jump_at_hand && !walk_live && speed > LEDGE_MIN_SPEED {
         if let Some(nf) = bot.near.as_ref() {
             let vdir = v_xy.normalize_or_zero();
             let stop =
@@ -1680,6 +1818,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // waypoints, so the misalignment gate keeps this dead there. Dead too while airborne, bhopping,
     // speed-/rocket-jumping, or hooking — those own their motion (and the hook/rj overrides below win).
     if let Some(bsp) = bsp {
+        // A certified pursuit cuts stair corners on purpose, so the misalignment this brake keys on is
+        // exactly what a proven line looks like — it must not fire under one.
         let braking = on_ground
             && !on_air
             && bot.bhop.phase == bhop::Phase::Off
@@ -1687,6 +1827,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             && !sj_active
             && !hook_engaged
             && !rj_engaged
+            && !walk_live
             && matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
             && speed > LEDGE_MIN_SPEED;
         if braking {

@@ -105,6 +105,14 @@ pub struct BotState {
     /// point and gain whose rolled-out landing stays on the route. Planned on a grounded frame, held
     /// across the hop's flight, and cleared on landing. `None` off ledge corridors or when boxed.
     pub hop: Option<crate::bot::hopsim::HopPlan>,
+    /// The certified walk-tracking latch (see [`crate::bot::walksim`]): the pursuit policy a pmove
+    /// rollout proved keeps the bot on its route's floor. While it is live the tracker owns the
+    /// grounded wish and the reactive edge margin/ledge brakes stand down; `None` means unproven
+    /// ground, and the brakes are armed.
+    pub walk: Option<WalkGuide>,
+    /// Earliest time to re-attempt a walk certification after one found nothing — the boxed back-off,
+    /// so a bot the rollout can't certify doesn't re-roll the whole failing fan every frame.
+    pub walk_retry: f32,
     /// A committed [`LinkKind::SpeedJump`](crate::navmesh::LinkKind::SpeedJump) leg (a bhop run-up +
     /// leap) being flown. `None` = not on a speed jump. See [`Commit`].
     pub sj: Option<Commit>,
@@ -307,6 +315,24 @@ pub struct AirCommit {
     pub since: f32,
     pub airborne: bool,
 }
+
+/// A live certified walk plan (see [`crate::bot::walksim`]) plus what it was certified against, so
+/// the steerer can tell each frame whether the proof still covers the ground under the bot: the
+/// policy itself, when it was proven (the re-certification clock), and the leading route legs the
+/// rollout saw. A repath swaps the route out from under the plan, and the current leg falling outside
+/// that window is how it shows up.
+#[derive(Clone, Copy)]
+pub struct WalkGuide {
+    pub plan: crate::bot::walksim::WalkPlan,
+    pub since: f32,
+    pub legs: [u32; WALK_LEGS],
+    /// How many of `legs` are valid — link id 0 is a real id, so a sentinel won't do.
+    pub n: u8,
+}
+
+/// How many leading route legs a [`WalkGuide`] remembers. The rollout looks 12 legs down the
+/// corridor; the window only has to be long enough that ordinary leg advancement stays inside it.
+pub const WALK_LEGS: usize = 8;
 
 /// Plat standoff (see [`crate::bot::steer`]): the navmesh plat index the bot is holding off from
 /// while it's raised, and when the hold began (the give-up timeout base). Keyed on the plat index,

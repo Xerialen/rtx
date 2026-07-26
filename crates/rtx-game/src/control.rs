@@ -497,6 +497,7 @@ fn reset_nav_state(bot: &mut crate::bot::state::BotState, at: Vec3, now: f32) {
     bot.hook = HookState::default();
     bot.sj = None;
     bot.air = None;
+    bot.walk = None; // the certified line was proven over route the bot is no longer on
     bot.bhop = Default::default();
     bot.watchdog.last_origin = at;
     bot.watchdog.stuck_origin = at;

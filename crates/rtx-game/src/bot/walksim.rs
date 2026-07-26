@@ -1,0 +1,452 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Certified grounded route tracking.
+//!
+//! Walking a route is not a control problem the way a fight is. The floor is static, the bot knows
+//! its own origin and velocity exactly, and pmove is deterministic — so "will steering at this point
+//! keep me on the floor" has an *answer*, not an estimate. What the reactive path did instead was
+//! probe the ground each frame and slam a full-reverse wish the moment a local sample said "edge",
+//! which at 300 ups can only overshoot: the bot arrives at a stair corner already braking, bleeds the
+//! speed that would have carried it across, and fumbles the one leg that needed an exact line.
+//!
+//! [`plan_walk`] rolls the [`pmove`](crate::pmove_sim) forward under the **pursuit policy the steerer
+//! actually runs** — aim at the point a fixed distance ahead along the route polyline, full wish, no
+//! jump — and accepts a look-ahead distance only if the rolled-out path stays inside a tube around the
+//! route for the whole horizon. The steerer then flies exactly that policy, so the rollout is a
+//! statement about what the bot will really do. `None` means no look-ahead tracks from here — the
+//! predicted boxed state, and the one case the ledge brakes are for.
+//!
+//! The plan is a *policy parameter*, not a fixed aim point: the rollout pursues `point_on(polyline,
+//! cursor + L)` while the live steerer pursues `corridor_point(origin, L)`. The two coincide when the
+//! bot sits on the line and diverge by order of its lateral offset otherwise — which certification
+//! bounds to [`LATERAL_TOL`] and the caller's per-frame deviation check keeps bounded. Re-deriving the
+//! aim from the live origin each frame is what makes the policy self-correcting rather than a
+//! dead-reckoned path the bot drifts off; it is the same trade [`hopsim`](super::hopsim) accepts.
+
+use glam::{Vec3, Vec3Swizzles};
+
+use super::hopsim::point_on;
+use crate::math::yaw_of;
+use crate::pmove_sim::{pm_step, Hull, PmParams, PmState};
+use rtx_nav::navmesh::PLAYER_HALF_WIDTH;
+use rtx_nav::qphys::STEP_HEIGHT;
+use rtx_nav::strafe::{Cmd, MOVE_SPEED};
+
+/// Rollout tick length (77 Hz, matching [`hopsim`](super::hopsim) and the offline certifier).
+const DT: f32 = 1.0 / 77.0;
+/// Tick budget for one walk rollout (~0.52 s). Long enough to outlive the re-certification interval
+/// plus the brakes' reaction window, so a certificate never lapses into unproven ground; short enough
+/// that the fan stays cheap, which matters more here than for a hop — a *grounded* pmove tick scraping
+/// a staircase takes the step-up path and traces the hull several times over.
+const MAX_TICKS: usize = 40;
+/// Pursuit distances tried, longest first, so the smoothest line that certifies wins. 96 matches the
+/// near-field glide's chord (three cells — enough to erase the grid's 45° zigzag), 64 is two cells,
+/// and 40 is one leg plus an arrival radius: the tightest tracking still ahead of the bot's feet.
+pub const LOOKAHEADS: [f32; 3] = [96.0, 64.0, 40.0];
+/// How far off the route polyline the rolled-out path may stray and still count as tracking — one
+/// navmesh cell. A pursuit line deliberately cuts the zigzag's corners (that is the point), which
+/// deviates about half a cell; twice that is drift.
+pub const LATERAL_TOL: f32 = 32.0;
+/// …and how far it may sit above or below the matched segment. A riser plus grid quantization slack:
+/// deeper than this under the line means the bot left the staircase rather than walked down it.
+pub const Z_TOL: f32 = 48.0;
+/// How many ticks in a row the roll may spend off the floor before it counts as a fall rather than a
+/// stride. Walking a staircase barely leaves the ground at all — pmove's step-down trace reaches a
+/// riser within the same tick — so this needs no slack for stairs, while a genuine walk off a lip is
+/// airborne from the moment it happens. Catching a fall *here* rather than waiting for the drop to
+/// show up in z is what lets a 40-tick horizon reject a lip it has only just crossed: the bot is over
+/// the void long before it is 48u below the route.
+const AIR_TICKS_MAX: usize = 8;
+/// Ticks between arc-progress checks.
+const PROGRESS_WINDOW: usize = 15;
+/// Arc-length the cursor must gain per [`PROGRESS_WINDOW`] (≈40 ups average) or the roll is wedged —
+/// nosed into a riser or a wall, sliding without advancing. Well under a walk's ~250 ups, so only a
+/// genuine stall trips it.
+const PROGRESS_MIN: f32 = 8.0;
+/// Reaching within this of the polyline's end counts as tracking it to the end (an arrival radius).
+const END_SLACK: f32 = 24.0;
+
+/// What the pursuit policy does when rolled forward from a live grounded state.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum WalkRollout {
+    /// Stayed inside the corridor tube for the whole horizon (or tracked the polyline to its end).
+    Held,
+    /// Left the tube — momentum beat the pursuit and carried the bot off the line.
+    Veered,
+    /// Left the floor and stayed off it: walked over a lip rather than down a step.
+    Fell,
+    /// Stopped gaining arc: wedged against a riser or wall.
+    Stalled,
+    /// Stepped onto lava/slime.
+    Burned,
+    /// Entered a volume the world hull cannot see — a closed gate, or a teleporter the route is not
+    /// trying to take.
+    Blocked,
+}
+
+/// A certified pursuit policy: steer at the corridor point this far ahead along the route.
+#[derive(Clone, Copy, Debug)]
+pub struct WalkPlan {
+    pub lookahead: f32,
+}
+
+/// Height mismatch a match absorbs for free before the level penalty bites. A route leg over a
+/// staircase interpolates its height linearly between two cell centres, but the floor underneath is
+/// treads: mid-leg the bot legitimately stands up to a riser off its own route line. Charging that
+/// like a wrong-level match (what a flat doubled-z penalty does) makes the *previous* segment's
+/// clamped corner outscore the correct segment ahead, which freezes the cursor and leaves the pursuit
+/// aiming at a point the bot has already walked past. Beyond this, the penalty resumes at full
+/// strength, so two flights of a spiral stacked ~100u apart stay as distinct as ever.
+const Z_FREE: f32 = 24.0;
+
+/// How well a candidate segment matches: lateral offset, plus a doubled penalty on whatever height
+/// mismatch exceeds [`Z_FREE`]. Lower is better.
+fn match_score(lateral: f32, dz: f32) -> f32 {
+    lateral + (dz.abs() - Z_FREE).max(0.0) * 2.0
+}
+
+/// Where a point sits relative to a polyline.
+#[derive(Clone, Copy, Debug)]
+pub struct Offset {
+    pub lateral: f32,
+    pub dz: f32,
+}
+
+/// Where a point sits along a polyline: arc-distance travelled, plus how far off the line it is.
+#[derive(Clone, Copy, Debug)]
+struct Track {
+    /// XY arc-distance from the polyline's start to the projection foot.
+    s: f32,
+    off: Offset,
+}
+
+/// Project `p` onto `pts`, keeping the cursor **monotonic**: segments whose foot lies behind `s_prev`
+/// are not considered, so a route that doubles back over itself (a switchback, a spiral's flight
+/// above its own core) can never snap the pursuit backward onto ground already covered. Among the
+/// rest the best [match](match_score) wins. Falls back to holding `s_prev` when nothing qualifies.
+fn track(pts: &[Vec3], s_prev: f32, p: Vec3) -> Track {
+    let mut acc = 0.0;
+    let mut best: Option<(f32, Track)> = None;
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let seg_len = (b.xy() - a.xy()).length();
+        if seg_len > 1e-3 {
+            let t = ((p.xy() - a.xy()).dot(b.xy() - a.xy()) / (seg_len * seg_len)).clamp(0.0, 1.0);
+            let s = acc + t * seg_len;
+            if s >= s_prev {
+                let foot = a.lerp(b, t);
+                let cand = Track {
+                    s,
+                    off: Offset {
+                        lateral: (p.xy() - foot.xy()).length(),
+                        dz: p.z - foot.z,
+                    },
+                };
+                if best
+                    .as_ref()
+                    .is_none_or(|(bs, _)| match_score(cand.off.lateral, cand.off.dz) < *bs)
+                {
+                    best = Some((match_score(cand.off.lateral, cand.off.dz), cand));
+                }
+            }
+        }
+        acc += seg_len;
+    }
+    best.map(|(_, t)| t).unwrap_or(Track {
+        s: s_prev,
+        off: Offset { lateral: 0.0, dz: 0.0 },
+    })
+}
+
+/// How far `p` sits off `pts`, with no monotonicity constraint — the caller's "is the bot still on the
+/// line its plan was certified over" test. Shares [`match_score`] with the rollout's cursor, so a
+/// certificate is judged against the same notion of on-route that proved it. `None` for a degenerate
+/// polyline.
+pub fn off_line(pts: &[Vec3], p: Vec3) -> Option<Offset> {
+    (pts.len() >= 2).then(|| track(pts, f32::NEG_INFINITY, p).off)
+}
+
+/// Whether `p` sits inside any blocked AABB, grown by the player half-width in XY and by a step in z
+/// below the box (the same slack the near-field stamps such volumes with, so a rollout and the
+/// clearance grid agree on where a shut door starts).
+fn blocked_at(p: Vec3, blocked: &[(Vec3, Vec3)]) -> bool {
+    blocked.iter().any(|&(lo, hi)| {
+        p.x >= lo.x - PLAYER_HALF_WIDTH
+            && p.x <= hi.x + PLAYER_HALF_WIDTH
+            && p.y >= lo.y - PLAYER_HALF_WIDTH
+            && p.y <= hi.y + PLAYER_HALF_WIDTH
+            && p.z >= lo.z - STEP_HEIGHT
+            && p.z <= hi.z
+    })
+}
+
+/// Roll the pursuit policy forward from `st` (a live grounded frame) chasing a point `lookahead` along
+/// `route_pts` — the leg-target polyline **starting at the bot's own position**, so arc-distances
+/// measure from here. Every tick re-aims at the cursor's look-ahead point and drives a full forward
+/// wish, exactly what the steerer emits; the roll ends the moment the path leaves the tube, burns,
+/// enters a blocked volume, or stops advancing.
+///
+/// Brief airborne ticks are *not* a failure: walking down a staircase leaves the floor for a few ticks
+/// per riser. The tube is what governs — a real fall exits it in z long before it lands.
+pub fn roll_walk(
+    hull: &impl Hull,
+    is_hazard: &impl Fn(Vec3) -> bool,
+    blocked: &[(Vec3, Vec3)],
+    route_pts: &[Vec3],
+    mut st: PmState,
+    lookahead: f32,
+    p: &PmParams,
+) -> WalkRollout {
+    let total: f32 = route_pts.windows(2).map(|w| (w[1].xy() - w[0].xy()).length()).sum();
+    let mut s = 0.0;
+    let mut mark = 0.0;
+    let mut air = 0;
+    for tick in 0..MAX_TICKS {
+        let target = point_on(route_pts, s + lookahead);
+        let cmd = Cmd {
+            view_yaw: yaw_of(target.xy() - st.origin.xy()),
+            forward: MOVE_SPEED,
+            side: 0.0,
+            jump: false,
+        };
+        pm_step(hull, &mut st, &cmd, p, DT);
+
+        air = if st.on_ground { 0 } else { air + 1 };
+        if air > AIR_TICKS_MAX {
+            return WalkRollout::Fell;
+        }
+        let t = track(route_pts, s, st.origin);
+        s = t.s;
+        if t.off.lateral > LATERAL_TOL || t.off.dz.abs() > Z_TOL {
+            return WalkRollout::Veered;
+        }
+        if is_hazard(st.origin) {
+            return WalkRollout::Burned;
+        }
+        if blocked_at(st.origin, blocked) {
+            return WalkRollout::Blocked;
+        }
+        if s >= total - END_SLACK {
+            return WalkRollout::Held; // tracked the corridor to its end
+        }
+        if tick > 0 && tick % PROGRESS_WINDOW == 0 {
+            if s - mark < PROGRESS_MIN {
+                return WalkRollout::Stalled;
+            }
+            mark = s;
+        }
+    }
+    WalkRollout::Held
+}
+
+/// Certify a pursuit policy for the grounded state `st` against `route_pts` — the leg-target polyline
+/// **starting at the bot's own position**, so arc-distances measure from here and match the live
+/// `corridor_point` the steerer will aim down. Tries the [`LOOKAHEADS`] longest-first and returns the
+/// first that tracks the corridor for the whole horizon; a longer look-ahead cuts corners more
+/// smoothly, a shorter one hugs the line, so this yields the smoothest policy that provably stays on.
+/// `None` when none of them do — nothing about this stretch can be walked at the bot's current speed,
+/// which is exactly when the fallback brakes should own the frame.
+///
+/// Note this cannot judge whether the bot is *already* off its route: the polyline starts under its
+/// feet by construction, so tick zero is always on the line. That question belongs to the caller,
+/// which has the current leg's source to measure against.
+pub fn plan_walk(
+    hull: &impl Hull,
+    is_hazard: &impl Fn(Vec3) -> bool,
+    blocked: &[(Vec3, Vec3)],
+    route_pts: &[Vec3],
+    st: PmState,
+    p: &PmParams,
+) -> Option<WalkPlan> {
+    if route_pts.len() < 2 {
+        return None;
+    }
+    LOOKAHEADS
+        .iter()
+        .find(|&&lookahead| roll_walk(hull, is_hazard, blocked, route_pts, st, lookahead, p) == WalkRollout::Held)
+        .map(|&lookahead| WalkPlan { lookahead })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pmove_sim::HeightHull;
+
+    fn no_hazard(_: Vec3) -> bool {
+        false
+    }
+
+    /// A diagonal staircase whose treads are shallow enough that a single 8u near-field column can
+    /// straddle two 16u risers — the dm3 geometry that reads as a cliff to a local probe — with a
+    /// fatal drop off both sides of a 64u-wide lane. Height rises 16u per 22.5u of travel along the
+    /// diagonal, so a 45u leg climbs 32u: two risers in one move.
+    fn wedge_stairs() -> HeightHull<impl Fn(f32, f32) -> Option<f32>> {
+        HeightHull {
+            floor: |x, y| {
+                // Risers run across +y, 16u tall on a 16u tread — so the route's 32u of y per leg
+                // crosses two of them. The lane is 224u of x; past its edges is the fatal drop.
+                ((-192.0..=32.0).contains(&x) && y >= -16.0).then(|| (y / 16.0).floor().max(0.0) * 16.0)
+            },
+        }
+    }
+
+    /// The route polyline up that staircase: dm3's 1014 → 977 → 938 → 895 shape, legs of (−32, +32)
+    /// climbing 32u each — a pure 45° diagonal that cuts every riser at its corner.
+    fn stair_route() -> Vec<Vec3> {
+        (0..8)
+            .map(|i| {
+                let k = i as f32;
+                Vec3::new(-32.0 * k, 32.0 * k, 32.0 * k)
+            })
+            .collect()
+    }
+
+    /// The target case: a 45° diagonal traverse across risers, beside a fatal drop. A certified
+    /// pursuit tracks it at speed — the whole point being that the physics is determined, so the line
+    /// is holdable and no brake is needed.
+    #[test]
+    fn plan_walk_tracks_wedge_stairs_beside_a_cliff() {
+        let hull = wedge_stairs();
+        let p = PmParams::default();
+        let route = stair_route();
+        let dir = (route[1] - route[0]).xy().normalize() * 300.0;
+        let st = PmState {
+            origin: route[0],
+            vel: Vec3::new(dir.x, dir.y, 0.0),
+            on_ground: true,
+            jump_held: false,
+        };
+        let plan = plan_walk(&hull, &no_hazard, &[], &route, st, &p).expect("the stair lane should certify");
+        assert_eq!(
+            roll_walk(&hull, &no_hazard, &[], &route, st, plan.lookahead, &p),
+            WalkRollout::Held,
+            "flying the certified policy must track the lane"
+        );
+        // …and it certifies the *smoothest* policy, not merely the tightest one that scrapes through.
+        assert_eq!(plan.lookahead, LOOKAHEADS[0]);
+
+        // Re-fly it by hand to check what "held" actually bought: the bot climbs several risers, keeps
+        // walking speed the whole way (no reverse, no brake-to-a-crawl), and never leaves the lane.
+        let mut fly = st;
+        let mut s = 0.0;
+        for _ in 0..MAX_TICKS {
+            let target = point_on(&route, s + plan.lookahead);
+            let cmd = Cmd {
+                view_yaw: yaw_of(target.xy() - fly.origin.xy()),
+                forward: MOVE_SPEED,
+                side: 0.0,
+                jump: false,
+            };
+            pm_step(&hull, &mut fly, &cmd, &p, DT);
+            s = track(&route, s, fly.origin).s;
+        }
+        assert!(
+            fly.origin.z >= 96.0,
+            "should have climbed the flight, z={}",
+            fly.origin.z
+        );
+        assert!(
+            fly.vel.xy().length() > 200.0,
+            "should still be walking, speed={}",
+            fly.vel.xy().length()
+        );
+        let off = off_line(&route, fly.origin).expect("on the route");
+        assert!(off.lateral <= LATERAL_TOL, "drifted off the lane: {}", off.lateral);
+    }
+
+    /// A route running off a cliff certifies nothing: every look-ahead carries the bot over the lip.
+    /// That `None` is the honest boxed state the fallback brakes exist for.
+    #[test]
+    fn plan_walk_none_when_the_route_runs_off_a_cliff() {
+        let hull = HeightHull {
+            floor: |x, _| (x <= 60.0).then_some(0.0),
+        };
+        let p = PmParams::default();
+        let route = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(60.0, 0.0, 0.0),
+            Vec3::new(400.0, 0.0, 0.0), // past the lip, over the void
+        ];
+        let st = PmState {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            vel: Vec3::new(400.0, 0.0, 0.0),
+            on_ground: true,
+            jump_held: false,
+        };
+        assert!(plan_walk(&hull, &no_hazard, &[], &route, st, &p).is_none());
+    }
+
+    /// A wall across the corridor stops the bot advancing, and the roll reports that rather than
+    /// claiming it tracked (sliding in place is not holding the line).
+    #[test]
+    fn roll_walk_stalls_into_a_wall() {
+        // Floor everywhere, but a 200u-tall block from x=20 on: the bot noses into it and stops well
+        // inside the horizon, so the stall is what the roll reports rather than the tick budget.
+        let hull = HeightHull {
+            floor: |x, _| Some(if x >= 20.0 { 200.0 } else { 0.0 }),
+        };
+        let p = PmParams::default();
+        let route = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(400.0, 0.0, 0.0)];
+        let st = PmState {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            vel: Vec3::new(200.0, 0.0, 0.0),
+            on_ground: true,
+            jump_held: false,
+        };
+        assert_eq!(
+            roll_walk(&hull, &no_hazard, &[], &route, st, 96.0, &p),
+            WalkRollout::Stalled
+        );
+    }
+
+    /// A shut gate's volume is invisible to the world hull, so the rollout would happily certify a
+    /// walk straight through it. The blocked-box check is what stops that.
+    #[test]
+    fn roll_walk_blocked_by_a_closed_gate_box() {
+        let hull = HeightHull {
+            floor: |_, _| Some(0.0),
+        };
+        let p = PmParams::default();
+        let route = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(400.0, 0.0, 0.0)];
+        let st = PmState {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            vel: Vec3::new(300.0, 0.0, 0.0),
+            on_ground: true,
+            jump_held: false,
+        };
+        let gate = [(Vec3::new(150.0, -64.0, 0.0), Vec3::new(170.0, 64.0, 80.0))];
+        assert_eq!(
+            roll_walk(&hull, &no_hazard, &gate, &route, st, 96.0, &p),
+            WalkRollout::Blocked
+        );
+        // …and with the gate open the same walk tracks fine, so the box is what rejected it.
+        assert_eq!(
+            roll_walk(&hull, &no_hazard, &[], &route, st, 96.0, &p),
+            WalkRollout::Held
+        );
+    }
+
+    /// The cursor never snaps backward onto a stretch the route already covered. On a switchback (out
+    /// along +x, back along −x a body-height above) the outbound pursuit must keep aiming outbound,
+    /// even though the return flight is nearer in XY than the route ahead.
+    #[test]
+    fn pursuit_cursor_never_snaps_back() {
+        let pts = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(300.0, 0.0, 0.0),
+            Vec3::new(300.0, 0.0, 56.0),
+            Vec3::new(0.0, 0.0, 56.0),
+        ];
+        // Halfway out on the lower flight: the upper flight sits directly overhead.
+        let mut s = 0.0;
+        for x in [10.0f32, 60.0, 120.0, 180.0, 240.0] {
+            let t = track(&pts, s, Vec3::new(x, 0.0, 0.0));
+            assert!(t.s >= s, "cursor went backward at x={x}: {} < {s}", t.s);
+            assert!(t.s <= 300.0, "cursor jumped onto the return flight at x={x}: s={}", t.s);
+            s = t.s;
+        }
+        // Once past the turn, the cursor may advance onto the return flight — but never back below it.
+        let t = track(&pts, 356.0, Vec3::new(200.0, 0.0, 56.0));
+        assert!(t.s >= 356.0, "cursor regressed onto the outbound flight: {}", t.s);
+    }
+}

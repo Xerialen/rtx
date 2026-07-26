@@ -86,6 +86,12 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // curved walkway at speed instead of edge-braking or carrying off it. Gated to ledge-flagged
         // cells, so open play is untouched. See `bot::hopsim`.
         ("rtx_bot_hopplan", Bool(true)),
+        // Certified walk tracking on grounded walk/step legs: roll the pmove forward under the
+        // waypoint-pursuit policy the steerer runs and let only a line it *proves* stays on the floor
+        // own the wish. While one is certified the reactive edge margin and both ledge brakes stand
+        // down — they become the fallback for "no trackable line exists" rather than the first
+        // responder, which is what made a bot brake mid-stride on a stair diagonal. See `bot::walksim`.
+        ("rtx_bot_walkplan", Bool(true)),
         // A bot's health weights how willing it is to shortcut through lava/slime: hurt bots detour,
         // healthy (or armored, or biosuited) ones clip the corner. `0` prices every bot as a bare
         // spawn — hazards still cost, but the same to everyone. See `bot::bot_hazard_strength`.

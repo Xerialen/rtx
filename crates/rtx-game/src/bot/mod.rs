@@ -32,6 +32,7 @@ mod rj;
 pub(crate) mod state;
 mod steer;
 mod vigil;
+pub(crate) mod walksim;
 
 pub use population::manage_population;
 pub(crate) use population::{drain_roster, RosterOp};
@@ -158,6 +159,14 @@ const BRAKE_MAX_LOOK: f32 = 128.0;
 /// to unwedge (see [`steer`]): inside this, the jump is held so a bot wedged at a pit lip diverts by
 /// repath rather than leaping to its death. About a hop's reach.
 const STUCK_JUMP_LOOK: f32 = 96.0;
+
+/// Certified walk tracking (see [`walksim`] / [`steer`]): how long one certification is trusted before
+/// re-rolling. Must stay well inside the rollout's ~0.52 s horizon so a plan is never flown past the
+/// ground it was proven over, while still amortising the fan over ~23 frames.
+const WALK_RECERT: f32 = 0.3;
+/// How long to wait before re-certifying after a fan found nothing. Without it a boxed bot re-rolls
+/// the whole failing fan every frame while the fallback brakes are the ones actually driving.
+const WALK_RETRY: f32 = 0.2;
 
 /// Outcome of a ballistic-phase landing check, shared by the hook and rocket-jump drivers: both fly
 /// a frictionless arc that matches their solve, so the only questions are whether we've touched down
