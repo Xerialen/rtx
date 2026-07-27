@@ -13,8 +13,12 @@ demos_dir = "evidence/demos"
 
 [build]
 # How the runner identifies the engine build it is testing.
-# The server reports its digest; commit/dirty come from this repo checkout.
+# commit/dirty come from this repo checkout; the binary digest comes from the
+# server's status reply when it exposes one, else from hashing engine_binary.
+# Leave engine_binary empty only if the server reports its own digest —
+# evidence without a binary digest cannot be tied to what actually ran.
 repo_dir = "."
+engine_binary = ""          # e.g. ~/.local/share/qw-fasttrack/runtime/qw/qwprogs.so
 
 [t2]
 duration_s = 600            # acceptance regime; anything else is stamped in regime_note

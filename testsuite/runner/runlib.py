@@ -82,7 +82,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
     _strict_table(
         root["paths"], f"{config_path}.paths", {"evidence_dir", "demos_dir"}
     )
-    _strict_table(root["build"], f"{config_path}.build", {"repo_dir"})
+    _strict_table(root["build"], f"{config_path}.build", {"repo_dir", "engine_binary"})
     t2 = _strict_table(root["t2"], f"{config_path}.t2", {"duration_s"})
     t3 = _strict_table(
         root["t3"],
@@ -174,6 +174,25 @@ def _server_digest(status: Any) -> str | None:
     return None
 
 
+def _engine_digest(config: dict[str, Any]) -> str | None:
+    """md5 (8 hex chars, display id) of the deployed engine binary, when the
+    config names one. This binds the evidence to the binary actually running,
+    which the repo checkout identity alone cannot do."""
+    binary = config.get("build", {}).get("engine_binary", "")
+    if not binary:
+        return None
+    path = config_path(config, binary)
+    if not path.is_file():
+        raise ConfigError(f"build.engine_binary: {path} does not exist")
+    import hashlib
+
+    digest = hashlib.md5()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:8]
+
+
 def build_identity(
     config: dict[str, Any], server_status: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -186,7 +205,7 @@ def build_identity(
     return {
         "branch": branch,
         "commit": commit,
-        "digest_md5": _server_digest(server_status),
+        "digest_md5": _server_digest(server_status) or _engine_digest(config),
         "dirty": dirty,
     }
 
