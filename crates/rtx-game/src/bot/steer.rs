@@ -13,7 +13,7 @@
 use glam::{Vec2, Vec3, Vec3Swizzles};
 
 use super::*;
-use crate::bot::state::{AirCommit, Commit, GateErrand, PlatWait};
+use crate::bot::state::{AirCommit, Commit, GateErrand, PlatWait, StallRecord};
 use crate::bsp::Bsp;
 use crate::defs::{Weapon, BOT_MOVE_SPEED as MOVE_SPEED, BUTTON_ATTACK, BUTTON_JUMP};
 use crate::game::cstring;
@@ -255,13 +255,13 @@ fn route_turn_sum(graph: &NavGraph, route: &[u32], pos: usize, origin: Vec3) -> 
 /// points sideways off a perfectly straight corridor. Velocity heading stays within the slalom's
 /// ±45° envelope on a straight run, and still betrays a hairpin sitting right at the bot's feet
 /// (the remaining window points back against the travel direction).
-fn route_turn(graph: &NavGraph, route: &[u32], pos: usize, v_xy: Vec2) -> f32 {
+fn route_turn(graph: &NavGraph, route: &[u32], pos: usize, v_xy: Vec2, look: usize) -> f32 {
     // Only directions between two cell origins count — the origin-anchored first segment is the
     // abeam-noise this function exists to ignore, so it seeds `prev` and nothing else.
     let mut prev: Option<Vec2> = None;
     let mut reference: Option<Vec2> = None;
     let mut max_dev = 0.0f32;
-    for &leg in route.iter().skip(pos).take(WINDING_LOOKAHEAD) {
+    for &leg in route.iter().skip(pos).take(look) {
         let tgt = graph.cell_origin(graph.link_target(leg)).xy();
         let Some(p) = prev else {
             prev = Some(tgt);
@@ -284,6 +284,43 @@ fn route_turn(graph: &NavGraph, route: &[u32], pos: usize, v_xy: Vec2) -> f32 {
         }
     }
     max_dev.to_degrees()
+}
+/// The per-frame constants every stall record shares, snapshotted once in [`steer`] so the five
+/// watchdogs can log a firing by copying — no watchdog computes anything it wouldn't otherwise.
+struct StallFrame {
+    now: f32,
+    origin: Vec3,
+    cell: CellId,
+    goal_cell: CellId,
+    goal_dist: f32,
+    speed: f32,
+}
+
+/// Park a watchdog firing on the bot (see [`StallRecord`]). Call it *before* clearing the route:
+/// the record is meant to say which leg of which route failed, not what was left afterwards.
+fn note_stall(
+    bot: &mut BotState,
+    f: &StallFrame,
+    reason: &'static str,
+    action: &'static str,
+    link: Option<u32>,
+    kind: Option<LinkKind>,
+) {
+    let (route_len, route_pos) = (bot.route.len() as u32, bot.route_pos as u32);
+    bot.push_stall(StallRecord {
+        t: f.now,
+        reason,
+        action,
+        origin: f.origin,
+        cell: f.cell,
+        goal_cell: f.goal_cell,
+        goal_dist: f.goal_dist,
+        link,
+        kind,
+        speed: f.speed,
+        route_len,
+        route_pos,
+    });
 }
 
 pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> SteerOut {
@@ -810,6 +847,16 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     };
 
     let goal_dist = (target_origin.xy() - origin.xy()).length();
+    // Everything the watchdogs below report about a stall, gathered once from values this frame
+    // already produced. See [`StallFrame`].
+    let stall_frame = StallFrame {
+        now,
+        origin,
+        cell: bot_cell,
+        goal_cell,
+        goal_dist,
+        speed,
+    };
 
     // Stuck detection. Suppressed mid-hook: standing in the throw stance, reeling, and riding the
     // parabola all look "stuck" to it, and a force-jump/repath there would wreck the traversal — the
@@ -837,6 +884,14 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         force_jump = !toward_edge;
         // Penalize the leg we're wedged on so the forced re-path actually *diverts* — without this
         // the deterministic A* hands back the identical route and the bot re-wedges every 0.7s.
+        // Both branches penalize+repath; the force-jump is the extra unwedge, so name it when it
+        // actually fired.
+        let action = if force_jump {
+            "force_jump"
+        } else {
+            "penalize+repath"
+        };
+        note_stall(bot, &stall_frame, "displacement", action, cur_leg, kind);
         penalize_leg(bot, cur_leg, kind, now);
         bot.repath_time = now; // re-path next frame
         bot.watchdog.stuck_since = now;
@@ -877,6 +932,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             progress_metric,
             now,
         ) {
+            note_stall(bot, &stall_frame, "progress", "penalize+repath", cur_leg, kind);
             penalize_leg(bot, cur_leg, kind, now);
             bot.route.clear();
             bot.repath_time = now;
@@ -916,7 +972,20 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             LinkKind::JumpGap | LinkKind::DoubleJump | LinkKind::SpeedJump
         )
     };
-    let jump_at_hand = cur_leg.is_some_and(&is_jump) || bot.route.get(bot.route_pos + 1).is_some_and(|&l| is_jump(l));
+    // ...but only when the leap lies along the travel direction. A jump leg that departs sideways
+    // off the current run (dm3: the westbound RA-ramp run whose next leg is the southbound gap jump
+    // onto the shelf) is not a run-up — the bot must first shed speed and turn, which is exactly the
+    // room the ledge policy exists to make. Exempting it let the ground zigzag pump the run to 490
+    // ups straight past a lip the runup gate (correctly) refused to jump perpendicular to.
+    let jump_along_travel = |l: u32| {
+        let d = (graph.cell_origin(graph.link_target(l)).xy() - graph.cell_origin(graph.link_source(l)).xy())
+            .normalize_or_zero();
+        let v = v_xy.normalize_or_zero();
+        v == Vec2::ZERO || d == Vec2::ZERO || d.dot(v) > 0.5
+    };
+    let is_jump_at_hand = |l: u32| is_jump(l) && jump_along_travel(l);
+    let jump_at_hand = cur_leg.is_some_and(&is_jump_at_hand)
+        || bot.route.get(bot.route_pos + 1).is_some_and(|&l| is_jump_at_hand(l));
     let on_ledge = graph.is_ledge(bot_cell) && !jump_at_hand;
     let bhop_veto = !host.cvar_bool(c"rtx_bot_bhop")
         || combat_view
@@ -946,7 +1015,13 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // risers, or a hairpin): a hop at full speed overshoots the bend and weaves off the narrow path,
     // so drop to the walk — its near-field glide tracks the curve. `ascent_ahead` alone misses this,
     // since the winding legs are flat (no riser); the curvature gate catches them.
-    let winding_ahead = route_turn(graph, &bot.route, bot.route_pos, v_xy) > WINDING_LIMIT;
+    // The carry gate must see as far as the bot needs to *stop* caring: at 490 ups four legs is a
+    // quarter second, and a hairpin past that horizon is reached before friction can shed a single
+    // band. A chain also needs a grounded stretch to die on: the last hop in flight is ~100u by
+    // itself. Scale the window with speed (~0.85 s of travel at 32u legs); slow chains keep the tight
+    // window that made the dogleg reading trustworthy.
+    let turn_look = ((v_xy.length() * 0.85 / 32.0).ceil() as usize).clamp(WINDING_LOOKAHEAD, 20);
+    let winding_ahead = route_turn(graph, &bot.route, bot.route_pos, v_xy, turn_look) > WINDING_LIMIT;
     let carry = (planned_band >= 1 || bot.route_bands.get(bot.route_pos + 1).copied().unwrap_or(0) >= 1)
         && !ascent_ahead
         && !winding_ahead;
@@ -995,6 +1070,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // built speed) abandon it and re-path rather than wedging on the runway forever. Penalize the
         // leg so the deterministic A* actually diverts instead of handing back the same run-up.
         if bot.sj.is_some_and(|c| now - c.since > 4.0) {
+            note_stall(bot, &stall_frame, "speedjump_stall", "penalize+repath", cur_leg, kind);
             penalize_leg(bot, cur_leg, kind, now);
             bot.sj = None;
             bot.route.clear();
@@ -1019,17 +1095,35 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         match air_commit_decision(on_ground, committed.airborne, now - committed.since) {
             AirRelease::Keep => {}
             AirRelease::Land => {
+                let leg_kind = graph.link_kind(committed.leg);
                 let target = graph.cell_origin(committed.target);
                 let on_target = (origin.xy() - target.xy()).length() <= 2.0 * ARRIVE_RADIUS;
                 if !on_target {
-                    penalize_leg(bot, Some(committed.leg), Some(graph.link_kind(committed.leg)), now);
+                    note_stall(
+                        bot,
+                        &stall_frame,
+                        "air_commit_off",
+                        "penalize+repath",
+                        Some(committed.leg),
+                        Some(leg_kind),
+                    );
+                    penalize_leg(bot, Some(committed.leg), Some(leg_kind), now);
                     bot.route.clear();
                     bot.repath_time = now;
                 }
                 bot.air = None;
             }
             AirRelease::Timeout => {
-                penalize_leg(bot, Some(committed.leg), Some(graph.link_kind(committed.leg)), now);
+                let leg_kind = graph.link_kind(committed.leg);
+                note_stall(
+                    bot,
+                    &stall_frame,
+                    "air_commit_timeout",
+                    "penalize+repath",
+                    Some(committed.leg),
+                    Some(leg_kind),
+                );
+                penalize_leg(bot, Some(committed.leg), Some(leg_kind), now);
                 bot.air = None;
                 bot.route.clear();
                 bot.repath_time = now;
@@ -1084,6 +1178,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             cv(c"sv_stopspeed", 100.0),
         );
         if predicted < v_req * 0.85 {
+            note_stall(bot, &stall_frame, "prestrafe_deficit", "penalize+repath", cur_leg, kind);
             penalize_leg(bot, cur_leg, kind, now);
             bot.sj = None;
             bot.route.clear();

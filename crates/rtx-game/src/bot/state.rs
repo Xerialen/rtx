@@ -4,9 +4,42 @@
 //! hook and grenade drivers run on. Split out of `entity.rs` so the ~60-field blackboard lives with
 //! the code that reads it (`crate::bot`), not with the engine-shared entity layout.
 
+use std::collections::VecDeque;
+
 use glam::Vec3;
 
-use crate::navmesh::CellId;
+use crate::navmesh::{CellId, LinkKind};
+
+/// One fired steering watchdog, parked on the bot until [`crate::control`] drains it into a
+/// `BotStall` event.
+///
+/// Deferred for the same reason [`RjTelemetry`] is: `crate::bot::steer` runs on `&mut BotState`
+/// with no `&GameState`, so it cannot reach the control channel itself. Every field is a copy of
+/// something the watchdog already had in hand — logging a stall costs no new work.
+#[derive(Clone, Debug)]
+pub struct StallRecord {
+    pub t: f32,
+    /// Which watchdog fired, and what it did about it. `&'static str` because both are drawn from
+    /// a closed set the watchdogs spell out literally.
+    pub reason: &'static str,
+    pub action: &'static str,
+    pub origin: Vec3,
+    pub cell: CellId,
+    pub goal_cell: CellId,
+    pub goal_dist: f32,
+    /// The route leg in force, and its kind — `None` off-route.
+    pub link: Option<u32>,
+    pub kind: Option<LinkKind>,
+    pub speed: f32,
+    /// The route as it stood *before* the watchdog cleared it, and the leg within it.
+    pub route_len: u32,
+    pub route_pos: u32,
+}
+
+/// How many [`StallRecord`]s a bot may hold. Deliberately tiny: with no control channel attached
+/// nothing ever drains the buffer, so [`BotState::push_stall`] drops the oldest record instead of
+/// letting an unobserved server grow a log it will never ship.
+pub const STALL_BUF_CAP: usize = 4;
 
 /// Per-bot navigation/AI state, on the bot's client edict (`1..=maxclients`). Non-bot edicts
 /// keep this at its `Default` (`is_bot == false`). See [`crate::bot`].
@@ -47,6 +80,9 @@ pub struct BotState {
     pub repath_time: f32,
     /// The route-progress watchdogs — three ways a bot notices it isn't getting anywhere.
     pub watchdog: Watchdog,
+    /// Stall records the watchdogs parked this frame, awaiting the control channel. Bounded ring —
+    /// see [`StallRecord`] / [`BotState::push_stall`].
+    pub stall_events: VecDeque<StallRecord>,
     /// Per-bot flight recorder (`rtx_bot_debug`): a fixed, once-allocated ring of compact per-frame
     /// [`rtx_auditlog::AuditFrame`] sensor snapshots, dumped on demand via the control channel's
     /// `audit` verb instead of flooding the server console. Budget is `rtx_bot_auditlog` MB.
@@ -130,6 +166,16 @@ pub struct BotState {
 }
 
 impl BotState {
+    /// Park a watchdog firing for [`crate::control`] to drain, dropping the oldest record once the
+    /// buffer is full. Never blocks and never grows: on a server with nothing listening this
+    /// degrades to "the last few stalls", which is all the buffer is for.
+    pub fn push_stall(&mut self, rec: StallRecord) {
+        if self.stall_events.len() >= STALL_BUF_CAP {
+            self.stall_events.pop_front();
+        }
+        self.stall_events.push_back(rec);
+    }
+
     /// Add `item` to the avoid ring until `until` (bumping a matching entry's expiry, else evicting
     /// the soonest-to-expire slot). Ignores `0` (the "no item" sentinel).
     pub fn mark_avoid(&mut self, item: u32, until: f32) {

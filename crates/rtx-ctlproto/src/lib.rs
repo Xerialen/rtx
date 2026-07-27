@@ -245,6 +245,25 @@ pub struct StatusResp {
     pub match_: MatchInfo,
     pub oracle: OracleInfo,
     pub bots: Vec<BotStatus>,
+    /// Connected human clients. A separate array from `bots` on purpose: every existing
+    /// consumer that iterates `bots` keeps its bots-only contract, and a movement-lab tool
+    /// that wants the human reads this one. Empty on a server nobody has joined.
+    #[serde(default)]
+    pub players: Vec<PlayerStatus>,
+}
+
+/// One connected human client, as much of it as a movement lab needs to attribute a position
+/// to a navmesh cell. Deliberately much smaller than [`BotStatus`]: no goal, no route, no
+/// puppet order — a human has none of those.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlayerStatus {
+    pub ent: u32,
+    pub name: String,
+    pub origin: Vec3,
+    pub health: f32,
+    pub on_ground: bool,
+    pub alive: bool,
+    pub speed: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -618,6 +637,82 @@ pub enum Event {
     RjResult(Box<RjResult>),
     /// A fly-link attempt finished (landed, timed out, …).
     FlyResult(FlyResult),
+    /// One server frame of authoritative player movement, while `rtx_telemetry` is on.
+    ///
+    /// This is the movement lab's input: engine-truth ground flag, the full 3-D velocity and
+    /// the ground entity, at the rate the server actually runs — none of which a 15 Hz
+    /// `status` poll can reconstruct. Emitted even with zero players: the empty event is the
+    /// consumer's heartbeat, proof this build supports telemetry, so a tool started before
+    /// the human connects does not fall back to polling.
+    Pmove(PmoveEvent),
+    /// A steering watchdog fired: the bot noticed it is not getting anywhere on its current leg.
+    ///
+    /// One event per firing, from every watchdog in the bot's steering core (displacement,
+    /// route progress, the speed-jump run-up, the air commitment, the curl prestrafe deficit).
+    /// Everything here is a copy of what the watchdog already had in hand, so a consumer can
+    /// attribute a stall to a map spot, a route leg and a link kind without a follow-up query.
+    BotStall {
+        bot: u32,
+        t: f32,
+        /// Which watchdog fired: `displacement`, `progress`, `speedjump_stall`,
+        /// `air_commit_off`, `air_commit_timeout`, `prestrafe_deficit`.
+        reason: String,
+        origin: Vec3,
+        /// The nav cell the bot stands on, and the one it is routing toward.
+        cell: u32,
+        goal_cell: u32,
+        goal_dist: f32,
+        /// The route leg (link index) in force when the watchdog fired; `u32::MAX` when off-route.
+        link: u32,
+        /// That leg's `LinkKind`, as its `Debug` name; empty when off-route.
+        kind: String,
+        speed: f32,
+        /// The route as it stood *before* the watchdog cleared it, and the bot's leg within it.
+        route_len: u32,
+        route_pos: u32,
+        /// What the watchdog did about it: `force_jump` or `penalize+repath`.
+        action: String,
+    },
+    /// One second of life from one `rtx-client` seat.
+    ///
+    /// A seat that connected and then went nowhere is indistinguishable from a working one in
+    /// every other line a client prints. This is the periodic proof of the opposite: how far it
+    /// has actually travelled, how the link is behaving, how stale its last snapshot is, and
+    /// whether it is far enough along to be playing at all.
+    SeatHeartbeat {
+        /// The name the seat connected under — the same string the server's scoreboard shows.
+        seat: String,
+        t: f32,
+        /// Distance covered since the seat connected. Flat across heartbeats = a stuck seat.
+        travelled: f32,
+        rtt_ms: f32,
+        /// Frames the server withheld to stay inside our rate, cumulative.
+        chokes: u32,
+        /// Seconds since this connection's entity snapshot last advanced.
+        snapshot_age: f32,
+        /// How far through connecting the seat is (`Active` once it is playing).
+        signon: String,
+        /// Whether the navmesh finished building. Without it the brain does nothing at all, so a
+        /// seat that stands still with `nav_ready: false` is waiting, not broken.
+        nav_ready: bool,
+        alive: bool,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PmoveEvent {
+    pub t: f32,
+    pub players: Vec<PmovePlayer>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PmovePlayer {
+    pub ent: u32,
+    pub origin: Vec3,
+    pub vel: Vec3,
+    pub on_ground: bool,
+    /// The entity being stood on, or -1 for none/invalid.
+    pub ground_ent: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -751,6 +846,104 @@ mod tests {
         let n = u32::from_le_bytes(frame[..4].try_into().unwrap()) as usize;
         assert_eq!(n, frame.len() - 4);
         decode(&frame[4..]).unwrap()
+    }
+
+    #[test]
+    fn pmove_event_roundtrips() {
+        let msg = Msg::Event(Event::Pmove(PmoveEvent {
+            t: 12.5,
+            players: vec![PmovePlayer {
+                ent: 1,
+                origin: [1.0, 2.0, 3.0],
+                vel: [191.0, -197.0, 62.0],
+                on_ground: false,
+                ground_ent: -1,
+            }],
+        }));
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn empty_pmove_event_roundtrips() {
+        // The zero-player heartbeat is load-bearing: a consumer started before anyone
+        // connects uses it to learn the build supports telemetry at all.
+        let msg = Msg::Event(Event::Pmove(PmoveEvent {
+            t: 12.5,
+            players: Vec::new(),
+        }));
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn bot_stall_event_roundtrips() {
+        let msg = Msg::Event(Event::BotStall {
+            bot: 3,
+            t: 91.25,
+            reason: "displacement".to_string(),
+            origin: [1874.5, -32.6, -127.0],
+            cell: 412,
+            goal_cell: 77,
+            goal_dist: 638.5,
+            link: 1901,
+            kind: "SpeedJump".to_string(),
+            speed: 118.0,
+            route_len: 9,
+            route_pos: 4,
+            action: "penalize+repath".to_string(),
+        });
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn off_route_bot_stall_roundtrips() {
+        // Off-route the watchdog has no leg to name: `u32::MAX` link and an empty kind must
+        // survive the wire, so a consumer can tell "no leg" from "leg 0".
+        let msg = Msg::Event(Event::BotStall {
+            bot: 1,
+            t: 4.0,
+            reason: "progress".to_string(),
+            origin: [0.0, 0.0, 0.0],
+            cell: 0,
+            goal_cell: 0,
+            goal_dist: 0.0,
+            link: u32::MAX,
+            kind: String::new(),
+            speed: 0.0,
+            route_len: 0,
+            route_pos: 0,
+            action: "penalize+repath".to_string(),
+        });
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn seat_heartbeat_roundtrips() {
+        let msg = Msg::Event(Event::SeatHeartbeat {
+            seat: "bot\u{2022}rex".to_string(),
+            t: 128.0,
+            travelled: 14203.5,
+            rtt_ms: 12.5,
+            chokes: 3,
+            snapshot_age: 0.013,
+            signon: "Active".to_string(),
+            nav_ready: true,
+            alive: true,
+        });
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn status_players_roundtrip() {
+        let players = vec![PlayerStatus {
+            ent: 1,
+            name: "Xerial".to_string(),
+            origin: [1874.5, -32.6, -127.0],
+            health: 100.0,
+            on_ground: false,
+            alive: true,
+            speed: 274.9,
+        }];
+        assert_eq!(roundtrip(&players), players);
     }
 
     #[test]

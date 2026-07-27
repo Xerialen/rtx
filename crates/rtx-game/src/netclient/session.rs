@@ -291,8 +291,8 @@ impl Session {
         &self.mapname
     }
 
-    /// The name this bot connects under — conchars and all.
-    #[cfg(test)]
+    /// The name this bot connects under — conchars and all. It is how the server's scoreboard
+    /// and every heartbeat identify this seat.
     pub(crate) fn name(&self) -> &str {
         &self.userinfo.name
     }

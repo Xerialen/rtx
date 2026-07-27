@@ -32,7 +32,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -89,6 +89,10 @@ pub(crate) struct ControlState {
     /// Outbound encoded [`Msg`] frames plus their delivery target. The writer thread owns the receiving
     /// half and the client table.
     out_tx: Option<Sender<(Target, Vec<u8>)>>,
+    /// Frames queued on `out_tx` that the writer has not yet picked up. Events stop being queued once
+    /// this passes [`EVENT_BACKLOG_MAX`] — one wedged client must not grow the queue without bound.
+    /// Replies are always queued: a request/response pair is bounded by the requester itself.
+    out_backlog: Arc<AtomicUsize>,
     /// Raised by [`shutdown`] to tell the accept loop to stop.
     stop: Option<Arc<AtomicBool>>,
     /// The port the listener bound, so [`shutdown`] can poke a blocked `accept` awake.
@@ -179,10 +183,47 @@ pub(crate) fn frame_end(game: &mut GameState) {
     }
     let now = game.time();
     let maxclients = game.host.cvar(c"maxclients").max(0.0) as u32;
+    // One switch for the whole new observability surface (`Pmove`, `BotStall`, the client heartbeat):
+    // pre-branch typed consumers cannot decode an unknown enum variant — the deployed nav viewer
+    // treats that as a dead connection — so nothing new goes on the wire until the operator opts
+    // this server in with `rtx_telemetry 1`.
+    let telemetry = game.host.cvar(c"rtx_telemetry") > 0.0;
+    if telemetry {
+        send_event(game, Event::Pmove(pmove_event(game, now, maxclients)));
+    }
     for i in 1..=maxclients {
         let e = EntId(i);
         if !game.entities[e].bot.is_bot || !game.entities[e].in_use {
             continue;
+        }
+        // Steering-watchdog firings the bot parked this frame (see `bot::state::StallRecord`).
+        // Drained ahead of the puppet-order match below, and for *every* bot: a stall is a fact
+        // about autonomous play, which by definition runs without an order. `pop_front` — not
+        // `mem::take` — so the deque keeps its capacity and the watchdog path never re-allocates.
+        // Behind the telemetry switch like everything else; undrained records self-bound at
+        // [`crate::bot::state::STALL_BUF_CAP`].
+        while telemetry {
+            let Some(rec) = game.entities[e].bot.stall_events.pop_front() else {
+                break;
+            };
+            send_event(
+                game,
+                Event::BotStall {
+                    bot: i,
+                    t: rec.t,
+                    reason: rec.reason.to_string(),
+                    origin: a3(rec.origin),
+                    cell: rec.cell,
+                    goal_cell: rec.goal_cell,
+                    goal_dist: rec.goal_dist,
+                    link: rec.link.unwrap_or(u32::MAX),
+                    kind: rec.kind.map(|k| format!("{k:?}")).unwrap_or_default(),
+                    speed: rec.speed,
+                    route_len: rec.route_len,
+                    route_pos: rec.route_pos,
+                    action: rec.action.to_string(),
+                },
+            );
         }
         match game.entities[e].bot.puppet.order {
             None | Some(ControlOrder::Hold) => {}
@@ -245,13 +286,16 @@ fn start_listener(game: &mut GameState, port: u16) {
     // navview viewer — with replies routed by id and events broadcast to all.
     let clients: Arc<Mutex<HashMap<u64, TcpStream>>> = Arc::new(Mutex::new(HashMap::new()));
     let wclients = clients.clone();
-    let writer = std::thread::spawn(move || writer_loop(out_rx, wclients));
+    let backlog = Arc::new(AtomicUsize::new(0));
+    let wbacklog = backlog.clone();
+    let writer = std::thread::spawn(move || writer_loop(out_rx, wclients, wbacklog));
     let lstop = stop.clone();
     let lreaders = readers.clone();
     let lclients = clients.clone();
     let accept = std::thread::spawn(move || listener_loop(listener, requests_tx, lclients, lstop, lreaders));
     game.control.requests_rx = Some(requests_rx);
     game.control.out_tx = Some(out_tx);
+    game.control.out_backlog = backlog;
     game.control.stop = Some(stop);
     game.control.port = port;
     game.control.clients = Some(clients);
@@ -313,8 +357,13 @@ fn listener_loop(
 /// Writer loop: drain outbound msgpack frames to their targets. A reply goes to the one client that
 /// asked; an event broadcasts to every connected client. A write error drops that client from the
 /// table (a reconnecting client resyncs via `status`).
-fn writer_loop(out_rx: Receiver<(Target, Vec<u8>)>, clients: Arc<Mutex<HashMap<u64, TcpStream>>>) {
+fn writer_loop(
+    out_rx: Receiver<(Target, Vec<u8>)>,
+    clients: Arc<Mutex<HashMap<u64, TcpStream>>>,
+    backlog: Arc<AtomicUsize>,
+) {
     while let Ok((target, frame)) = out_rx.recv() {
+        backlog.fetch_sub(1, Ordering::Relaxed);
         // Pick the recipients under the lock, then **release it before writing**. `write_all` blocks
         // once the peer stops draining — a multi-megabyte BSP overruns a socket buffer several times
         // over — and holding the table across that wedges the whole channel: `listener_loop` needs
@@ -355,13 +404,37 @@ fn writer_loop(out_rx: Receiver<(Target, Vec<u8>)>, clients: Arc<Mutex<HashMap<u
 /// Queue one outbound [`Msg`] to a target, encoded to a wire frame. A no-op when the channel is down.
 fn send_to(game: &GameState, target: Target, msg: Msg) {
     if let Some(tx) = game.control.out_tx.as_ref() {
+        game.control.out_backlog.fetch_add(1, Ordering::Relaxed);
         let _ = tx.send((target, proto::to_frame(&msg)));
     }
 }
 
-/// Queue one async lifecycle [`Event`] to every connected client.
+/// Ceiling on queued-but-unwritten frames before *events* stop being queued (replies always are).
+/// ~6 s of per-frame telemetry at 77 Hz — far above any healthy writer's backlog, small enough that
+/// a wedged client caps the queue at a few hundred kilobytes instead of the whole heap.
+const EVENT_BACKLOG_MAX: usize = 512;
+
+/// Queue one async lifecycle [`Event`] to every connected client — unless the writer is drowning
+/// (see [`EVENT_BACKLOG_MAX`]). An event is a broadcast fact about a moment already gone; stale
+/// facts are droppable in a way replies never are.
 fn send_event(game: &GameState, ev: Event) {
+    if game.control.out_backlog.load(Ordering::Relaxed) >= EVENT_BACKLOG_MAX {
+        return;
+    }
     send_to(game, Target::All, Msg::Event(ev));
+}
+
+/// Broadcast an event raised outside the frame hooks — the client's per-seat heartbeat (see
+/// `crate::netclient`). Silently drops it when the channel never came up, the same way
+/// [`frame_end`] declines to do any work at all in that case.
+///
+/// Gated on the feature that owns its only caller: a `qwprogs` build has no seats to report.
+#[cfg(feature = "netclient")]
+pub(crate) fn emit_event(game: &GameState, ev: Event) {
+    if game.control.out_tx.is_none() {
+        return;
+    }
+    send_event(game, ev);
 }
 
 /// Whether a cvar name is safe to splice into a `set` localcmd (guards the console tokenizer): a
@@ -706,6 +779,40 @@ fn match_info(game: &GameState) -> proto::MatchInfo {
     }
 }
 
+/// One frame of authoritative human movement for [`Event::Pmove`].
+///
+/// Bots are excluded: their state already travels in `status.bots` every frame a harness asks
+/// for it, and the lab is about what a *person* did. An empty player list is still emitted by
+/// the caller — see the event's own documentation for why the heartbeat matters.
+fn pmove_event(game: &GameState, now: f32, maxclients: u32) -> proto::PmoveEvent {
+    let mut players = Vec::new();
+    for i in 1..=maxclients {
+        let ent = &game.entities[EntId(i)];
+        if !ent.in_use || !ent.is_player() || ent.bot.is_bot {
+            continue;
+        }
+        // groundentity is a raw prog reference: only trust it if it round-trips to a real edict.
+        let ground_ent = if ent.v.groundentity < 0 {
+            -1
+        } else {
+            let ground = EntId::from_prog(ent.v.groundentity);
+            if ground.index() < MAX_EDICTS && ground.to_prog() == ent.v.groundentity {
+                ground.0 as i32
+            } else {
+                -1
+            }
+        };
+        players.push(proto::PmovePlayer {
+            ent: i,
+            origin: a3(ent.v.origin),
+            vel: a3(ent.v.velocity),
+            on_ground: ent.v.flags.has(Flags::ONGROUND),
+            ground_ent,
+        });
+    }
+    proto::PmoveEvent { t: now, players }
+}
+
 fn status_resp(game: &GameState) -> proto::StatusResp {
     let (navmesh, cells, links, rj_links) = match game.nav.graph.as_ref() {
         Some(g) => (
@@ -764,6 +871,24 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
             bhop_peak: b.bhop.peak,
         });
     }
+    // Human clients, for movement-lab monitoring. A separate array from `bots` on purpose:
+    // every existing consumer that iterates `bots` keeps its bots-only contract.
+    let mut players = Vec::new();
+    for i in 1..=maxclients {
+        let ent = &game.entities[EntId(i)];
+        if ent.bot.is_bot || !ent.in_use || !ent.is_player() {
+            continue;
+        }
+        players.push(proto::PlayerStatus {
+            ent: i,
+            name: game.netname_of(EntId(i)),
+            origin: a3(ent.v.origin),
+            health: ent.v.health,
+            on_ground: ent.v.flags.has(Flags::ONGROUND),
+            alive: ent.is_alive(),
+            speed: ent.v.velocity.xy().length(),
+        });
+    }
     proto::StatusResp {
         map: game.level.mapname.clone(),
         time: game.time(),
@@ -774,6 +899,7 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
         match_: match_info(game),
         oracle: oracle_info(game),
         bots,
+        players,
     }
 }
 
