@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import sys
 
-from runner import selftest, t0_import, t1, t2
+from runner import selftest, t0_import, t1, t2, t3
 from runner.checks import ValidationError
 from runner.runlib import ConfigError, RunAborted, load_config
 from runner.scenario import ScenarioError
@@ -55,7 +55,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     t2_parser.add_argument("--map", default="dm3", help="map label for evidence")
 
-    commands.add_parser("t3", help="reserved for branch-vs-reference matches")
+    commands.add_parser(
+        "t3", help="run one branch-vs-reference match on the prepared KTX server"
+    )
     commands.add_parser("t4", help="reserved for the frogbot ladder")
     selftest_parser = commands.add_parser(
         "selftest", help="run the offline schema conformance fixtures"
@@ -95,8 +97,9 @@ def main(argv: list[str] | None = None) -> int:
             print(path)
             return 0
         if args.command == "t3":
-            print("t3: not implemented until E3", file=sys.stderr)
-            return 3
+            path = t3.run(config)
+            print(path)
+            return 0
         if args.command == "t4":
             print("t4: not implemented until E4", file=sys.stderr)
             return 4

@@ -24,10 +24,16 @@ engine_binary = ""          # e.g. ~/.local/share/qw-fasttrack/runtime/qw/qwprog
 duration_s = 600            # acceptance regime; anything else is stamped in regime_note
 
 [t3]
-duration_s = 300
+duration_s = 300            # MUST equal the match server's usermode timelimit * 60
 reference_client = ""       # path to the reference (main) rtx-client build - REQUIRED for t3
 branch_client = ""          # path to the branch-under-test rtx-client build - REQUIRED for t3
-seats_per_side = 4
+seats_per_side = 4          # server default usermode must be <n>on<n> for this n
+match_server = "127.0.0.1:27700"  # dedicated mvdsv+KTX instance, idle in Standby
+basedir = ""                # quake basedir passed to both rtx-client processes
+control_port_base = 28100   # branch client control port; reference uses base+1
+reference_branch = "main"   # what the reference client was built from (operator claim)
+reference_commit = ""       # full 40-char commit of the reference build - REQUIRED for t3
+demoinfo_dir = ""           # KTX demo dir (demoinfo *.txt + MVD); empty = client-status oracle
 
 [t4]
 duration_s = 300

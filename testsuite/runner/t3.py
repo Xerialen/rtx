@@ -1,0 +1,492 @@
+"""T3 branch-vs-reference match on a KTX server.
+
+The runner does not manage the match server: the operator prepares a dedicated
+mvdsv+KTX instance whose default usermode matches [t3].seats_per_side and whose
+timelimit equals [t3].duration_s — both are verified against the server's
+serverinfo before anything launches. The runner only launches the two client
+processes, gates readiness, observes, and reads the score back.
+"""
+from __future__ import annotations
+
+import hashlib
+import math
+import re
+import socket
+import subprocess
+import time
+from pathlib import Path
+from typing import Any
+
+from .control import Control
+from .runlib import RigLock, RunRecorder, config_path
+from .t2 import _mean, _summarize_cells
+
+TEAM_BY_SIDE = {"branch": "brch", "reference": "ref"}
+COLORS_BY_SIDE = {"branch": ("4", "4"), "reference": ("13", "13")}
+SIDES = ("branch", "reference")
+
+
+def _udp_serverinfo(host: str, port: int, timeout: float = 3.0) -> dict[str, str]:
+    """One QW status query, returning the serverinfo key/value line."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.settimeout(timeout)
+        sock.sendto(b"\xff\xff\xff\xffstatus\n", (host, port))
+        data, _ = sock.recvfrom(8192)
+    finally:
+        sock.close()
+    text = data.decode("latin1")
+    if not text.startswith("\xff\xff\xff\xffn"):
+        raise RuntimeError(f"unexpected status reply from {host}:{port}")
+    info_line = text[5:].split("\n", 1)[0]
+    tokens = info_line.strip("\\").split("\\")
+    return dict(zip(tokens[0::2], tokens[1::2]))
+
+
+def _match_server(config: dict[str, Any]) -> tuple[str, int]:
+    raw = config["t3"]["match_server"]
+    host, _, port_text = raw.rpartition(":")
+    if not host or not port_text.isdigit():
+        raise RuntimeError(f"t3.match_server must be host:port, got {raw!r}")
+    return host, int(port_text)
+
+
+def _md5_file(path: Path) -> str:
+    digest = hashlib.md5()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:8]
+
+
+def _client_binary(config: dict[str, Any], side: str) -> Path:
+    key = "branch_client" if side == "branch" else "reference_client"
+    value = config["t3"][key]
+    if not value:
+        raise RuntimeError(f"t3.{key} is required for T3")
+    path = config_path(config, value)
+    if not path.is_file():
+        raise RuntimeError(f"t3.{key}: {path} does not exist")
+    return path
+
+
+class _Side:
+    """One client process plus its control connection and running measurement."""
+
+    def __init__(self, side: str, binary: Path, control_port: int):
+        self.side = side
+        self.binary = binary
+        self.control_port = control_port
+        self.process: subprocess.Popen | None = None
+        self.control: Control | None = None
+        self.stalls: list[dict[str, Any]] = []
+        self.per_second: list[float] = []
+        self.still_s = 0.0
+        self.bots_seen = 0
+        self.polls = 0
+        self.frags: int | None = None
+        self._previous: dict[int, tuple[list[float], float]] = {}
+        self._accumulator: dict[int, list[float]] = {}
+        self._last_second = time.monotonic()
+        self._last_telemetry = 0.0
+
+    def launch(
+        self,
+        server: str,
+        basedir: str,
+        bots: int,
+        soak_s: int,
+        log_dir: Path,
+    ) -> None:
+        colors = COLORS_BY_SIDE[self.side]
+        command = [
+            str(self.binary),
+            "--server", server,
+            "--basedir", basedir,
+            "--bots", str(bots),
+            "--team", TEAM_BY_SIDE[self.side],
+            "--colors", colors[0], colors[1],
+            "--control-port", str(self.control_port),
+            "--soak", str(soak_s),
+        ]
+        log_path = log_dir / f"t3-{self.side}.log"
+        self.log = open(log_path, "w", encoding="utf-8")
+        self.process = subprocess.Popen(
+            command, stdout=self.log, stderr=subprocess.STDOUT
+        )
+
+    def connect(self, deadline: float) -> None:
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            if self.process is not None and self.process.poll() is not None:
+                raise RuntimeError(
+                    f"{self.side} client exited before its control port opened "
+                    f"(code {self.process.returncode})"
+                )
+            try:
+                self.control = Control("127.0.0.1", self.control_port, timeout=10.0)
+                return
+            except OSError as exc:
+                last_error = exc
+                time.sleep(0.5)
+        raise RuntimeError(
+            f"{self.side} client control port {self.control_port} never opened: "
+            f"{last_error}"
+        )
+
+    def status_bots(self) -> list[dict[str, Any]]:
+        assert self.control is not None
+        return self.control.request("status", timeout=8.0)["data"].get("bots", [])
+
+    def sample(self) -> None:
+        """One measurement poll: origins, per-second speed, stillness, stalls."""
+        assert self.control is not None
+        now = time.monotonic()
+        try:
+            bots = self.status_bots()
+        except Exception:
+            return
+        self.polls += 1
+        alive = [bot for bot in bots if bot.get("alive")]
+        self.bots_seen = max(self.bots_seen, len(alive))
+        frag_values = [bot.get("frags") for bot in bots]
+        if frag_values and all(isinstance(value, int) for value in frag_values):
+            self.frags = sum(frag_values)
+        for bot in bots:
+            entity = int(bot["ent"])
+            origin = bot["origin"]
+            previous = self._previous.get(entity)
+            if bot.get("alive") and previous is not None:
+                elapsed = now - previous[1]
+                if 0.01 < elapsed < 0.6:
+                    speed = math.hypot(
+                        origin[0] - previous[0][0], origin[1] - previous[0][1]
+                    ) / elapsed
+                    if speed < 1500:
+                        accumulator = self._accumulator.setdefault(entity, [0.0, 0])
+                        accumulator[0] += speed * elapsed
+                        accumulator[1] += 1
+                        if speed < 16:
+                            self.still_s += elapsed
+            self._previous[entity] = (origin, now)
+        if now - self._last_second >= 1.0:
+            elapsed = now - self._last_second
+            for distance, samples in self._accumulator.values():
+                if samples:
+                    self.per_second.append(float(distance) / elapsed)
+            self._accumulator = {}
+            self._last_second = now
+        if now - self._last_telemetry >= 10.0:
+            try:
+                self.control.request("set rtx_telemetry 1", timeout=4.0)
+            except Exception:
+                pass
+            self._last_telemetry = now
+        for event in self.control.events:
+            if event.get("ev") == "bot_stall":
+                self.stalls.append(event)
+        self.control.events.clear()
+
+    def payload_side(self, build: dict[str, Any]) -> dict[str, Any]:
+        if self.frags is None:
+            raise RuntimeError(
+                f"no frag oracle for side {self.side}: neither KTX demoinfo nor "
+                "the client status exposed frags"
+            )
+        bots = self.bots_seen or 1
+        return {
+            "side": self.side,
+            "build": build,
+            "frags": self.frags,
+            "stats": {
+                "speed_1s": _mean(self.per_second),
+                "still_s_per_bot": round(self.still_s / bots, 1),
+                "stall_firings": len(self.stalls),
+                "bots": self.bots_seen,
+                "polls": self.polls,
+            },
+            "cells": _summarize_cells(self.stalls),
+        }
+
+    def shutdown(self) -> None:
+        if self.control is not None:
+            self.control.close()
+            self.control = None
+        if self.process is not None:
+            if self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(10)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(10)
+            self.process = None
+        log = getattr(self, "log", None)
+        if log is not None:
+            log.close()
+            self.log = None
+
+
+def _preflight_serverinfo(
+    config: dict[str, Any], host: str, port: int
+) -> dict[str, str]:
+    seats = config["t3"]["seats_per_side"]
+    duration = config["t3"]["duration_s"]
+    info = _udp_serverinfo(host, port)
+    if info.get("status") != "Standby":
+        raise RuntimeError(
+            f"match server is not in Standby (status={info.get('status')!r}); "
+            "refuse to start on a busy server"
+        )
+    expected_mode = f"{seats}on{seats}"
+    if info.get("mode") != expected_mode:
+        raise RuntimeError(
+            f"match server mode is {info.get('mode')!r} but seats_per_side={seats} "
+            f"requires {expected_mode!r} — fix the server's default usermode"
+        )
+    timelimit = info.get("timelimit")
+    if timelimit != str(duration // 60):
+        raise RuntimeError(
+            f"server timelimit is {timelimit!r} but t3.duration_s={duration} "
+            f"requires {duration // 60} — fix the usermode timelimit"
+        )
+    return info
+
+
+def _seats_gate(sides: list[_Side], seats: int, timeout_s: float = 60.0) -> None:
+    """Every seat must be alive (joined and spawned) before the match may start."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            alive = [
+                sum(bool(bot.get("alive")) for bot in side.status_bots())
+                for side in sides
+            ]
+        except Exception:
+            time.sleep(1.0)
+            continue
+        if all(count >= seats for count in alive):
+            return
+        time.sleep(1.0)
+    raise RuntimeError(f"not all {seats}+{seats} seats came alive in {timeout_s}s")
+
+
+def _movement_check(
+    sides: list[_Side], seats: int, window_s: float = 45.0
+) -> int:
+    """Every seat must move once the match runs.
+
+    Movement cannot be gated before the start: KTX freezes players during the
+    pre-match countdown, so the proof window is the first seconds of play. The
+    proof is cumulative — a seat counts once it has moved >32u from where it
+    was first seen, whenever in the window that happens — since a healthy bot
+    may still idle through any single short sampling slice.
+    """
+    first_seen: dict[tuple[str, int], list[float]] = {}
+    moved: set[tuple[str, int]] = set()
+    deadline = time.monotonic() + window_s
+    while time.monotonic() < deadline:
+        for side in sides:
+            try:
+                bots = side.status_bots()
+            except Exception:
+                continue
+            for bot in bots:
+                if not bot.get("alive"):
+                    continue
+                key = (side.side, int(bot["ent"]))
+                if key not in first_seen:
+                    first_seen[key] = bot["origin"]
+                elif key not in moved:
+                    if math.dist(bot["origin"], first_seen[key]) > 32:
+                        moved.add(key)
+        if len(moved) >= 2 * seats:
+            return len(moved)
+        time.sleep(1.0)
+    raise RuntimeError(
+        f"movement gate failed: only {len(moved)}/{2 * seats} seats moved >32u "
+        f"within {window_s:.0f}s of match start"
+    )
+
+
+# The serverinfo status walks Standby -> Countdown -> "<n> min left" -> Standby.
+# Players are frozen until the countdown ends, so "match running" specifically
+# means neither of the first two.
+_IDLE_STATUSES = {"Standby", "Countdown"}
+
+
+def _wait_serverinfo(
+    host: str,
+    port: int,
+    *,
+    until_running: bool,
+    timeout_s: float,
+) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            status = _udp_serverinfo(host, port).get("status")
+        except (OSError, RuntimeError):
+            status = None
+        if status is not None:
+            running = status not in _IDLE_STATUSES
+            if running == until_running:
+                return
+        time.sleep(2.0)
+    state = "start the match" if until_running else "return to Standby"
+    raise RuntimeError(f"match server did not {state} within {timeout_s:.0f}s")
+
+
+def _read_demoinfo(
+    config: dict[str, Any], started_wallclock: float
+) -> tuple[dict[str, int], str] | None:
+    directory = config["t3"].get("demoinfo_dir", "")
+    if not directory:
+        return None
+    demo_dir = config_path(config, directory)
+    candidates = [
+        path
+        for path in demo_dir.glob("*.txt")
+        if path.stat().st_mtime >= started_wallclock - 5
+    ]
+    if not candidates:
+        return None
+    newest = max(candidates, key=lambda path: path.stat().st_mtime)
+    import json
+
+    try:
+        document = json.loads(newest.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return None
+    frags_by_team: dict[str, int] = {}
+    for player in document.get("players", []):
+        team = str(player.get("team", ""))
+        stats = player.get("stats", {})
+        if isinstance(stats, dict) and isinstance(stats.get("frags"), int):
+            frags_by_team[team] = frags_by_team.get(team, 0) + stats["frags"]
+    demo = document.get("demo")
+    return frags_by_team, demo if isinstance(demo, str) else ""
+
+
+def run(config: dict[str, Any]) -> Path:
+    t3 = config["t3"]
+    duration = t3["duration_s"]
+    seats = t3["seats_per_side"]
+    host, port = _match_server(config)
+    reference_commit = t3["reference_commit"]
+    if not re.fullmatch(r"[0-9a-f]{40}", reference_commit):
+        raise RuntimeError(
+            "t3.reference_commit must be the full 40-character commit the "
+            "reference client was built from"
+        )
+    binaries = {side: _client_binary(config, side) for side in SIDES}
+    digests = {side: _md5_file(binaries[side]) for side in SIDES}
+    port_base = t3["control_port_base"]
+    evidence_dir = config_path(config, config["paths"]["evidence_dir"])
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    with RigLock(port):
+        serverinfo = _preflight_serverinfo(config, host, port)
+        map_name = serverinfo.get("map", "unknown")
+        with RunRecorder(
+            config,
+            "T3",
+            map_name,
+            server_status={"digest_md5": digests["branch"]},
+        ) as recorder:
+            side_builds = {
+                "branch": dict(recorder.build),
+                "reference": {
+                    "branch": t3["reference_branch"],
+                    "commit": reference_commit,
+                    "digest_md5": digests["reference"],
+                    "dirty": False,
+                },
+            }
+            sides = [
+                _Side("branch", binaries["branch"], port_base),
+                _Side("reference", binaries["reference"], port_base + 1),
+            ]
+            started_wallclock = time.time()
+            soak = duration + 240
+            try:
+                for side in sides:
+                    side.launch(
+                        f"{host}:{port}", t3["basedir"], seats, soak, evidence_dir
+                    )
+                connect_deadline = time.monotonic() + 30.0
+                for side in sides:
+                    side.connect(connect_deadline)
+                _seats_gate(sides, seats)
+                _wait_serverinfo(
+                    host, port, until_running=True, timeout_s=120.0
+                )
+                match_began = time.monotonic()
+                seats_ok = _movement_check(sides, seats)
+                readiness = {
+                    "seats_ok": seats_ok,
+                    "gate": "status+movement",
+                    "passed": True,
+                }
+                hard_stop = match_began + duration + 180.0
+                last_lifecycle = 0.0
+                ended = False
+                while time.monotonic() < hard_stop:
+                    cycle_began = time.monotonic()
+                    for side in sides:
+                        side.sample()
+                    if cycle_began - last_lifecycle >= 2.0:
+                        last_lifecycle = cycle_began
+                        try:
+                            status = _udp_serverinfo(host, port).get("status")
+                            if status in _IDLE_STATUSES:
+                                ended = True
+                                break
+                        except (OSError, RuntimeError):
+                            pass
+                    time.sleep(max(0.0, 0.25 - (time.monotonic() - cycle_began)))
+                if not ended:
+                    raise RuntimeError(
+                        f"match did not finish within {duration + 180:.0f}s"
+                    )
+                time.sleep(3.0)  # let KTX finish the MVD and demoinfo embed
+                oracle = "control-status"
+                mvd = ""
+                demoinfo = _read_demoinfo(config, started_wallclock)
+                if demoinfo is not None:
+                    frags_by_team, mvd = demoinfo
+                    for side in sides:
+                        team_frags = frags_by_team.get(TEAM_BY_SIDE[side.side])
+                        if team_frags is not None:
+                            side.frags = team_frags
+                    oracle = "ktx-demoinfo"
+                payload_sides = [
+                    side.payload_side(side_builds[side.side]) for side in sides
+                ]
+                frags = {item["side"]: item["frags"] for item in payload_sides}
+                diff = frags["branch"] - frags["reference"]
+                recorder.payload = {
+                    "duration_s": duration,
+                    "sides": payload_sides,
+                    "result": {
+                        "diff": diff,
+                        "winner": "branch"
+                        if diff > 0
+                        else "reference"
+                        if diff < 0
+                        else "draw",
+                        "oracle": oracle,
+                        "mvd": mvd,
+                    },
+                    "readiness": readiness,
+                    "combat_lock": None,
+                    "replicate_of": None,
+                    "verdict": "PIPELINE-OK",
+                }
+            finally:
+                # Stagger the teardown: dropping eight clients in the same
+                # server frame mid-recording has crashed mvdsv (SZ_GetSpace
+                # overflow during mvdfinish).
+                for side in sides:
+                    side.shutdown()
+                    time.sleep(2.0)
+    return recorder.path

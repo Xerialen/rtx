@@ -3,8 +3,9 @@
 This subtree is the portable test runner for rtx. T1 is Nano's in-repository
 integration test: declarative movement scenarios are executed against a live
 rtx server in the same way unit tests exercise offline code. T0 imports the
-upstream Rust test result, while T2 measures pacifist free play. T3 and T4 are
-reserved for later match orchestration stages.
+upstream Rust test result, T2 measures pacifist free play, and T3 plays one
+branch-versus-reference 4on4 match on a prepared KTX server. T4 is reserved
+for the frogbot ladder.
 
 Every invocation writes one atomic JSON evidence file. The common envelope and
 tier payloads are defined in [`schema/SCHEMA.md`](schema/SCHEMA.md). Dashboard
@@ -75,7 +76,19 @@ All machine-specific values belong in the configuration file.
 - `paths.demos_dir`: reserved demo-artifact directory.
 - `build.repo_dir`: Git checkout for branch, full commit, and dirty identity.
 - `t2.duration_s`: default T2 duration; 600 is the acceptance regime.
-- `t3.*`: future branch/reference clients, duration, and seat count.
+- `t3.duration_s`: match length in seconds; must equal the match server's
+  timelimit times sixty — the preflight verifies this against serverinfo.
+- `t3.branch_client` / `t3.reference_client`: the two `rtx-client` binaries.
+  Their md5 digests bind each side's evidence to the binary that played.
+- `t3.match_server`: the dedicated mvdsv+KTX instance, `host:port`.
+- `t3.basedir`: Quake directory holding `qw/` and `id1/`, passed to both
+  client processes.
+- `t3.control_port_base`: branch client control port; reference uses base+1.
+- `t3.reference_branch` / `t3.reference_commit`: what the reference client was
+  built from. The commit is the operator's declaration; the digest is measured.
+- `t3.demoinfo_dir`: the server's demo directory. When set, the KTX demoinfo
+  JSON is the score oracle and the MVD path is recorded; when empty, the
+  runner falls back to the clients' own status frags.
 - `t4.*`: future frogbot endpoint, duration, and fixed skill ladder.
 - `tools.qw_analyze`: future combat-lock analyzer path.
 
@@ -124,8 +137,38 @@ offline using the hand-written validators in `runner/checks.py`. It covers all
 tiers, scenario schema compatibility, missing fields, unknown major versions,
 the T2 stall invariant, and the T4 stop-at-first-loss rule.
 
-T3 and T4 currently validate configuration and exit with explicit E3/E4
-not-implemented messages.
+T4 currently validates configuration and exits with an explicit E4
+not-implemented message.
+
+## T3: branch versus reference
+
+`python3 testflow.py t3` launches two `rtx-client` processes — the branch
+build and the reference build, `seats_per_side` bots each on their own team —
+against the configured match server, and writes one `PIPELINE-OK` envelope
+with per-side movement statistics and the final score. A branch quality
+verdict is never taken from a single match; that belongs to a `T3-agg`
+aggregate over two or more replicates with side alternation.
+
+The runner does not manage the server. The operator prepares a dedicated
+mvdsv+KTX instance — never a shared lab server, since the runner refuses to
+start unless the server is idle in Standby with the exact mode and timelimit:
+
+- A private gamedir (copy the `configs/` tree and root `.cfg` files, symlink
+  `qwprogs.so`) so nothing shared is edited.
+- Default usermode `<n>on<n>` matching `seats_per_side`, match mode
+  (`k_matchless 0` — matchless forces `teamplay 0`).
+- The timelimit must survive KTX's mode re-initialisation: KTX stamps its own
+  mode default *after* the boot cfg runs, so put `timelimit <min>` in the
+  private `configs/usermodes/<mode>/default.cfg`, which KTX executes last.
+- `k_noframechecks 1` (headless clients trip the illegal-FPS check),
+  `k_lockmode 0` (network clients may join), no frogbots, no master servers.
+- MVD recording on with `k_demotxt_format json`: the demoinfo `.txt` written
+  next to the MVD is the score oracle.
+
+Readiness is gated in two phases: all seats alive before the match may start,
+and every seat moving within the first seconds of play — KTX freezes players
+during the pre-match countdown, so movement can only be proven after launch.
+A failed gate writes a `failed` envelope and no score.
 
 ## Static dashboard
 
