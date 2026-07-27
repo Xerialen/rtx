@@ -1,0 +1,15 @@
+{
+  "schema": "rtx-testflow/2",
+  "run_id": "t0-ignored",
+  "tier": "T0",
+  "status": "complete",
+  "started_utc": "2026-07-27T14:00:00Z",
+  "build": {
+    "branch": "must-not-render",
+    "digest_md5": "ffffffff"
+  },
+  "provenance": "synthetic",
+  "payload": {
+    "verdict": "PASS"
+  }
+}

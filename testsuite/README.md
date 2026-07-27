@@ -126,3 +126,38 @@ the T2 stall invariant, and the T4 stop-at-first-loss rule.
 
 T3 and T4 currently validate configuration and exit with explicit E3/E4
 not-implemented messages.
+
+## Static dashboard
+
+`dashboard/build_dashboard.py` builds one self-contained HTML file from
+`rtx-testflow/1` evidence. It groups tier attempts by branch and engine
+`build.digest_md5`, retains each `run_id`, and orders build groups by their
+latest `started_utc`. Unknown schema majors are skipped with a warning.
+Missing tiers and `failed`/`aborted` envelopes are shown as run state; their
+partial payloads are never used as data.
+
+Build from a synced evidence directory:
+
+```sh
+python3 dashboard/build_dashboard.py \
+  --evidence-dir /path/to/evidence \
+  --output dashboard.html
+```
+
+The result has no network dependencies. Map geometry is loaded at build time
+from `dashboard/assets/maps/<map>/graph.json` and `entities.json`. T2/T3
+telemetry cells come only from complete evidence payloads. The EX marker is
+controlled only by envelope `provenance: synthetic`; derived values retain
+their `*_source` reference. Runs marked `quick` or `smoke` are displayed but
+are not compared with full-regime runs.
+
+The offline golden set covers a complete synthetic T0–T4 flow, missing and
+null fields, an unknown branch, a failed run, T3 aggregate semantics, and an
+unknown schema major:
+
+```sh
+python3 dashboard/build_dashboard.py --selftest
+python3 dashboard/build_dashboard.py \
+  --evidence-dir dashboard/fixtures \
+  --output /tmp/rtx-dashboard-fixture.html
+```

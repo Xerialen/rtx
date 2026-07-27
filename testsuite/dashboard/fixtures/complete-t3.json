@@ -1,0 +1,77 @@
+{
+  "schema": "rtx-testflow/1",
+  "run_id": "t3-20260727T102100Z-aaaaaaaa",
+  "tier": "T3",
+  "status": "complete",
+  "started_utc": "2026-07-27T10:21:00Z",
+  "ended_utc": "2026-07-27T10:26:00Z",
+  "map": "dm3",
+  "build": {
+    "branch": "golden-complete",
+    "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "digest_md5": "aaaabbbb",
+    "dirty": false
+  },
+  "config_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runner_version": "0.1.0",
+  "provenance": "synthetic",
+  "payload": {
+    "duration_s": 300,
+    "sides": [
+      {
+        "side": "branch",
+        "build": {
+          "branch": "golden-complete",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "digest_md5": "aaaabbbb",
+          "dirty": false
+        },
+        "frags": 87,
+        "stats": {"speed_1s": 238.6, "still_s_per_bot": 51.8, "stall_firings": 2},
+        "cells": [
+          {
+            "id": "m33224",
+            "pos": [1984, -288, -72],
+            "n": 2,
+            "reasons": {"displacement": 2},
+            "links": {}
+          }
+        ]
+      },
+      {
+        "side": "reference",
+        "build": {
+          "branch": "main",
+          "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "digest_md5": "bbbbcccc",
+          "dirty": false
+        },
+        "frags": 74,
+        "stats": {"speed_1s": 225.1, "still_s_per_bot": 58.4, "stall_firings": 1},
+        "cells": [
+          {
+            "id": "m33224",
+            "pos": [1984, -288, -72],
+            "n": 1,
+            "reasons": {"displacement": 1},
+            "links": {}
+          }
+        ]
+      }
+    ],
+    "result": {
+      "diff": 13,
+      "winner": "branch",
+      "oracle": "ktx-scoreboard",
+      "mvd": "demos/golden.mvd"
+    },
+    "readiness": {"seats_ok": 8, "gate": "heartbeat+movement", "passed": true},
+    "combat_lock": {
+      "s_per_bot": {"branch": 51.8, "reference": 58.4},
+      "source": "qw-analyze",
+      "version": "fixture"
+    },
+    "replicate_of": null,
+    "verdict": "PIPELINE-OK"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "schema": "rtx-testflow/1",
+  "run_id": "t0-20260727T100000Z-aaaaaaaa",
+  "tier": "T0",
+  "status": "complete",
+  "started_utc": "2026-07-27T10:00:00Z",
+  "ended_utc": "2026-07-27T10:00:02Z",
+  "map": "n/a",
+  "build": {
+    "branch": "golden-complete",
+    "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "digest_md5": "aaaabbbb",
+    "dirty": false
+  },
+  "config_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runner_version": "0.1.0",
+  "provenance": "synthetic",
+  "payload": {
+    "modules": [
+      {"name": "combat", "tests": 58, "passed": 58},
+      {"name": "navmesh", "tests": 42, "passed": 42}
+    ],
+    "total": {"tests": 100, "passed": 100},
+    "quality_floors": [
+      {"name": "bhop corpus 100m", "floor": 795, "unit": "u/s", "passed": true}
+    ],
+    "verdict": "PASS"
+  }
+}

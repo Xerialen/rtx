@@ -1,0 +1,26 @@
+{
+  "schema": "rtx-testflow/1",
+  "run_id": "t3-agg-20260727T123000Z-ffffffff",
+  "tier": "T3-agg",
+  "status": "complete",
+  "started_utc": "2026-07-27T12:30:00Z",
+  "ended_utc": "2026-07-27T12:31:00Z",
+  "map": "dm3",
+  "build": {
+    "branch": "aggregate-pass",
+    "commit": "ffffffffffffffffffffffffffffffffffffffff",
+    "digest_md5": "ffff0000",
+    "dirty": false
+  },
+  "config_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "runner_version": "0.1.0",
+  "provenance": "measured",
+  "payload": {
+    "replicates": [
+      "t3-20260727T120000Z-ffffffff",
+      "t3-20260727T121000Z-ffffffff"
+    ],
+    "side_alternation": true,
+    "verdict": "PASS"
+  }
+}
