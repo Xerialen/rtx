@@ -1,0 +1,17 @@
+schema = "rtx-scenario/1"
+name = "sng_mega"
+map = "dm3"
+kind = "goto"
+description = "From the SNG spawn to mega over the ledge route."
+
+[run]
+start = [-473, 514, 120]
+target = [-720, 80, 160]
+attempts = 10
+timeout_s = 20
+pause_s = 1.0
+arrive_box = 70
+regoto_max = 6
+
+[threshold]
+required = 8

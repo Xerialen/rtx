@@ -1,0 +1,17 @@
+schema = "rtx-scenario/1"
+name = "cell_724_503"
+map = "dm3"
+kind = "goto"
+description = "Cell transition on the SNG ledge (724 -> 503) - upstream merge criterion."
+
+[run]
+start = [-288, 768, -16]
+target = [-544, 864, 120]
+attempts = 10
+timeout_s = 12
+pause_s = 0.5
+arrive_box = 60
+regoto_max = 6
+
+[threshold]
+required = 10

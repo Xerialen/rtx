@@ -1,0 +1,17 @@
+schema = "rtx-scenario/1"
+name = "fixture_goto"
+map = "dm3"
+kind = "goto"
+description = "Minimal valid scenario fixture."
+
+[run]
+start = [0, 0, 0]
+target = [32, 0, 0]
+attempts = 10
+timeout_s = 5
+pause_s = 0.5
+arrive_box = 32
+regoto_max = 2
+
+[threshold]
+required = 10

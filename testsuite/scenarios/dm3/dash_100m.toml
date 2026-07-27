@@ -1,0 +1,20 @@
+schema = "rtx-scenario/1"
+name = "dash_100m"
+map = "100m"
+kind = "dash"
+description = "Straight-line speed test on 100m.bsp - best peak of two clean dashes. Informative floor: shown red under 800 u/s but does not flip the T1 verdict."
+
+[run]
+start = [-32, -2100, 24]
+target = [-32, 3500, 24]
+dashes = 2
+timeout_s = 16
+
+[workaround]
+# Known bug: after the map change + teleport the bot freezes (posture Hold).
+# Cycling rtx_bot_count 0 -> 1 unfreezes; the runner cycles before each dash.
+cycle_bot_count = true
+
+[threshold]
+floor = 800
+informative = true

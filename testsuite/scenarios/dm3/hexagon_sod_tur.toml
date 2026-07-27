@@ -1,0 +1,32 @@
+schema = "rtx-scenario/1"
+name = "hexagon_sod_tur"
+map = "dm3"
+kind = "goto"
+description = "The hexagon jump, south route outbound - over the pit on a planted SpeedJump link. A detour around the pit or a fall into it fails the attempt."
+
+[setup]
+# Planted links are runtime-only (they die on restart); the runner plants them
+# before the first attempt. Format: planlink verb args.
+plant_links = [
+  "352 -192 56 440 -191 56 733 -215 56 445",
+  "768 -192 56 704 -209 56 407 -193 56 445",
+  "352 128 56 440 133 56 733 150 56 445",
+  "832 128 56 750 139 56 444 144 56 450",
+]
+
+[run]
+start = [176, -192, 56]
+target = [880, -200, 56]
+attempts = 10
+timeout_s = 9
+pause_s = 7.0       # >=7 s between attempts or the abort-penalty cycling kicks in
+arrive_box = 90
+regoto_max = 6
+
+[fail.crossing]
+# The attempt must cross the pit airborne: x in (500,652), |y - bowl_y| < 130, z > 40.
+bowl_y = -200
+# Falling into the pit: z < 20 while x in (460,692) => fell.
+
+[threshold]
+required = 9

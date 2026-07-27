@@ -1,0 +1,42 @@
+# rtx-testflow runner configuration — copy to config.toml and edit.
+# EVERYTHING environment-specific lives here; the code has no baked-in paths.
+schema = "rtx-testflow-config/1"
+
+[server]
+host = "127.0.0.1"
+control_port = 27980        # rtx control channel (game port + 450 by our convention)
+protocol = "auto"           # auto | msgpack | text
+
+[paths]
+evidence_dir = "evidence"   # where result JSON lands (absolute or repo-relative)
+demos_dir = "evidence/demos"
+
+[build]
+# How the runner identifies the engine build it is testing.
+# The server reports its digest; commit/dirty come from this repo checkout.
+repo_dir = "."
+
+[t2]
+duration_s = 600            # acceptance regime; anything else is stamped in regime_note
+
+[t3]
+duration_s = 300
+reference_client = ""       # path to the reference (main) rtx-client build - REQUIRED for t3
+branch_client = ""          # path to the branch-under-test rtx-client build - REQUIRED for t3
+seats_per_side = 4
+
+[t4]
+duration_s = 300
+skills = [10, 12, 14, 16, 18, 20]
+frogbot_server = ""         # host:port of the KTX+frogbots server - REQUIRED for t4
+
+[restore]
+# The rig's idle state, restored after every run (and on abort). Required when
+# the engine's status reply does not expose current cvar values (the current
+# control protocol does not), since the runner then cannot snapshot them.
+rtx_telemetry = "0"
+rtx_bot_pacifist = "1"
+rtx_bot_count = "0"
+
+[tools]
+qw_analyze = ""             # path to qw-analyze binary (combat lock); empty = combat_lock skipped
