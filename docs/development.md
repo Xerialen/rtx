@@ -133,13 +133,20 @@ excluded, and anything summing distance must respect that. Positions are quantis
 Player state is a *delta against that player's last update*, so "no data this frame" and
 "unchanged" are the same bytes.
 
-`analyze` reports speed percentiles over frames the player was moving (a 20-minute match is mostly
-standing still, so a mean says nothing), the jumps it found — takeoff/landing, distance, apex, and
-whether speed rose in flight, which is the strafe-jump signature — and optional waypoints.
+`analyze` reports the speed distribution over live frames (excluding only warps and death), the
+jumps it found — takeoff/landing, distance, apex, and whether speed rose in flight, which is the
+strafe-jump signature — and optional waypoints.
 
-A team-game MVD is the richest source available: `demos/`'s 4-on-4 holds eight players over 20
-minutes on dm3, all at p50 ~330 / p90 ~475 ups while moving, with 93-96% of jumps gaining speed in
-the air. That is the reference population to measure bot movement against.
+A team-game MVD is the richest source available, and worth internalising before judging any bot
+number: in `demos/`'s 4-on-4, eight players over 20 minutes on dm3 sit at **p50 ~300-340, p90
+~450-480 ups**, spend **60-74% of the match above 200 ups** and 18-31% above 400, are **dead only
+3-6%** of it, and gain speed in the air on **93-96% of their jumps**.
+
+Competitive QuakeWorld is near-continuous motion. Do not model it as bursts of travel between
+pauses — there is barely any idling to discount, so any "while moving" filter is a thumb on the
+scale (measured: it moves p50 by ~2%). What *looks* stationary in the data mostly isn't: positions
+are quantised to 1/8 unit, so a slow step rounds to zero, and 58% of apparently stationary runs
+last under a tenth of a second.
 
 ## Navmesh coverage vs. hand-authored waypoints
 

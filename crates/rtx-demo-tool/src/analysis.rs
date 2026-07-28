@@ -43,6 +43,9 @@ pub struct Motion {
     /// The player was *moved* into this position (teleport, respawn) rather than travelling there,
     /// so the speeds above are zeroed and the step contributes no path length.
     pub warped: bool,
+    /// The player was dead this frame. A corpse slides, so these frames carry motion that is not
+    /// the player travelling.
+    pub dead: bool,
 }
 
 /// One player's motion across a whole demo, in ascending time.
@@ -157,6 +160,7 @@ pub fn track(demo: &Demo, player: u8) -> Track {
             heading,
             turn_rate,
             warped,
+            dead: frame.dead,
         });
         prev = Some((frame.time, origin));
     }
@@ -286,23 +290,60 @@ impl Track {
         out
     }
 
-    /// Speed distribution over the track, as `[p0, p50, p90, p99, max]` of horizontal speed across
-    /// frames the player was actually moving. Percentiles rather than a mean because a 20-minute
-    /// game is mostly standing still, waiting, and dying — the mean of that says nothing about how
-    /// fast the player *travels*.
+    /// Speed distribution over the track, as `[p0, p50, p90, p99, max]` of horizontal speed.
+    ///
+    /// Over every live frame — the only exclusions are warps (see [`TELEPORT_SPEED`]) and frames
+    /// the player was dead for, neither of which is that player travelling. There is deliberately
+    /// no "is he moving" threshold: measured on a real 4-on-4, one costs about 2% (p50 327 → 334)
+    /// while quietly biasing the answer upward, and what it removes is mostly not standing still
+    /// anyway — at 1/8-unit positions and 72 Hz, a slow step rounds to zero, and 58% of apparently
+    /// stationary runs last under a tenth of a second.
+    ///
+    /// Percentiles rather than a mean because the distribution is wide and skewed, not because
+    /// there is much idling to discount: a competitive player is above 200 ups for roughly 70% of
+    /// the match.
     pub fn speed_percentiles(&self) -> [f32; 5] {
-        let mut v: Vec<f32> = self
-            .motions
-            .iter()
-            .filter(|m| !m.warped && m.horizontal_speed > 1.0)
-            .map(|m| m.horizontal_speed)
-            .collect();
+        let mut v: Vec<f32> = self.live().map(|m| m.horizontal_speed).collect();
         if v.is_empty() {
             return [0.0; 5];
         }
         v.sort_by(f32::total_cmp);
         let at = |q: f32| v[((v.len() - 1) as f32 * q) as usize];
         [at(0.0), at(0.5), at(0.9), at(0.99), v[v.len() - 1]]
+    }
+
+    /// Frames this player was alive and actually travelling through — the honest denominator for
+    /// any "how fast does this player move" question.
+    pub fn live(&self) -> impl Iterator<Item = &Motion> {
+        self.motions.iter().filter(|m| !m.warped && !m.dead)
+    }
+
+    /// Share of live frames spent above `speed`, in 0..1.
+    ///
+    /// More informative than any single percentile for this population, and the number that says
+    /// plainly how wrong "mostly standing still" is: on the reference 4-on-4 every player is above
+    /// 200 ups for about 70% of the match.
+    pub fn share_above(&self, speed: f32) -> f32 {
+        let (mut n, mut hit) = (0u32, 0u32);
+        for m in self.live() {
+            n += 1;
+            if m.horizontal_speed > speed {
+                hit += 1;
+            }
+        }
+        if n == 0 {
+            0.0
+        } else {
+            hit as f32 / n as f32
+        }
+    }
+
+    /// Share of frames the player was dead, in 0..1.
+    pub fn dead_share(&self) -> f32 {
+        if self.motions.is_empty() {
+            return 0.0;
+        }
+        self.motions.iter().filter(|m| m.dead).count() as f32 / self.motions.len() as f32
     }
 
     /// Down-sample the track to at most `n` roughly evenly spaced waypoints, always keeping the
@@ -456,10 +497,10 @@ mod tests {
         );
     }
 
-    /// Percentiles describe how fast a player travels; a mean over a whole match describes how much
-    /// of it they spent standing still.
+    /// Percentiles run over every live frame, parked ones included — there is no "is he moving"
+    /// threshold, because on real data one costs ~2% and biases the answer upward.
     #[test]
-    fn speed_percentiles_ignore_standing_still() {
+    fn speed_percentiles_cover_all_live_frames() {
         let mut frames = vec![frame(0.0, 0, Vec3::ZERO)];
         // 20 frames parked, then 5 moving at ~400 ups.
         for i in 1..=20 {
@@ -470,7 +511,11 @@ mod tests {
         }
         let p = track(&demo(frames), 0).speed_percentiles();
         assert!((p[4] - 400.0).abs() < 1.0, "max {}", p[4]);
-        assert!(p[1] > 300.0, "p50 over *moving* frames should be ~400, got {}", p[1]);
+        assert!(
+            p[1] < 100.0,
+            "p50 over all live frames is dragged down by the parked ones: {}",
+            p[1]
+        );
     }
 
     /// Down-sampling keeps the endpoints and the requested count.

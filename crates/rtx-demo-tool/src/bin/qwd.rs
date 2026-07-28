@@ -708,12 +708,16 @@ fn report_player(out: &mut impl Write, demo: &Demo, player: u8, waypoints: usize
         "    horizontal speed: peak {:.0}  mean {:.0} ups   path {:.0}u   z {:.0}..{:.0}",
         s.peak_speed, s.mean_speed, s.path_length, s.min_z, s.max_z,
     )?;
-    // Percentiles over moving frames: a whole match is mostly standing still, so a mean says very
-    // little about how fast the player actually travels.
+    // The distribution, over live frames. `share_above` is the honest headline: a percentile alone
+    // invites the reader to imagine a lot of idling that isn't there.
     let [_, p50, p90, p99, max] = track.speed_percentiles();
     writeln!(
         out,
-        "    while moving: p50 {p50:.0}  p90 {p90:.0}  p99 {p99:.0}  max {max:.0} ups",
+        "    speed: p50 {p50:.0}  p90 {p90:.0}  p99 {p99:.0}  max {max:.0} ups   \
+         {:.0}% of the time above 200, {:.0}% above 400   dead {:.0}%",
+        100.0 * track.share_above(200.0),
+        100.0 * track.share_above(400.0),
+        100.0 * track.dead_share(),
     )?;
     let jumps = track.jumps();
     if !jumps.is_empty() {

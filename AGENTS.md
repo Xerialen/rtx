@@ -54,11 +54,15 @@ cargo run --release -p rtx-demo-tool --bin qwd -- analyze --player <name|slot> <
 cargo run --release -p rtx-demo-tool --bin qwd -- dump [--raw] <demo> > out.csv
 ```
 
-`analyze` reports speed percentiles over *moving* frames, the jumps it found (takeoff/landing,
+`analyze` reports the speed distribution over live frames, the jumps it found (takeoff/landing,
 distance, apex, and whether speed rose in the air — the strafe-jump signature), and optional
 waypoints. An `.mvd` of a team game gives every player at once, which is where human reference
-lines come from: the 4-on-4 in `demos/` has eight players over 20 minutes on dm3, all sitting at
-p50 ~330 / p90 ~475 ups while moving with 93-96% of their jumps gaining speed in the air.
+lines come from.
+
+**Calibrate on this before judging a bot number.** The 4-on-4 in `demos/` — eight players, 20
+minutes, dm3 — sits at p50 ~300-340 and p90 ~450-480 ups, **above 200 ups for 60-74% of the
+match**, dead for only 3-6%, gaining speed in the air on 93-96% of jumps. Competitive play is
+near-continuous fast movement, not travel punctuated by pauses.
 
 Mind what each format can say: an MVD carries no velocities (speeds are differenced from
 positions, so teleports must be — and are — excluded) and no ground flag; a `.qwd` carries both,
