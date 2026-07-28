@@ -128,11 +128,31 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
         _number(run["arrive_box"], f"{source}.run.arrive_box", positive=True)
         _integer(run["regoto_max"], f"{source}.run.regoto_max")
         threshold = _fields(
-            root["threshold"], f"{source}.threshold", {"required"}
+            root["threshold"],
+            f"{source}.threshold",
+            {"required"},
+            {"max_time_s", "reference_time_s"},
         )
         required = _integer(
             threshold["required"], f"{source}.threshold.required", positive=True
         )
+        # A timed drill is measured against a human run of the same route: the
+        # reference is what the owner did, max_time_s the slowest still
+        # acceptable. Arriving later than that is not a pass.
+        for field in ("max_time_s", "reference_time_s"):
+            if field in threshold:
+                _number(threshold[field], f"{source}.threshold.{field}", positive=True)
+        if ("max_time_s" in threshold) != ("reference_time_s" in threshold):
+            raise ScenarioError(
+                f"{source}.threshold: max_time_s and reference_time_s belong together"
+            )
+        if (
+            "max_time_s" in threshold
+            and threshold["max_time_s"] < threshold["reference_time_s"]
+        ):
+            raise ScenarioError(
+                f"{source}.threshold.max_time_s: cannot be faster than the reference"
+            )
         if required > run["attempts"]:
             raise ScenarioError(
                 f"{source}.threshold.required: cannot exceed run.attempts"

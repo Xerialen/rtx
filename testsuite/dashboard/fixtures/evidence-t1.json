@@ -29,16 +29,20 @@
       "demo_t_s": 12.5
      },
      {
-      "status": "passed",
-      "time_s": 5.61,
+      "status": "slow",
+      "time_s": 7.61,
       "demo_t_s": 44.0
      }
     ],
     "threshold": {
-     "required": 2,
-     "of": 2
+     "required": 1,
+     "of": 2,
+     "reference_time_s": 4.9,
+     "max_time_s": 5.49
     },
-    "passed": 2,
+    "passed": 1,
+    "arrived": 2,
+    "best_time_s": 5.37,
     "verdict": "PASS",
     "evidence": {
      "demo": "t1-20260727T150000Z-12121212.mvd",

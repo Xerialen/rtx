@@ -141,6 +141,16 @@
     width: 100%; appearance: none; border: 1px solid var(--rule); border-radius: 0;
     background: var(--panel-2); color: var(--ink); padding: 8px 28px 8px 9px; font: 11px var(--mono);
   }
+  .field-row { display: flex; gap: 6px; align-items: stretch; }
+  .field-row select { flex: 1 1 auto; min-width: 0; }
+  .clear-btn {
+    flex: 0 0 auto; appearance: none; border: 1px solid var(--rule); background: var(--panel-2);
+    color: var(--muted); padding: 0 9px; cursor: pointer; font: 10px var(--mono);
+    text-transform: uppercase; letter-spacing: .08em;
+  }
+  .clear-btn:hover { color: var(--ink); border-color: var(--muted); }
+  .clear-btn[disabled] { opacity: .4; cursor: default; }
+  .clear-btn[disabled]:hover { color: var(--muted); border-color: var(--rule); }
   .run-meta { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule-2); }
   .run-meta div { margin: 3px 0; color: var(--ink-2); font: 10.5px/1.4 var(--mono); overflow-wrap: anywhere; }
   .run-meta b { color: var(--ink); font-weight: 600; }
@@ -193,11 +203,15 @@
 
   .drills { overflow-x: auto; }
   .drill-row {
-    min-width: 620px; display: grid; grid-template-columns: 175px minmax(220px, 1fr) 95px;
+    min-width: 660px; display: grid; grid-template-columns: 205px minmax(220px, 1fr) 118px;
     gap: 12px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--rule-2);
   }
   .drill-name { font: 11px var(--mono); }
   .drill-name small { display: block; margin-top: 3px; color: var(--muted); }
+  /* .drill-name small sätter också färg, så tidsraden måste vinna på specificitet. */
+  .drill-name small.drill-time { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .drill-best { color: var(--ink-2); font: 10px var(--mono); font-variant-numeric: tabular-nums; }
+  .drill-best.over { color: var(--warn); }
   .attempts { display: flex; gap: 5px; }
   .attempt {
     min-width: 42px; height: 34px; display: grid; place-items: center;
@@ -205,6 +219,13 @@
     color: var(--halo); font: 700 9px/1.1 var(--mono); text-align: center;
   }
   .attempt.passed { background: var(--good); }
+  /* slow = framme, men över gränstiden: grön grund som passed, randad så att
+     "kom fram" och "för långsamt" syns som två olika saker. */
+  .attempt.slow {
+    background: repeating-linear-gradient(135deg, var(--good) 0 6px,
+      color-mix(in srgb, var(--good) 45%, var(--warn)) 6px 12px);
+    border-color: var(--warn);
+  }
   .attempt.fell { background: var(--r-airoff); }
   .attempt.timeout { background: var(--bad); }
   .attempt.stall { background: var(--r-pre); }
@@ -215,6 +236,10 @@
   .legend span { display: inline-flex; align-items: center; gap: 5px; }
   .legend i { width: 9px; height: 9px; display: inline-block; }
   .legend .passed { background: var(--good); } .legend .fell { background: var(--r-airoff); }
+  .legend .slow {
+    background: repeating-linear-gradient(135deg, var(--good) 0 3px,
+      color-mix(in srgb, var(--good) 45%, var(--warn)) 3px 6px);
+  }
   .legend .timeout { background: var(--bad); } .legend .stall { background: var(--r-pre); }
   .legend .loop { background: var(--r-sj); } .legend .detoured { background: var(--r-airtime); }
   .legend .died { background: var(--mesh-mid); }
@@ -383,11 +408,19 @@
     <h2>Run och referens</h2>
     <div class="field">
       <label for="focus-select">Fokus</label>
-      <select id="focus-select"></select>
+      <div class="field-row">
+        <select id="focus-select"></select>
+        <button class="clear-btn" id="focus-clear" type="button"
+          title="Återgå till den senaste körningen">rensa</button>
+      </div>
     </div>
     <div class="field">
       <label for="ref-select">Referens-run</label>
-      <select id="ref-select"></select>
+      <div class="field-row">
+        <select id="ref-select"></select>
+        <button class="clear-btn" id="ref-clear" type="button"
+          title="Ta bort referensen och visa fokuskörningen utan jämförelse">rensa</button>
+      </div>
     </div>
     <div class="run-meta" id="run-meta"></div>
     <div class="compare-note">Fokusvärdet visas först. Referensen visas inom parentes och jämförs alltid inom den valda nivån.</div>
@@ -431,7 +464,7 @@ const TERM_TITLES = {
   "stall-fyrningar": "Antal gånger stall-vakten löste ut: botten kom inte framåt och en räddningsåtgärd fyrades.",
   "quad/pent liggtid": "Sekunder i snitt som föremålet låg framme innan någon bot plockade det. Lägre är bättre.",
   "snittfart 1 s / 100 ms": "Medelfart över alla bottar, samplad i 1-sekunds- respektive 100-millisekundersfönster. u/s = enheter per sekund.",
-  "peak u/s (100m)": "Högsta fart på 100m-banans raka — separat dash-test per bygge, inte ur matchen. Golv 800; rött under.",
+  "peak u/s (100m)": "Högsta fart på 100m-banans raka — separat dash-test per bygge, inte ur matchen. Golv 790; rött under.",
   "combat lock": "Sekunder botten är beskjuten av en fiende inom sitt synfält utan att svara med egna skott. Räknas ur matchdemon i efterhand.",
   "stilla s / bot": "Sekunder per bot där farten var nära noll. Mycket stillastående = botten står fast eller tvekar.",
   "pacifist": "Serverläge där bottarna inte skjuter — navigationen kan mätas utan stridsbrus.",
@@ -445,9 +478,14 @@ const TERM_TITLES = {
   "matchkort": "Slutställningen som analysatorn läste ur matchdemon: lagens frags överst, sedan en rad per spelare. Namnet länkar till spelarens POV i demospelaren.",
   "spree": "Längsta obrutna fragsvit spelaren hade under matchen.",
   "teleport → goto": "Drillen startar med att botten teleporteras till startpunkten och får ett goto-mål — samma förutsättningar varje försök.",
+  "ägartid": "Tiden ägaren själv körde sträckan på i sitt eget demo. Ankarna för start och mål är hämtade ur samma körning.",
+  "gränstid": "Långsammaste ankomst som fortfarande räknas som klarad: ägarens tid plus marginal. Långsammare ankomst blir slow, inte passed.",
+  "framme": "Antal försök där botten nådde målet över huvud taget — oavsett om det gick inom gränstiden.",
+  "bäst": "Snabbaste ankomsten i körningen. Gul när även den bästa låg över gränstiden.",
   "körning": "Löpnummer i kronologisk ordning: #1 är den äldsta körningen, varje ny körning får ett högre nummer.",
   "bygge": "Commiten som testades (kort sha). Alla tiers i samma körning delar den; suffixet -dirty betyder att trädet hade oincheckade ändringar.",
-  "passed": "nådde målet inom tiden",
+  "passed": "nådde målet inom gränstiden",
+  "slow": "nådde målet, men långsammare än gränstiden",
   "fell": "föll från höjd på vägen",
   "timeout": "hann inte fram",
   "stall": "stall-vakten löste ut",
@@ -467,7 +505,7 @@ const TERM_TITLES = {
 
 const DOCS = {
   t0: "Cirka 400 offline-tester i rtx-repot körs med cargo test vid varje bygge, före deploy. Det är Nanos vanliga testsvit; T0 är vår etikett. Nästan alla är logiktester utan kvalitetsgolv. Undantaget är bhop-korpusen med offline-oraklet 795 u/s på 100m-profilen. Syftet är fail-fast: logikkorrekthet innan något deployas.",
-  t1: "Deterministiska enbotsdrillar med teleport → goto tar cirka åtta minuter. Ordinarie trösklar är ra_klattring 10/10, sng_mega minst 8/10, hexagon_sod_tur minst 9/10, cell_724_503 10/10 och cell_503_194 10/10. Drillarna delas i grunddrillar (kartans fasta utmaningar) och cellprover. Dash 100m har golv 800 u/s och visas röd under golvet; när dashen är graderad bär den ett eget verdikt som räknas in i T1-domen, annars är den bara informativ. Ingen karta används.",
+  t1: "Deterministiska enbotsdrillar med teleport → goto. Drillarna delas i grunddrillar och cellprover. Grunddrillarna är kartans fasta rutter, och de är tidsatta: ankarna för start och mål samt referenstiden kommer ur ägarens egna demon av samma sträcka, och gränstiden är hans tid plus marginal. Ett försök som når målet inom gränstiden är passed; ett som når målet men går över den är slow — det skiljer 'kan gå sträckan' från 'går den i spelbar fart'. Cellproverna är cellövergångarna ur mergekriterierna. Dash 100m har golv 790 u/s och visas röd under golvet; när dashen är graderad bär den ett eget verdikt som räknas in i T1-domen, annars är den bara informativ.",
   t2: "Fyra bottar spelar utan skott i tio minuter. Pacifist-regimen isolerar navigationssignalen: pickups, fart, stillatid och stall-fyrningar. Snapshot-JSON innehåller stats, cells, länkdata och regime T2. Kartvyn hör hemma här.",
   t3: "Fyra bottar från testgrenen möter fyra bottar från main på DM3 i fem minuter, med skott. Två byggen krävs och rtx-client-seats används mot servern. Matchresultat, sidornas snapshot-mätetal och stall-data jämförs. Combat lock kräver MVD-demo; verifierad inspelning saknas ännu.",
   t4: "Fyra bottar från testgrenen möter fyra frogbots i fem minuter per match. Stegen går skill 10, 12, 14, 16, 18 och 20. Vinst går vidare; första förlust stoppar stegen. Huvudmåttet är högsta besegrade skill, eller 0 vid direkt förlust på skill 10."
@@ -476,6 +514,10 @@ const DOCS = {
 let activeLevel = "t0";
 let focusIndex = 0;
 let refIndex = Math.min(1, RUNS.length - 1);
+// Referensen går att rensa bort helt. refIndex pekar då fortfarande på en
+// giltig körning — inget renderingsanrop får en trasig referens — men allt
+// jämförande är avstängt och panelerna visar bara fokuskörningen.
+let refOff = false;
 
 const esc = value => String(value).replace(/[&<>"']/g, char => (
   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]
@@ -539,7 +581,7 @@ function panelBadges(level, focus, ref) {
 
 function panelShell(level, title, subtitle, body) {
   const focus = RUNS[focusIndex].levels[level];
-  const ref = RUNS[refIndex].levels[level];
+  const ref = refOff ? null : RUNS[refIndex].levels[level];
   return '<div class="panel-head"><div><div class="eyebrow">' + level.toUpperCase() +
     ' · samma nivå mot samma nivå</div><h2>' + title + "</h2><p>" + subtitle +
     '</p></div><div class="panel-badges">' + panelBadges(level, focus, ref) +
@@ -548,8 +590,8 @@ function panelShell(level, title, subtitle, body) {
 }
 
 function canCompare(level, focus, ref) {
-  return focusIndex !== refIndex && focus.status === "complete" && ref.status === "complete" &&
-    focus.comparisonKey === ref.comparisonKey;
+  return !refOff && focusIndex !== refIndex && focus.status === "complete" &&
+    ref.status === "complete" && focus.comparisonKey === ref.comparisonKey;
 }
 
 function regimeBadge(item) {
@@ -610,20 +652,27 @@ function renderRunControls() {
     " · " + esc(run.branch) + " · " + esc(run.build) + "</option>"
   ).join("");
   focusSelect.innerHTML = options;
-  refSelect.innerHTML = options;
+  refSelect.innerHTML = '<option value="">ingen referens</option>' + options;
   focusSelect.value = String(focusIndex);
-  refSelect.value = String(refIndex);
-  Array.from(focusSelect.options).forEach(option => { option.disabled = Number(option.value) === refIndex; });
-  Array.from(refSelect.options).forEach(option => { option.disabled = Number(option.value) === focusIndex; });
+  refSelect.value = refOff ? "" : String(refIndex);
+  Array.from(focusSelect.options).forEach(option => {
+    option.disabled = !refOff && Number(option.value) === refIndex;
+  });
+  Array.from(refSelect.options).forEach(option => {
+    option.disabled = option.value !== "" && Number(option.value) === focusIndex;
+  });
+  document.getElementById("focus-clear").disabled = focusIndex === 0;
+  document.getElementById("ref-clear").disabled = refOff;
   const focus = RUNS[focusIndex], ref = RUNS[refIndex];
   const failed = focus.attempts.filter(attempt => attempt.status !== "complete");
   document.getElementById("run-meta").innerHTML =
     '<div><span class="muted">fokus</span><br><b>' + term("körning #" + focus.number, "körning") +
     " · " + esc(focus.branch) + "</b><br>" +
     term(focus.build, "bygge") + " · " + esc(focus.date) + "</div>" +
-    '<div><span class="muted">referens</span><br><b>(' + term("körning #" + ref.number, "körning") +
-    " · " + esc(ref.branch) + ")</b><br>(" +
-    term(ref.build, "bygge") + " · " + esc(ref.date) + ")</div>" +
+    '<div><span class="muted">referens</span><br>' + (refOff
+      ? "<b>ingen</b><br>inga värden jämförs"
+      : '<b>(' + term("körning #" + ref.number, "körning") + " · " + esc(ref.branch) + ")</b><br>(" +
+        term(ref.build, "bygge") + " · " + esc(ref.date) + ")") + "</div>" +
     (failed.length ? '<div><span class="muted">problemkörningar</span><br>' +
       failed.map(attempt => esc(attempt.tier) + " " + esc(attempt.status)).join(" · ") + "</div>" : "");
 }
@@ -662,9 +711,16 @@ function drillPasses(drill) {
   return drill.results.filter(result => result.status === "passed").length;
 }
 
+// slow bär också en tid: den ska synas, annars går det inte att se hur långt
+// ifrån gränsen botten låg.
 function resultLabel(result) {
-  if (result.status === "passed" && typeof result.time_s === "number") return result.time_s.toFixed(2) + "s";
+  const arrived = result.status === "passed" || result.status === "slow";
+  if (arrived && typeof result.time_s === "number") return result.time_s.toFixed(2) + "s";
   return result.status || "okänt";
+}
+
+function secs(value) {
+  return typeof value === "number" ? value.toFixed(2) + " s" : "–";
 }
 
 function attemptTitle(result) {
@@ -673,7 +729,8 @@ function attemptTitle(result) {
 }
 
 const T1_GROUPS = [
-  ["grunddrill", "Grunddrillar", "Kartans fasta utmaningar."],
+  ["grunddrill", "Grunddrillar",
+   "Kartans fasta rutter. Ankare och tider är hämtade ur ägarens egna demon: xer-tiden är vad han körde sträckan på, gränstiden är den långsammaste ankomst som fortfarande räknas."],
   ["cellprov", "Cellprover", "Cellövergångarna ur mergekriterierna."]
 ];
 
@@ -681,20 +738,38 @@ function drillRow(drill, refDrill) {
   const passed = drillPasses(drill);
   const ok = passed >= drill.threshold;
   const refPassed = refDrill ? drillPasses(refDrill) : null;
+  const of = drill.of || drill.results.length;
   const place = drill.place
     ? '<small class="drill-place">' + esc(drill.place) + "</small>"
     : "";
-  const evidence = drill.evidence
-    ? evidenceLink(drill.evidence, drill.evidence.status === "passed" ? "se hoppet" : "se försöket")
+  // Tidsatta drillar bär ägarens egen tid och gränstiden; äldre drillar har
+  // varken och bedöms bara på ankomster.
+  const timed = drill.referenceTime != null && drill.maxTime != null;
+  const times = timed
+    ? '<small class="drill-time">' + term("xer " + secs(drill.referenceTime), "ägartid") +
+      " · " + term("gräns " + secs(drill.maxTime), "gränstid") + "</small>"
     : "";
-  return '<div class="drill-row"><div class="drill-name">' + esc(drill.name) + place +
-    "<small>tröskel " + fmt(drill.threshold) + "/" + fmt(drill.of || drill.results.length) +
+  const arrived = drill.arrived != null
+    ? " · " + term("framme " + drill.arrived + "/" + of, "framme")
+    : "";
+  const overLimit = timed && drill.bestTime != null && drill.bestTime > drill.maxTime;
+  const best = drill.bestTime != null
+    ? '<span class="drill-best' + (overLimit ? " over" : "") + '" title="' +
+      esc(TERM_TITLES["bäst"]) + '">bäst ' + secs(drill.bestTime) + "</span>"
+    : "";
+  const arrivedEvidence = drill.evidence &&
+    (drill.evidence.status === "passed" || drill.evidence.status === "slow");
+  const evidence = drill.evidence
+    ? evidenceLink(drill.evidence, arrivedEvidence ? "se hoppet" : "se försöket")
+    : "";
+  return '<div class="drill-row"><div class="drill-name">' + esc(drill.name) + place + times +
+    "<small>tröskel " + fmt(drill.threshold) + "/" + fmt(of) + arrived +
     (refDrill ? " · ref (" + refPassed + "/" + refDrill.results.length + ")" : "") + "</small></div>" +
     '<div class="attempts">' + drill.results.map(result =>
       '<span class="attempt ' + esc(result.status) + '" title="' + esc(attemptTitle(result)) + '">' +
       esc(resultLabel(result)) + "</span>"
     ).join("") + '</div><div class="drill-verdict">' +
-    verdictChip(drill.verdict || (ok ? "PASS" : "FAIL")) + evidence + "</div></div>";
+    verdictChip(drill.verdict || (ok ? "PASS" : "FAIL")) + best + evidence + "</div></div>";
 }
 
 function drillGroups(focus, ref, compare) {
@@ -731,6 +806,7 @@ function renderT1() {
     " · " + comparisonNote + demoNote + "</div>" + note +
     drillGroups(focus, ref, compare) +
     '<div class="legend" aria-label="Utfallsklasser"><span><i class="passed"></i>' + term("passed") +
+    '</span><span><i class="slow"></i>' + term("slow") +
     '</span><span><i class="fell"></i>' + term("fell") + '</span><span><i class="timeout"></i>' +
     term("timeout") + '</span><span><i class="stall"></i>' + term("stall") +
     '</span><span><i class="loop"></i>' + term("loop") + '</span><span><i class="detoured"></i>' +
@@ -1104,13 +1180,28 @@ function renderAll() {
 
 document.getElementById("focus-select").addEventListener("change", event => {
   focusIndex = Number(event.target.value);
-  if (RUNS.length > 1 && focusIndex === refIndex) refIndex = focusIndex === 0 ? 1 : 0;
+  if (!refOff && RUNS.length > 1 && focusIndex === refIndex) refIndex = focusIndex === 0 ? 1 : 0;
   renderAll();
 });
 
 document.getElementById("ref-select").addEventListener("change", event => {
+  refOff = event.target.value === "";
+  if (refOff) return renderAll();
   refIndex = Number(event.target.value);
   if (RUNS.length > 1 && refIndex === focusIndex) focusIndex = refIndex === 0 ? 1 : 0;
+  renderAll();
+});
+
+// Rensa fokus = tillbaka till den senaste körningen, som vid sidladdning.
+document.getElementById("focus-clear").addEventListener("click", () => {
+  focusIndex = 0;
+  if (!refOff && RUNS.length > 1 && refIndex === 0) refIndex = 1;
+  renderAll();
+});
+
+// Rensa referens = ingen jämförelse alls, inte en annan körning.
+document.getElementById("ref-clear").addEventListener("click", () => {
+  refOff = true;
   renderAll();
 });
 

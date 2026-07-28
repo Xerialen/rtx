@@ -3,18 +3,21 @@ name = "window_to_rl"
 map = "dm3"
 kind = "goto"
 category = "grunddrill"
-place = "window → RL-lådan"
-description = "The same RL-box landing taken from the window side, the shorter of the two approaches. Anchored on a demo of the owner's own run of the route."
+place = "window → RL"
+description = "window-to-rl: anchored on the owner's own run of the route (3.12 s, peak 620 u/s, ending at rl@RL). The bot has to arrive within 3.49 s to pass."
 
 [run]
-# Anchors read out of the owner's route demo (window-to-rl.qwd), 4.5 s end to end.
-start = [1296, 446, 56]
-target = [1674, 461, -88]
-attempts = 10
-timeout_s = 20
+# Anchors and reference time come from window-to-rl.qwd via the owner's route
+# manifest (see scenarios/dm3/routes-v1.json).
+start = [1295.9, 445.5, 56.0]
+target = [1674.2, 460.9, -88.0]
+attempts = 5
+timeout_s = 15
 pause_s = 1.0
 arrive_box = 70
 regoto_max = 6
 
 [threshold]
-required = 9
+required = 4
+reference_time_s = 3.12
+max_time_s = 3.49

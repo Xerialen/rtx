@@ -1,0 +1,23 @@
+schema = "rtx-scenario/1"
+name = "lifts_or_ring_to_sngmega"
+map = "dm3"
+kind = "goto"
+category = "grunddrill"
+place = "lifts → SNG mega"
+description = "lifts-or-ring-to-sngmega: anchored on the owner's own run of the route (7.74 s, peak 539 u/s, ending at mh@SNG.MH). The bot has to arrive within 8.67 s to pass."
+
+[run]
+# Anchors and reference time come from lifts-or-ring-to-sngmega.qwd via the owner's route
+# manifest (see scenarios/dm3/routes-v1.json).
+start = [514.4, 759.6, 216.0]
+target = [-688.0, 78.1, 184.0]
+attempts = 5
+timeout_s = 31
+pause_s = 1.0
+arrive_box = 70
+regoto_max = 6
+
+[threshold]
+required = 4
+reference_time_s = 7.74
+max_time_s = 8.67

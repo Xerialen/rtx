@@ -17,3 +17,5 @@ regoto_max = 2
 
 [threshold]
 required = 10
+reference_time_s = 4.2
+max_time_s = 4.7

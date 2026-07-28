@@ -26,14 +26,16 @@
       "demo_t_s": 12.5
      },
      {
-      "status": "fell",
-      "time_s": null,
+      "status": "slow",
+      "time_s": 8.9,
       "demo_t_s": 41.0
      }
     ],
     "threshold": {
      "required": 1,
-     "of": 2
+     "of": 2,
+     "reference_time_s": 5.0,
+     "max_time_s": 5.6
     },
     "passed": 1,
     "verdict": "PASS",
@@ -42,10 +44,12 @@
     "evidence": {
      "demo": "t1-20260727T190000Z-11111111.mvd",
      "attempt": 2,
-     "status": "fell",
+     "status": "slow",
      "at_s": 41.0,
      "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260727T190000Z-11111111.mvd&map=dm3&duration=500&from=38.0&track=1"
-    }
+    },
+    "arrived": 2,
+    "best_time_s": 5.37
    }
   ],
   "dash": {

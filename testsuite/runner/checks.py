@@ -221,6 +221,7 @@ def _t1(payload: Any, path: str) -> None:
                 "verdict",
                 "evidence",
             },
+            {"arrived", "best_time_s"},
         )
         _str(item["name"], f"{item_path}.name")
         _str(item["place"], f"{item_path}.place")
@@ -229,6 +230,7 @@ def _t1(payload: Any, path: str) -> None:
         _evidence(item["evidence"], f"{item_path}.evidence")
         attempts = _list(item["attempts"], f"{item_path}.attempts")
         passed_count = 0
+        arrived_count = 0
         for attempt_index, attempt_value in enumerate(attempts):
             attempt_path = f"{item_path}.attempts[{attempt_index}]"
             attempt = _fields(
@@ -238,6 +240,7 @@ def _t1(payload: Any, path: str) -> None:
                 _num_or_null(attempt["demo_t_s"], f"{attempt_path}.demo_t_s")
             if attempt["status"] not in {
                 "passed",
+                "slow",
                 "fell",
                 "timeout",
                 "stall",
@@ -247,14 +250,42 @@ def _t1(payload: Any, path: str) -> None:
             }:
                 _fail(f"{attempt_path}.status", "unknown outcome")
             _num_or_null(attempt["time_s"], f"{attempt_path}.time_s")
-            if (attempt["status"] == "passed") != (
+            if (attempt["status"] in {"passed", "slow"}) != (
                 attempt["time_s"] is not None
             ):
-                _fail(attempt_path, "time_s is present only for passed attempts")
+                _fail(attempt_path, "time_s is present exactly for attempts that arrived")
             passed_count += attempt["status"] == "passed"
+            arrived_count += attempt["status"] in {"passed", "slow"}
         threshold = _fields(
-            item["threshold"], f"{item_path}.threshold", {"required", "of"}
+            item["threshold"],
+            f"{item_path}.threshold",
+            {"required", "of"},
+            {"reference_time_s", "max_time_s"},
         )
+        for field in ("reference_time_s", "max_time_s"):
+            _num_or_null(threshold.get(field), f"{item_path}.threshold.{field}")
+        if ("max_time_s" in threshold) != ("reference_time_s" in threshold):
+            _fail(f"{item_path}.threshold", "the two time fields belong together")
+        limit = threshold.get("max_time_s")
+        if limit is not None:
+            for attempt_index, attempt_value in enumerate(attempts):
+                status = attempt_value.get("status")
+                elapsed = attempt_value.get("time_s")
+                if status == "passed" and elapsed is not None and elapsed > limit:
+                    _fail(
+                        f"{item_path}.attempts[{attempt_index}]",
+                        "an arrival slower than max_time_s is 'slow', not 'passed'",
+                    )
+                if status == "slow" and elapsed is not None and elapsed <= limit:
+                    _fail(
+                        f"{item_path}.attempts[{attempt_index}]",
+                        "an arrival within max_time_s is 'passed', not 'slow'",
+                    )
+        elif any(a.get("status") == "slow" for a in attempts):
+            _fail(item_path, "'slow' requires a max_time_s to be slow against")
+        if "arrived" in item and _int(item["arrived"], f"{item_path}.arrived") != arrived_count:
+            _fail(f"{item_path}.arrived", "must equal attempts that reached the target")
+        _num_or_null(item.get("best_time_s"), f"{item_path}.best_time_s")
         required = _int(
             threshold["required"], f"{item_path}.threshold.required", 1
         )

@@ -94,9 +94,13 @@ def _outcome(
             ):
                 if crossing and not crossed:
                     return {"status": "detoured", "time_s": None, "demo_t_s": demo_t}
+                elapsed = round(time.monotonic() - began, 2)
+                # A timed drill is measured against a human run of the route:
+                # arriving late is its own outcome, not a pass and not a miss.
+                limit = scenario["threshold"].get("max_time_s")
                 return {
-                    "status": "passed",
-                    "time_s": round(time.monotonic() - began, 2),
+                    "status": "slow" if limit is not None and elapsed > limit else "passed",
+                    "time_s": elapsed,
                     "demo_t_s": demo_t,
                 }
             if regotos >= run["regoto_max"]:
@@ -138,16 +142,26 @@ def _run_goto(
         )
         time.sleep(scenario["run"]["pause_s"])
     passed = sum(result["status"] == "passed" for result in attempts)
+    arrived = sum(result["status"] in {"passed", "slow"} for result in attempts)
+    times = [
+        result["time_s"] for result in attempts if result["time_s"] is not None
+    ]
     required = _scaled_required(
         scenario["threshold"]["required"], full_attempts, attempts_count
     )
+    threshold = {"required": required, "of": attempts_count}
+    for field in ("reference_time_s", "max_time_s"):
+        if field in scenario["threshold"]:
+            threshold[field] = scenario["threshold"][field]
     return {
         "name": scenario["name"],
         "category": scenario["category"],
         "place": scenario["place"],
         "attempts": attempts,
-        "threshold": {"required": required, "of": attempts_count},
+        "threshold": threshold,
         "passed": passed,
+        "arrived": arrived,
+        "best_time_s": min(times) if times else None,
         "verdict": "PASS" if passed >= required else "FAIL",
         "evidence": None,
     }

@@ -379,6 +379,13 @@ def t1_level(envelope: dict[str, Any]) -> dict[str, Any]:
                 "category": category if category in {"grunddrill", "cellprov"} else "grunddrill",
                 "place": scenario.get("place") if isinstance(scenario.get("place"), str) else None,
                 "evidence": normalize_evidence(scenario.get("evidence")),
+                # The timed drills carry the owner's own time on the route and
+                # the slowest arrival still counted as a pass. Older envelopes
+                # have neither, and then the drill is scored on arrivals alone.
+                "referenceTime": number(threshold.get("reference_time_s")),
+                "maxTime": number(threshold.get("max_time_s")),
+                "arrived": number(scenario.get("arrived")),
+                "bestTime": number(scenario.get("best_time_s")),
             }
         )
     regime_note = payload.get("regime_note")
@@ -920,6 +927,13 @@ def selftest() -> None:
             drill["evidence"]["link"].startswith("/demo-player/")
             for drill in t1["data"]["drills"]
         )
+        timed = t1["data"]["drills"][0]
+        assert (timed["referenceTime"], timed["maxTime"]) == (4.9, 5.49)
+        assert (timed["arrived"], timed["bestTime"]) == (2, 5.37)
+        assert [result["status"] for result in timed["results"]] == ["passed", "slow"]
+        # Cellproven är otidsatt: de nya fälten får inte hittas på, bara utebli.
+        untimed = t1["data"]["drills"][1]
+        assert untimed["referenceTime"] is None and untimed["maxTime"] is None
         assert t1["data"]["demo"].endswith(".mvd")
         assert t1["data"]["dash"]["informative"] is False
         assert t1["data"]["dash"]["verdict"] == "PASS"

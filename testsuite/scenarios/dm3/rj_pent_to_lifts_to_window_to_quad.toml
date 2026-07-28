@@ -1,0 +1,23 @@
+schema = "rtx-scenario/1"
+name = "rj_pent_to_lifts_to_window_to_quad"
+map = "dm3"
+kind = "goto"
+category = "grunddrill"
+place = "pent → quad"
+description = "rj-pent-to-lifts-to-window-to-quad: anchored on the owner's own run of the route (5.42 s, peak 809 u/s, ending at quad@Quad). The bot has to arrive within 6.07 s to pass."
+
+[run]
+# Anchors and reference time come from rj-pent-to-lifts-to-window-to-quad.qwd via the owner's route
+# manifest (see scenarios/dm3/routes-v1.json).
+start = [957.8, 787.8, -296.0]
+target = [978.5, 301.5, 56.0]
+attempts = 5
+timeout_s = 23
+pause_s = 1.0
+arrive_box = 70
+regoto_max = 6
+
+[threshold]
+required = 4
+reference_time_s = 5.42
+max_time_s = 6.07
