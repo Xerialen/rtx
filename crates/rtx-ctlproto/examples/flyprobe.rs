@@ -211,34 +211,27 @@ fn main() {
                 at(0.9),
                 at(0.5),
             );
-            // Airborne segments: vz != 0 runs. Report takeoff and landing of each.
-            let mut seg: Option<(usize, [f32; 7])> = None;
+            // How much of the run was spent off the ground, and how many times it left it.
+            //
+            // A trajectory row carries no ground flag, only vz, and the obvious reading of that is
+            // wrong for exactly the gait we care about. This used to open an airborne span on
+            // `vz != 0` and close it on `vz == 0.0` — but closing needs a frame where vz is
+            // *exactly* zero, and a bhopping bot touches down for one frame and relaunches, so that
+            // frame is never sampled. The span opened on the first hop and never closed, reporting
+            // "0 real jumps" for a run that turned out to be airborne 94% of the time.
+            //
+            // Ground contact is unmistakable in vz's *derivative* instead: gravity changes it by
+            // about -10 a frame, so any sharp rise is either a landing (vz snapped to 0) or a jump
+            // (vz set to +270), and in a bhop those are the same frame. One event per hop either
+            // way, which is what makes it worth counting.
             let mut hops = 0;
+            let mut airborne = 0usize;
             for (k, r) in traj.iter().enumerate() {
-                let air = r[6] != 0.0;
-                match (&seg, air) {
-                    (None, true) => seg = Some((k, *r)),
-                    (Some((k0, r0)), false) => {
-                        let d = ((r[1] - r0[1]).powi(2) + (r[2] - r0[2]).powi(2)).sqrt();
-                        if d > 100.0 {
-                            hops += 1;
-                            println!(
-                                "    JUMP {:>4}..{:<4} ({:7.1},{:7.1},{:6.1}) |v|={:4.0} -> ({:7.1},{:7.1},{:6.1})  {:5.0}u",
-                                k0,
-                                k,
-                                r0[1],
-                                r0[2],
-                                r0[3],
-                                (r0[4] * r0[4] + r0[5] * r0[5]).sqrt(),
-                                r[1],
-                                r[2],
-                                r[3],
-                                d
-                            );
-                        }
-                        seg = None;
-                    }
-                    _ => {}
+                if k > 0 && r[6] - traj[k - 1][6] > 200.0 {
+                    hops += 1;
+                }
+                if r[6] != 0.0 {
+                    airborne += 1;
                 }
             }
             // Where it crawls: 40-frame windows whose net displacement is under 64u.
@@ -261,7 +254,14 @@ fn main() {
                 }
                 k += w;
             }
-            println!("    ({hops} real jumps)");
+            println!(
+                "    ({hops} hops, {} of frames airborne)",
+                if traj.is_empty() {
+                    "0%".to_string()
+                } else {
+                    format!("{:.0}%", 100.0 * airborne as f32 / traj.len() as f32)
+                },
+            );
             std::thread::sleep(Duration::from_millis(200));
         }
         return;

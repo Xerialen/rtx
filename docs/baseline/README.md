@@ -46,15 +46,18 @@ within 30s: the goto neither arrived nor stalled, which is its own bug.
 the 100m runway (`flyprobe goto 224 -1408 32 224 2900 32 3`):
 
 ```
-trial 0: arrived  7.5s  speed peak 805  p90 777  p50 651
-trial 1: arrived  7.5s  speed peak 803  p90 775  p50 651
-trial 2: arrived  7.5s  speed peak 802  p90 772  p50 648
+trial 0: arrived  7.5s  speed peak 803  p90 774  p50 650   (10 hops, 94% of frames airborne)
+trial 1: arrived  7.5s  speed peak 800  p90 771  p50 649   (10 hops, 94% of frames airborne)
+trial 2: arrived  7.5s  speed peak 801  p90 773  p50 649   (10 hops, 94% of frames airborne)
 ```
 
-It **sustains** 775 ups — faster than the 630-700 ups at the head of the human suite, and it does it
-with zero jumps, on plain ground. So wherever it arrives late on dm3 it is not because it cannot
-carry speed; navigation is costing it speed it demonstrably has. Read every ratio in the table above
-as a navigation number, not a movement-physics one. No tuning of the gait closes it.
+It **sustains** 775 ups — faster than the 630-700 ups at the head of the human suite — by bhopping
+the whole runway, airborne 94% of the time. (Which is the only way to get there: ground friction
+caps a QW run near 320 ups, so anything above that is necessarily airborne.)
+
+So wherever it arrives late on dm3 it is not because it cannot carry speed; navigation is costing it
+speed it demonstrably has. Read every ratio in the table above as a navigation number, not a
+movement-physics one. No tuning of the gait closes it.
 
 **It fights its own steering everywhere.** 500 deg/s of yaw jitter at p50 is not a tail effect —
 that is the *median* movement sawing at its heading, and it is measured only over frames above
