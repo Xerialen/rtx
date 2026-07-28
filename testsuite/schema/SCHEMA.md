@@ -58,11 +58,16 @@ codec is vendored in `runner/mpwire.py`.
   Absence of the block means everything the tier needed was available, which is the
   common case. A number a run could not measure is `null`, never `0` — a build with
   no stall instrumentation would otherwise sit at the top of the column precisely
-  because it cannot see. The block is detected once during preflight: the cvar is
-  read back off the server itself (`CvarRestore.server_has`), never off our own
-  `[restore]` baseline, which vouches for what to put back and not for what the
-  binary has. An empty `unavailable` or a blank `note` is rejected: the block exists
-  to explain an absence, so an unexplained one is worse than none.
+  because it cannot see. Detection reads the **engine binary** for the cvar name
+  (`runlib.engine_declares`), not the server's cvar table: the control layer's Get
+  answers for any name a build never registered, and mvdsv's console `set` creates
+  an unknown cvar, so a rig config that does `set rtx_telemetry 1` at boot
+  manufactures the cvar on a build that has no such thing. The binary is checked
+  only when its md5 matches what the server reports it is running; otherwise the
+  answer is *unknown* and nothing is declared, because unknown and absent are
+  different answers and only one of them is a finding. An empty `unavailable` or a
+  blank `note` is rejected: the block exists to explain an absence, so an
+  unexplained one is worse than none.
 
 ## T0 payload (import adapter — cargo runs stay upstream)
 

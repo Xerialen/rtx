@@ -9,17 +9,26 @@ from typing import Any
 
 from . import evidence as evidence_mod
 from .control import Control, ControlError
-from .runlib import CvarRestore, RigLock, RunRecorder, config_path, connect
+from .runlib import (
+    CvarRestore,
+    RigLock,
+    RunRecorder,
+    config_path,
+    connect,
+    engine_declares,
+)
 
-# Declared when the build under test has no `rtx_telemetry` cvar: the drills all
-# still run, but the `stall` outcome cannot occur on such a build.
+from .scenario import load_scenarios
+
+# Declared when the engine binary under test does not register
+# `rtx_telemetry`: the drills all still run, but the `stall` outcome cannot
+# occur on such a build.
 TELEMETRY_ABSENT = {
     "telemetry": False,
     "unavailable": ["t1:stall"],
-    "note": "build exposes no rtx_telemetry cvar; a stalled attempt is recorded"
-            " as a timeout",
+    "note": "engine binary does not register rtx_telemetry; a stalled attempt"
+            " is recorded as a timeout",
 }
-from .scenario import load_scenarios
 
 
 def _coordinates(values: list[int | float]) -> str:
@@ -464,8 +473,8 @@ def run(
                     baseline=config.get("restore", {}),
                 )
                 restorer.__enter__()
-                snapshot = restorer.snapshot
-                if restorer.server_has("rtx_telemetry"):
+                snapshot = restorer.restorable()
+                if engine_declares(config, "rtx_telemetry", initial_status) is not False:
                     control.request("set rtx_telemetry 1")
                 else:
                     # Arrival is read off `status`, so every drill is still

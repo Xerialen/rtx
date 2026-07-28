@@ -10,17 +10,24 @@ from typing import Any
 from . import analyzer as analyzer_mod
 from . import evidence as evidence_mod
 from .control import Control, ControlError
-from .runlib import CvarRestore, RigLock, RunRecorder, config_path, connect
+from .runlib import (
+    CvarRestore,
+    RigLock,
+    RunRecorder,
+    config_path,
+    connect,
+    engine_declares,
+)
 
 NOLINK = 4_294_967_295
 
-# Declared when the build under test has no `rtx_telemetry` cvar. Everything T2
-# reads off `status` and the demo is unaffected; only what the engine would have
-# had to emit is missing.
+# Declared when the engine binary under test does not register `rtx_telemetry`.
+# Everything T2 reads off `status` and the demo is unaffected; only what the
+# engine would have had to emit is missing.
 TELEMETRY_ABSENT = {
     "telemetry": False,
     "unavailable": ["stall_firings", "cells"],
-    "note": "build exposes no rtx_telemetry cvar; stall events are not emitted",
+    "note": "engine binary does not register rtx_telemetry; stall events are not emitted by this build",
 }
 
 
@@ -343,8 +350,10 @@ def run(
                     control,
                     ["rtx_telemetry", "rtx_bot_pacifist", "rtx_bot_count"],
                     baseline=config.get("restore", {}),
-                ) as cvars:
-                    telemetry = cvars.server_has("rtx_telemetry")
+                ):
+                    telemetry = engine_declares(
+                        config, "rtx_telemetry", initial_status
+                    ) is not False
                     if not telemetry:
                         recorder.capabilities = dict(TELEMETRY_ABSENT)
                         print(

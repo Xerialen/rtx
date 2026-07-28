@@ -228,6 +228,53 @@ def _engine_digest(config: dict[str, Any]) -> str | None:
     return digest.hexdigest()[:8]
 
 
+def engine_declares(
+    config: dict[str, Any],
+    name: str,
+    server_status: dict[str, Any] | None = None,
+) -> bool | None:
+    """Does the engine binary that is running contain this cvar name.
+
+    The obvious probe — ask the server for the cvar — cannot answer this. The
+    control layer's Get reads the engine's string for any name and reports
+    success, and mvdsv's console `set` *creates* an unknown cvar, so the rig's
+    own `fasttrack.cfg` (`set rtx_telemetry 1`) manufactures the cvar on a build
+    that never registered it. The server's cvar table therefore says more about
+    our configuration than about the build.
+
+    The binary does not lie about it: a build that registers the cvar carries
+    its name in its data, and one that does not, does not. Returns None rather
+    than False when that cannot be established — a binary we cannot read, or one
+    whose digest does not match what the server reports it is running. Unknown
+    and absent are different answers and only one of them is a finding.
+
+    The digest cross-check is as good as the server's willingness to report one,
+    and the current control protocol reports none. Where it is silent, this
+    answers for the file on disk and rests on the deploy having been followed by
+    a restart — which is what `sweep` does, and the reason it does it there
+    rather than leaving it to whoever is at the keyboard.
+    """
+    binary = config.get("build", {}).get("engine_binary", "")
+    if not binary:
+        return None
+    path = config_path(config, binary)
+    if not path.is_file():
+        return None
+    reported = _server_digest(server_status)
+    if reported and reported != _engine_digest(config):
+        # The file on disk is not the one that was loaded, so reading it would
+        # describe a build that is not playing.
+        return None
+    needle = name.encode("ascii")
+    previous = b""
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            if needle in previous + chunk:
+                return True
+            previous = chunk[-len(needle):]
+    return False
+
+
 def build_identity(
     config: dict[str, Any], server_status: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -380,6 +427,18 @@ class CvarRestore(AbstractContextManager["CvarRestore"]):
         """Where the value that will be restored came from."""
         return self.sources.get(name)
 
+    def restorable(self) -> dict[str, str]:
+        """The cvars it makes sense to write back.
+
+        Setting one the build never registered does not restore it, it creates
+        it — see `__exit__` — so those are left alone.
+        """
+        return {
+            name: value
+            for name, value in self.snapshot.items()
+            if self.server_has(name)
+        }
+
     def server_has(self, name: str) -> bool:
         """Did the server itself answer for this cvar.
 
@@ -393,22 +452,29 @@ class CvarRestore(AbstractContextManager["CvarRestore"]):
         values = _cvar_values(status)
         missing = []
         for name in self.names:
-            if name in values:
+            if values.get(name):
                 self.snapshot[name] = values[name]
                 self.sources[name] = "status"
                 continue
-            # Two attempts before concluding the build lacks the cvar: one
-            # dropped reply would otherwise be recorded as a missing capability,
-            # which is a lie in the more damaging direction — it would mark a
-            # build that measures fine as unable to measure.
+            # The Get verb answers for a cvar the build never registered: it
+            # reads the engine's string, which is empty in that case, and
+            # reports success. So the reply arriving proves nothing and the
+            # value is the whole signal — an empty string means no such cvar.
+            # This is the engine's own existence test (`cvar_is_set` is a
+            # non-empty `cvar_string`), so we are asking the same question it
+            # would. Two attempts, because one dropped reply would otherwise be
+            # recorded as a missing capability, and marking a build that
+            # measures fine as unable to measure is the more damaging lie.
             for _ in range(2):
                 try:
                     reply = self.control.request(f"get {name}", timeout=8.0)["data"]
-                    self.snapshot[name] = str(reply["string"])
-                    self.sources[name] = "get"
-                    break
                 except Exception:
                     continue
+                answer = str(reply["string"])
+                if answer:
+                    self.snapshot[name] = answer
+                    self.sources[name] = "get"
+                break
             if name in self.sources:
                 continue
             if name in self.baseline:
@@ -428,7 +494,12 @@ class CvarRestore(AbstractContextManager["CvarRestore"]):
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         errors = []
-        for name, value in self.snapshot.items():
+        # Setting a cvar the build never registered does not restore it, it
+        # creates it: the control layer falls back to the console `set`, which
+        # mvdsv honours by making a new cvar. That phantom then answers the next
+        # run's probe with a value, and this run's tidying up would be why a
+        # later run believed a blind build could see.
+        for name, value in self.restorable().items():
             try:
                 self.control.request(f"set {name} {value}", timeout=8.0)
             except Exception as restore_error:

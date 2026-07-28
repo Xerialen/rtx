@@ -1,7 +1,7 @@
 # Spec: a build that cannot measure must not report zero
 
-Status: agreed 2026-07-28, not yet implemented. Owner asked for this to be
-written down before the session compacts.
+Status: implemented 2026-07-28 in 65a458b. Kept as the reasoning behind the
+`capabilities` block; the contract itself now lives in `schema/SCHEMA.md`.
 
 ## The defect
 
@@ -19,11 +19,24 @@ the worst kind of wrong number: silent, plausible and flattering. The same
 applies to T1 — the `stall` outcome can never fire on that build, so a stalled
 attempt is recorded as `timeout` instead.
 
-The run was allowed through because `CvarRestore` (runner/runlib.py:355) treats
-the config's `[restore]` table as an acceptable source for a cvar the server
-cannot answer for. That fallback is correct for *restoring* a value; it is wrong
-as evidence that the build *has* the cvar. Our own configuration vouched for a
-capability the build does not have.
+The run was allowed through because nothing ever asked whether the build could
+measure. The first attempt at asking got it wrong twice, and both mistakes are
+worth keeping written down:
+
+1. `CvarRestore` treats the config's `[restore]` table as an acceptable source
+   for a cvar the server cannot answer for. That fallback is correct for
+   *restoring* a value and wrong as evidence the build *has* the cvar.
+2. Asking the server directly does not work either. The control layer's `do_get`
+   reads the engine string for any name and reports success, so a reply proves
+   nothing; and `do_set` creates an unknown cvar through mvdsv's console `set`,
+   which the rig's own `fasttrack.cfg` (`set rtx_telemetry 1`) does at every
+   boot. Measured on the rig, `get rtx_telemetry` returns `'0'` on
+   meganav-stock — a cvar our configuration manufactured, on a build that has
+   no such thing.
+
+What does not lie is the binary: a build that registers the cvar carries its
+name in its data. `strings` finds `rtx_telemetry` twice in the testsuite and
+main libraries and not at all in meganav-stock's.
 
 ## The rule
 
@@ -55,21 +68,20 @@ of the build and the rig rather than of one tier's payload:
 
 ## Detection
 
-One probe, once, during the T1/T2 preflight, after the cvar set:
+`engine_declares(config, "rtx_telemetry", status)` in `runlib`, once, during the
+T1/T2 preflight: scan the deployed engine binary for the cvar name. Returns
+`None` — *unknown*, declare nothing — when the file cannot be read or when its
+md5 disagrees with the digest the server reports it is running, because reading a
+binary that is not playing describes the wrong build.
 
-1. `set rtx_telemetry 1`
-2. `get rtx_telemetry` — success means the build has it; a control error or a
-   missing value means it does not.
+`CvarRestore` keeps its forgiving behaviour for restoration, but the two
+questions are now separate there too:
 
-This is the probe `CvarRestore` already performs; the change is to record the
-outcome instead of papering over it with the `[restore]` baseline. Split the two
-concerns explicitly in `runlib`:
-
-- `restore_source(name) -> "server" | "baseline"` — what will be restored, as now.
-- `server_has(name) -> bool` — did the server itself answer for this cvar.
-
-`CvarRestore` keeps its current forgiving behaviour for restoration. The new
-`server_has` is what the tiers consult before claiming a measurement.
+- `restore_source(name)` — where the value to be put back came from.
+- `server_has(name)` / `restorable()` — did the server itself answer with a
+  value. Used for restoration only: writing back a cvar the server never had
+  does not restore it, it creates it, and that phantom would answer the next
+  run's question.
 
 ## Behaviour, tier by tier
 
@@ -127,3 +139,14 @@ capability-mismatched reference shows `ej jämförbar` rather than a number.
 
 Making `meganav-stock` measurable. It is a reference build for what the engine
 did before the meganav work; instrumenting it would change what it is.
+
+T3 and T4. Both sit behind the same defect in principle — a T3 side would report
+`stall_firings: 0` on a build that cannot emit stall events — but T3 is not the
+same shape: its two sides run *different client binaries* against one server, so
+availability is arguably a property of a side rather than of the run, and the
+envelope block as specified has no per-side granularity. Neither tier has ever
+been run against a build without telemetry, so there is no measurement to design
+against. Deciding that on guesswork would be the same mistake in a new place.
+The concrete follow-up is to run T3 once with the stock library on the server
+and see which side, if either, loses the signal; the answer settles whether the
+block needs a side dimension or whether it is a server property after all.
