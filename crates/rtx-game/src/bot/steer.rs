@@ -14,6 +14,7 @@ use glam::{Vec2, Vec3, Vec3Swizzles};
 
 use super::*;
 use crate::bot::state::{AirCommit, Commit, GateErrand, PlatWait, StallRecord};
+use crate::bot::swim;
 use crate::bsp::Bsp;
 use crate::defs::{Weapon, BOT_MOVE_SPEED as MOVE_SPEED, BUTTON_ATTACK, BUTTON_JUMP};
 use crate::game::cstring;
@@ -152,6 +153,31 @@ fn inside_box(p: Vec3, lo: Vec3, hi: Vec3) -> bool {
 /// past the ~130u a 40-tick rollout at walk speed can cover, so the horizon — not the polyline — is
 /// what ends the roll.
 const WALK_ROUTE_LEGS: usize = 12;
+
+/// The same horizon as [`WALK_ROUTE_LEGS`], in arclength — what a resampled lane has to be cut by,
+/// since shaping replaces "one point per leg" with uniform spacing.
+const WALK_ROUTE_ARC: f32 = WALK_ROUTE_LEGS as f32 * 32.0;
+
+/// How far ahead the shared lane is shaped. It has to cover the *longest* consumer, which is the
+/// speed-scaled bhop look-ahead at up to 448u, not the walk rollout's shorter horizon.
+const LANE_LEGS: usize = 20;
+
+/// The prefix of `pts` within `arc` of its start.
+///
+/// A lane is resampled to uniform spacing, so a consumer that wants "twelve legs of corridor" can no
+/// longer just take twelve points. Measuring the cut in arclength keeps that horizon the same
+/// distance whatever the spacing happens to be.
+fn arc_prefix(pts: &[Vec3], arc: f32) -> impl Iterator<Item = Vec3> + '_ {
+    let mut travelled = 0.0;
+    let mut prev: Option<Vec3> = None;
+    pts.iter().copied().take_while(move |&p| {
+        if let Some(q) = prev {
+            travelled += (p - q).length();
+        }
+        prev = Some(p);
+        travelled <= arc
+    })
+}
 
 /// The route polyline a walk plan is certified against and then flown along: the current leg's source
 /// cell, then the leading ground leg targets. Truncated at the first non-ground leg (unlike the hop
@@ -347,6 +373,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         weapon,
         on_ground,
         in_water,
+        submerged,
+        air_left,
         vz,
         air_jumped,
         enemy_seen_time,
@@ -1264,6 +1292,31 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         }
     }
 
+    // The shaped route, built once a frame and shared by everything that steers by route geometry.
+    //
+    // There are three such consumers and they each used to build their own polyline out of raw cell
+    // centres: the grounded walk certification, the speed-scaled bhop look-ahead, and the hop
+    // planner. Cells sit where the 32u grid fell, so those polylines zigzag down a straight corridor
+    // and cut the inside of every turn — the bot aims at the corner it is trying to get around, and
+    // the reactive brakes exist to rescue it from a line that was never good. `lane::build` relaxes
+    // the polyline toward straightness inside the room a pair of hull traces per point actually
+    // measures, so it arcs outward before a corner the way a player does and holds still where there
+    // is no room to move.
+    //
+    // Shaped as bare leg targets with no anchor, so each consumer can prepend its own — the walk line
+    // is anchored at the leg *source* (that is what lets it measure how far off-route the bot has
+    // drifted), while the look-ahead and the hop planner measure arc from the bot. One build, three
+    // re-anchorings, and no way for them to disagree about where the route is.
+    let lane_targets: Option<Vec<Vec3>> = bsp
+        .filter(|_| host.cvar_bool(c"rtx_bot_lane"))
+        .map(|b| {
+            let raw: Vec<Vec3> = ground_leg_targets(graph, &bot.route, bot.route_pos)
+                .take(LANE_LEGS)
+                .collect();
+            lane::build(&raw, |from, to| b.hull1_trace(from, to).fraction * (to - from).length())
+        })
+        .filter(|pts| pts.len() >= 2);
+
     // Predictive hop planning (see `hopsim`). On a ledge corridor (a wall-hugging walkway over a drop
     // — a spiral staircase's inner edge) a bhop's chord sags over the void by more than the walkway is
     // wide, so no reactive edge test both keeps speed and stays on. Instead roll the pmove a hop ahead
@@ -1299,14 +1352,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 };
                 // Route polyline from the bot outward, so plan arc-distances measure from here.
                 let route_pts: Vec<Vec3> = std::iter::once(origin)
-                    .chain(
+                    .chain(lane_targets.clone().unwrap_or_else(|| {
                         bot.route
                             .get(bot.route_pos..)
                             .unwrap_or_default()
                             .iter()
                             .take(12)
-                            .map(|&l| graph.cell_origin(graph.link_target(l))),
-                    )
+                            .map(|&l| graph.cell_origin(graph.link_target(l)))
+                            .collect()
+                    }))
                     .collect();
                 let st = crate::pmove_sim::PmState {
                     origin,
@@ -1355,13 +1409,11 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // (race mode, when a line exists) or a *speed-scaled* corridor look-ahead — ~0.6 s of travel
         // ahead (clamped 96–448u) so a fast bot's bearing anticipates the corridor far enough to
         // start curving, rather than chasing the fixed ~2-legs `look_point` it has already overrun.
-        let bhop_look = corridor_point(
-            graph,
-            &bot.route,
-            bot.route_pos,
-            origin,
-            (speed * 0.6).clamp(96.0, 448.0),
-        );
+        let look_dist = (speed * 0.6).clamp(96.0, 448.0);
+        let bhop_look = match &lane_targets {
+            Some(pts) => point_along(origin, pts.iter().copied(), look_dist),
+            None => corridor_point(graph, &bot.route, bot.route_pos, origin, look_dist),
+        };
         let to_wp = waypoint.xy() - origin.xy();
         let ahead = match race_line_ahead {
             Some(lp) if !sj_active => lp.xy() - origin.xy(),
@@ -1706,11 +1758,16 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // brakes a problem the line created. `lane::build` relaxes it toward straightness inside the room
     // a pair of hull traces per point actually measures, so the line arcs *outward* before a corner
     // the way a player does, and stays put wherever there is no room to move.
-    let route_line =
-        walk_line_pts(graph, bot, cur_leg).map(|pts| match bsp.filter(|_| host.cvar_bool(c"rtx_bot_lane")) {
-            Some(b) => lane::build(&pts, |from, to| b.hull1_trace(from, to).fraction * (to - from).length()),
-            None => pts,
-        });
+    // The line the walk certifier, its freshness check and the aim point all share, so they cannot
+    // disagree about where the route is. Under `rtx_bot_lane` it is the shaped lane built above,
+    // re-anchored at the leg source and cut to the rollout's horizon; otherwise the raw cell centres.
+    let route_line: Option<Vec<Vec3>> = match &lane_targets {
+        Some(pts) => cur_leg.map(|leg| {
+            let src = graph.cell_origin(graph.link_source(leg));
+            std::iter::once(src).chain(arc_prefix(pts, WALK_ROUTE_ARC)).collect()
+        }),
+        None => walk_line_pts(graph, bot, cur_leg),
+    };
     if !walk_corridor {
         bot.walk = None; // another driver owns the frame, or this isn't ground to certify
     } else if on_ground {
@@ -2083,6 +2140,31 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         if rj.fire {
             buttons |= BUTTON_ATTACK;
         }
+    }
+
+    // Depth, once everything above has settled the horizontal wish.
+    //
+    // The navmesh is built from standable floor, so a route through water is a line of cells along
+    // the *bottom* of it — followed literally, a crossing that drowns. `swim::vertical_wish` decides
+    // depth from what the bot can perceive (where the route goes next in 3D, whether there is air
+    // overhead, how much is left) and returns it as a velocity, so it composes into the same
+    // world-space wish instead of being a separate mode. The result is a swimmer that moves
+    // diagonally toward where it is going, which is what a person does.
+    //
+    // Applied last so it survives the hook/rj/reverse branches above, and only in water — out of it
+    // the vertical term is meaningless and `wish::Regime::Ground` would drop it anyway.
+    if in_water {
+        let air_above = bsp.is_some_and(|b| crate::hazard::surface_above(&|p| b.pointcontents(p), origin));
+        move_world.z = swim::vertical_wish(
+            &swim::Sense {
+                submerged,
+                air_above,
+                air_left,
+                origin,
+                aim: waypoint,
+            },
+            MOVE_SPEED,
+        );
     }
 
     // Bundle the frame's decisions into one command for the combat/grenade overlays to mutate.

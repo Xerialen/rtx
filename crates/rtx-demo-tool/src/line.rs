@@ -111,6 +111,17 @@ impl Traversal {
         (last.origin - first.origin) / dt
     }
 
+    /// This run as `(time, position)` samples — the same shape a bot trajectory is scored from.
+    ///
+    /// Scoring a human against their own line is how the scale-free metrics get calibrated. Yaw
+    /// jitter and wall events have no obvious "good" value in the abstract: strafe jumping *is*
+    /// rapid yaw oscillation, and a fast player clips geometry too. Running [`LineScore`] over this
+    /// gives what those counters read for a human doing the movement well, which is the only number
+    /// a bot's should be judged against.
+    pub fn samples(&self) -> Vec<(f32, Vec3)> {
+        self.motions.iter().map(|m| (m.time, m.origin)).collect()
+    }
+
     /// Turn this run into a reference line to score against.
     pub fn reference(&self, name: impl Into<String>) -> ReferenceLine {
         ReferenceLine {
@@ -352,6 +363,16 @@ pub struct LineScore {
     /// Grounded frames that lost more than [`WALL_LOSS`] of speed in one step — running into
     /// geometry. The count that "stops bumping into things" has to move.
     pub wall_events: u32,
+    /// How often the turn *reverses direction*, per second of travel.
+    ///
+    /// This is the honest "is the movement smooth" number, and [`LineScore::yaw_jitter_p95`] is not.
+    /// A strafe jump is a wide swinging arc, so a good run turns hard and continuously — the peak
+    /// turn *rate* of excellent movement and of a bot sawing at its own steering look the same. What
+    /// separates them is that the arc holds its direction while the saw keeps changing its mind.
+    ///
+    /// Counted with a [`TURN_DEADBAND`] on both sides of the flip, so the noise either side of
+    /// straight-line travel does not register as a decision.
+    pub yaw_reversals: f32,
 }
 
 /// Speed lost in a single frame that reads as hitting something rather than braking. Friction and
@@ -409,6 +430,12 @@ impl LineScore {
             speed: f32,
         }
         let mut prev: Option<Prev> = None;
+        // Signed turn rate of the previous step, and how long has been spent travelling fast enough
+        // for a turn to mean anything — the denominator that makes reversals comparable across
+        // movements of different length.
+        let mut turn_prev: Option<f32> = None;
+        let mut reversals = 0u32;
+        let mut turning_secs = 0.0f32;
 
         for &(time, pos) in samples {
             let (dist, progress) = reference.nearest(pos);
@@ -439,7 +466,21 @@ impl LineScore {
                     if speed >= YAW_MIN_SPEED {
                         let h = step.normalize();
                         if p.heading.length_squared() > 0.0 {
-                            yaw_steps.push(p.heading.dot(h).clamp(-1.0, 1.0).acos().to_degrees() / dt);
+                            // Signed, so the *direction* of the turn survives: a swinging arc holds
+                            // its sign for many frames, a saw flips it. The magnitude alone cannot
+                            // tell those apart, and excellent movement has plenty of magnitude.
+                            let rate = p.heading.perp_dot(h).atan2(p.heading.dot(h)).to_degrees() / dt;
+                            yaw_steps.push(rate.abs());
+                            if let Some(last) = turn_prev {
+                                if last.abs() > TURN_DEADBAND
+                                    && rate.abs() > TURN_DEADBAND
+                                    && last.signum() != rate.signum()
+                                {
+                                    reversals += 1;
+                                }
+                            }
+                            turn_prev = Some(rate);
+                            turning_secs += dt;
                         }
                         heading = h;
                     }
@@ -521,9 +562,18 @@ impl LineScore {
             wall_events,
             path_length,
             reference_path: len,
+            yaw_reversals: if turning_secs > 0.0 {
+                reversals as f32 / turning_secs
+            } else {
+                0.0
+            },
         }
     }
 }
+
+/// Turn rate below which a step's direction is not a steering decision — the wobble either side of
+/// running straight. Both steps have to clear it for a sign change to count as a reversal.
+pub const TURN_DEADBAND: f32 = 60.0;
 
 impl Track {
     /// Cut this player's whole track into continuous movement segments.
@@ -886,6 +936,54 @@ mod tests {
             .collect();
         let s = LineScore::score(&detour, &straight.reference("straight"));
         assert!(s.comparable(), "a longer path is comparable: {:.0}u", s.path_length);
+    }
+
+    /// A wide smooth arc and a bot sawing at its own steering reach the *same* peak turn rate — a
+    /// strafe jump is a hard continuous turn, and excellent movement has plenty of magnitude. Only
+    /// the reversal count separates them, which is why it is the number that matters.
+    #[test]
+    fn an_arc_and_a_saw_differ_by_reversals_not_by_rate() {
+        let line = ReferenceLine {
+            name: "l".into(),
+            player: 0,
+            duration: 1.0,
+            pts: (0..=60).map(|i| Vec3::new(10.0 * i as f32, 0.0, 0.0)).collect(),
+            speeds: vec![600.0; 61],
+        };
+        // A steady arc: heading rotates one way throughout, ~600 ups.
+        let dt = 1.0 / 72.0;
+        let mut p = Vec3::ZERO;
+        let arc: Vec<(f32, Vec3)> = (0..60)
+            .map(|i| {
+                let a = (i as f32 * 1.5).to_radians();
+                p += Vec3::new(a.cos(), a.sin(), 0.0) * 600.0 * dt;
+                (dt * i as f32, p)
+            })
+            .collect();
+        // A saw: same speed, heading alternates either side of straight by the same angle.
+        let mut q = Vec3::ZERO;
+        let saw: Vec<(f32, Vec3)> = (0..60)
+            .map(|i| {
+                let a = if i % 2 == 0 { 22.0f32 } else { -22.0f32 }.to_radians();
+                q += Vec3::new(a.cos(), a.sin(), 0.0) * 600.0 * dt;
+                (dt * i as f32, q)
+            })
+            .collect();
+
+        let (a, s) = (
+            LineScore::score(&arc, &line).clone(),
+            LineScore::score(&saw, &line).clone(),
+        );
+        // The old metric cannot tell them apart — the saw's peak rate is if anything *higher*.
+        assert!(
+            s.yaw_jitter_p95 >= a.yaw_jitter_p95,
+            "peak rate does not separate them: arc {} saw {}",
+            a.yaw_jitter_p95,
+            s.yaw_jitter_p95
+        );
+        // The reversal count does, decisively.
+        assert!(a.yaw_reversals < 1.0, "an arc holds its direction: {}", a.yaw_reversals);
+        assert!(s.yaw_reversals > 20.0, "a saw keeps changing it: {}", s.yaw_reversals);
     }
 
     /// Redundancy is about ground covered, not endpoints — the case endpoint bucketing gets wrong,

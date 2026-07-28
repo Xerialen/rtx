@@ -352,6 +352,15 @@ fn main() {
                     ""
                 },
             );
+            // What the metrics read for the human doing this movement. Yaw jitter and wall events
+            // have no meaningful absolute scale — strafe jumping is rapid yaw oscillation by design,
+            // and a fast player clips geometry too — so the bot's numbers only mean something next
+            // to these.
+            let human = line::LineScore::score(&seg.samples(), &reference);
+            println!(
+                "    human: yaw p95 {:3.0}deg/s  wall {:>3}  rev {:>3}",
+                human.yaw_jitter_p95, human.wall_events, human.reverse_frames
+            );
             let mut scores = Vec::new();
             for _ in 0..trials {
                 c.req(

@@ -31,8 +31,10 @@ pub(crate) mod prof;
 mod rj;
 pub(crate) mod state;
 mod steer;
+pub(crate) mod swim;
 mod vigil;
 pub(crate) mod walksim;
+pub(crate) mod wish;
 
 pub use population::manage_population;
 pub(crate) use population::{drain_roster, RosterOp};
@@ -49,7 +51,7 @@ use crate::bot::state::{
 use crate::defs::{Bits, DeadFlag, Flags, Items, Solid, TakeDamage, Weapon, BUTTON_ATTACK, BUTTON_JUMP, VEC_VIEW_OFS};
 use crate::entity::{EntId, Entity, Touch};
 use crate::game::GameState;
-use crate::math::{angle_vectors, wrap180, yaw_of};
+use crate::math::{wrap180, yaw_of};
 use crate::mode::BotIntent;
 use crate::navmesh::{CellId, HazardPrice, LinkCosts, LinkKind, NavGraph};
 
@@ -1384,7 +1386,7 @@ fn emit(
         }
         None => (look, move_world),
     };
-    let (view, forward, side) = {
+    let (view, forward, side, up) = {
         let dt = frametime.clamp(0.001, 0.05);
         // Spring stiffness (1/s): sluggish → pro-snappy. Shared with the combat feed-forward,
         // whose lag compensation assumes exactly this spring.
@@ -1409,11 +1411,25 @@ fn emit(
         b.aim.angles = Vec3::new(pitch, yaw, 0.0);
         b.aim.vel = Vec3::new(pv, yv, 0.0);
         let view = b.aim.angles;
-        let (vf, vr, _) = angle_vectors(view);
+        // Solve for the command that makes the engine produce `move_world`, rather than projecting
+        // onto the view and hoping. See `bot::wish`: the two-dot-product form this replaces lost
+        // `cos(pitch)` of the move whenever the bot looked away from its direction of travel — worst
+        // in a fight, exactly where holding a line matters — and had no way at all to express the
+        // vertical component that swimming is made of.
+        let regime = if s.in_water {
+            wish::Regime::Water
+        } else {
+            wish::Regime::Ground
+        };
+        let w = wish::clamp(
+            wish::express(view, move_world, regime),
+            crate::defs::BOT_MOVE_SPEED as f32,
+        );
         (
             view,
-            vf.dot(move_world).round() as i32,
-            vr.dot(move_world).round() as i32,
+            w.forward.round() as i32,
+            w.side.round() as i32,
+            w.up.round() as i32,
         )
     };
 
@@ -1495,7 +1511,7 @@ fn emit(
         game.entities[e].bot.audit.push(frame, audit_cap(&host));
     }
 
-    host.set_bot_cmd(client, msec, view, forward, side, 0, buttons, impulse);
+    host.set_bot_cmd(client, msec, view, forward, side, up, buttons, impulse);
 }
 
 /// Pre-arm an indivisible jump traversal from the route that existed at frame start. This runs
