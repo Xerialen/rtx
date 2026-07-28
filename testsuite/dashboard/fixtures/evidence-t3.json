@@ -1,18 +1,18 @@
 {
  "schema": "rtx-testflow/1",
- "run_id": "t3-20260727T190000Z-11111111",
+ "run_id": "t3-20260727T152000Z-12121212",
  "tier": "T3",
  "status": "complete",
- "started_utc": "2026-07-27T19:00:00Z",
- "ended_utc": "2026-07-27T19:05:00Z",
+ "started_utc": "2026-07-27T15:20:00Z",
+ "ended_utc": "2026-07-27T15:20:00Z",
  "map": "dm3",
  "build": {
-  "branch": "testsuite",
-  "commit": "1111111111111111111111111111111111111111",
-  "digest_md5": "aaaaaaaa",
+  "branch": "evidence-rich",
+  "commit": "1212121212121212121212121212121212121212",
+  "digest_md5": "12341234",
   "dirty": false
  },
- "config_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "config_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
  "runner_version": "0.1.0",
  "provenance": "synthetic",
  "payload": {

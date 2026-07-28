@@ -1,0 +1,20 @@
+schema = "rtx-scenario/1"
+name = "window_to_rl"
+map = "dm3"
+kind = "goto"
+category = "grunddrill"
+place = "window → RL-lådan"
+description = "The same RL-box landing taken from the window side, the shorter of the two approaches. Anchored on a demo of the owner's own run of the route."
+
+[run]
+# Anchors read out of the owner's route demo (window-to-rl.qwd), 4.5 s end to end.
+start = [1296, 446, 56]
+target = [1674, 461, -88]
+attempts = 10
+timeout_s = 20
+pause_s = 1.0
+arrive_box = 70
+regoto_max = 6
+
+[threshold]
+required = 9

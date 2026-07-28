@@ -7,8 +7,10 @@ from pathlib import Path
 import time
 from typing import Any
 
+from . import analyzer as analyzer_mod
+from . import evidence as evidence_mod
 from .control import Control, ControlError
-from .runlib import CvarRestore, RigLock, RunRecorder, connect
+from .runlib import CvarRestore, RigLock, RunRecorder, config_path, connect
 
 NOLINK = 4_294_967_295
 
@@ -63,12 +65,15 @@ def _summarize_cells(stalls: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "pos": None,
             "reasons": Counter(),
             "links": Counter(),
+            "first_at_s": None,
         }
     )
     for event in stalls:
         identifier = f"m{int(event['cell'])}"
         cell = cells[identifier]
         cell["n"] += 1
+        if cell["first_at_s"] is None and event.get("_at_s") is not None:
+            cell["first_at_s"] = event["_at_s"]
         cell["reasons"][str(event["reason"])] += 1
         origin = event.get("origin")
         if cell["pos"] is None and isinstance(origin, list) and len(origin) == 3:
@@ -87,15 +92,22 @@ def _summarize_cells(stalls: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "n": cell["n"],
                 "reasons": dict(cell["reasons"]),
                 "links": dict(cell["links"].most_common(4)),
+                "first_at_s": cell["first_at_s"],
             }
         )
     return output
 
 
-def _collect(control: Control, duration_s: int) -> dict[str, Any]:
+def _collect(
+    control: Control,
+    duration_s: int,
+    recording: evidence_mod.Recording | None = None,
+) -> dict[str, Any]:
     speed_samples: list[float] = []
     per_second: list[float] = []
     still_s = 0.0
+    still_streak: dict[int, tuple[float, float]] = {}
+    longest_still: tuple[float, int, float] | None = None
     bot_previous: dict[int, tuple[list[float], float]] = {}
     second_accumulator: dict[int, list[float | int]] = {}
     measured_bots = 0
@@ -144,6 +156,15 @@ def _collect(control: Control, duration_s: int) -> dict[str, Any]:
                         accumulator[1] += 1
                         if speed < 16:
                             still_s += elapsed
+                            began_at, length = still_streak.get(
+                                entity, (loop_began, 0.0)
+                            )
+                            length += elapsed
+                            still_streak[entity] = (began_at, length)
+                            if longest_still is None or length > longest_still[0]:
+                                longest_still = (length, entity, began_at)
+                        else:
+                            still_streak.pop(entity, None)
             bot_previous[entity] = (origin, loop_began)
         if loop_began - last_second >= 1.0:
             elapsed = loop_began - last_second
@@ -165,6 +186,8 @@ def _collect(control: Control, duration_s: int) -> dict[str, Any]:
             last_telemetry_assert = loop_began
         for event in control.events:
             if event.get("ev") == "bot_stall":
+                if recording is not None:
+                    event = {**event, "_at_s": recording.at()}
                 stalls.append(event)
         control.events.clear()
         time.sleep(max(0.0, 0.1 - (time.monotonic() - loop_began)))
@@ -183,9 +206,63 @@ def _collect(control: Control, duration_s: int) -> dict[str, Any]:
         "stall_firings": len(stalls),
         "polls": polls,
         "bots": bots,
-        "peak_100m": None,
     }
-    return {"stats": stats, "cells": cells}
+    still_moment = None
+    if longest_still is not None and recording is not None:
+        length, entity, began_at = longest_still
+        still_moment = {
+            "entity": entity,
+            "length_s": round(length, 1),
+            "at_s": recording.at(began_at),
+        }
+    return {"stats": stats, "cells": cells, "still_moment": still_moment}
+
+
+def _analyzer_metrics(
+    config: dict[str, Any],
+    recording: evidence_mod.Recording,
+    stats: dict[str, Any],
+    roster: list[dict[str, Any]],
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Let the analyzer own every metric it can read off the demo.
+
+    Whatever it answers replaces our own sampling of the same thing and says
+    so in `sources`; whatever it cannot answer on this demo (a lab rig has no
+    KTX block, so no server-side speeds) leaves our measurement standing.
+    """
+    sources: dict[str, str] = {}
+    moments: list[dict[str, Any]] = []
+    analyzer = analyzer_mod.open_analyzer(config, config_path)
+    if analyzer is None or recording.path is None:
+        return sources, moments
+    try:
+        demo_id = analyzer.plant(recording.path)
+        measurements, skipped = analyzer.measure(demo_id)
+    except analyzer_mod.AnalyzerError as exc:
+        print(f"analyzer unavailable: {exc}", flush=True)
+        return sources, moments
+    for name, reason in skipped.items():
+        print(f"analyzer skipped {name}: {reason}", flush=True)
+    for key, measurement in measurements.items():
+        if key in stats:
+            stats[key] = measurement.value
+            sources[key] = measurement.source
+        for moment in measurement.moments:
+            link = recording.link(
+                moment.t_s, evidence_mod.userid_for_name(roster, moment.who or "")
+            )
+            if link is None:
+                continue
+            moments.append(
+                {
+                    "demo": recording.demo_name,
+                    "metric": key,
+                    "at_s": round(moment.t_s, 1),
+                    "who": moment.who,
+                    "link": link,
+                }
+            )
+    return sources, moments
 
 
 def _wait_for_bots(
@@ -241,11 +318,72 @@ def run(
                             raise RuntimeError(
                                 f"map has no {name} ({fragment}) in the Items reply"
                             )
-                    measured = _collect(control, duration)
+                    recording = evidence_mod.open_recording(
+                        control, recorder.run_id, config, map_name, config_path
+                    )
+                    recording.start()
+                    try:
+                        measured = _collect(control, duration, recording)
+                    finally:
+                        recording.stop()
+                    roster = (
+                        evidence_mod.players(recording.path)
+                        if recording.path is not None
+                        else []
+                    )
+                    stats = measured["stats"]
+                    cells = measured["cells"]
+                    still_moment = measured.pop("still_moment", None)
+                    sources, moments = _analyzer_metrics(
+                        config, recording, stats, roster
+                    )
+                    for cell in cells:
+                        at_s = cell.pop("first_at_s", None)
+                        link = recording.link(at_s)
+                        cell["evidence"] = (
+                            None
+                            if link is None
+                            else {
+                                "demo": recording.demo_name,
+                                "metric": "stall_firings",
+                                "at_s": round(float(at_s), 1),
+                                "link": link,
+                            }
+                        )
+                    if still_moment is not None:
+                        link = recording.link(
+                            still_moment["at_s"],
+                            evidence_mod.userid_for_slot(
+                                roster, still_moment["entity"] - 1
+                            ),
+                        )
+                        if link is not None:
+                            moments.append(
+                                {
+                                    "demo": recording.demo_name,
+                                    "metric": "still_s_per_bot",
+                                    "at_s": round(float(still_moment["at_s"]), 1),
+                                    "link": link,
+                                }
+                            )
+                    whole = recording.link(0.0, lead_s=0.0)
                     recorder.payload = {
                         "duration_s": duration,
                         "regime_note": None if duration == 600 else "smoke",
-                        **measured,
+                        "stats": stats,
+                        "cells": cells,
+                        "demo": recording.demo_name,
+                        "evidence": (
+                            None
+                            if whole is None
+                            else {
+                                "demo": recording.demo_name,
+                                "at_s": 0.0,
+                                "link": whole,
+                            }
+                        ),
+                        "moments": moments,
+                        "sources": sources,
                         "verdict": "MEASURED",
                     }
             finally:

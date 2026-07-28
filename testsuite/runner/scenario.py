@@ -55,11 +55,26 @@ def _vec3(value: Any, path: str) -> None:
         _number(coordinate, f"{path}[{index}]")
 
 
+# A drill is either one of the map's fixed challenges — the routes and jumps
+# a bot has to own to play dm3 at all — or a probe of one navmesh cell.
+CATEGORIES = {"grunddrill", "cellprov", "fart"}
+
+
 def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, Any]:
     root = _fields(
         document,
         source,
-        {"schema", "name", "map", "kind", "description", "run", "threshold"},
+        {
+            "schema",
+            "name",
+            "map",
+            "kind",
+            "category",
+            "place",
+            "description",
+            "run",
+            "threshold",
+        },
         {"setup", "fail", "workaround"},
     )
     if root["schema"] != "rtx-scenario/1":
@@ -67,11 +82,19 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
             f"{source}.schema: unsupported schema {root['schema']!r}; "
             "expected 'rtx-scenario/1'"
         )
-    for field in ("name", "map", "description"):
+    for field in ("name", "map", "description", "place"):
         if not isinstance(root[field], str) or not root[field]:
             raise ScenarioError(f"{source}.{field}: expected non-empty string")
     if root["kind"] not in {"goto", "dash"}:
         raise ScenarioError(f"{source}.kind: expected 'goto' or 'dash'")
+    if root["category"] not in CATEGORIES:
+        raise ScenarioError(
+            f"{source}.category: expected one of {', '.join(sorted(CATEGORIES))}"
+        )
+    if (root["kind"] == "dash") != (root["category"] == "fart"):
+        raise ScenarioError(
+            f"{source}.category: 'fart' is exactly the dash scenarios"
+        )
 
     if "setup" in root:
         setup = _fields(root["setup"], f"{source}.setup", {"plant_links"})
@@ -130,9 +153,9 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
             root["threshold"], f"{source}.threshold", {"floor", "informative"}
         )
         _number(threshold["floor"], f"{source}.threshold.floor", positive=True)
-        if threshold["informative"] is not True:
+        if not isinstance(threshold["informative"], bool):
             raise ScenarioError(
-                f"{source}.threshold.informative: dash must be informative"
+                f"{source}.threshold.informative: expected boolean"
             )
         if "workaround" in root:
             workaround = _fields(

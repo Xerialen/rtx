@@ -1,0 +1,20 @@
+schema = "rtx-scenario/1"
+name = "highbridge_to_rl"
+map = "dm3"
+kind = "goto"
+category = "grunddrill"
+place = "höga bron → RL-lådan"
+description = "The jump onto the RL box taken from the high-bridge side. Anchored on a demo of the owner's own run of the route."
+
+[run]
+# Anchors read out of the owner's route demo (highbridge-to-rl.qwd), 5.4 s end to end.
+start = [1359, -348, -24]
+target = [1647, 492, -88]
+attempts = 10
+timeout_s = 20
+pause_s = 1.0
+arrive_box = 70
+regoto_max = 6
+
+[threshold]
+required = 9

@@ -72,8 +72,13 @@ All machine-specific values belong in the configuration file.
   port prevents concurrent runners from changing the same rig.
 - `server.protocol`: `auto`, `msgpack`, or `text`. Auto probes msgpack first
   and reconnects cleanly before trying text.
+- `server.demo_dir`: the server's own demo directory, readable by the runner.
+  Setting it turns on MVD evidence: T1 and T2 record their runs, collect the
+  demo into `paths.demos_dir`, and link every drill and metric to the moment it
+  is about. Leave it empty and everything still measures, just without links.
 - `paths.evidence_dir`: destination for one JSON file per run.
-- `paths.demos_dir`: reserved demo-artifact directory.
+- `paths.demos_dir`: where recorded demos are collected, next to the evidence
+  that links them.
 - `build.repo_dir`: Git checkout for branch, full commit, and dirty identity.
 - `t2.duration_s`: default T2 duration; 600 is the acceptance regime.
 - `t3.duration_s`: match length in seconds; must equal the match server's
@@ -89,14 +94,19 @@ All machine-specific values belong in the configuration file.
 - `t3.demoinfo_dir`: the server's demo directory. When set, the KTX demoinfo
   JSON is the score oracle and the MVD path is recorded; when empty, the
   runner falls back to the clients' own status frags.
-- `t4.*`: future frogbot endpoint, duration, and fixed skill ladder.
+- `t4.*`: frogbot endpoint, duration, and fixed skill ladder.
 - `t3.rig_up_cmd` / `t3.rig_down_cmd` / `t3.rig_boot_wait_s` (and the same
   keys under `[t4]`): optional on-demand rig lifecycle. The up command runs
   (shell, must succeed) before the preflight; the down command runs
   best-effort after the run, including on failure and abort — so a dedicated
   match server only exists while a run needs it. Absent keys mean the
   operator manages the rig.
-- `tools.qw_analyze`: future combat-lock analyzer path.
+- `tools.qw_analyze`: combat-lock analyzer path (T3 enrichment).
+- `tools.mvd_api`: base URL of a local qw-analyze REST instance. When set, every
+  metric the analyzer can read off a recorded demo comes from there instead of
+  from a counter of our own, and the payload's `sources` names the origin per
+  metric. `tools.mvd_cache_dir` overrides where demos are planted for it
+  (default `~/.cache/qw-mvd`).
 
 Relative filesystem values are resolved from the configuration file's
 directory. The SHA-256 digest is calculated from the exact configuration
@@ -121,15 +131,24 @@ outcome classification. Outcomes are `passed`, `fell`, `timeout`, `stall`,
 `loop`, `detoured`, or `died`; only a passed attempt has a time.
 
 A `dash` scenario declares start/target coordinates, dash count, timeout, and
-an informative floor. Its optional `workaround.cycle_bot_count` handles the
-known post-map-change freeze. Dash color can be red in consumers, but it never
-changes the T1 verdict.
+a speed floor. Its optional `workaround.cycle_bot_count` handles the known
+post-map-change freeze. `threshold.informative = false` grades the dash: the
+peak must reach the floor or the whole T1 run fails. An informative dash is
+shown but never flips the verdict.
+
+Drills are declared in two categories: `grunddrill` for the map's fixed
+challenges (the routes and jumps a bot must own to play dm3 at all) and
+`cellprov` for single-cell probes. Every scenario also names its `place` in
+plain words, because a cell id tells a reader nothing. The dash is graded
+against its floor unless it declares `informative = true`.
 
 `--quick` runs three attempts per goto scenario and scales each required count
 with the same ratio as a full run. Quick evidence is marked `regime_note:
 "quick"` and must not be compared with full runs.
 
-The six initial DM3 scenarios live in [`scenarios/dm3`](scenarios/dm3).
+The DM3 scenarios live in [`scenarios/dm3`](scenarios/dm3). The jump drills are
+anchored on demos of the owner's own runs of those routes, so the coordinates
+are the ones a human actually used rather than derived from the navmesh.
 
 ## Evidence safety and conformance
 

@@ -7,8 +7,9 @@ import sys
 import time
 from typing import Any
 
+from . import evidence as evidence_mod
 from .control import Control, ControlError
-from .runlib import CvarRestore, RigLock, RunRecorder, connect
+from .runlib import CvarRestore, RigLock, RunRecorder, config_path, connect
 from .scenario import load_scenarios
 
 
@@ -34,6 +35,7 @@ def _outcome(
     control: Control,
     bot_id: int,
     scenario: dict[str, Any],
+    recording: evidence_mod.Recording | None = None,
 ) -> dict[str, Any]:
     run = scenario["run"]
     start = run["start"]
@@ -45,6 +47,7 @@ def _outcome(
     control.events.clear()
     control.request(f"goto {bot_id} {_coordinates(target)}")
     began = time.monotonic()
+    demo_t = recording.at(began) if recording is not None else None
     highest_z = -math.inf
     regotos = 0
     crossed = False
@@ -57,7 +60,7 @@ def _outcome(
             None,
         )
         if bot is None or not bot.get("alive"):
-            return {"status": "died", "time_s": None}
+            return {"status": "died", "time_s": None, "demo_t_s": demo_t}
         position = bot["origin"]
         highest_z = max(highest_z, position[2])
         if (
@@ -65,7 +68,7 @@ def _outcome(
             and highest_z >= fall_gate["armed_z"]
             and position[2] < fall_gate["fail_z"]
         ):
-            return {"status": "fell", "time_s": None}
+            return {"status": "fell", "time_s": None, "demo_t_s": demo_t}
         if crossing:
             bowl_y = crossing["bowl_y"]
             if (
@@ -76,31 +79,32 @@ def _outcome(
             ):
                 crossed = True
             if position[2] < 20 and 460 < position[0] < 692:
-                return {"status": "fell", "time_s": None}
+                return {"status": "fell", "time_s": None, "demo_t_s": demo_t}
         arrived = any(event.get("ev") == "arrived" for event in control.events)
         stalled = any(
             event.get("ev") == "goto_stall" for event in control.events
         )
         control.events.clear()
         if stalled:
-            return {"status": "stall", "time_s": None}
+            return {"status": "stall", "time_s": None, "demo_t_s": demo_t}
         if arrived:
             if (
                 abs(position[0] - target[0]) < run["arrive_box"]
                 and abs(position[1] - target[1]) < run["arrive_box"]
             ):
                 if crossing and not crossed:
-                    return {"status": "detoured", "time_s": None}
+                    return {"status": "detoured", "time_s": None, "demo_t_s": demo_t}
                 return {
                     "status": "passed",
                     "time_s": round(time.monotonic() - began, 2),
+                    "demo_t_s": demo_t,
                 }
             if regotos >= run["regoto_max"]:
-                return {"status": "loop", "time_s": None}
+                return {"status": "loop", "time_s": None, "demo_t_s": demo_t}
             regotos += 1
             control.request(f"goto {bot_id} {_coordinates(target)}")
         time.sleep(0.07)
-    return {"status": "timeout", "time_s": None}
+    return {"status": "timeout", "time_s": None, "demo_t_s": demo_t}
 
 
 def _scaled_required(required: int, full_attempts: int, attempts: int) -> int:
@@ -114,6 +118,7 @@ def _run_goto(
     bot_id: int,
     scenario: dict[str, Any],
     quick: bool,
+    recording: evidence_mod.Recording | None = None,
 ) -> dict[str, Any]:
     for link in scenario.get("setup", {}).get("plant_links", []):
         control.request(f"planlink {link}")
@@ -121,7 +126,7 @@ def _run_goto(
     attempts_count = 3 if quick else full_attempts
     attempts = []
     for index in range(attempts_count):
-        result = _outcome(control, bot_id, scenario)
+        result = _outcome(control, bot_id, scenario, recording)
         attempts.append(result)
         suffix = (
             f" {result['time_s']}s" if result["time_s"] is not None else ""
@@ -138,11 +143,51 @@ def _run_goto(
     )
     return {
         "name": scenario["name"],
+        "category": scenario["category"],
+        "place": scenario["place"],
         "attempts": attempts,
         "threshold": {"required": required, "of": attempts_count},
         "passed": passed,
         "verdict": "PASS" if passed >= required else "FAIL",
+        "evidence": None,
     }
+
+
+def _representative(attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The attempt worth watching: the first failure, else the first pass.
+
+    A drill that failed is explained by watching it fail; a drill that passed
+    is evidenced by watching it work.
+    """
+    for attempt in attempts:
+        if attempt["status"] != "passed":
+            return attempt
+    return attempts[0] if attempts else None
+
+
+def _attach_evidence(
+    results: list[dict[str, Any]],
+    recording: evidence_mod.Recording | None,
+    userid: int | None,
+) -> None:
+    """Give every drill a demo link, once the recording has been collected."""
+    if recording is None or recording.demo_name is None:
+        return
+    for result in results:
+        attempt = _representative(result["attempts"])
+        if attempt is None:
+            continue
+        index = result["attempts"].index(attempt) + 1
+        link = recording.link(attempt.get("demo_t_s"), userid)
+        if link is None:
+            continue
+        result["evidence"] = {
+            "demo": recording.demo_name,
+            "attempt": index,
+            "status": attempt["status"],
+            "at_s": round(float(attempt["demo_t_s"]), 1),
+            "link": link,
+        }
 
 
 def _reconnect(config: dict[str, Any], attempts: int = 12) -> Control:
@@ -172,9 +217,17 @@ def _run_dash(
     control: Control,
     config: dict[str, Any],
     scenario: dict[str, Any],
+    run_id: str,
 ) -> tuple[dict[str, Any], Control]:
     control = _change_map(control, config, scenario["map"], 5.0)
+    # The dash lives on its own map, so it gets its own demo: a recording
+    # cannot survive the map change that brings us here.
+    recording = evidence_mod.open_recording(
+        control, f"t1dash-{run_id}", config, scenario["map"], config_path
+    )
+    recording.start()
     peaks = []
+    peak_moments: list[float | None] = []
     for index in range(scenario["run"]["dashes"]):
         if scenario.get("workaround", {}).get("cycle_bot_count"):
             control.request("set rtx_bot_count 0")
@@ -183,6 +236,8 @@ def _run_dash(
             control.close()
             time.sleep(5.0)
             control = _reconnect(config)
+            # The demo keeps running server-side; only our socket was recycled.
+            recording.control = control
         bot_id = _wait_for_bots(control, 1)[0]
         control.request(
             f"teleport {bot_id} {_coordinates(scenario['run']['start'])}"
@@ -194,6 +249,7 @@ def _run_dash(
         )
         began = time.monotonic()
         peak = 0.0
+        peak_at: float | None = None
         while time.monotonic() - began < scenario["run"]["timeout_s"]:
             bots = control.request("status")["data"].get("bots", [])
             bot = next(
@@ -206,7 +262,10 @@ def _run_dash(
             )
             if bot is None:
                 break
-            peak = max(peak, float(bot.get("speed", 0.0)))
+            speed = float(bot.get("speed", 0.0))
+            if speed > peak:
+                peak = speed
+                peak_at = recording.at()
             if any(
                 event.get("ev") in {"arrived", "goto_stall"}
                 for event in control.events
@@ -216,13 +275,40 @@ def _run_dash(
             time.sleep(0.05)
         rounded = round(peak)
         peaks.append(rounded)
+        peak_moments.append(peak_at)
         print(f"  {scenario['name']} {index + 1}: peak {rounded}", flush=True)
+    control.request("set rtx_bot_count 0")
+    recording.stop()
+    best = max(range(len(peaks)), key=lambda i: peaks[i]) if peaks else None
+    dash_evidence = None
+    if best is not None and recording.demo_name is not None:
+        roster = evidence_mod.players(recording.path) if recording.path else []
+        link = recording.link(
+            peak_moments[best], evidence_mod.userid_for_slot(roster, 0)
+        )
+        if link is not None:
+            dash_evidence = {
+                "demo": recording.demo_name,
+                "dash": best + 1,
+                "at_s": round(float(peak_moments[best]), 1),
+                "link": link,
+            }
+    floor = scenario["threshold"]["floor"]
+    informative = scenario["threshold"]["informative"]
+    peak = max(peaks) if peaks else None
     return (
         {
             "peaks": peaks,
-            "peak": max(peaks) if peaks else None,
-            "floor": scenario["threshold"]["floor"],
-            "informative": True,
+            "peak": peak,
+            "floor": floor,
+            "informative": informative,
+            "verdict": (
+                None
+                if informative
+                else ("PASS" if peak is not None and peak >= floor else "FAIL")
+            ),
+            "place": scenario["place"],
+            "evidence": dash_evidence,
         },
         control,
     )
@@ -293,22 +379,38 @@ def run(
                 snapshot = restorer.snapshot
                 control.request("set rtx_telemetry 1")
                 bot_id = _wait_for_bots(control, 1)[0]
+                recording = evidence_mod.open_recording(
+                    control, recorder.run_id, config, main_map, config_path
+                )
+                recording.start()
                 results = [
-                    _run_goto(control, bot_id, scenario, quick)
+                    _run_goto(control, bot_id, scenario, quick, recording)
                     for scenario in goto_scenarios
                 ]
                 control.request(f"stop {bot_id}")
                 control.request(f"hold {bot_id}")
-                dash, control = _run_dash(control, config, dash_scenarios[0])
+                recording.stop()
+                roster = (
+                    evidence_mod.players(recording.path)
+                    if recording.path is not None
+                    else []
+                )
+                _attach_evidence(
+                    results,
+                    recording,
+                    evidence_mod.userid_for_slot(roster, bot_id - 1),
+                )
+                dash, control = _run_dash(
+                    control, config, dash_scenarios[0], recorder.run_id
+                )
                 control = _change_map(control, config, main_map, 6.0)
+                drills_pass = all(result["verdict"] == "PASS" for result in results)
+                dash_pass = dash["verdict"] != "FAIL"
                 payload = {
                     "scenarios": results,
                     "dash": dash,
-                    "verdict": (
-                        "PASS"
-                        if all(result["verdict"] == "PASS" for result in results)
-                        else "FAIL"
-                    ),
+                    "demo": recording.demo_name,
+                    "verdict": "PASS" if drills_pass and dash_pass else "FAIL",
                 }
                 if quick:
                     payload["regime_note"] = "quick"

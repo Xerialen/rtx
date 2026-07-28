@@ -1,18 +1,18 @@
 {
  "schema": "rtx-testflow/1",
- "run_id": "t4-20260727T200000Z-11111111",
+ "run_id": "t4-20260727T153000Z-12121212",
  "tier": "T4",
  "status": "complete",
- "started_utc": "2026-07-27T20:00:00Z",
- "ended_utc": "2026-07-27T20:30:00Z",
+ "started_utc": "2026-07-27T15:30:00Z",
+ "ended_utc": "2026-07-27T15:30:00Z",
  "map": "dm3",
  "build": {
-  "branch": "testsuite",
-  "commit": "1111111111111111111111111111111111111111",
-  "digest_md5": "7fc55d7e",
+  "branch": "evidence-rich",
+  "commit": "1212121212121212121212121212121212121212",
+  "digest_md5": "12341234",
   "dirty": false
  },
- "config_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "config_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
  "runner_version": "0.1.0",
  "provenance": "synthetic",
  "payload": {
@@ -77,7 +77,54 @@
     "frags_for": 60,
     "frags_against": 40,
     "win": true,
-    "mvd": "demos/12.mvd"
+    "mvd": "demos/12.mvd",
+    "scoreboard": {
+     "teams": [
+      {
+       "name": "brch",
+       "frags": 55
+      },
+      {
+       "name": "frog12",
+       "frags": 31
+      }
+     ],
+     "players": [
+      {
+       "name": "bot.brch1",
+       "team": "brch",
+       "frags": 15,
+       "deaths": 9,
+       "kills": 12,
+       "tk": 0,
+       "dmg_given": 3120,
+       "dmg_taken": 2890,
+       "speed_max": 512.4,
+       "speed_avg": 246.1,
+       "spree_max": 3,
+       "link": "/demo-player/?demoUrl=%2Fdemos%2Fm.mvd&map=dm3&duration=300&from=0.0&track=1"
+      },
+      {
+       "name": "frog.1",
+       "team": "frog12",
+       "frags": 14,
+       "deaths": 10,
+       "kills": 11,
+       "tk": 1,
+       "dmg_given": 2980,
+       "dmg_taken": 3010,
+       "speed_max": 498.2,
+       "speed_avg": 241.7,
+       "spree_max": 2,
+       "link": null
+      }
+     ],
+     "map": "The Abandoned Base",
+     "duration_s": 300,
+     "demo": "m.mvd",
+     "source": "qw-analyze/demoinfo",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Fm.mvd&map=dm3&duration=300&from=0.0"
+    }
    },
    {
     "skill": 14,

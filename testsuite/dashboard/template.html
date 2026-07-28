@@ -220,10 +220,23 @@
   .legend .died { background: var(--mesh-mid); }
   .dash {
     margin-top: 14px; display: flex; align-items: baseline; justify-content: space-between;
-    gap: 16px; border: 1px solid var(--rule); padding: 11px 13px;
+    gap: 16px; border: 1px solid var(--rule); padding: 11px 13px; flex-wrap: wrap;
   }
   .dash .value { font: 700 24px var(--mono); }
   .dash .value.bad { color: var(--bad); }
+  .dash-verdict { display: flex; align-items: center; gap: 8px; }
+
+  a.evidence-link {
+    color: var(--accent); font: 10px var(--mono); white-space: nowrap;
+    text-decoration: underline dotted; text-underline-offset: 2px;
+  }
+  a.evidence-link:hover { color: var(--ink); }
+  a.evidence-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .group-note { margin: -4px 0 8px; color: var(--muted); font: 10.5px/1.4 var(--mono); }
+  .drill-place { display: block; margin-top: 3px; color: var(--ink-2); font: 10.5px/1.35 var(--mono); }
+  .drill-verdict { display: grid; gap: 5px; justify-items: start; }
+  .metric-source { display: block; margin-top: 2px; color: var(--muted); font: 9.5px var(--mono); }
+  .metric-evidence { display: block; margin-top: 3px; }
 
   .metrics-wrap { overflow-x: auto; }
   table.metrics { width: 100%; min-width: 560px; border-collapse: collapse; font-variant-numeric: tabular-nums; }
@@ -275,6 +288,38 @@
   .metric-column h3 { margin: 0 0 8px; font: 600 11px var(--mono); }
   .metric-line { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-top: 1px solid var(--rule-2); font: 10.5px var(--mono); }
   .metric-line span:first-child { color: var(--muted); }
+
+  .matchcard { border: 1px solid var(--rule); background: var(--panel-2); }
+  .mc-head {
+    display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center;
+    gap: 8px 20px; padding: 13px 14px; border-bottom: 1px solid var(--rule-2);
+  }
+  .mc-team { display: inline-flex; align-items: baseline; gap: 9px; }
+  .mc-team .name { color: var(--ink-2); font: 600 12px var(--mono); }
+  .mc-team .frags { font: 700 27px var(--mono); }
+  .mc-team.winner .frags { color: var(--good); }
+  .mc-vs { color: var(--muted); font: 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+  .mc-wrap { overflow-x: auto; }
+  table.mc-table { width: 100%; min-width: 660px; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  table.mc-table th {
+    padding: 6px 8px; border-bottom: 1px solid var(--rule); color: var(--muted);
+    font: 600 9.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; text-align: right;
+  }
+  table.mc-table th:first-child, table.mc-table th:nth-child(2) { text-align: left; }
+  table.mc-table td { padding: 6px 8px; border-bottom: 1px solid var(--rule-2); text-align: right; font: 10.5px var(--mono); }
+  table.mc-table td:first-child, table.mc-table td:nth-child(2) { text-align: left; }
+  table.mc-table td:nth-child(2) { color: var(--muted); }
+  .mc-row.a td:first-child { border-left: 3px solid var(--accent); }
+  .mc-row.b td:first-child { border-left: 3px solid var(--arc); }
+  a.mc-player { color: var(--ink); text-decoration: underline dotted; text-underline-offset: 2px; }
+  a.mc-player:hover { color: var(--accent); }
+  .mc-meta {
+    display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 14px;
+    border-top: 1px solid var(--rule-2); color: var(--muted); font: 10px/1.5 var(--mono);
+  }
+  details.rung-card { margin-top: 9px; border: 1px solid var(--rule); padding: 9px 11px; }
+  details.rung-card summary { cursor: pointer; color: var(--ink-2); font: 600 11px var(--mono); }
+  details.rung-card[open] summary { margin-bottom: 10px; }
 
   .reached {
     text-align: center; padding: 18px 12px 10px; font: 700 clamp(30px, 6vw, 56px)/1 var(--mono);
@@ -397,6 +442,8 @@ const TERM_TITLES = {
   "MVD-demo": "Serverinspelning av matchen (multi-view demo). Krävs för att räkna combat lock i efterhand.",
   "frogbots": "Den klassiska QuakeWorld-botten som motståndarreferens; skill 0–20 styr dess nivå.",
   "fragdiff": "Skillnaden i frags mellan lagen. Positiv = testgrenen vann.",
+  "matchkort": "Slutställningen som analysatorn läste ur matchdemon: lagens frags överst, sedan en rad per spelare. Namnet länkar till spelarens POV i demospelaren.",
+  "spree": "Längsta obrutna fragsvit spelaren hade under matchen.",
   "teleport → goto": "Drillen startar med att botten teleporteras till startpunkten och får ett goto-mål — samma förutsättningar varje försök.",
   "körning": "Löpnummer i kronologisk ordning: #1 är den äldsta körningen, varje ny körning får ett högre nummer.",
   "bygge": "Commiten som testades (kort sha). Alla tiers i samma körning delar den; suffixet -dirty betyder att trädet hade oincheckade ändringar.",
@@ -420,7 +467,7 @@ const TERM_TITLES = {
 
 const DOCS = {
   t0: "Cirka 400 offline-tester i rtx-repot körs med cargo test vid varje bygge, före deploy. Det är Nanos vanliga testsvit; T0 är vår etikett. Nästan alla är logiktester utan kvalitetsgolv. Undantaget är bhop-korpusen med offline-oraklet 795 u/s på 100m-profilen. Syftet är fail-fast: logikkorrekthet innan något deployas.",
-  t1: "Deterministiska enbotsdrillar med teleport → goto tar cirka åtta minuter. Ordinarie trösklar är ra_klattring 10/10, sng_mega minst 8/10, hexagon_sod_tur minst 9/10, cell_724_503 10/10 och cell_503_194 10/10. Dash 100m har informativt golv 800 u/s och visas röd under golvet. Ingen karta används.",
+  t1: "Deterministiska enbotsdrillar med teleport → goto tar cirka åtta minuter. Ordinarie trösklar är ra_klattring 10/10, sng_mega minst 8/10, hexagon_sod_tur minst 9/10, cell_724_503 10/10 och cell_503_194 10/10. Drillarna delas i grunddrillar (kartans fasta utmaningar) och cellprover. Dash 100m har golv 800 u/s och visas röd under golvet; när dashen är graderad bär den ett eget verdikt som räknas in i T1-domen, annars är den bara informativ. Ingen karta används.",
   t2: "Fyra bottar spelar utan skott i tio minuter. Pacifist-regimen isolerar navigationssignalen: pickups, fart, stillatid och stall-fyrningar. Snapshot-JSON innehåller stats, cells, länkdata och regime T2. Kartvyn hör hemma här.",
   t3: "Fyra bottar från testgrenen möter fyra bottar från main på DM3 i fem minuter, med skott. Två byggen krävs och rtx-client-seats används mot servern. Matchresultat, sidornas snapshot-mätetal och stall-data jämförs. Combat lock kräver MVD-demo; verifierad inspelning saknas ännu.",
   t4: "Fyra bottar från testgrenen möter fyra frogbots i fem minuter per match. Stegen går skill 10, 12, 14, 16, 18 och 20. Vinst går vidare; första förlust stoppar stegen. Huvudmåttet är högsta besegrade skill, eller 0 vid direkt förlust på skill 10."
@@ -437,6 +484,32 @@ const esc = value => String(value).replace(/[&<>"']/g, char => (
 function term(label, key) {
   const title = TERM_TITLES[key || label] || String(label);
   return '<span class="term" title="' + esc(title) + '">' + esc(label) + "</span>";
+}
+
+// Bevislänkar är alltid host-relativa och öppnas i ny flik. Allt annat
+// (null, saknat fält, absolut URL) renderas inte alls.
+function hostRelative(value) {
+  return typeof value === "string" && value.charAt(0) === "/" ? value : null;
+}
+
+function linkTag(href, label, title, className) {
+  const safe = hostRelative(href);
+  if (!safe) return "";
+  return '<a class="' + className + '" href="' + esc(safe) +
+    '" target="_blank" rel="noopener" title="' + esc(title || label) + '">' + esc(label) + "</a>";
+}
+
+function evidenceTitle(evidence) {
+  const parts = [];
+  if (evidence.demo) parts.push(String(evidence.demo));
+  if (evidence.at_s != null) parts.push(fmt(evidence.at_s) + " s in i demot");
+  if (evidence.who) parts.push(String(evidence.who));
+  return "Öppnar demospelaren i ny flik" + (parts.length ? " · " + parts.join(" · ") : "");
+}
+
+function evidenceLink(evidence, label) {
+  if (!evidence || typeof evidence !== "object") return "";
+  return linkTag(evidence.link, label, evidenceTitle(evidence), "evidence-link");
 }
 
 function verdictClass(verdict) {
@@ -594,6 +667,47 @@ function resultLabel(result) {
   return result.status || "okänt";
 }
 
+function attemptTitle(result) {
+  const base = TERM_TITLES[result.status] || String(result.status || "okänt");
+  return result.demo_t_s == null ? base : base + " · demo " + fmt(result.demo_t_s) + " s";
+}
+
+const T1_GROUPS = [
+  ["grunddrill", "Grunddrillar", "Kartans fasta utmaningar."],
+  ["cellprov", "Cellprover", "Cellövergångarna ur mergekriterierna."]
+];
+
+function drillRow(drill, refDrill) {
+  const passed = drillPasses(drill);
+  const ok = passed >= drill.threshold;
+  const refPassed = refDrill ? drillPasses(refDrill) : null;
+  const place = drill.place
+    ? '<small class="drill-place">' + esc(drill.place) + "</small>"
+    : "";
+  const evidence = drill.evidence
+    ? evidenceLink(drill.evidence, drill.evidence.status === "passed" ? "se hoppet" : "se försöket")
+    : "";
+  return '<div class="drill-row"><div class="drill-name">' + esc(drill.name) + place +
+    "<small>tröskel " + fmt(drill.threshold) + "/" + fmt(drill.of || drill.results.length) +
+    (refDrill ? " · ref (" + refPassed + "/" + refDrill.results.length + ")" : "") + "</small></div>" +
+    '<div class="attempts">' + drill.results.map(result =>
+      '<span class="attempt ' + esc(result.status) + '" title="' + esc(attemptTitle(result)) + '">' +
+      esc(resultLabel(result)) + "</span>"
+    ).join("") + '</div><div class="drill-verdict">' +
+    verdictChip(drill.verdict || (ok ? "PASS" : "FAIL")) + evidence + "</div></div>";
+}
+
+function drillGroups(focus, ref, compare) {
+  return T1_GROUPS.map(group => {
+    const drills = focus.data.drills.filter(drill => (drill.category || "grunddrill") === group[0]);
+    if (!drills.length) return "";
+    return '<div class="section-title">' + esc(group[1]) + '</div><div class="group-note">' +
+      esc(group[2]) + '</div><div class="drills">' + drills.map(drill =>
+        drillRow(drill, compare ? ref.data.drills.find(candidate => candidate.name === drill.name) : null)
+      ).join("") + "</div>";
+  }).join("");
+}
+
 function renderT1() {
   const focus = RUNS[focusIndex].levels.t1;
   const ref = RUNS[refIndex].levels.t1;
@@ -603,38 +717,34 @@ function renderT1() {
     return;
   }
   const compare = canCompare("t1", focus, ref);
-  const drills = focus.data.drills.map((drill, index) => {
-    const passed = drillPasses(drill);
-    const ok = passed >= drill.threshold;
-    const refDrill = compare ? ref.data.drills.find(candidate => candidate.name === drill.name) : null;
-    const refPassed = refDrill ? drillPasses(refDrill) : null;
-    return '<div class="drill-row"><div class="drill-name">' + esc(drill.name) +
-      "<small>tröskel " + fmt(drill.threshold) + "/" + fmt(drill.of || drill.results.length) +
-      (refDrill ? " · ref (" + refPassed + "/" + refDrill.results.length + ")" : "") + "</small></div>" +
-      '<div class="attempts">' + drill.results.map(result =>
-        '<span class="attempt ' + result.status + '" title="' + esc(TERM_TITLES[result.status]) + '">' +
-        esc(resultLabel(result)) + "</span>"
-      ).join("") + '</div><div>' + verdictChip(drill.verdict || (ok ? "PASS" : "FAIL")) + "</div></div>";
-  }).join("");
   const dash = focus.data.dash;
   const refDash = ref.data.dash;
   const dashBad = dash.peak != null && dash.floor != null && dash.peak < dash.floor;
   const note = focus.data.note ? '<div class="callout"><strong>Run-anmärkning:</strong> ' + esc(focus.data.note) + "</div>" : "";
+  const demoNote = focus.data.demo
+    ? ' · demo <span class="mono">' + esc(focus.data.demo) + "</span>"
+    : "";
   const comparisonNote = compare
     ? "Jämförbar referens inom samma regim."
     : "Ingen jämförelse: quick/full eller körstatus skiljer.";
   const body = '<div class="callout"><strong>Regim:</strong> ' + esc(focus.regimeNote || "full") +
-    " · " + comparisonNote + "</div>" + note +
-    '<div class="section-title">Drillar</div><div class="drills">' + drills + "</div>" +
+    " · " + comparisonNote + demoNote + "</div>" + note +
+    drillGroups(focus, ref, compare) +
     '<div class="legend" aria-label="Utfallsklasser"><span><i class="passed"></i>' + term("passed") +
     '</span><span><i class="fell"></i>' + term("fell") + '</span><span><i class="timeout"></i>' +
     term("timeout") + '</span><span><i class="stall"></i>' + term("stall") +
     '</span><span><i class="loop"></i>' + term("loop") + '</span><span><i class="detoured"></i>' +
     term("detoured") + '</span><span><i class="died"></i>' + term("died") + "</span></div>" +
     '<div class="dash"><div><div class="eyebrow">' + term("dash_100m", "peak u/s (100m)") +
-    " · golv " + fmt(dash.floor) +
-    ' u/s</div><span class="muted mono">' + (compare ? "referens (" + fmt(refDash.peak) + " u/s)" : "ej jämförd") +
-    '</span></div><div class="value' + (dashBad ? " bad" : "") + '">' + fmt(dash.peak) +
+    " · golv " + fmt(dash.floor) + " u/s</div>" +
+    (dash.place ? '<span class="drill-place">' + esc(dash.place) + "</span>" : "") +
+    '<span class="muted mono">' + (compare ? "referens (" + fmt(refDash.peak) + " u/s)" : "ej jämförd") +
+    '</span></div><div class="dash-verdict">' +
+    (dash.informative || !dash.verdict
+      ? '<span class="regime-chip">informativ</span>'
+      : verdictChip(dash.verdict)) +
+    evidenceLink(dash.evidence, "se hoppet") +
+    '</div><div class="value' + (dashBad ? " bad" : "") + '">' + fmt(dash.peak) +
     " u/s</div></div>" + sourceNotes(focus);
   document.getElementById("panel-t1").innerHTML = panelShell("t1", "Enbotsdrillar",
     "Deterministisk rörelse · " + term("teleport → goto"), body);
@@ -643,7 +753,7 @@ function renderT1() {
 const T2_METRICS = [
   ["quad_takes", "quad tagna"], ["quad_lay_avg", "quad liggtid s"], ["pent_takes", "pent tagna"],
   ["pent_lay_avg", "pent liggtid s"], ["speed_1s", "snittfart 1 s"], ["speed_100ms", "snittfart 100 ms"],
-  ["peak_100m", "peak u/s (100m)"], ["still_s_per_bot", "stilla s / bot"],
+  ["still_s_per_bot", "stilla s / bot"],
   ["stall_firings", "stall-fyrningar"], ["duration_s", "längd s"]
 ];
 
@@ -653,16 +763,33 @@ function fmt(value) {
   return String(value);
 }
 
-function metricsTable(focusStats, refStats) {
+// Ett mätetals bevis kan ligga antingen som ett ögonblick i payloaden eller på
+// den cell som orsakade siffran. Båda matchas på metric-namnet.
+function metricEvidence(item, name) {
+  const pools = [item.moments || [], item.cellEvidence || []];
+  for (const pool of pools) {
+    const hit = pool.find(entry => entry && entry.metric === name);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function metricsTable(item, refStats) {
+  const focusStats = item.stats || {};
+  const sources = item.metricSources || {};
   return '<div class="metrics-wrap"><table class="metrics"><thead><tr><th>Mätetal</th><th>fokus (referens)</th></tr></thead><tbody>' +
     T2_METRICS.map(metric => {
       let label = esc(metric[1]);
       if (metric[0] === "quad_lay_avg" || metric[0] === "pent_lay_avg") label = term(metric[1], "quad/pent liggtid");
       if (metric[0] === "speed_1s" || metric[0] === "speed_100ms") label = term(metric[1], "snittfart 1 s / 100 ms");
-      if (metric[0] === "peak_100m") label = term(metric[1], "peak u/s (100m)");
       if (metric[0] === "still_s_per_bot" || metric[0] === "stall_firings") label = term(metric[1]);
-      return '<tr><td>' + label + '</td><td><b>' + fmt(focusStats[metric[0]]) +
+      const source = sources[metric[0]]
+        ? '<span class="metric-source">' + esc(metric[0]) + " → " + esc(sources[metric[0]]) + "</span>"
+        : "";
+      const evidence = evidenceLink(metricEvidence(item, metric[0]), "se ögonblicket");
+      return '<tr><td>' + label + source + '</td><td><b>' + fmt(focusStats[metric[0]]) +
         '</b>' + (refStats ? ' <span class="ref">(' + fmt(refStats[metric[0]]) + ")</span>" : "") +
+        (evidence ? '<span class="metric-evidence">' + evidence + "</span>" : "") +
         "</td></tr>";
     }).join("") +
     "</tbody></table></div>";
@@ -690,11 +817,19 @@ function renderT2() {
     return;
   }
   const compare = canCompare("t2", focus, ref);
-  const body = '<div class="callout"><strong>Regim:</strong> ' + esc(focus.regimeNote || "full") +
+  const wholeDemo = evidenceLink(focus.evidence, "se hela demot");
+  const demoName = focus.demo || (focus.evidence ? focus.evidence.demo : null);
+  const demoCallout = wholeDemo || demoName
+    ? '<div class="callout"><strong>Demot:</strong> ' +
+      (demoName ? '<span class="mono">' + esc(demoName) + "</span> " : "") +
+      (wholeDemo || '<span class="muted mono">ingen spelbar länk</span>') + "</div>"
+    : "";
+  const body = demoCallout +
+    '<div class="callout"><strong>Regim:</strong> ' + esc(focus.regimeNote || "full") +
     " · " + (compare ? "Fokusvärdet står först och jämförbar referens inom parentes." :
       "Ingen jämförelse görs mot smoke/full eller en icke-komplett run.") +
     ' “–” betyder null eller saknat fält.</div>' +
-    '<div class="section-title">Mätetal</div>' + metricsTable(focus.stats, compare ? ref.stats : null) +
+    '<div class="section-title">Mätetal</div>' + metricsTable(focus, compare ? ref.stats : null) +
     sourceNotes(focus) + mapHtml("t2", focus);
   document.getElementById("panel-t2").innerHTML = panelShell("t2",
     term("Pacifist", "pacifist") + "-frispel", "Fyra bottar · inga skott · ren navigationssignal", body);
@@ -716,6 +851,64 @@ function sideColumn(title, side, refSide) {
         fmt(side[metric[0]]) + (refSide ? ' <span class="muted">(' + fmt(refSide[metric[0]]) + ")</span>" : "")) +
       "</b></div>";
   }).join("") + "</div>";
+}
+
+const SCOREBOARD_COLUMNS = [
+  ["frags", "frags"], ["deaths", "deaths"], ["dmg_given", "dmg +"], ["dmg_taken", "dmg −"],
+  ["speed_max", "fart max"], ["speed_avg", "fart snitt"], ["spree_max", "spree"]
+];
+
+// Matchkortet i hubbens anda: lagen med slutresultatet överst, sedan varje
+// spelares rad. Null-kort och saknade fält faller tillbaka på “–”.
+function scoreboardCard(card) {
+  if (!card) return "";
+  const teams = Array.isArray(card.teams) ? card.teams : [];
+  const best = teams.reduce(
+    (top, team) => (team.frags != null && (top == null || team.frags > top) ? team.frags : top),
+    null
+  );
+  const head = teams.length
+    ? teams.map((team, index) =>
+        (index ? '<span class="mc-vs">mot</span>' : "") +
+        '<span class="mc-team' + (best != null && team.frags === best ? " winner" : "") +
+        '"><span class="name">' + esc(team.name) + '</span><span class="frags">' +
+        fmt(team.frags) + "</span></span>"
+      ).join("")
+    : '<span class="mc-vs">lagresultat saknas</span>';
+  const order = {};
+  teams.forEach((team, index) => { order[team.name] = index; });
+  const players = (Array.isArray(card.players) ? card.players.slice() : []).sort((a, b) => {
+    const teamA = order[a.team] == null ? 99 : order[a.team];
+    const teamB = order[b.team] == null ? 99 : order[b.team];
+    if (teamA !== teamB) return teamA - teamB;
+    return (b.frags == null ? -1e9 : b.frags) - (a.frags == null ? -1e9 : a.frags);
+  });
+  const rows = players.length
+    ? players.map(player => {
+        const index = order[player.team];
+        const name = linkTag(player.link, player.name, "Öppnar POV för " + player.name, "mc-player") ||
+          esc(player.name);
+        return '<tr class="mc-row ' + (index === 0 ? "a" : index === 1 ? "b" : "") + '"><td>' + name +
+          "</td><td>" + esc(player.team || "–") + "</td>" +
+          SCOREBOARD_COLUMNS.map(column => "<td>" + fmt(player[column[0]]) + "</td>").join("") +
+          "</tr>";
+      }).join("")
+    : '<tr><td colspan="' + (SCOREBOARD_COLUMNS.length + 2) +
+      '" class="muted">Inga spelarrader i kortet.</td></tr>';
+  const meta = [];
+  if (card.map) meta.push("<span>karta " + esc(card.map) + "</span>");
+  if (card.duration_s != null) meta.push("<span>" + fmt(card.duration_s) + " s</span>");
+  if (card.demo) meta.push("<span>demo " + esc(card.demo) + "</span>");
+  if (card.source) meta.push("<span>källa → " + esc(card.source) + "</span>");
+  const whole = linkTag(card.link, "se hela matchen", "Öppnar demospelaren i ny flik", "evidence-link");
+  if (whole) meta.push(whole);
+  return '<div class="matchcard"><div class="mc-head">' + head + "</div>" +
+    '<div class="mc-wrap"><table class="mc-table"><thead><tr><th>Spelare</th><th>Lag</th>' +
+    SCOREBOARD_COLUMNS.map(column =>
+      "<th>" + (column[0] === "spree_max" ? term(column[1], "spree") : esc(column[1])) + "</th>"
+    ).join("") +
+    "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
+    (meta.length ? '<div class="mc-meta">' + meta.join("") + "</div>" : "") + "</div>";
 }
 
 function renderT3() {
@@ -751,6 +944,10 @@ function renderT3() {
     fmt(focus.score.main) + '</div></div></div><div class="score-ref">' +
     (compare ? "referens (" + fmt(ref.score.branch) + " – " + fmt(ref.score.main) +
       " · diff " + sign(refDiff) + ")" : "singelmatch · ingen kvalitetsjämförelse") + "</div>" +
+    (focus.scoreboard
+      ? '<div class="section-title">' + term("Matchkort", "matchkort") + "</div>" +
+        scoreboardCard(focus.scoreboard)
+      : "") +
     '<div class="section-title">Mätetal per sida' + (compare ? " · fokus (referens)" : "") +
     '</div><div class="side-metrics">' +
     sideColumn(focusRun.branch, focus.sides.branch, compare ? ref.sides.branch : null) +
@@ -781,6 +978,19 @@ function renderT4() {
     return;
   }
   const compare = canCompare("t4", focus, ref);
+  const played = focus.rungs.filter(rung => rung.state !== "unplayed");
+  const cards = played.filter(rung => rung.scoreboard).map(rung =>
+    '<details class="rung-card"><summary>skill ' + esc(rung.skill) + " · " +
+    fmt(rung["for"]) + "–" + fmt(rung.against) + " · matchkort</summary>" +
+    scoreboardCard(rung.scoreboard) + "</details>"
+  ).join("");
+  const missing = played.filter(rung => !rung.scoreboard).map(rung => "skill " + rung.skill);
+  const cardBlock = played.length
+    ? '<div class="section-title">' + term("Matchkort", "matchkort") + " per stegpinne</div>" + cards +
+      (missing.length
+        ? '<div class="historical">Utan matchkort: ' + esc(missing.join(", ")) + ".</div>"
+        : "")
+    : "";
   const body =
     '<div class="reached">nådde skill <span>' + fmt(focus.reached) + '</span></div>' +
     '<div class="reached-ref">' +
@@ -789,7 +999,7 @@ function renderT4() {
     focus.rungs.map(rung => rungHtml(rung, false)).join("") + "</div></div>" +
     (compare ? '<div class="ladder-block"><div class="ladder-label">(Referens)</div><div class="ladder">' +
       ref.rungs.map(rung => rungHtml(rung, true)).join("") + "</div></div>" : "") +
-    sourceNotes(focus);
+    cardBlock + sourceNotes(focus);
   document.getElementById("panel-t4").innerHTML = panelShell("t4",
     term("Frogbot", "frogbots") + "-stegen", "Fem minuter per match · vinst går vidare", body);
 }
@@ -815,7 +1025,8 @@ function renderExplanations() {
       'SpeedJump-länk. Omväg runt (' + term("detoured") + ') eller fall i gropen underkänns.</li>' +
       '<li><strong>cell_724_503</strong> och <strong>cell_503_194</strong> (10/10 vardera): cellövergångarna på SNG-hyllan ' +
       'respektive vidare mot mega — Nanos mergekriterier.</li>' +
-      '<li><strong>dash_100m</strong> (informativ, golv 800 u/s): kartbyte till 100m, två raka dashar, bästa peak.</li>' +
+      '<li><strong>dash_100m</strong> (golv 800 u/s): kartbyte till 100m, två raka dashar, bästa peak. ' +
+      'En graderad dash bär ett eget verdikt som räknas in i T1-domen; en informativ dash visas bara.</li>' +
       '</ul><p style="margin-top:9px">Svarar på: "klarar botten de svåra passagerna isolerat?"</p></section>' +
       '<section class="explanation-level"><h3>T2 — Pacifist-frispel</h3><p>Fyra bottar, inga skott, DM3. ' +
       'Mäter ren navigation: quad-/pent-tagningar och liggtider, snittfart (1 s- och 100 ms-fönster), ' +

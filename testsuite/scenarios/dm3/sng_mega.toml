@@ -2,6 +2,8 @@ schema = "rtx-scenario/1"
 name = "sng_mega"
 map = "dm3"
 kind = "goto"
+category = "grunddrill"
+place = "SNG → mega (SNG MH) över hyllan"
 description = "From the SNG spawn to mega over the ledge route."
 
 [run]

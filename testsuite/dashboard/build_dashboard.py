@@ -102,6 +102,84 @@ def number(value: Any) -> int | float | None:
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
+def host_relative(value: Any) -> str | None:
+    """Keep only host-relative links; anything else is not ours to render."""
+    return value if isinstance(value, str) and value.startswith("/") else None
+
+
+EVIDENCE_EXTRAS = ("attempt", "status", "dash", "metric", "who")
+
+
+def normalize_evidence(value: Any) -> dict[str, Any] | None:
+    """A demo-player pointer for one number, or None when it cannot be shown."""
+    if not isinstance(value, dict):
+        return None
+    link = host_relative(value.get("link"))
+    if link is None:
+        return None
+    evidence: dict[str, Any] = {
+        "demo": value.get("demo") if isinstance(value.get("demo"), str) else None,
+        "at_s": number(value.get("at_s")),
+        "link": link,
+    }
+    for key in EVIDENCE_EXTRAS:
+        if isinstance(value.get(key), (str, int, float)) and not isinstance(
+            value.get(key), bool
+        ):
+            evidence[key] = value[key]
+    return evidence
+
+
+SCOREBOARD_INTS = ("frags", "deaths", "kills", "tk", "spree_max")
+SCOREBOARD_NUMBERS = ("dmg_given", "dmg_taken", "speed_max", "speed_avg")
+
+
+def normalize_scoreboard(value: Any) -> dict[str, Any] | None:
+    """The match card: team result plus one line per player, or None."""
+    if not isinstance(value, dict):
+        return None
+    teams: list[dict[str, Any]] = []
+    for raw in value.get("teams") if isinstance(value.get("teams"), list) else []:
+        if not isinstance(raw, dict):
+            continue
+        teams.append(
+            {"name": text(raw.get("name"), "?"), "frags": number(raw.get("frags"))}
+        )
+    players: list[dict[str, Any]] = []
+    for raw in value.get("players") if isinstance(value.get("players"), list) else []:
+        if not isinstance(raw, dict):
+            continue
+        player: dict[str, Any] = {
+            "name": text(raw.get("name"), "?"),
+            "team": text(raw.get("team"), ""),
+            "link": host_relative(raw.get("link")),
+        }
+        for field in SCOREBOARD_INTS + SCOREBOARD_NUMBERS:
+            player[field] = number(raw.get(field))
+        players.append(player)
+    if not teams and not players:
+        return None
+    return {
+        "teams": teams,
+        "players": players,
+        "map": value.get("map") if isinstance(value.get("map"), str) else None,
+        "duration_s": number(value.get("duration_s")),
+        "demo": value.get("demo") if isinstance(value.get("demo"), str) else None,
+        "source": value.get("source") if isinstance(value.get("source"), str) else None,
+        "link": host_relative(value.get("link")),
+    }
+
+
+def unplayed_rung(skill: int) -> dict[str, Any]:
+    return {
+        "skill": skill,
+        "state": "unplayed",
+        "for": None,
+        "against": None,
+        "scoreboard": None,
+    }
+
+
 def default_level(level: str) -> dict[str, Any]:
     common: dict[str, Any] = {
         "status": "missing",
@@ -123,8 +201,17 @@ def default_level(level: str) -> dict[str, Any]:
     elif level == "t1":
         common["data"] = {
             "drills": [],
-            "dash": {"peaks": [], "peak": None, "floor": None, "informative": True},
+            "dash": {
+                "peaks": [],
+                "peak": None,
+                "floor": None,
+                "informative": True,
+                "verdict": None,
+                "place": None,
+                "evidence": None,
+            },
             "note": None,
+            "demo": None,
         }
     elif level == "t2":
         common["stats"] = {
@@ -134,11 +221,17 @@ def default_level(level: str) -> dict[str, Any]:
             "pent_lay_avg": None,
             "speed_1s": None,
             "speed_100ms": None,
-            "peak_100m": None,
             "still_s_per_bot": None,
             "stall_firings": None,
             "duration_s": None,
         }
+        common.update(
+            demo=None,
+            evidence=None,
+            moments=[],
+            cellEvidence=[],
+            metricSources={},
+        )
     elif level == "t3":
         empty_side = {
             "speed_1s": None,
@@ -151,14 +244,12 @@ def default_level(level: str) -> dict[str, Any]:
             score={"branch": None, "main": None},
             sides={"branch": dict(empty_side), "main": dict(empty_side)},
             aggregate=None,
+            scoreboard=None,
         )
     elif level == "t4":
         common.update(
             reached=None,
-            rungs=[
-                {"skill": skill, "state": "unplayed", "for": None, "against": None}
-                for skill in LADDER_SKILLS
-            ],
+            rungs=[unplayed_rung(skill) for skill in LADDER_SKILLS],
         )
     return common
 
@@ -275,6 +366,7 @@ def t1_level(envelope: dict[str, Any]) -> dict[str, Any]:
         attempts = scenario.get("attempts") if isinstance(scenario.get("attempts"), list) else []
         verdict = scenario.get("verdict")
         passed_scenarios += verdict == "PASS"
+        category = scenario.get("category")
         drills.append(
             {
                 "name": text(scenario.get("name"), "okänt scenario"),
@@ -282,6 +374,11 @@ def t1_level(envelope: dict[str, Any]) -> dict[str, Any]:
                 "of": number(threshold.get("of")),
                 "results": attempts,
                 "verdict": verdict,
+                # Envelopes before the evidence contract carry no category; they
+                # render as ordinary map drills instead of vanishing.
+                "category": category if category in {"grunddrill", "cellprov"} else "grunddrill",
+                "place": scenario.get("place") if isinstance(scenario.get("place"), str) else None,
+                "evidence": normalize_evidence(scenario.get("evidence")),
             }
         )
     regime_note = payload.get("regime_note")
@@ -300,8 +397,12 @@ def t1_level(envelope: dict[str, Any]) -> dict[str, Any]:
                 "peak": number(dash.get("peak")),
                 "floor": number(dash.get("floor")),
                 "informative": dash.get("informative") is True,
+                "verdict": dash.get("verdict") if dash.get("verdict") in {"PASS", "FAIL"} else None,
+                "place": dash.get("place") if isinstance(dash.get("place"), str) else None,
+                "evidence": normalize_evidence(dash.get("evidence")),
             },
             "note": payload.get("note") if isinstance(payload.get("note"), str) else None,
+            "demo": payload.get("demo") if isinstance(payload.get("demo"), str) else None,
         },
     )
     return item
@@ -331,6 +432,7 @@ def normalize_cells(value: Any) -> list[dict[str, Any]]:
             "links": links,
             "reason": text(raw.get("reason"), dominant_reason(reasons)),
             "samples": raw.get("samples") if isinstance(raw.get("samples"), list) else [],
+            "evidence": normalize_evidence(raw.get("evidence")),
         }
         for optional in (
             "phases",
@@ -406,6 +508,17 @@ def t2_level(
     regime_note = payload.get("regime_note")
     regime_note = regime_note if isinstance(regime_note, str) and regime_note else None
     cells = normalize_cells(payload.get("cells"))
+    raw_moments = payload.get("moments") if isinstance(payload.get("moments"), list) else []
+    moments = [
+        evidence for evidence in map(normalize_evidence, raw_moments) if evidence
+    ]
+    cell_evidence = [cell["evidence"] for cell in cells if cell.get("evidence")]
+    raw_sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
+    metric_sources = {
+        str(name): source
+        for name, source in raw_sources.items()
+        if isinstance(source, str) and source
+    }
     snap_id = f"{snapshot_id}:t2"
     item.update(
         verdict="MÄTT",
@@ -414,6 +527,11 @@ def t2_level(
         regimeNote=regime_note,
         comparisonKey=f"t2:{regime_note or 'full'}",
         snapshotIds=[snap_id] if cells else [],
+        demo=payload.get("demo") if isinstance(payload.get("demo"), str) else None,
+        evidence=normalize_evidence(payload.get("evidence")),
+        moments=moments,
+        cellEvidence=cell_evidence,
+        metricSources=metric_sources,
     )
     return item, [
         snapshot(
@@ -547,6 +665,7 @@ def t3_level(
         },
         sides={"branch": branch_stats, "main": reference_stats},
         result=result,
+        scoreboard=normalize_scoreboard(payload.get("scoreboard")),
         snapshotIds=snapshot_ids,
     )
     return item, snapshots
@@ -575,14 +694,9 @@ def t4_level(envelope: dict[str, Any]) -> dict[str, Any]:
             "state": state,
             "for": number(raw.get("frags_for")),
             "against": number(raw.get("frags_against")),
+            "scoreboard": normalize_scoreboard(raw.get("scoreboard")),
         }
-    rungs = [
-        played.get(
-            skill,
-            {"skill": skill, "state": "unplayed", "for": None, "against": None},
-        )
-        for skill in LADDER_SKILLS
-    ]
+    rungs = [played.get(skill, unplayed_rung(skill)) for skill in LADDER_SKILLS]
     reached = number(payload.get("reached"))
     verdict = payload.get("verdict") if payload.get("verdict") == "COMPLETE" else "OFULLSTÄNDIG"
     item.update(
@@ -797,6 +911,47 @@ def selftest() -> None:
         assert "http://" not in html
         assert "https://" not in html
         assert len(runs) >= 5
+        rich = next(run for run in runs if run["branch"] == "evidence-rich")
+        t1 = rich["levels"]["t1"]
+        categories = [drill["category"] for drill in t1["data"]["drills"]]
+        assert categories == ["grunddrill", "cellprov"]
+        assert all(drill["place"] for drill in t1["data"]["drills"])
+        assert all(
+            drill["evidence"]["link"].startswith("/demo-player/")
+            for drill in t1["data"]["drills"]
+        )
+        assert t1["data"]["demo"].endswith(".mvd")
+        assert t1["data"]["dash"]["informative"] is False
+        assert t1["data"]["dash"]["verdict"] == "PASS"
+        assert t1["data"]["dash"]["evidence"]["link"].startswith("/demo-player/")
+        t2 = rich["levels"]["t2"]
+        assert "peak_100m" not in t2["stats"]
+        assert t2["evidence"]["link"].startswith("/demo-player/")
+        assert [moment["metric"] for moment in t2["moments"]] == ["quad_takes"]
+        assert [cell["metric"] for cell in t2["cellEvidence"]] == ["stall_firings"]
+        assert t2["metricSources"]["quad_takes"] == "qw-analyze/items"
+        board = rich["levels"]["t3"]["scoreboard"]
+        assert [team["name"] for team in board["teams"]] == ["brch", "ref"]
+        assert board["players"][0]["dmg_given"] == 3120
+        assert board["players"][0]["link"].startswith("/demo-player/")
+        assert board["players"][1]["link"] is None
+        assert board["source"] == "qw-analyze/demoinfo"
+        rungs = rich["levels"]["t4"]["rungs"]
+        assert [rung["scoreboard"] is not None for rung in rungs] == [
+            True, True, False, False, False, False
+        ]
+        # Older envelopes keep rendering: no evidence, no scoreboard, no crash.
+        golden = next(run for run in runs if run["branch"] == "golden-complete")
+        assert golden["levels"]["t1"]["data"]["drills"][0]["evidence"] is None
+        assert golden["levels"]["t1"]["data"]["drills"][0]["category"] == "grunddrill"
+        assert golden["levels"]["t1"]["data"]["dash"]["verdict"] is None
+        assert golden["levels"]["t2"]["evidence"] is None
+        assert golden["levels"]["t2"]["metricSources"] == {}
+        assert golden["levels"]["t3"]["scoreboard"] is None
+        assert all(rung["scoreboard"] is None for rung in golden["levels"]["t4"]["rungs"])
+        # Host-relative demo links reach the page and open in a new tab.
+        assert "/demo-player/?demoUrl=" in html
+        assert 'target="_blank" rel="noopener"' in html
         assert runs == sorted(
             runs, key=lambda run: iso_sort_key(run["startedUtc"]), reverse=True
         )

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from . import combat_lock as combat_lock_mod
+from . import evidence as evidence_mod
 from .control import Control
 from .runlib import RigLifecycle, RigLock, RunRecorder, config_path
 from .t2 import _mean, _summarize_cells
@@ -557,6 +558,14 @@ def run(config: dict[str, Any]) -> Path:
                             side.frags = team_frags
                     oracle = "ktx-demoinfo"
                 lock = _combat_lock(config, mvd)
+                card = evidence_mod.match_scoreboard(
+                    config,
+                    config_path(config, demo_dir_value) if demo_dir_value else None,
+                    mvd,
+                    map_name,
+                    duration,
+                    config_path,
+                )
                 payload_sides = [
                     side.payload_side(side_builds[side.side]) for side in sides
                 ]
@@ -576,6 +585,7 @@ def run(config: dict[str, Any]) -> Path:
                         "mvd": mvd,
                     },
                     "readiness": readiness,
+                    "scoreboard": card,
                     "combat_lock": lock,
                     "replicate_of": None,
                     "verdict": "PIPELINE-OK",

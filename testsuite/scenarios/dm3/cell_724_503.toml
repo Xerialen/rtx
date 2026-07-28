@@ -2,6 +2,8 @@ schema = "rtx-scenario/1"
 name = "cell_724_503"
 map = "dm3"
 kind = "goto"
+category = "cellprov"
+place = "SNG-låg → SNG-hyllan"
 description = "Cell transition on the SNG ledge (724 -> 503) - upstream merge criterion."
 
 [run]

@@ -2,6 +2,8 @@ schema = "rtx-scenario/1"
 name = "fixture_goto"
 map = "dm3"
 kind = "goto"
+category = "grunddrill"
+place = "fixturplats"
 description = "Minimal valid scenario fixture."
 
 [run]

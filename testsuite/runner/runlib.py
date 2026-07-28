@@ -69,9 +69,12 @@ def load_config(path: str | Path) -> dict[str, Any]:
         root["server"],
         f"{config_path}.server",
         {"host", "control_port", "protocol"},
+        optional={"demo_dir"},
     )
     if not isinstance(server["host"], str) or not server["host"]:
         raise ConfigError(f"{config_path}.server.host: expected non-empty string")
+    if "demo_dir" in server and not isinstance(server["demo_dir"], str):
+        raise ConfigError(f"{config_path}.server.demo_dir: expected string")
     if (
         isinstance(server["control_port"], bool)
         or not isinstance(server["control_port"], int)
@@ -108,7 +111,12 @@ def load_config(path: str | Path) -> dict[str, Any]:
         {"duration_s", "skills", "frogbot_server", "control_port", "demoinfo_dir"},
         optional={"rig_up_cmd", "rig_down_cmd", "rig_boot_wait_s"},
     )
-    _strict_table(root["tools"], f"{config_path}.tools", {"qw_analyze"})
+    _strict_table(
+        root["tools"],
+        f"{config_path}.tools",
+        {"qw_analyze"},
+        optional={"mvd_api", "mvd_cache_dir"},
+    )
     for table_name, table, key in (
         ("t2", t2, "duration_s"),
         ("t3", t3, "duration_s"),

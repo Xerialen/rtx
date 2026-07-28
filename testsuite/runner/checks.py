@@ -69,6 +69,77 @@ def _num_or_null(value: Any, path: str) -> None:
         _fail(path, "expected number or null")
 
 
+def _evidence(value: Any, path: str) -> None:
+    """A demo link that opens the moment a number is about.
+
+    Null is legitimate: a rig without a readable demo directory still
+    measures, it just cannot show its work.
+    """
+    if value is None:
+        return
+    item = _fields(
+        value,
+        path,
+        {"demo", "at_s", "link"},
+        {"attempt", "status", "dash", "metric", "who"},
+    )
+    _str(item["demo"], f"{path}.demo")
+    _num_or_null(item["at_s"], f"{path}.at_s")
+    link = _str(item["link"], f"{path}.link")
+    if not link.startswith("/"):
+        _fail(f"{path}.link", "expected a host-relative demo-player link")
+
+
+def _scoreboard(value: Any, path: str) -> None:
+    """The match card: final team scores and every player's line.
+
+    Null when no analyzer or no KTX block was available for that match.
+    """
+    if value is None:
+        return
+    card = _fields(
+        value,
+        path,
+        {"teams", "players", "source"},
+        {"map", "duration_s", "demo", "link"},
+    )
+    _str(card["source"], f"{path}.source")
+    for index, team in enumerate(_list(card["teams"], f"{path}.teams")):
+        team_path = f"{path}.teams[{index}]"
+        item = _fields(team, team_path, {"name", "frags"})
+        _str(item["name"], f"{team_path}.name")
+        _int(item["frags"], f"{team_path}.frags", -10_000)
+    for index, player in enumerate(_list(card["players"], f"{path}.players")):
+        player_path = f"{path}.players[{index}]"
+        item = _fields(
+            player,
+            player_path,
+            {"name", "team", "frags"},
+            {
+                "deaths",
+                "kills",
+                "tk",
+                "dmg_given",
+                "dmg_taken",
+                "speed_max",
+                "speed_avg",
+                "spree_max",
+                "link",
+            },
+        )
+        _str(item["name"], f"{player_path}.name")
+        _str(item["team"], f"{player_path}.team")
+        for field in ("frags", "deaths", "kills", "tk", "spree_max"):
+            if item.get(field) is not None:
+                _int(item[field], f"{player_path}.{field}", -10_000)
+        for field in ("dmg_given", "dmg_taken", "speed_max", "speed_avg"):
+            _num_or_null(item.get(field), f"{player_path}.{field}")
+        if item.get("link") is not None:
+            link = _str(item["link"], f"{player_path}.link")
+            if not link.startswith("/"):
+                _fail(f"{player_path}.link", "expected a host-relative link")
+
+
 def _build(value: Any, path: str) -> None:
     build = _fields(
         value, path, {"branch", "commit", "digest_md5", "dirty"}
@@ -125,8 +196,10 @@ def _t0(payload: Any, path: str) -> None:
 
 def _t1(payload: Any, path: str) -> None:
     data = _fields(
-        payload, path, {"scenarios", "dash", "verdict"}, {"regime_note"}
+        payload, path, {"scenarios", "dash", "verdict"}, {"regime_note", "demo"}
     )
+    if data.get("demo") is not None:
+        _str(data["demo"], f"{path}.demo")
     if "regime_note" in data and data["regime_note"] != "quick":
         _fail(f"{path}.regime_note", "expected 'quick'")
     all_pass = True
@@ -138,16 +211,31 @@ def _t1(payload: Any, path: str) -> None:
         item = _fields(
             value,
             item_path,
-            {"name", "attempts", "threshold", "passed", "verdict"},
+            {
+                "name",
+                "category",
+                "place",
+                "attempts",
+                "threshold",
+                "passed",
+                "verdict",
+                "evidence",
+            },
         )
         _str(item["name"], f"{item_path}.name")
+        _str(item["place"], f"{item_path}.place")
+        if item["category"] not in {"grunddrill", "cellprov"}:
+            _fail(f"{item_path}.category", "expected 'grunddrill' or 'cellprov'")
+        _evidence(item["evidence"], f"{item_path}.evidence")
         attempts = _list(item["attempts"], f"{item_path}.attempts")
         passed_count = 0
         for attempt_index, attempt_value in enumerate(attempts):
             attempt_path = f"{item_path}.attempts[{attempt_index}]"
             attempt = _fields(
-                attempt_value, attempt_path, {"status", "time_s"}
+                attempt_value, attempt_path, {"status", "time_s"}, {"demo_t_s"}
             )
+            if attempt.get("demo_t_s") is not None:
+                _num_or_null(attempt["demo_t_s"], f"{attempt_path}.demo_t_s")
             if attempt["status"] not in {
                 "passed",
                 "fell",
@@ -183,8 +271,12 @@ def _t1(payload: Any, path: str) -> None:
             _fail(f"{item_path}.verdict", f"expected {expected}")
         all_pass &= expected == "PASS"
     dash = _fields(
-        data["dash"], f"{path}.dash", {"peaks", "peak", "floor", "informative"}
+        data["dash"],
+        f"{path}.dash",
+        {"peaks", "peak", "floor", "informative"},
+        {"verdict", "place", "evidence"},
     )
+    _evidence(dash.get("evidence"), f"{path}.dash.evidence")
     peaks = _list(dash["peaks"], f"{path}.dash.peaks")
     for index, peak in enumerate(peaks):
         _int(peak, f"{path}.dash.peaks[{index}]")
@@ -195,9 +287,22 @@ def _t1(payload: Any, path: str) -> None:
         dash["floor"], (int, float)
     ):
         _fail(f"{path}.dash.floor", "expected number")
-    if dash["informative"] is not True:
-        _fail(f"{path}.dash.informative", "must be true")
-    expected_verdict = "PASS" if all_pass else "FAIL"
+    if not isinstance(dash["informative"], bool):
+        _fail(f"{path}.dash.informative", "expected boolean")
+    dash_pass = True
+    if not dash["informative"]:
+        # A graded dash owns a verdict of its own and counts toward T1.
+        expected_dash = (
+            "PASS"
+            if dash["peak"] is not None and dash["peak"] >= dash["floor"]
+            else "FAIL"
+        )
+        if dash.get("verdict") != expected_dash:
+            _fail(f"{path}.dash.verdict", f"expected {expected_dash}")
+        dash_pass = expected_dash == "PASS"
+    elif dash.get("verdict") is not None:
+        _fail(f"{path}.dash.verdict", "an informative dash carries no verdict")
+    expected_verdict = "PASS" if all_pass and dash_pass else "FAIL"
     if data["verdict"] != expected_verdict:
         _fail(f"{path}.verdict", f"expected {expected_verdict}")
 
@@ -207,8 +312,15 @@ def _t2(payload: Any, path: str) -> None:
         payload,
         path,
         {"duration_s", "regime_note", "stats", "cells", "verdict"},
-        {"peak_100m_source"},
+        {"demo", "evidence", "moments", "sources"},
     )
+    if data.get("demo") is not None:
+        _str(data["demo"], f"{path}.demo")
+    _evidence(data.get("evidence"), f"{path}.evidence")
+    for index, moment in enumerate(_list(data.get("moments", []), f"{path}.moments")):
+        _evidence(moment, f"{path}.moments[{index}]")
+    for name, source in _dict(data.get("sources", {}), f"{path}.sources").items():
+        _str(source, f"{path}.sources.{name}")
     duration = _int(data["duration_s"], f"{path}.duration_s", 1)
     expected_note = None if duration == 600 else "smoke"
     if data["regime_note"] != expected_note:
@@ -227,7 +339,6 @@ def _t2(payload: Any, path: str) -> None:
             "stall_firings",
             "polls",
             "bots",
-            "peak_100m",
         },
     )
     for field in ("quad_takes", "pent_takes", "stall_firings", "polls"):
@@ -239,19 +350,15 @@ def _t2(payload: Any, path: str) -> None:
         "speed_1s",
         "speed_100ms",
         "still_s_per_bot",
-        "peak_100m",
     ):
         _num_or_null(stats[field], f"{path}.stats.{field}")
-    if (stats["peak_100m"] is None) != ("peak_100m_source" not in data):
-        _fail(path, "peak_100m and peak_100m_source must appear together")
-    if "peak_100m_source" in data:
-        _str(data["peak_100m_source"], f"{path}.peak_100m_source")
     count_sum = reason_sum = 0
     for index, value in enumerate(_list(data["cells"], f"{path}.cells")):
         item_path = f"{path}.cells[{index}]"
         item = _fields(
-            value, item_path, {"id", "pos", "n", "reasons", "links"}
+            value, item_path, {"id", "pos", "n", "reasons", "links"}, {"evidence"}
         )
+        _evidence(item.get("evidence"), f"{item_path}.evidence")
         _str(item["id"], f"{item_path}.id")
         pos = _list(item["pos"], f"{item_path}.pos")
         if len(pos) != 3:
@@ -289,6 +396,7 @@ def _t3(payload: Any, path: str) -> None:
             "sides",
             "result",
             "readiness",
+            "scoreboard",
             "combat_lock",
             "replicate_of",
             "verdict",
@@ -337,6 +445,7 @@ def _t3(payload: Any, path: str) -> None:
         _fail(f"{path}.result.diff", f"expected {expected_diff}")
     if result["winner"] != expected_winner:
         _fail(f"{path}.result.winner", f"expected {expected_winner}")
+    _scoreboard(data["scoreboard"], f"{path}.scoreboard")
     ready = _fields(
         data["readiness"],
         f"{path}.readiness",
@@ -379,7 +488,7 @@ def _t4(payload: Any, path: str) -> None:
             value,
             item_path,
             {"skill", "frags_for", "frags_against", "win", "mvd"},
-            {"draw"},
+            {"draw", "scoreboard"},
         )
         if index >= len(expected_skills) or item["skill"] != expected_skills[index]:
             _fail(f"{item_path}.skill", "ladder must use 10,12,14,16,18,20")
@@ -404,6 +513,7 @@ def _t4(payload: Any, path: str) -> None:
         else:
             stopped = True
         _str(item["mvd"], f"{item_path}.mvd")
+        _scoreboard(item.get("scoreboard"), f"{item_path}.scoreboard")
     if _int(data["reached"], f"{path}.reached") != reached:
         _fail(f"{path}.reached", f"expected {reached}")
     _str(data["skill_verified_by"], f"{path}.skill_verified_by")

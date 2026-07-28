@@ -2,7 +2,9 @@ schema = "rtx-scenario/1"
 name = "dash_100m"
 map = "100m"
 kind = "dash"
-description = "Straight-line speed test on 100m.bsp - best peak of two clean dashes. Informative floor: shown red under 800 u/s but does not flip the T1 verdict."
+category = "fart"
+place = "100m, rak bana"
+description = "Straight-line speed test on 100m.bsp - best peak of two clean dashes. The peak must reach the 790 u/s floor; the dash is a graded drill, not a note."
 
 [run]
 start = [-32, -2100, 24]
@@ -16,5 +18,5 @@ timeout_s = 16
 cycle_bot_count = true
 
 [threshold]
-floor = 800
-informative = true
+floor = 790
+informative = false

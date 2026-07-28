@@ -2,6 +2,8 @@ schema = "rtx-scenario/1"
 name = "ra_climb"
 map = "dm3"
 kind = "goto"
+category = "grunddrill"
+place = "RA-ingången → RA-plattan (uppför trapporna)"
 description = "Climb from the floor by the RA stairs to the RA platform (z=328) without falling."
 
 [run]

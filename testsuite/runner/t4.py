@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import evidence as evidence_mod
 from .runlib import RigLifecycle, RigLock, RunRecorder, config_path
 from .t3 import (
     _IDLE_STATUSES,
@@ -201,6 +202,7 @@ def _play_rung(
     evidence_dir: Path,
     demo_dir: Path | None,
     seater: _Seater,
+    map_name: str,
 ) -> dict[str, Any]:
     t4 = config["t4"]
     duration = t4["duration_s"]
@@ -281,6 +283,9 @@ def _play_rung(
         "frags_against": frags_against,
         "win": frags_for > frags_against,
         "mvd": mvd,
+        "scoreboard": evidence_mod.match_scoreboard(
+            config, demo_dir, mvd, map_name, config["t4"]["duration_s"], config_path
+        ),
     }
     if frags_for == frags_against:
         rung["draw"] = True
@@ -340,6 +345,7 @@ def run(config: dict[str, Any]) -> Path:
                                 evidence_dir,
                                 demo_dir,
                                 seater,
+                                map_name,
                             )
                             break
                         except GateError as gate:

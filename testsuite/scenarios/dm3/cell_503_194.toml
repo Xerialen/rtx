@@ -2,6 +2,8 @@ schema = "rtx-scenario/1"
 name = "cell_503_194"
 map = "dm3"
 kind = "goto"
+category = "cellprov"
+place = "SNG-hyllan → mega (SNG MH)"
 description = "Cell transition SNG ledge onward toward mega (503 -> 194) - upstream merge criterion."
 
 [run]

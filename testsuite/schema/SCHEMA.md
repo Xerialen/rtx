@@ -65,20 +65,41 @@ stops before T1 when T0 import is missing or FAIL.
   "scenarios": [
     {
       "name": "ra_climb",
-      "attempts": [ {"status": "passed", "time_s": 5.37}, {"status": "fell", "time_s": null} ],
+      "category": "grunddrill",
+      "place": "RA-ingången → RA-plattan (uppför trapporna)",
+      "attempts": [
+        {"status": "passed", "time_s": 5.37, "demo_t_s": 12.5},
+        {"status": "fell", "time_s": null, "demo_t_s": 41.0}
+      ],
       "threshold": {"required": 10, "of": 10},
       "passed": 9,
-      "verdict": "FAIL"
+      "verdict": "FAIL",
+      "evidence": {
+        "demo": "t1-....mvd", "attempt": 2, "status": "fell", "at_s": 41.0,
+        "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-....mvd&map=dm3&duration=500&from=38.0&track=1"
+      }
     }
   ],
-  "dash": {"peaks": [527, 609], "peak": 609, "floor": 800, "informative": true},
+  "dash": {
+    "peaks": [527, 609], "peak": 609, "floor": 790, "informative": false,
+    "verdict": "FAIL", "place": "100m, rak bana", "evidence": { }
+  },
+  "demo": "t1-....mvd",
   "verdict": "FAIL"
 }
 ```
 - `attempts[].status`: `passed|fell|timeout|stall|loop|detoured|died`. `time_s` only
-  for `passed`, else null. Attempt count and order are preserved.
-- Run `verdict` = PASS iff ALL scenario thresholds hold (dash is informative: shown
-  red under floor but does not flip the verdict — matches suite.py semantics).
+  for `passed`, else null. Attempt count and order are preserved. `demo_t_s` is the
+  moment the attempt began on the run's own demo clock.
+- `category` splits the map's fixed challenges (`grunddrill`) from single-cell
+  probes (`cellprov`); `place` says in plain words where on the map it happens,
+  because a cell id tells a reader nothing.
+- `evidence` links the attempt worth watching — the first failure, else the first
+  pass — opening the demo player three seconds before it, POV on the drilling bot.
+  Null when the rig has no readable demo directory.
+- Run `verdict` = PASS iff ALL scenario thresholds hold AND the dash clears its
+  floor when it is graded (`informative: false`). An informative dash carries
+  `verdict: null` and never flips the run.
 - A quick run (3 attempts) scales thresholds like suite.py and MUST set
   `"regime_note": "quick"`; quick runs are never compared against full runs.
 
@@ -93,16 +114,28 @@ stops before T1 when T0 import is missing or FAIL.
     "pent_takes": 1, "pent_lay_avg": 2.5,
     "speed_1s": 182.0, "speed_100ms": 182.4,
     "still_s_per_bot": 226.6, "stall_firings": 687,
-    "polls": 5996, "bots": 4, "peak_100m": null
+    "polls": 5996, "bots": 4
   },
-  "cells": [ {"id": "m4569", "pos": [1984,-288,-72], "n": 350, "reasons": {"displacement": 350}, "links": {}} ],
+  "sources": {"quad_takes": "qw-analyze/items", "quad_lay_avg": "qw-analyze/items"},
+  "cells": [ {"id": "m4569", "pos": [1984,-288,-72], "n": 350, "reasons": {"displacement": 350},
+              "links": {}, "evidence": { }} ],
+  "demo": "t2-....mvd",
+  "evidence": {"demo": "t2-....mvd", "at_s": 0.0, "link": "/demo-player/?..."},
+  "moments": [ {"demo": "t2-....mvd", "metric": "quad_takes", "at_s": 33.2,
+                "who": "bot.ref1", "link": "/demo-player/?..."} ],
   "verdict": "MEASURED"
 }
 ```
 - 600 s is the acceptance regime; 300 s runs set `"regime_note": "smoke"` and are
   never compared against 600 s runs.
-- `peak_100m` is null unless a dash test ran for this build; when present it is
-  `derived` from the T1 dash and says so: `"peak_100m_source": "<t1 run_id>"`.
+- Anything the analyzer can read off the recorded demo comes from the analyzer,
+  not from a counter of our own, and `sources` names the origin per metric.
+  Availability is a property of the demo: a non-KTX rig has no demoinfo block, so
+  those metrics keep our own measurement and stay out of `sources`.
+- `evidence` opens the whole demo; `moments` links individual events (a powerup
+  taken, the longest motionless stretch) and `cells[].evidence` opens the first
+  firing of each stall zone. Speed over the 100 m profile belongs to T1's dash,
+  not here.
 - `still_s_per_bot` divides by `stats.bots` (recorded, not assumed 4).
 - Invariant, checked by the writer: `stall_firings == sum(cells[].n) == sum over
   cells of sum(reasons.values())`. Violation ⇒ `status: "failed"`.
@@ -120,6 +153,14 @@ stops before T1 when T0 import is missing or FAIL.
   ],
   "result": {"diff": 13, "winner": "branch", "oracle": "ktx-scoreboard", "mvd": "demos/....mvd"},
   "readiness": {"seats_ok": 8, "gate": "heartbeat+movement", "passed": true},
+  "scoreboard": {
+    "teams": [{"name": "brch", "frags": 87}, {"name": "ref", "frags": 74}],
+    "players": [ {"name": "bot.brch1", "team": "brch", "frags": 12, "deaths": 9,
+                  "dmg_given": 3120, "dmg_taken": 2890, "speed_max": 512.4,
+                  "speed_avg": 246.1, "spree_max": 3, "link": "/demo-player/?..."} ],
+    "map": "The Abandoned Base", "duration_s": 300, "demo": "....mvd",
+    "source": "qw-analyze/demoinfo", "link": "/demo-player/?..."
+  },
   "combat_lock": null,
   "replicate_of": null,
   "verdict": "PIPELINE-OK"
@@ -140,7 +181,8 @@ stops before T1 when T0 import is missing or FAIL.
 {
   "duration_s_per_match": 300,
   "ladder": [
-    {"skill": 10, "frags_for": 61, "frags_against": 45, "win": true, "mvd": "..."},
+    {"skill": 10, "frags_for": 61, "frags_against": 45, "win": true, "mvd": "...",
+     "scoreboard": { }},
     {"skill": 12, "frags_for": 54, "frags_against": 49, "win": true, "mvd": "..."},
     {"skill": 14, "frags_for": 42, "frags_against": 50, "win": false, "mvd": "..."}
   ],
@@ -156,6 +198,26 @@ stops before T1 when T0 import is missing or FAIL.
   of sporting outcome.
 - Draw rule: a draw does not advance the ladder and stops it (recorded as
   `"win": false, "draw": true`).
+- Every played rung carries the same `scoreboard` card as T3: the match as the
+  KTX scoreboard saw it, with a POV link per player. Null when no analyzer or no
+  demoinfo block was available for that match.
+
+## Demo evidence
+
+Numbers nobody can look at are hard to trust, so a tier that can record its own
+match does: the runner asks the server for an MVD, keeps the demo clock, and
+emits links that open the hub demo player three seconds before the moment in
+question with the POV locked to the bot the number is about.
+
+- Links are host-relative (`/demo-player/?demoUrl=%2Fdemos%2F<file>&map=<map>&duration=<s>&from=<s>&track=<userid>`),
+  so the same evidence file works on the LAN hub and behind the gated dashboard.
+- `track` is an FTE userid, read out of the demo's own `svc_updateuserinfo`
+  records — no analyzer endpoint exposes it.
+- Demo file names in links follow the publisher's URL-safe rewrite, so a KTX
+  demo called `4on4_a_vs_b[dm3]….mvd` is linked as `4on4_a_vs_b_dm3_….mvd`.
+- All of it is best effort: a rig without a readable demo directory still
+  measures everything, it just cannot show its work, and every evidence field
+  is then null.
 
 ## Fixtures
 
