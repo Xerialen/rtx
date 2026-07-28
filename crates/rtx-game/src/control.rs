@@ -824,7 +824,13 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
         None if game.nav.pending.is_some() => ("building", 0, 0, 0),
         None => ("none", 0, 0, 0),
     };
-    let maxclients = game.host.cvar(c"maxclients").max(0.0) as u32;
+    // Scan the full QW client-entity range, not just `maxclients`: as a net
+    // client, the local cvar mirrors the *advertised* maxclients (KTX caps it
+    // with k_maxclients), while our own seats can sit on higher slots when
+    // earlier connections hold the low ones — a bot on such a slot would
+    // silently vanish from Status. The is_bot/in_use filter already skips
+    // whatever else lives in 1..=32.
+    let maxclients = (game.host.cvar(c"maxclients").max(0.0) as u32).max(32);
     let mut bots = Vec::new();
     for i in 1..=maxclients {
         let ent = &game.entities[EntId(i)];
