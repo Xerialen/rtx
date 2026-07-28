@@ -119,7 +119,7 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
                 "arrive_box",
                 "regoto_max",
             },
-            {"no_progress_s", "speed_ceiling", "give_up_slack"},
+            {"no_progress_s", "speed_ceiling", "give_up_grace_s"},
         )
         _vec3(run["start"], f"{source}.run.start")
         _vec3(run["target"], f"{source}.run.target")
@@ -131,14 +131,29 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
         # An attempt ends when it can no longer succeed rather than when its
         # clock runs out. `speed_ceiling` must be above any speed the map has
         # produced, or the impossibility bound would cut attempts that were
-        # still within reach; `give_up_slack` is the margin past the time limit
-        # the bot is still allowed to aim for. Zeroes disable the two tests.
+        # still within reach; `give_up_grace_s` is how many seconds past the
+        # time limit the bot is still allowed to aim for. Zeroes disable the
+        # two tests.
         if "no_progress_s" in run:
             _number(run["no_progress_s"], f"{source}.run.no_progress_s")
+        if "no_progress_s" in run and run["no_progress_s"] < 0:
+            raise ScenarioError(f"{source}.run.no_progress_s: cannot be negative")
         if "speed_ceiling" in run:
-            _number(run["speed_ceiling"], f"{source}.run.speed_ceiling")
-        if "give_up_slack" in run:
-            _number(run["give_up_slack"], f"{source}.run.give_up_slack")
+            ceiling = _number(run["speed_ceiling"], f"{source}.run.speed_ceiling")
+            # The bound is only sound while the ceiling is above anything the
+            # engine can do; a low one would call reachable targets impossible.
+            if 0 < ceiling < 500:
+                raise ScenarioError(
+                    f"{source}.run.speed_ceiling: must exceed any speed the map "
+                    "produces (or be 0 to disable the bound)"
+                )
+        if "give_up_grace_s" in run:
+            grace = _number(run["give_up_grace_s"], f"{source}.run.give_up_grace_s")
+            if grace < 0:
+                raise ScenarioError(
+                    f"{source}.run.give_up_grace_s: cannot be negative — a "
+                    "deadline before the limit would fail arrivals that passed"
+                )
         threshold = _fields(
             root["threshold"],
             f"{source}.threshold",

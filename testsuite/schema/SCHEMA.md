@@ -95,9 +95,13 @@ stops before T1 when T0 import is missing or FAIL.
 - `attempts[].status`: `passed|slow|fell|timeout|stall|loop|detoured|died`. `time_s`
   exactly for the two arriving statuses (`passed`, `slow`), else null. Attempt count
   and order are preserved. `demo_t_s` is the moment the attempt began on the run's
-  own demo clock. `timeout` covers both running the clock out and being cut short
-  once past the time limit with the bot no longer moving (`run.no_progress_s`);
-  either way it did not arrive.
+  own demo clock. `timeout` covers three ways of not arriving: running the clock
+  out, being cut short once reaching the target in time became impossible (then
+  the attempt also carries `min_possible_s`, the bound it could not have beaten),
+  and being cut short past the time limit with the bot no longer moving. A cut
+  attempt is indistinguishable from one that never would have arrived, which is
+  the price of not waiting — `run.give_up_grace_s` sets how many seconds past
+  the limit the bot is still allowed to aim for.
 - `threshold.reference_time_s` and `threshold.max_time_s` are optional and come as a
   pair: the time the owner ran the route in, and the slowest arrival still counted as
   a pass (a limit faster than its own reference is rejected). With them set, an
@@ -222,6 +226,33 @@ stops before T1 when T0 import is missing or FAIL.
   KTX scoreboard saw it, with a POV link per player. Null when no analyzer or no
   demoinfo block was available for that match.
 
+## The match card
+
+`scoreboard` is the public hub's game page, column for column, taken from its own
+source (`vikpe/servers.qwlan.pl`, `DemoStats.tsx`) so a lab match reads like a
+real one instead of like an invention of ours. Team rows carry the same line as
+player rows because the hub renders both through the same row:
+
+```
+frags · efficiency · kills · deaths · suicides ("Bores") · tk ("TKs")
+dmg_given · dmg_taken · dmg_enemy_weapons ("EWEP") · taken_to_die ("To Die")
+ga · ya · ra · mh · sg_acc · lg_acc · rl_direct ("RL#", direct hits)
+quad · pent · ring · lg/rl taken-kills-dropped
+```
+
+The hub's table changes with the mode: teamplay adds Team and the powerup
+columns and drops S.Frags, team deathmatch adds TKs and EWEP. Ours is always
+team deathmatch, so that is the template it follows. Players also carry `ping`
+and `top_color`/`bottom_color`, which is what the frag box is painted with.
+
+Three of these are computed rather than read, the way KTX computes them:
+efficiency is `kills / (kills + deaths)`, the two accuracies are `hits /
+attacks` and stay null when nothing was fired, and `taken_to_die` is
+`taken // deaths` — an average, so it is recomputed on a team row instead of
+summed. ktxstats serialises with serde defaults, so a counter the player never
+touched has no key at all: absence means none, not unknown, and it reads as
+zero.
+
 ## Demo evidence
 
 Numbers nobody can look at are hard to trust, so a tier that can record its own
@@ -231,6 +262,10 @@ question with the POV locked to the bot the number is about.
 
 - Links are host-relative (`/demo-player/?demoUrl=%2Fdemos%2F<file>&map=<map>&duration=<s>&from=<s>&track=<userid>`),
   so the same evidence file works on the LAN hub and behind the gated dashboard.
+  Host-relative is not enough on its own — both surfaces have to actually hold
+  the demo at that path. The publisher mirrors every published demo into the
+  hub's static `demos/` directory for exactly that reason; without it a link
+  pasted on the hub opens the player and then finds nothing.
 - `from` is whole seconds — the player parses it with `parseInt`, so a fractional
   value would truncate silently and the URL would claim a start it never honours.
   It is truncated downwards, which keeps the lead at or above three seconds. The

@@ -69,14 +69,28 @@ def _outcome(
     # measuring distance to the target punished routes that swing wide before
     # they close and turned `slow 15 s` into a bare timeout.
     ceiling = run.get("speed_ceiling", 850.0)
-    slack = run.get("give_up_slack", 0.10)
+    # Flat seconds, not a share of the limit: the cost being bounded is the
+    # waiting, and waiting is measured in seconds. A multiplier would spend the
+    # most extra time on the routes that are already the slowest, which is
+    # exactly where the extra time is worth least.
+    grace = run.get("give_up_grace_s", 5.0)
     limit = scenario["threshold"].get("max_time_s")
-    deadline = limit * (1.0 + slack) if limit is not None else run["timeout_s"]
+    deadline = limit + grace if limit is not None else run["timeout_s"]
     no_progress_s = run.get("no_progress_s", 4.0)
     late_after = limit if limit is not None else run["timeout_s"] / 2
     moved = 0.0
     window_began = began
-    previous_position: list[float] | None = None
+    # Seeded with the point the bot was teleported to, so ground covered before
+    # the first status sample counts. Starting from None credited the bot with
+    # nothing until sample two and could cut a moving attempt on its first
+    # window.
+    previous_position: list[float] = list(start)
+
+    def inside_box(where: list[float]) -> bool:
+        return (
+            abs(where[0] - target[0]) < run["arrive_box"]
+            and abs(where[1] - target[1]) < run["arrive_box"]
+        )
     while time.monotonic() - began < run["timeout_s"]:
         bots = control.request("status")["data"].get("bots", [])
         bot = next(
@@ -91,8 +105,7 @@ def _outcome(
         # The give-up test itself waits until the bottom of the loop: an attempt
         # that fell, died or detoured should say so rather than be written off
         # as a bot that stopped moving.
-        if previous_position is not None:
-            moved += math.dist(position, previous_position)
+        moved += math.dist(position, previous_position)
         previous_position = position
         if (
             fall_gate
@@ -119,10 +132,7 @@ def _outcome(
         if stalled:
             return {"status": "stall", "time_s": None, "demo_t_s": demo_t}
         if arrived:
-            if (
-                abs(position[0] - target[0]) < run["arrive_box"]
-                and abs(position[1] - target[1]) < run["arrive_box"]
-            ):
+            if inside_box(position):
                 if crossing and not crossed:
                     return {"status": "detoured", "time_s": None, "demo_t_s": demo_t}
                 elapsed = round(time.monotonic() - began, 2)
@@ -140,18 +150,25 @@ def _outcome(
             control.request(f"goto {bot_id} {_coordinates(target)}")
         # The soonest this attempt could still reach the target, if it travelled
         # the rest in a straight line at a speed nothing here has ever reached.
-        earliest = (now - began) + math.dist(position, target) / ceiling
-        if ceiling > 0 and earliest > deadline:
-            return {
-                "status": "timeout",
-                "time_s": None,
-                "demo_t_s": demo_t,
-                "min_possible_s": round(earliest, 2),
-            }
+        # Distance is measured the way arrival is judged — on X and Y — so a bot
+        # already standing in the arrive box cannot be written off over a height
+        # difference while its `arrived` event is still in flight.
+        if ceiling > 0 and not inside_box(position):
+            earliest = (now - began) + math.dist(position[:2], target[:2]) / ceiling
+            if earliest > deadline:
+                return {
+                    "status": "timeout",
+                    "time_s": None,
+                    "demo_t_s": demo_t,
+                    "min_possible_s": round(earliest, 2),
+                }
         if no_progress_s > 0 and now - window_began >= no_progress_s:
             # A bot that is running covers hundreds of units in four seconds;
             # this floor only catches one that is wedged or spinning in place.
-            if now - began > late_after and moved < 64.0:
+            # The window has to lie entirely after the arming point, or a bot
+            # that stood still early would be cut on ground it was still
+            # allowed to make up.
+            if window_began - began >= late_after and moved < 64.0:
                 return {"status": "timeout", "time_s": None, "demo_t_s": demo_t}
             moved = 0.0
             window_began = now

@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import sys
 
-from runner import selftest, t0_import, t1, t2, t3, t4
+from runner import selftest, sweep, t0_import, t1, t2, t3, t4
 from runner.checks import ValidationError
 from runner.runlib import ConfigError, RunAborted, load_config
 from runner.scenario import ScenarioError
@@ -59,6 +59,23 @@ def _parser() -> argparse.ArgumentParser:
         "t3", help="run one branch-vs-reference match on the prepared KTX server"
     )
     commands.add_parser("t4", help="climb the frogbot skill ladder")
+
+    sweep_parser = commands.add_parser(
+        "sweep", help="run the same tiers against every build in [sweep]"
+    )
+    sweep_parser.add_argument(
+        "--scenarios",
+        default=str(ROOT / "scenarios" / "dm3"),
+        help="scenario TOML file or directory",
+    )
+    sweep_parser.add_argument(
+        "--quick", action="store_true", help="run three attempts per drill"
+    )
+    sweep_parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="run even though a checkout has uncommitted changes",
+    )
     selftest_parser = commands.add_parser(
         "selftest", help="run the offline schema conformance fixtures"
     )
@@ -104,6 +121,27 @@ def main(argv: list[str] | None = None) -> int:
             path = t4.run(config)
             print(path)
             return 0
+        if args.command == "sweep":
+            path = sweep.run(
+                args.config,
+                args.scenarios,
+                quick=args.quick,
+                allow_dirty=args.allow_dirty,
+            )
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            print(path)
+            for column in manifest["columns"]:
+                runs = " ".join(
+                    f"{run['tier']}:{run.get('verdict') or run['status']}"
+                    for run in column["runs"]
+                )
+                print(f"  {column['label']} {column['commit'][:8]} {runs}")
+            failed = any(
+                run["status"] != "complete"
+                for column in manifest["columns"]
+                for run in column["runs"]
+            )
+            return 1 if failed else 0
     except RunAborted:
         return 130
     except (

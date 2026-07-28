@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import gzip
 import hashlib
+import math
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -121,59 +122,147 @@ def _speeds(document: Any) -> dict[str, Measurement]:
     }
 
 
+def _half_up(value: float) -> int:
+    """Round half away from zero, the way the hub's JavaScript rounds.
+
+    Python rounds halves to even, so a percentage landing exactly on .5 would
+    differ from the site this table mirrors by one.
+    """
+    return int(math.floor(value + 0.5)) if value >= 0 else -int(math.floor(-value + 0.5))
+
+
 def _number(value: Any, digits: int = 1) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return round(float(value), digits)
 
 
-def scoreboard(document: Any) -> dict[str, Any]:
-    """The match as the scoreboard saw it: teams, order, per-player stats.
+def _int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
-    Straight off the KTX demoinfo block, which is the same source the public
-    hub renders its game pages from — so a lab match reads like a real one.
+
+def _leaf(entry: dict[str, Any], *path: str) -> int:
+    """A counter out of the demoinfo tree, treating absence as zero.
+
+    ktxstats serialises with serde defaults, so a player who never took an
+    armour or fired a shotgun simply has no key for it. Absence therefore means
+    none, not unknown, and reading it as zero is what makes the totals add up.
+    """
+    node: Any = entry
+    for key in path:
+        if not isinstance(node, dict):
+            return 0
+        node = node.get(key)
+    if isinstance(node, bool) or node is None:
+        return 0
+    if isinstance(node, (int, float)):
+        return node
+    # A counter that arrived as something other than a number is a reading
+    # error, not a zero: silently counting it as none would hide the mismatch.
+    raise AnalyzerError(f"demoinfo counter {'.'.join(path)} is {type(node).__name__}")
+
+
+# The public hub's game page, column by column, from its own source
+# (vikpe/servers.qwlan.pl DemoStats.tsx). Efficiency, the two accuracies and
+# the team rows are computed exactly the way it computes them, so a lab match
+# and a real match are read the same way.
+def _line(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """One scoreboard row: a single player, or a team as the sum of its players."""
+    kills = sum(_leaf(e, "stats", "kills") for e in entries)
+    deaths = sum(_leaf(e, "stats", "deaths") for e in entries)
+    taken = sum(_leaf(e, "dmg", "taken") for e in entries)
+    sg_attacks = sum(_leaf(e, "weapons", "sg", "acc", "attacks") for e in entries)
+    sg_hits = sum(_leaf(e, "weapons", "sg", "acc", "hits") for e in entries)
+    lg_attacks = sum(_leaf(e, "weapons", "lg", "acc", "attacks") for e in entries)
+    lg_hits = sum(_leaf(e, "weapons", "lg", "acc", "hits") for e in entries)
+    return {
+        "frags": sum(_leaf(e, "stats", "frags") for e in entries),
+        "kills": kills,
+        "deaths": deaths,
+        # The share of a player's engagements they won, rounded as KTX rounds it.
+        "efficiency": _half_up(100 * kills / (kills + deaths)) if kills + deaths else None,
+        "suicides": sum(_leaf(e, "stats", "suicides") for e in entries),
+        "tk": sum(_leaf(e, "stats", "tk") for e in entries),
+        "spawn_frags": sum(_leaf(e, "stats", "spawn-frags") for e in entries),
+        "dmg_given": sum(_leaf(e, "dmg", "given") for e in entries),
+        "dmg_taken": taken,
+        "dmg_enemy_weapons": sum(_leaf(e, "dmg", "enemy-weapons") for e in entries),
+        # An average, so it is recomputed rather than summed — adding one
+        # player's average to another's would be meaningless on a team row.
+        # KTX truncates this division and so do we, to land on its own number.
+        "taken_to_die": taken // deaths if deaths else None,
+        "ga": sum(_leaf(e, "items", "ga", "took") for e in entries),
+        "ya": sum(_leaf(e, "items", "ya", "took") for e in entries),
+        "ra": sum(_leaf(e, "items", "ra", "took") for e in entries),
+        "mh": sum(_leaf(e, "items", "health_100", "took") for e in entries),
+        "quad": sum(_leaf(e, "items", "q", "took") for e in entries),
+        "pent": sum(_leaf(e, "items", "p", "took") for e in entries),
+        "ring": sum(_leaf(e, "items", "r", "took") for e in entries),
+        # Blank rather than zero when nothing was fired — the hub hides the cell.
+        "sg_acc": _half_up(100 * sg_hits / sg_attacks) if sg_attacks else None,
+        "lg_acc": _half_up(100 * lg_hits / lg_attacks) if lg_attacks else None,
+        "rl_direct": sum(_leaf(e, "weapons", "rl", "acc", "hits") for e in entries),
+        "lg_taken": sum(_leaf(e, "weapons", "lg", "pickups", "taken") for e in entries),
+        "lg_kills": sum(_leaf(e, "weapons", "lg", "kills", "enemy") for e in entries),
+        "lg_dropped": sum(_leaf(e, "weapons", "lg", "pickups", "dropped") for e in entries),
+        "rl_taken": sum(_leaf(e, "weapons", "rl", "pickups", "taken") for e in entries),
+        "rl_kills": sum(_leaf(e, "weapons", "rl", "kills", "enemy") for e in entries),
+        "rl_dropped": sum(_leaf(e, "weapons", "rl", "pickups", "dropped") for e in entries),
+    }
+
+
+def scoreboard(document: Any) -> dict[str, Any]:
+    """The match as the scoreboard saw it, laid out the way the hub lays it out.
+
+    Straight off the KTX demoinfo block, which is the same source the public hub
+    renders its game pages from. The rows and their order are the hub's, so a lab
+    match reads like a real one instead of like our own invention: team rows
+    first when the match is teamplay, then the players.
+
+    Our own additions — speed and the longest spree — ride along on each player
+    for the panels that want them; the hub's table does not show them.
     """
     if not isinstance(document, dict) or not isinstance(document.get("players"), list):
         raise AnalyzerError("demoinfo document has no player list")
+    entries = [entry for entry in document["players"] if isinstance(entry, dict)]
+    mode = document.get("mode") if isinstance(document.get("mode"), str) else None
+    by_team: dict[str, list[dict[str, Any]]] = {}
     players = []
-    team_frags: dict[str, int] = {}
-    for entry in document["players"]:
-        if not isinstance(entry, dict):
-            continue
-        stats = entry.get("stats") if isinstance(entry.get("stats"), dict) else {}
-        damage = entry.get("dmg") if isinstance(entry.get("dmg"), dict) else {}
+    for entry in entries:
+        team = entry.get("team") if isinstance(entry.get("team"), str) else ""
+        by_team.setdefault(team, []).append(entry)
         speed = entry.get("speed") if isinstance(entry.get("speed"), dict) else {}
         spree = entry.get("spree") if isinstance(entry.get("spree"), dict) else {}
-        team = entry.get("team") if isinstance(entry.get("team"), str) else ""
-        frags = stats.get("frags")
-        if isinstance(frags, int):
-            team_frags[team] = team_frags.get(team, 0) + frags
         players.append(
             {
                 "name": entry.get("name") if isinstance(entry.get("name"), str) else "?",
                 "team": team,
-                "frags": frags if isinstance(frags, int) else None,
-                "deaths": stats.get("deaths") if isinstance(stats.get("deaths"), int) else None,
-                "kills": stats.get("kills") if isinstance(stats.get("kills"), int) else None,
-                "tk": stats.get("tk") if isinstance(stats.get("tk"), int) else None,
-                "dmg_given": _number(damage.get("given"), 0),
-                "dmg_taken": _number(damage.get("taken"), 0),
+                "ping": _int(entry.get("ping")),
+                "top_color": _int(entry.get("topColor")),
+                "bottom_color": _int(entry.get("bottomColor")),
                 "speed_max": _number(speed.get("max")),
                 "speed_avg": _number(speed.get("avg")),
-                "spree_max": spree.get("max") if isinstance(spree.get("max"), int) else None,
+                "spree_max": _int(spree.get("max")),
                 "link": None,
+                **_line([entry]),
             }
         )
-    players.sort(key=lambda player: (player["team"], -(player["frags"] or 0)))
+    players.sort(key=lambda player: (player["team"], -player["frags"]))
     teams = [
-        {"name": name, "frags": frags}
-        for name, frags in sorted(team_frags.items(), key=lambda item: -item[1])
+        {"name": name, **_line(group)}
+        for name, group in sorted(
+            by_team.items(), key=lambda item: -sum(_leaf(e, "stats", "frags") for e in item[1])
+        )
+        if name
     ]
     return {
         "teams": teams,
         "players": players,
         "map": document.get("map") if isinstance(document.get("map"), str) else None,
         "duration_s": _number(document.get("duration"), 0),
+        "mode": mode,
+        "hostname": document.get("hostname") if isinstance(document.get("hostname"), str) else None,
+        "date": document.get("date") if isinstance(document.get("date"), str) else None,
         "source": "qw-analyze/demoinfo",
     }
 

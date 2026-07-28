@@ -59,3 +59,25 @@ rtx_bot_count = "0"
 
 [tools]
 qw_analyze = ""             # path to qw-analyze binary (combat lock); empty = combat_lock skipped
+
+# Optional: run the same tiers against several builds, one at a time.
+#   python3 testflow.py sweep
+# The sweep refuses to start while any target's checkout has uncommitted
+# changes, because build identity is captured when a run starts — a tree that
+# moves mid-sweep splits its own column across two build ids.
+[sweep]
+deploy_to = "/home/you/.local/share/qw-fasttrack/runtime/qw/qwprogs.so"
+restart_cmd = "systemctl --user restart fasttrack-server"
+boot_wait_s = 20
+tiers = ["t1", "t2"]        # default for targets that do not say otherwise
+restore = "branch"          # whose library goes back on the rig afterwards
+
+[[sweep.target]]
+label = "branch"
+config = "config.toml"
+library = "target/release/librtx.so"
+
+[[sweep.target]]
+label = "main"
+config = "config-main.toml"
+library = "/home/you/projects/rtx/target/release/librtx.so"

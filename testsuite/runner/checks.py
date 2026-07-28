@@ -92,6 +92,10 @@ def _evidence(value: Any, path: str) -> None:
     # The whole point of the link is the three seconds of run-up, so the lead
     # is part of the contract rather than a detail of how the URL was built.
     start = parse_qs(urlparse(link).query).get("from")
+    if item["at_s"] is not None and not start:
+        # Without `from` the player opens at zero, so a link that carries a
+        # moment but no start is not evidence of that moment at all.
+        _fail(f"{path}.link", "carries a moment but no 'from' to open at")
     if start and item["at_s"] is not None:
         try:
             lead = float(item["at_s"]) - float(start[0])
@@ -108,8 +112,28 @@ def _evidence(value: Any, path: str) -> None:
                 )
 
 
+# The hub game page's own columns. Team rows and player rows carry the same
+# line, because the hub renders them through the same row.
+SCORE_LINE = (
+    "frags", "efficiency", "kills", "spawn_frags", "deaths", "suicides", "tk",
+    "dmg_given", "dmg_taken", "dmg_enemy_weapons", "taken_to_die",
+    "ga", "ya", "ra", "mh", "quad", "pent", "ring",
+    "sg_acc", "lg_acc", "rl_direct",
+    "lg_taken", "lg_kills", "lg_dropped", "rl_taken", "rl_kills", "rl_dropped",
+)
+SCORE_EXTRAS = ("ping", "top_color", "bottom_color", "speed_max", "speed_avg", "spree_max")
+
+
+def _percentages(line: dict[str, Any], path: str) -> None:
+    """Efficiency and the two accuracies are shares; a team row is no exception."""
+    for field in ("efficiency", "sg_acc", "lg_acc"):
+        share = line.get(field)
+        if share is not None and not 0 <= share <= 100:
+            _fail(f"{path}.{field}", "a percentage outside 0-100")
+
+
 def _scoreboard(value: Any, path: str) -> None:
-    """The match card: final team scores and every player's line.
+    """The match card: the match as KTX's own scoreboard saw it.
 
     Null when no analyzer or no KTX block was available for that match.
     """
@@ -119,39 +143,29 @@ def _scoreboard(value: Any, path: str) -> None:
         value,
         path,
         {"teams", "players", "source"},
-        {"map", "duration_s", "demo", "link"},
+        {"map", "duration_s", "demo", "link", "mode", "hostname", "date"},
     )
     _str(card["source"], f"{path}.source")
     for index, team in enumerate(_list(card["teams"], f"{path}.teams")):
         team_path = f"{path}.teams[{index}]"
-        item = _fields(team, team_path, {"name", "frags"})
+        item = _fields(team, team_path, {"name", "frags"}, set(SCORE_LINE) | set(SCORE_EXTRAS))
         _str(item["name"], f"{team_path}.name")
-        _int(item["frags"], f"{team_path}.frags", -10_000)
+        for field in SCORE_LINE:
+            _num_or_null(item.get(field), f"{team_path}.{field}")
+        _percentages(item, team_path)
     for index, player in enumerate(_list(card["players"], f"{path}.players")):
         player_path = f"{path}.players[{index}]"
         item = _fields(
             player,
             player_path,
             {"name", "team", "frags"},
-            {
-                "deaths",
-                "kills",
-                "tk",
-                "dmg_given",
-                "dmg_taken",
-                "speed_max",
-                "speed_avg",
-                "spree_max",
-                "link",
-            },
+            set(SCORE_LINE) | set(SCORE_EXTRAS) | {"link"},
         )
         _str(item["name"], f"{player_path}.name")
         _str(item["team"], f"{player_path}.team")
-        for field in ("frags", "deaths", "kills", "tk", "spree_max"):
-            if item.get(field) is not None:
-                _int(item[field], f"{player_path}.{field}", -10_000)
-        for field in ("dmg_given", "dmg_taken", "speed_max", "speed_avg"):
+        for field in SCORE_LINE + SCORE_EXTRAS:
             _num_or_null(item.get(field), f"{player_path}.{field}")
+        _percentages(item, player_path)
         if item.get("link") is not None:
             link = _str(item["link"], f"{player_path}.link")
             if not link.startswith("/"):
@@ -315,7 +329,21 @@ def _t1(payload: Any, path: str) -> None:
             _fail(item_path, "'slow' requires a max_time_s to be slow against")
         if "arrived" in item and _int(item["arrived"], f"{item_path}.arrived") != arrived_count:
             _fail(f"{item_path}.arrived", "must equal attempts that reached the target")
-        _num_or_null(item.get("best_time_s"), f"{item_path}.best_time_s")
+        best = item.get("best_time_s")
+        _num_or_null(best, f"{item_path}.best_time_s")
+        # It has to be the fastest arrival that is actually in the list, or the
+        # number the dashboard shows is not from this run.
+        times = [a["time_s"] for a in attempts if a.get("time_s") is not None]
+        if best is None and times:
+            _fail(f"{item_path}.best_time_s", "attempts arrived but no best time")
+        if best is not None:
+            if not times:
+                _fail(f"{item_path}.best_time_s", "a best time with no arrival")
+            elif abs(best - min(times)) > 0.011:
+                _fail(
+                    f"{item_path}.best_time_s",
+                    f"must be the fastest arrival ({min(times)}), not {best}",
+                )
         required = _int(
             threshold["required"], f"{item_path}.threshold.required", 1
         )

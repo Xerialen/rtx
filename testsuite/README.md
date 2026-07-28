@@ -122,17 +122,34 @@ A `goto` scenario declares:
 
 - `run.start` and `run.target` three-dimensional coordinates.
 - `attempts`, `timeout_s`, `pause_s`, `arrive_box`, and `regoto_max`.
-- Optional `run.no_progress_s` (default 4 s, zero disables): once an attempt is
-  past the time it had to beat, it ends as soon as the bot has stopped moving —
-  less than 64 units covered in the window — instead of running the clock out.
-  Drills with no time limit arm the rule at half their timeout.
+- Optional `run.speed_ceiling` (default 850 u/s), `run.give_up_grace_s`
+  (default 5 s) and `run.no_progress_s` (default 4 s; zeroes disable either
+  test). An attempt ends the moment it can no longer succeed rather than when
+  its clock runs out, which is what the drills spend most of their wall time on.
 
-  The test is ground *covered*, not ground *gained*. Measuring distance to the
-  target instead punished the routes that swing wide before they close:
+  Two independent ways of knowing that. **Impossible**: elapsed time plus the
+  straight-line distance left over the speed ceiling exceeds the time limit plus
+  the grace. The grace is flat seconds rather than a share of the limit, because
+  the cost being bounded is the waiting and waiting is measured in seconds — a
+  multiplier spends the most extra time on the routes that are already slowest,
+  which is where it is worth least. Straight-line understates the real path and the ceiling is above
+  anything the map has produced, so it only ever fires when arriving in time is
+  genuinely out of reach; the attempt records `min_possible_s`, the bound it
+  could not have beaten. **Wedged**: the bound above goes quiet when a bot is
+  stuck a few units from the target, so past the time limit an attempt that
+  covers less than 64 units in the window ends too.
+
+  Measure ground *covered*, never ground *gained*. An earlier version measured
+  distance to the target and punished routes that swing wide before they close:
   `hex_quad_to_sng` went from `slow 15 s`, the number that shows how far the bot
-  is from a human, to a bare `timeout`. A bot still travelling is still running
-  the route however indirect its path. The test also sits after the outcome
+  is from a human, to a bare `timeout`. Both tests also sit after the outcome
   classifications, so falling, dying and detouring keep their own names.
+
+  The trade is real: an attempt cut before it arrives is recorded as a timeout,
+  so a bot that would have got there late becomes indistinguishable from one
+  that never gets there at all. Widen `give_up_grace_s` to buy that back — on
+  DM3 the measured arrivals sit between 0.8 and 16 seconds past their limit, so
+  five seconds keeps the near misses and drops the hopeless ones.
 - `threshold.required`.
 - Optional `setup.plant_links`.
 - Optional `fail.fall_gate` and/or `fail.crossing`.
@@ -182,6 +199,40 @@ with the same ratio as a full run. Quick evidence is marked `regime_note:
 The DM3 scenarios live in [`scenarios/dm3`](scenarios/dm3). The jump drills are
 anchored on demos of the owner's own runs of those routes, so the coordinates
 are the ones a human actually used rather than derived from the navmesh.
+
+## Sweeping several builds
+
+Comparing branches means running each of them through identical work on the same
+rig. `[sweep]` in the configuration declares the builds and
+`python3 testflow.py sweep` walks them one at a time: install that build's
+library, restart the server, run its tiers, move on, and put the baseline back
+at the end whatever happened.
+
+```toml
+[sweep]
+deploy_to = "/…/qw-fasttrack/runtime/qw/qwprogs.so"
+restart_cmd = "systemctl --user restart fasttrack-server"
+boot_wait_s = 20
+tiers = ["t1", "t2"]
+restore = "branch"
+
+[[sweep.target]]
+label = "branch"
+config = "config.toml"
+library = "target/release/librtx.so"
+```
+
+The sweep refuses to start while any target's checkout has uncommitted changes,
+because build identity is captured when a run starts: a commit or an edit
+landing mid-sweep splits that column across two build ids, and nothing warns
+you — the evidence simply arrives in two groups that cannot be compared.
+`--allow-dirty` overrides it when the dirtiness is deliberate.
+
+It writes one `sweep-<stamp>.json` manifest recording, per column, the branch,
+commit, dirty flag, the md5 of the library that actually played, and every run
+id it produced — plus a digest over the scenario files, which is the cheap proof
+that all columns answered the same questions. A tier that fails is recorded and
+the sweep continues; only an abort stops it.
 
 ## Evidence safety and conformance
 

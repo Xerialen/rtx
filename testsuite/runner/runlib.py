@@ -54,7 +54,10 @@ def load_config(path: str | Path) -> dict[str, Any]:
     root = _strict_table(
         config,
         str(config_path),
-        {"schema", "server", "paths", "build", "t2", "t3", "t4", "tools", "restore"},
+        {"schema", "server", "paths", "build", "t2", "t3", "t4", "tools", "restore",
+         # [sweep] drives several builds through the same tiers; its own
+         # module validates the contents, this only admits the section.
+         "sweep"},
     )
     restore = config.get("restore", {})
     if not isinstance(restore, dict) or not all(

@@ -315,25 +315,29 @@
   .metric-line span:first-child { color: var(--muted); }
 
   .matchcard { border: 1px solid var(--rule); background: var(--panel-2); }
-  .mc-head {
-    display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center;
-    gap: 8px 20px; padding: 13px 14px; border-bottom: 1px solid var(--rule-2);
-  }
-  .mc-team { display: inline-flex; align-items: baseline; gap: 9px; }
-  .mc-team .name { color: var(--ink-2); font: 600 12px var(--mono); }
-  .mc-team .frags { font: 700 27px var(--mono); }
-  .mc-team.winner .frags { color: var(--good); }
-  .mc-vs { color: var(--muted); font: 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+  .mc-title { padding: 12px 13px 2px; font: 600 15px/1.3 var(--mono); }
+  .mc-sub { padding: 0 13px 11px; color: var(--muted); font: 10.5px var(--mono); }
   .mc-wrap { overflow-x: auto; }
-  table.mc-table { width: 100%; min-width: 660px; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  table.mc-table { width: 100%; min-width: 900px; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   table.mc-table th {
     padding: 6px 8px; border-bottom: 1px solid var(--rule); color: var(--muted);
-    font: 600 9.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; text-align: right;
+    font: 600 9.5px var(--mono); text-transform: uppercase; letter-spacing: .06em; text-align: right;
+    white-space: nowrap;
   }
-  table.mc-table th:first-child, table.mc-table th:nth-child(2) { text-align: left; }
-  table.mc-table td { padding: 6px 8px; border-bottom: 1px solid var(--rule-2); text-align: right; font: 10.5px var(--mono); }
-  table.mc-table td:first-child, table.mc-table td:nth-child(2) { text-align: left; }
-  table.mc-table td:nth-child(2) { color: var(--muted); }
+  table.mc-table th:nth-child(2), table.mc-table th:nth-child(3) { text-align: left; }
+  table.mc-table td { padding: 5px 8px; border-bottom: 1px solid var(--rule-2); text-align: right; font: 10.5px var(--mono); }
+  table.mc-table td.mc-teamcell, table.mc-table td.mc-namecell { text-align: left; }
+  table.mc-table td.mc-teamcell { color: var(--muted); }
+  /* Fragrutan bär spelarens egna färger, som på hubben. */
+  .mc-fragcell { text-align: center !important; }
+  .mc-frags {
+    display: inline-block; min-width: 34px; padding: 1px 5px; background: var(--mesh-mid);
+    color: var(--halo); font: 700 11px var(--mono); text-align: center;
+    text-shadow: 0 0 2px rgba(0,0,0,.85);
+  }
+  .mc-row.team td { border-bottom: 1px solid var(--rule); font-weight: 600; }
+  .mc-row.team.winner .mc-frags { outline: 2px solid var(--good); outline-offset: 1px; }
+  .mc-gap td { height: 9px; border: 0; padding: 0; }
   .mc-row.a td:first-child { border-left: 3px solid var(--accent); }
   .mc-row.b td:first-child { border-left: 3px solid var(--arc); }
   a.mc-player { color: var(--ink); text-decoration: underline dotted; text-underline-offset: 2px; }
@@ -531,7 +535,9 @@ function term(label, key) {
 // Bevislänkar är alltid host-relativa och öppnas i ny flik. Allt annat
 // (null, saknat fält, absolut URL) renderas inte alls.
 function hostRelative(value) {
-  return typeof value === "string" && value.charAt(0) === "/" ? value : null;
+  // "//host/path" starts with a slash but is protocol-relative: another origin.
+  if (typeof value !== "string" || value.charAt(0) !== "/") return null;
+  return value.charAt(1) === "/" ? null : value;
 }
 
 function linkTag(href, label, title, className) {
@@ -942,28 +948,81 @@ function sideColumn(title, side, refSide) {
   }).join("") + "</div>";
 }
 
+// Hubbens spelsida, kolumn för kolumn ur dess egen källa
+// (vikpe/servers.qwlan.pl, DemoStats.tsx). Lagläge lägger till Team, TKs och
+// EWEP och tar bort S.Frags; teamplay lägger till Q/P/R. Vi kör alltid lagläge,
+// så listan nedan är den mallen — inte 1on1-mallen.
 const SCOREBOARD_COLUMNS = [
-  ["frags", "frags"], ["deaths", "deaths"], ["dmg_given", "dmg +"], ["dmg_taken", "dmg −"],
-  ["speed_max", "fart max"], ["speed_avg", "fart snitt"], ["spree_max", "spree"]
+  ["efficiency", "Eff", "%"], ["kills", "Kills"], ["deaths", "Deaths"],
+  ["suicides", "Bores"], ["tk", "TKs"],
+  ["dmg_given", "Given"], ["dmg_taken", "Taken"], ["dmg_enemy_weapons", "EWEP"],
+  ["taken_to_die", "To Die"],
+  ["ga", "GA"], ["ya", "YA"], ["ra", "RA"], ["mh", "MH"],
+  ["sg_acc", "SG%", "%"], ["lg_acc", "LG%", "%"], ["rl_direct", "RL#"],
+  ["quad", "Q"], ["pent", "P"], ["ring", "R"]
 ];
 
-// Matchkortet i hubbens anda: lagen med slutresultatet överst, sedan varje
-// spelares rad. Null-kort och saknade fält faller tillbaka på “–”.
+const SCOREBOARD_TITLES = {
+  "Eff": "Andelen av spelarens dueller som slutade med en frag: kills delat med kills plus deaths.",
+  "Bores": "Självmord.",
+  "TKs": "Frags på egna lagkamrater.",
+  "EWEP": "Skada gjord på fiendens vapen.",
+  "To Die": "Skada spelaren tålde i snitt per död.",
+  "GA": "Gröna rustningar tagna.", "YA": "Gula rustningar tagna.",
+  "RA": "Röda rustningar tagna.", "MH": "Megahealth tagna.",
+  "SG%": "Träffprocent med hagelbössan.", "LG%": "Träffprocent med blixtgeväret.",
+  "RL#": "Direktträffar med raketgeväret.",
+  "Q": "Quad tagna.", "P": "Pentagram tagna.", "R": "Ring tagna."
+};
+
+// QuakeWorlds spelarfärger, som hubben ritar dem i fragrutan.
+const QW_COLORS = ["#fff", "#8f5b2a", "#7a1a1a", "#1a4d7a", "#c8b400", "#8f2ac8",
+  "#e05b00", "#e0e0e0", "#7a3ac8", "#c800c8", "#00a0a0", "#00a000",
+  "#e0c800", "#2a5be0", "#e08000", "#e02020"];
+const qwColor = index => QW_COLORS[(index | 0) % 16] || "#666";
+
+function scoreCell(value, suffix) {
+  if (value == null) return "–";
+  return fmt(value) + (suffix || "");
+}
+
+// Fragrutan: siffran mot spelarens skjort- och byxfärg, som på hubben.
+function fragBox(line) {
+  const top = line.top_color == null ? null : qwColor(line.top_color);
+  const bottom = line.bottom_color == null ? null : qwColor(line.bottom_color);
+  const style = top && bottom
+    ? ' style="background:linear-gradient(180deg,' + top + ' 0 50%,' + bottom + ' 50% 100%)"'
+    : "";
+  return '<span class="mc-frags"' + style + ">" + fmt(line.frags) + "</span>";
+}
+
+function scoreRow(line, kind, label) {
+  return '<tr class="mc-row ' + kind + '"><td class="mc-fragcell">' + fragBox(line) +
+    '</td><td class="mc-teamcell">' + esc(line.team || line.name || "–") + "</td>" +
+    '<td class="mc-namecell">' + label + "</td>" +
+    SCOREBOARD_COLUMNS.map(column =>
+      "<td>" + scoreCell(line[column[0]], column[2]) + "</td>").join("") +
+    "</tr>";
+}
+
+// Matchkortet som hubbens spelsida: rubrikraden med läge, lag och karta, sedan
+// lagraderna och därefter spelarna — samma ordning, samma kolumner.
 function scoreboardCard(card) {
   if (!card) return "";
   const teams = Array.isArray(card.teams) ? card.teams : [];
   const best = teams.reduce(
     (top, team) => (team.frags != null && (top == null || team.frags > top) ? team.frags : top),
-    null
-  );
-  const head = teams.length
-    ? teams.map((team, index) =>
-        (index ? '<span class="mc-vs">mot</span>' : "") +
-        '<span class="mc-team' + (best != null && team.frags === best ? " winner" : "") +
-        '"><span class="name">' + esc(team.name) + '</span><span class="frags">' +
-        fmt(team.frags) + "</span></span>"
-      ).join("")
-    : '<span class="mc-vs">lagresultat saknas</span>';
+    null);
+  const title = (teams.length
+    ? (card.mode ? esc(card.mode) + " " : "") +
+      teams.map(team => esc(team.name)).join(" vs ")
+    : "matchen") + (card.map ? " [" + esc(card.map) + "]" : "");
+  const subtitle = [
+    card.date ? esc(card.date) : null,
+    card.hostname ? "på " + esc(card.hostname) : null,
+    card.duration_s != null ? fmt(card.duration_s) + " s" : null
+  ].filter(Boolean).join(" · ");
+
   const order = {};
   teams.forEach((team, index) => { order[team.name] = index; });
   const players = (Array.isArray(card.players) ? card.players.slice() : []).sort((a, b) => {
@@ -972,31 +1031,35 @@ function scoreboardCard(card) {
     if (teamA !== teamB) return teamA - teamB;
     return (b.frags == null ? -1e9 : b.frags) - (a.frags == null ? -1e9 : a.frags);
   });
-  const rows = players.length
-    ? players.map(player => {
-        const index = order[player.team];
-        const name = linkTag(player.link, player.name, "Öppnar POV för " + player.name, "mc-player") ||
-          esc(player.name);
-        return '<tr class="mc-row ' + (index === 0 ? "a" : index === 1 ? "b" : "") + '"><td>' + name +
-          "</td><td>" + esc(player.team || "–") + "</td>" +
-          SCOREBOARD_COLUMNS.map(column => "<td>" + fmt(player[column[0]]) + "</td>").join("") +
-          "</tr>";
-      }).join("")
-    : '<tr><td colspan="' + (SCOREBOARD_COLUMNS.length + 2) +
+
+  const teamRows = teams.map(team =>
+    scoreRow({ ...team, team: team.name },
+      "team" + (best != null && team.frags === best ? " winner" : ""),
+      "<b>" + esc(team.name) + "</b>")).join("");
+  const playerRows = players.length
+    ? players.map(player => scoreRow(player, order[player.team] === 0 ? "a" : "b",
+        linkTag(player.link, player.name, "Öppnar POV för " + player.name, "mc-player") ||
+          esc(player.name))).join("")
+    : '<tr><td colspan="' + (SCOREBOARD_COLUMNS.length + 3) +
       '" class="muted">Inga spelarrader i kortet.</td></tr>';
+
   const meta = [];
-  if (card.map) meta.push("<span>karta " + esc(card.map) + "</span>");
-  if (card.duration_s != null) meta.push("<span>" + fmt(card.duration_s) + " s</span>");
   if (card.demo) meta.push("<span>demo " + esc(card.demo) + "</span>");
   if (card.source) meta.push("<span>källa → " + esc(card.source) + "</span>");
   const whole = linkTag(card.link, "se hela matchen", "Öppnar demospelaren i ny flik", "evidence-link");
   if (whole) meta.push(whole);
-  return '<div class="matchcard"><div class="mc-head">' + head + "</div>" +
-    '<div class="mc-wrap"><table class="mc-table"><thead><tr><th>Spelare</th><th>Lag</th>' +
+
+  return '<div class="matchcard"><div class="mc-title">' + title + "</div>" +
+    (subtitle ? '<div class="mc-sub">' + subtitle + "</div>" : "") +
+    '<div class="mc-wrap"><table class="mc-table"><thead><tr>' +
+    "<th>Frags</th><th>Team</th><th>Name</th>" +
     SCOREBOARD_COLUMNS.map(column =>
-      "<th>" + (column[0] === "spree_max" ? term(column[1], "spree") : esc(column[1])) + "</th>"
-    ).join("") +
-    "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
+      "<th>" + (SCOREBOARD_TITLES[column[1]]
+        ? '<span class="term" title="' + esc(SCOREBOARD_TITLES[column[1]]) + '">' + esc(column[1]) + "</span>"
+        : esc(column[1])) + "</th>").join("") +
+    "</tr></thead><tbody>" + teamRows +
+    (teamRows ? '<tr class="mc-gap"><td colspan="' + (SCOREBOARD_COLUMNS.length + 3) + '"></td></tr>' : "") +
+    playerRows + "</tbody></table></div>" +
     (meta.length ? '<div class="mc-meta">' + meta.join("") + "</div>" : "") + "</div>";
 }
 

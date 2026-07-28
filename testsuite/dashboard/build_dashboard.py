@@ -103,8 +103,14 @@ def number(value: Any) -> int | float | None:
 
 
 def host_relative(value: Any) -> str | None:
-    """Keep only host-relative links; anything else is not ours to render."""
-    return value if isinstance(value, str) and value.startswith("/") else None
+    """Keep only host-relative links; anything else is not ours to render.
+
+    `//host/path` also starts with a slash but is protocol-relative: the browser
+    would fetch it from another origin entirely.
+    """
+    if not isinstance(value, str) or not value.startswith("/"):
+        return None
+    return None if value.startswith("//") else value
 
 
 EVIDENCE_EXTRAS = ("attempt", "status", "dash", "metric", "who", "detail")
@@ -130,8 +136,17 @@ def normalize_evidence(value: Any) -> dict[str, Any] | None:
     return evidence
 
 
-SCOREBOARD_INTS = ("frags", "deaths", "kills", "tk", "spree_max")
-SCOREBOARD_NUMBERS = ("dmg_given", "dmg_taken", "speed_max", "speed_avg")
+# The hub game page's columns, in its own order, plus the two of our own
+# (speed, spree) that ride along for the panels that want them.
+SCOREBOARD_INTS = (
+    "frags", "efficiency", "kills", "spawn_frags", "deaths", "suicides", "tk",
+    "dmg_given", "dmg_taken", "dmg_enemy_weapons", "taken_to_die",
+    "ga", "ya", "ra", "mh", "quad", "pent", "ring",
+    "sg_acc", "lg_acc", "rl_direct",
+    "lg_taken", "lg_kills", "lg_dropped", "rl_taken", "rl_kills", "rl_dropped",
+    "ping", "top_color", "bottom_color", "spree_max",
+)
+SCOREBOARD_NUMBERS = ("speed_max", "speed_avg")
 
 
 def normalize_scoreboard(value: Any) -> dict[str, Any] | None:
@@ -142,9 +157,10 @@ def normalize_scoreboard(value: Any) -> dict[str, Any] | None:
     for raw in value.get("teams") if isinstance(value.get("teams"), list) else []:
         if not isinstance(raw, dict):
             continue
-        teams.append(
-            {"name": text(raw.get("name"), "?"), "frags": number(raw.get("frags"))}
-        )
+        team = {"name": text(raw.get("name"), "?")}
+        for field in SCOREBOARD_INTS + SCOREBOARD_NUMBERS:
+            team[field] = number(raw.get(field))
+        teams.append(team)
     players: list[dict[str, Any]] = []
     for raw in value.get("players") if isinstance(value.get("players"), list) else []:
         if not isinstance(raw, dict):
@@ -164,6 +180,9 @@ def normalize_scoreboard(value: Any) -> dict[str, Any] | None:
         "players": players,
         "map": value.get("map") if isinstance(value.get("map"), str) else None,
         "duration_s": number(value.get("duration_s")),
+        "mode": value.get("mode") if isinstance(value.get("mode"), str) else None,
+        "hostname": value.get("hostname") if isinstance(value.get("hostname"), str) else None,
+        "date": value.get("date") if isinstance(value.get("date"), str) else None,
         "demo": value.get("demo") if isinstance(value.get("demo"), str) else None,
         "source": value.get("source") if isinstance(value.get("source"), str) else None,
         "link": host_relative(value.get("link")),
@@ -363,7 +382,16 @@ def t1_level(envelope: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(scenario, dict):
             continue
         threshold = scenario.get("threshold") if isinstance(scenario.get("threshold"), dict) else {}
-        attempts = scenario.get("attempts") if isinstance(scenario.get("attempts"), list) else []
+        attempts = [
+            {
+                "status": text(raw.get("status"), "okänt"),
+                "time_s": number(raw.get("time_s")),
+                "demo_t_s": number(raw.get("demo_t_s")),
+                "min_possible_s": number(raw.get("min_possible_s")),
+            }
+            for raw in (scenario.get("attempts") or [])
+            if isinstance(raw, dict)
+        ]
         verdict = scenario.get("verdict")
         passed_scenarios += verdict == "PASS"
         category = scenario.get("category")
