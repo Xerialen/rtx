@@ -222,9 +222,9 @@
   /* slow = framme, men över gränstiden: grön grund som passed, randad så att
      "kom fram" och "för långsamt" syns som två olika saker. */
   .attempt.slow {
-    background: repeating-linear-gradient(135deg, var(--good) 0 6px,
-      color-mix(in srgb, var(--good) 45%, var(--warn)) 6px 12px);
-    border-color: var(--warn);
+    background: repeating-linear-gradient(135deg, var(--good) 0 5px,
+      color-mix(in srgb, var(--good) 15%, var(--warn)) 5px 10px);
+    border-color: var(--warn); color: var(--ground);
   }
   .attempt.fell { background: var(--r-airoff); }
   .attempt.timeout { background: var(--bad); }
@@ -237,8 +237,8 @@
   .legend i { width: 9px; height: 9px; display: inline-block; }
   .legend .passed { background: var(--good); } .legend .fell { background: var(--r-airoff); }
   .legend .slow {
-    background: repeating-linear-gradient(135deg, var(--good) 0 3px,
-      color-mix(in srgb, var(--good) 45%, var(--warn)) 3px 6px);
+    background: repeating-linear-gradient(135deg, var(--good) 0 2px,
+      color-mix(in srgb, var(--good) 15%, var(--warn)) 2px 4px);
   }
   .legend .timeout { background: var(--bad); } .legend .stall { background: var(--r-pre); }
   .legend .loop { background: var(--r-sj); } .legend .detoured { background: var(--r-airtime); }
@@ -649,9 +649,11 @@ function renderStepper() {
 function renderRunControls() {
   const focusSelect = document.getElementById("focus-select");
   const refSelect = document.getElementById("ref-select");
+  // Rälsen är smal och rensa-knappen tar sin plats, så datumet får stå i
+  // run-meta nedanför i stället för att tränga ut grennamnet ur väljaren.
   const options = RUNS.map((run, index) =>
-    '<option value="' + index + '">' + "#" + run.number + " · " + esc(run.date) +
-    " · " + esc(run.branch) + " · " + esc(run.build) + "</option>"
+    '<option value="' + index + '" title="' + esc(run.date + " · " + run.build) + '">' +
+    "#" + run.number + " · " + esc(run.branch) + "</option>"
   ).join("");
   focusSelect.innerHTML = options;
   refSelect.innerHTML = '<option value="">ingen referens</option>' + options;
