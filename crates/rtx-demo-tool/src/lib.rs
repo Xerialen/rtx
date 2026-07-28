@@ -1,17 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! `rtx-demo-tool` — read and analyze QuakeWorld demo files (`.qwd` today).
+//! `rtx-demo-tool` — read and analyze QuakeWorld demos, in both containers.
 //!
-//! A `.qwd` is a flat log of timestamped records: the local client's own `dem_cmd` inputs, the
-//! `dem_read` server→client packets it received, and `dem_set` bookkeeping. The records are the
-//! *only* thing this crate parses — a `dem_read` block is a recorded network packet, and the
-//! messages inside it are decoded by [`rtx_proto::svc`], the same codec the live client speaks.
-//! So the split is clean: [`binrw`] reads the fixed demo framing here, `rtx-proto` reads the wire.
+//! A **`.qwd`** is what a client records: a flat log of timestamped records holding its own
+//! `dem_cmd` inputs and the `dem_read` packets it received. A **`.mvd`** is what a *server* records
+//! — the whole game, every player, addressed blocks, delta timestamps, and no single point of view
+//! (see [`mvd`], which is where all the container differences live).
 //!
-//! [`parse_demo`] hands back the per-frame [`Frame`]s and the local player's [`DemoCmd`]s; the
-//! [`analysis`] module turns those into per-player motion [`Track`](analysis::Track)s (position and
-//! speed over time) with summary stats. The `qwd` binary is the CLI over both: `qwd dump` emits the
-//! CSV the old `qwd_dump.py` did, `qwd analyze` prints a movement report.
+//! Either way the framing is the *only* thing this crate parses: a block's payload is a recorded
+//! message stream, decoded by [`rtx_proto::svc`], the same codec the live client speaks. So the
+//! split is clean — the containers are read here, the wire is read there.
+//!
+//! [`parse_demo`] picks the container by content and hands back [`Frame`]s: one normalised player
+//! state per update, whichever format it came from. The [`analysis`] module turns those into
+//! per-player motion [`Track`](analysis::Track)s and the things worth asking of them — speed
+//! percentiles, the jumps, turn rates. The `qwd` binary is the CLI: `players` lists a demo's
+//! roster, `dump` emits CSV, `analyze` prints a movement report.
+//!
+//! What the two formats can and cannot tell you differs, and [`Frame`]'s `Option`s are where that
+//! shows: an MVD carries no velocity (speeds are differenced from positions) and no ground flag,
+//! while a `.qwd` carries both but only for the players its recorder could see.
 
 use std::io::{Cursor, Seek, SeekFrom};
 use std::path::{Path, PathBuf};

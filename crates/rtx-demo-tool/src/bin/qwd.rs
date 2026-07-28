@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! `qwd` — inspect QuakeWorld `.qwd` demos. Two subcommands:
+//! `qwd` — inspect QuakeWorld demos, single-client `.qwd` and multi-view `.mvd` alike (the
+//! container is chosen by content, since neither has a magic number and demos get renamed).
 //!
+//! - `qwd players` lists a demo's roster. The first thing to run on a file you haven't seen: a
+//!   multi-view recording holds a whole team game across thirty-two slots, and the other
+//!   subcommands need a slot or a name to talk about.
 //! - `qwd dump` writes position, velocity, and usercmd fields as CSV (the old `qwd_dump.py`
-//!   output): *combined* rows (one per `svc_playerinfo`, paired with its usercmd) by default, or
-//!   `--raw` events interleaved by time with a leading `movevars` row.
-//! - `qwd analyze` prints a per-player movement report — duration, speed, climb, path length, and
-//!   an optional down-sampled waypoint table.
+//!   output): *combined* rows (one per player-state update, paired with its usercmd) by default,
+//!   or `--raw` events interleaved by time with a leading `movevars` row.
+//! - `qwd analyze` prints a per-player movement report — duration, speed percentiles, climb, path
+//!   length, the jumps it found, and an optional down-sampled waypoint table.
+//!
+//! The name is historical: it predates MVD support and is kept because scripts call it.
 
 use std::borrow::Cow;
 use std::io::{self, BufWriter, Write};

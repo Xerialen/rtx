@@ -376,6 +376,103 @@ mod tests {
         assert_eq!(players(&d), vec![0, 1]);
     }
 
+    /// A teleport is a jump in *space*, and differencing positions cannot tell that from motion —
+    /// so it must be excluded explicitly, or one dm3 teleporter reports a five-figure speed and
+    /// adds its own length to how far the player is said to have run.
+    #[test]
+    fn a_teleport_is_not_motion() {
+        let d = demo(vec![
+            frame(0.0, 0, Vec3::new(0.0, 0.0, 0.0)),
+            frame(0.1, 0, Vec3::new(30.0, 0.0, 0.0)),   // 300 ups: real running
+            frame(0.2, 0, Vec3::new(2000.0, 0.0, 0.0)), // across the map between frames
+            frame(0.3, 0, Vec3::new(2030.0, 0.0, 0.0)), // running again at the far end
+        ]);
+        let t = track(&d, 0);
+        assert!(!t.motions[1].warped);
+        assert!(t.motions[2].warped, "19,700 ups is a teleport, not a sprint");
+        assert_eq!(t.motions[2].horizontal_speed, 0.0);
+        assert!(!t.motions[3].warped);
+
+        let s = t.summary();
+        assert!((s.peak_speed - 300.0).abs() < 1.0, "the teleport must not set the peak");
+        assert!(
+            (s.path_length - 60.0).abs() < 1.0,
+            "path counts the two 30u runs, not the 1970u warp: {}",
+            s.path_length
+        );
+    }
+
+    /// A jump is an airborne span between a takeoff and a landing, and the numbers that matter are
+    /// how far it went and whether speed rose in the air — the signature of a strafe jump.
+    #[test]
+    fn finds_a_jump_and_its_speed_gain() {
+        // A 0.6s arc: up, over, down. Speed climbs 300 -> 400 ups across the flight.
+        let mut frames = vec![frame(0.0, 0, Vec3::new(0.0, 0.0, 0.0))];
+        let zs = [20.0, 36.0, 44.0, 40.0, 24.0, 0.0];
+        for (i, z) in zs.iter().enumerate() {
+            let t = 0.1 * (i + 1) as f32;
+            frames.push(frame(t, 0, Vec3::new(30.0 + 34.0 * i as f32, 0.0, *z)));
+        }
+        frames.push(frame(0.7, 0, Vec3::new(234.0, 0.0, 0.0))); // grounded again
+        let t = track(&demo(frames), 0);
+
+        let jumps = t.jumps();
+        assert_eq!(jumps.len(), 1, "one arc, one jump: {jumps:?}");
+        let j = jumps[0];
+        assert!((j.apex - 44.0).abs() < 1.0, "apex is measured above the takeoff");
+        assert!(j.airtime > 0.4 && j.airtime < 0.8, "airtime {}", j.airtime);
+        assert!(j.distance > 150.0, "distance {}", j.distance);
+        assert!(
+            j.peak_speed > j.takeoff_speed,
+            "this arc accelerates in the air ({} -> {})",
+            j.takeoff_speed,
+            j.peak_speed
+        );
+    }
+
+    /// Standing still is not a jump, and neither is a long fall.
+    #[test]
+    fn rejects_non_jumps() {
+        // Flat ground, no vertical motion at all.
+        let flat: Vec<Frame> = (0..12)
+            .map(|i| frame(0.1 * i as f32, 0, Vec3::new(30.0 * i as f32, 0.0, 0.0)))
+            .collect();
+        assert!(track(&demo(flat), 0).jumps().is_empty(), "level running is not a jump");
+
+        // A 3-second descent: airborne, but falling rather than jumping.
+        let mut fall = vec![frame(0.0, 0, Vec3::new(0.0, 0.0, 1000.0))];
+        for i in 1..=30 {
+            let t = 0.1 * i as f32;
+            fall.push(frame(
+                t,
+                0,
+                Vec3::new(20.0 * i as f32, 0.0, 1000.0 - 10.0 * (i * i) as f32),
+            ));
+        }
+        fall.push(frame(3.2, 0, Vec3::new(620.0, 0.0, -8000.0)));
+        assert!(
+            track(&demo(fall), 0).jumps().is_empty(),
+            "a multi-second plunge is a fall, not a jump"
+        );
+    }
+
+    /// Percentiles describe how fast a player travels; a mean over a whole match describes how much
+    /// of it they spent standing still.
+    #[test]
+    fn speed_percentiles_ignore_standing_still() {
+        let mut frames = vec![frame(0.0, 0, Vec3::ZERO)];
+        // 20 frames parked, then 5 moving at ~400 ups.
+        for i in 1..=20 {
+            frames.push(frame(0.1 * i as f32, 0, Vec3::ZERO));
+        }
+        for i in 1..=5 {
+            frames.push(frame(2.0 + 0.1 * i as f32, 0, Vec3::new(40.0 * i as f32, 0.0, 0.0)));
+        }
+        let p = track(&demo(frames), 0).speed_percentiles();
+        assert!((p[4] - 400.0).abs() < 1.0, "max {}", p[4]);
+        assert!(p[1] > 300.0, "p50 over *moving* frames should be ~400, got {}", p[1]);
+    }
+
     /// Down-sampling keeps the endpoints and the requested count.
     #[test]
     fn waypoints_keep_endpoints() {

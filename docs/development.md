@@ -17,6 +17,7 @@ Part of the [rtx manual](../README.md)
 | `rtx-ctlproto` | The typed control-channel schema shared by the game and its clients (`rtx-mcp`, `rtx-nav-view`): the request / reply / event enums plus the length-framed msgpack codec. Pure, no IO. |
 | `rtx-auditlog` | A once-allocated per-bot ring buffer of compact `AuditFrame` sensor snapshots (speed, bhop/hook/rj phase, posture, commit, tags), replacing per-frame console spam; the MCP's `audit` tool decodes it. |
 | `rtx-mcp` | An MCP (stdio) server bridging Claude Code to the game's TCP control channel, managing a local server process for live bot control and rocket-jump tuning. See [its README](../crates/rtx-mcp/README.md). |
+| `rtx-demo-tool` | Reads QuakeWorld demos offline — single-client `.qwd` and server-recorded multi-view `.mvd`, chosen by content — and analyses the movement in them: per-player tracks, speed percentiles, jump segmentation, turn rates. Depends only on `rtx-proto`, so it never rebuilds the game cdylib. See below. |
 | `rtx-waypoint-check` | An offline checker that parses KTX's hand-authored `.bot` waypoint files, rebuilds the navmesh from the map's BSP, and reports which human rocket-jump / curl-jump connections our generated mesh reproduces, routes around, or misses — surfacing blind spots in link generation. Pure `rtx-nav`; see below. |
 
 `cargo build` builds the default members — `rtx-nav`, `rtx-proto`, `rtx-game`. The viewer, the
@@ -102,6 +103,43 @@ One workflow, `.github/workflows/build.yml`:
   human QuakeWorld demos (dm3/dm4) to check the pmove simulation's fidelity and that the bhop
   bot matches or beats the human line.
 - **Navmesh** — unit and integration tests in `crates/rtx-nav`.
+
+## Reading demos
+
+Human demos are the ground truth for movement work — what a player *actually* does is the only
+honest answer to "should the bot be able to do this". `rtx-demo-tool` reads them offline, with no
+server and no game module, so it is safe to run while an agent holds the MCP:
+
+```sh
+cargo run --release -p rtx-demo-tool --bin qwd -- players <demo>
+cargo run --release -p rtx-demo-tool --bin qwd -- analyze --player <name|slot> <demo>
+cargo run --release -p rtx-demo-tool --bin qwd -- dump [--raw] <demo> > out.csv
+```
+
+Two containers, told apart by content (neither has a magic number, and demos get renamed):
+
+| | `.qwd` | `.mvd` |
+|---|---|---|
+| recorded by | one client | the server |
+| players | those its recorder could see | all of them |
+| time | absolute float per record | one-byte **millisecond delta**, summed |
+| velocity | on the wire | **none** — differenced from positions |
+| inputs | the recorder's own `dem_cmd` | only where embedded in hidden blocks |
+| ground contact | under `Z_EXT_PF_ONGROUND` | none |
+
+The consequences are worth internalising before trusting a number off an MVD. Speeds are
+differenced, so teleports and respawns would read as five-figure sprints — they are detected and
+excluded, and anything summing distance must respect that. Positions are quantised to 1/8 unit.
+Player state is a *delta against that player's last update*, so "no data this frame" and
+"unchanged" are the same bytes.
+
+`analyze` reports speed percentiles over frames the player was moving (a 20-minute match is mostly
+standing still, so a mean says nothing), the jumps it found — takeoff/landing, distance, apex, and
+whether speed rose in flight, which is the strafe-jump signature — and optional waypoints.
+
+A team-game MVD is the richest source available: `demos/`'s 4-on-4 holds eight players over 20
+minutes on dm3, all at p50 ~330 / p90 ~475 ups while moving, with 93-96% of jumps gaining speed in
+the air. That is the reference population to measure bot movement against.
 
 ## Navmesh coverage vs. hand-authored waypoints
 

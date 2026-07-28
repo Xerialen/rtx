@@ -43,8 +43,26 @@ mvdsv when you need to run or observe bots live:
   `fly_link` flies one and measures the landing, and `side_jump_test` measures a *short-ramp side
   strafe jump* end to end on the `100m` runway — see
   [docs/side-jump-harness.md](docs/side-jump-harness.md) for the sweeps that calibrate the side-jump
-  envelope. Ground truth for those jumps is `demos/dm3_rlstrafejump.qwd`; read it with
-  `cargo run --release -p rtx-demo-tool --bin qwd -- analyze|dump <demo>` (offline, no server).
+  envelope. Ground truth for those jumps is `demos/dm3_rlstrafejump.qwd`.
+
+Read demos offline (no server) with `rtx-demo-tool`, which handles single-client `.qwd` and
+server-recorded multi-view `.mvd` alike — the container is picked by content, not extension:
+
+```
+cargo run --release -p rtx-demo-tool --bin qwd -- players <demo>            # who is in it
+cargo run --release -p rtx-demo-tool --bin qwd -- analyze --player <name|slot> <demo>
+cargo run --release -p rtx-demo-tool --bin qwd -- dump [--raw] <demo> > out.csv
+```
+
+`analyze` reports speed percentiles over *moving* frames, the jumps it found (takeoff/landing,
+distance, apex, and whether speed rose in the air — the strafe-jump signature), and optional
+waypoints. An `.mvd` of a team game gives every player at once, which is where human reference
+lines come from: the 4-on-4 in `demos/` has eight players over 20 minutes on dm3, all sitting at
+p50 ~330 / p90 ~475 ups while moving with 93-96% of their jumps gaining speed in the air.
+
+Mind what each format can say: an MVD carries no velocities (speeds are differenced from
+positions, so teleports must be — and are — excluded) and no ground flag; a `.qwd` carries both,
+but only for the players its recorder could see.
 
 Link ids are not stable across `server_restart` or a `map` change — re-list after either. The
 bridge lives in `crates/rtx-mcp/`; see its [README](crates/rtx-mcp/README.md).
