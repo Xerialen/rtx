@@ -98,7 +98,10 @@ def _evidence(value: Any, path: str) -> None:
         except ValueError:
             _fail(f"{path}.link", "'from' must be a number of seconds")
         else:
-            if float(start[0]) > 0 and not 3.0 <= lead < 4.0:
+            # `from` is the floor of at_s minus three, while the recorded at_s
+            # is rounded to a tenth, so the two disagree by up to that tenth at
+            # either end of the window.
+            if float(start[0]) > 0 and not 2.95 <= lead <= 4.05:
                 _fail(
                     f"{path}.link",
                     f"must open three seconds before the moment, opens {lead:.2f} s before",
@@ -249,10 +252,22 @@ def _t1(payload: Any, path: str) -> None:
         for attempt_index, attempt_value in enumerate(attempts):
             attempt_path = f"{item_path}.attempts[{attempt_index}]"
             attempt = _fields(
-                attempt_value, attempt_path, {"status", "time_s"}, {"demo_t_s"}
+                attempt_value,
+                attempt_path,
+                {"status", "time_s"},
+                {"demo_t_s", "min_possible_s"},
             )
             if attempt.get("demo_t_s") is not None:
                 _num_or_null(attempt["demo_t_s"], f"{attempt_path}.demo_t_s")
+            # The lower bound only exists for attempts abandoned as impossible;
+            # an attempt that arrived has a real time instead.
+            if "min_possible_s" in attempt:
+                _num_or_null(attempt["min_possible_s"], f"{attempt_path}.min_possible_s")
+                if attempt["status"] in {"passed", "slow"}:
+                    _fail(
+                        f"{attempt_path}.min_possible_s",
+                        "an attempt that arrived carries its time, not a bound",
+                    )
             if attempt["status"] not in {
                 "passed",
                 "slow",

@@ -53,6 +53,30 @@ def _outcome(
     crossed = False
     fall_gate = scenario.get("fail", {}).get("fall_gate")
     crossing = scenario.get("fail", {}).get("crossing")
+    # An attempt ends the moment it can no longer succeed, rather than when its
+    # clock runs out. Two independent ways of knowing that:
+    #
+    # Impossible — from where the bot is and how fast anything has ever moved
+    # here, it cannot reach the target before the deadline. Straight-line
+    # distance understates the real path and the ceiling is above any speed
+    # measured on this map, so the bound only ever fires when arriving is
+    # genuinely out of reach.
+    #
+    # Wedged — the bound above goes quiet when a bot is stuck a few units from
+    # the target, because the remaining distance is trivial. Ground covered
+    # catches that: past the deadline's own time limit, a bot that has stopped
+    # travelling has given up. It must be ground *covered*, not ground *gained*:
+    # measuring distance to the target punished routes that swing wide before
+    # they close and turned `slow 15 s` into a bare timeout.
+    ceiling = run.get("speed_ceiling", 850.0)
+    slack = run.get("give_up_slack", 0.10)
+    limit = scenario["threshold"].get("max_time_s")
+    deadline = limit * (1.0 + slack) if limit is not None else run["timeout_s"]
+    no_progress_s = run.get("no_progress_s", 4.0)
+    late_after = limit if limit is not None else run["timeout_s"] / 2
+    moved = 0.0
+    window_began = began
+    previous_position: list[float] | None = None
     while time.monotonic() - began < run["timeout_s"]:
         bots = control.request("status")["data"].get("bots", [])
         bot = next(
@@ -63,6 +87,13 @@ def _outcome(
             return {"status": "died", "time_s": None, "demo_t_s": demo_t}
         position = bot["origin"]
         highest_z = max(highest_z, position[2])
+        now = time.monotonic()
+        # The give-up test itself waits until the bottom of the loop: an attempt
+        # that fell, died or detoured should say so rather than be written off
+        # as a bot that stopped moving.
+        if previous_position is not None:
+            moved += math.dist(position, previous_position)
+        previous_position = position
         if (
             fall_gate
             and highest_z >= fall_gate["armed_z"]
@@ -107,6 +138,23 @@ def _outcome(
                 return {"status": "loop", "time_s": None, "demo_t_s": demo_t}
             regotos += 1
             control.request(f"goto {bot_id} {_coordinates(target)}")
+        # The soonest this attempt could still reach the target, if it travelled
+        # the rest in a straight line at a speed nothing here has ever reached.
+        earliest = (now - began) + math.dist(position, target) / ceiling
+        if ceiling > 0 and earliest > deadline:
+            return {
+                "status": "timeout",
+                "time_s": None,
+                "demo_t_s": demo_t,
+                "min_possible_s": round(earliest, 2),
+            }
+        if no_progress_s > 0 and now - window_began >= no_progress_s:
+            # A bot that is running covers hundreds of units in four seconds;
+            # this floor only catches one that is wedged or spinning in place.
+            if now - began > late_after and moved < 64.0:
+                return {"status": "timeout", "time_s": None, "demo_t_s": demo_t}
+            moved = 0.0
+            window_began = now
         time.sleep(0.07)
     return {"status": "timeout", "time_s": None, "demo_t_s": demo_t}
 

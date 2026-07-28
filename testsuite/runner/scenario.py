@@ -119,6 +119,7 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
                 "arrive_box",
                 "regoto_max",
             },
+            {"no_progress_s", "speed_ceiling", "give_up_slack"},
         )
         _vec3(run["start"], f"{source}.run.start")
         _vec3(run["target"], f"{source}.run.target")
@@ -127,6 +128,17 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
         _number(run["pause_s"], f"{source}.run.pause_s")
         _number(run["arrive_box"], f"{source}.run.arrive_box", positive=True)
         _integer(run["regoto_max"], f"{source}.run.regoto_max")
+        # An attempt ends when it can no longer succeed rather than when its
+        # clock runs out. `speed_ceiling` must be above any speed the map has
+        # produced, or the impossibility bound would cut attempts that were
+        # still within reach; `give_up_slack` is the margin past the time limit
+        # the bot is still allowed to aim for. Zeroes disable the two tests.
+        if "no_progress_s" in run:
+            _number(run["no_progress_s"], f"{source}.run.no_progress_s")
+        if "speed_ceiling" in run:
+            _number(run["speed_ceiling"], f"{source}.run.speed_ceiling")
+        if "give_up_slack" in run:
+            _number(run["give_up_slack"], f"{source}.run.give_up_slack")
         threshold = _fields(
             root["threshold"],
             f"{source}.threshold",

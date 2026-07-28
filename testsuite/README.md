@@ -122,13 +122,46 @@ A `goto` scenario declares:
 
 - `run.start` and `run.target` three-dimensional coordinates.
 - `attempts`, `timeout_s`, `pause_s`, `arrive_box`, and `regoto_max`.
+- Optional `run.no_progress_s` (default 4 s, zero disables): once an attempt is
+  past the time it had to beat, it ends as soon as the bot has stopped moving —
+  less than 64 units covered in the window — instead of running the clock out.
+  Drills with no time limit arm the rule at half their timeout.
+
+  The test is ground *covered*, not ground *gained*. Measuring distance to the
+  target instead punished the routes that swing wide before they close:
+  `hex_quad_to_sng` went from `slow 15 s`, the number that shows how far the bot
+  is from a human, to a bare `timeout`. A bot still travelling is still running
+  the route however indirect its path. The test also sits after the outcome
+  classifications, so falling, dying and detouring keep their own names.
 - `threshold.required`.
 - Optional `setup.plant_links`.
 - Optional `fail.fall_gate` and/or `fail.crossing`.
 
 The generic engine performs stop, hold, teleport, goto, polling, re-goto, and
-outcome classification. Outcomes are `passed`, `fell`, `timeout`, `stall`,
-`loop`, `detoured`, or `died`; only a passed attempt has a time.
+outcome classification. Outcomes are `passed`, `slow`, `fell`, `timeout`,
+`stall`, `loop`, `detoured`, or `died`. `passed` and `slow` are the two ways of
+arriving and both carry a time; the rest never arrived and carry none.
+
+### Timed drills
+
+A drill may also declare `threshold.reference_time_s` and
+`threshold.max_time_s`. They come as a pair — a limit without the reference it
+was measured against is meaningless, and a limit faster than that reference is
+rejected. The reference is the time the owner himself ran the route in; the
+limit is the slowest arrival still counted as a pass.
+
+With a limit set, arriving is no longer enough: an arrival within
+`max_time_s` is `passed`, an arrival past it is `slow`. That distinction is the
+whole point — a bot that crawls a route in sixteen seconds where a human takes
+six has not learned the route, it has merely survived it, and without a clock
+both read identically. The payload adds `arrived` (attempts that reached the
+target at all) and `best_time_s` (the fastest of them) so a run can be read
+without counting cells.
+
+`scenarios/dm3/routes-v1.json` is the owner's route manifest — start and target
+coordinates plus his own time, taken from his demos — and
+`scenarios/dm3/generate_from_routes.py` turns it into scenario files. Regenerate
+rather than hand-editing the generated drills.
 
 A `dash` scenario declares start/target coordinates, dash count, timeout, and
 a speed floor. Its optional `workaround.cycle_bot_count` handles the known
@@ -160,7 +193,33 @@ same-directory temporary file, flushed, and installed with `os.replace`.
 `python3 testflow.py selftest` checks valid and deliberately broken fixtures
 offline using the hand-written validators in `runner/checks.py`. It covers all
 tiers, scenario schema compatibility, missing fields, unknown major versions,
-the T2 stall invariant, and the T4 stop-at-first-loss rule.
+the T2 stall invariant, the T4 stop-at-first-loss rule, and the evidence
+lead-in below.
+
+## Demo evidence
+
+Every number the dashboard states should be checkable, so each one carries a
+demo-player link that opens three seconds before the moment it is about, on the
+POV of the bot it is about. The lead-in is part of the contract rather than a
+detail of the URL builder: `checks.py` recomputes it from `at_s` and the link's
+`from` and rejects an envelope whose links do not open when they claim to.
+
+`from` is whole seconds because the player parses it with `parseInt` — a
+fractional value truncated silently and the URL then claimed a start the player
+never honoured. Truncating downwards keeps the lead at or above three seconds
+rather than dropping under it.
+
+T1 links a representative attempt per drill and the dash. T2 links the whole
+demo, every stall cell, and every metric: what the analyzer measured is linked
+to the event it read (a quad being taken), and what the runner measured itself
+is linked to the sample that produced it — the fastest 100 ms sample, the
+fastest second, the longest stand-still, and the first firing in the zone that
+stalled most. T3 and T4 link each player's POV from the match card.
+
+The userid behind `track` is read out of the MVD itself: `svc_updateuserinfo`
+(svc 40) carries `[slot][int32-LE userid][\\name\\...]`, and QuakeWorld's
+readable-character table turns the bots' fun-char names back into the names on
+the scoreboard.
 
 ## T4: the frogbot ladder
 

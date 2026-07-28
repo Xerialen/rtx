@@ -69,10 +69,14 @@ stops before T1 when T0 import is missing or FAIL.
       "place": "RA-ingången → RA-plattan (uppför trapporna)",
       "attempts": [
         {"status": "passed", "time_s": 5.37, "demo_t_s": 12.5},
+        {"status": "slow", "time_s": 9.02, "demo_t_s": 27.4},
         {"status": "fell", "time_s": null, "demo_t_s": 41.0}
       ],
-      "threshold": {"required": 10, "of": 10},
+      "threshold": {"required": 10, "of": 10,
+                    "reference_time_s": 5.95, "max_time_s": 6.66},
       "passed": 9,
+      "arrived": 10,
+      "best_time_s": 5.37,
       "verdict": "FAIL",
       "evidence": {
         "demo": "t1-....mvd", "attempt": 2, "status": "fell", "at_s": 41.0,
@@ -88,9 +92,19 @@ stops before T1 when T0 import is missing or FAIL.
   "verdict": "FAIL"
 }
 ```
-- `attempts[].status`: `passed|fell|timeout|stall|loop|detoured|died`. `time_s` only
-  for `passed`, else null. Attempt count and order are preserved. `demo_t_s` is the
-  moment the attempt began on the run's own demo clock.
+- `attempts[].status`: `passed|slow|fell|timeout|stall|loop|detoured|died`. `time_s`
+  exactly for the two arriving statuses (`passed`, `slow`), else null. Attempt count
+  and order are preserved. `demo_t_s` is the moment the attempt began on the run's
+  own demo clock. `timeout` covers both running the clock out and being cut short
+  once past the time limit with the bot no longer moving (`run.no_progress_s`);
+  either way it did not arrive.
+- `threshold.reference_time_s` and `threshold.max_time_s` are optional and come as a
+  pair: the time the owner ran the route in, and the slowest arrival still counted as
+  a pass (a limit faster than its own reference is rejected). With them set, an
+  arrival within `max_time_s` is `passed` and an arrival past it is `slow` — the
+  difference between owning a route and merely surviving it. `arrived` counts every
+  attempt that reached the target and `best_time_s` is the fastest of them; both are
+  null-safe on drills with no timing.
 - `category` splits the map's fixed challenges (`grunddrill`) from single-cell
   probes (`cellprov`); `place` says in plain words where on the map it happens,
   because a cell id tells a reader nothing.
@@ -122,7 +136,9 @@ stops before T1 when T0 import is missing or FAIL.
   "demo": "t2-....mvd",
   "evidence": {"demo": "t2-....mvd", "at_s": 0.0, "link": "/demo-player/?..."},
   "moments": [ {"demo": "t2-....mvd", "metric": "quad_takes", "at_s": 33.2,
-                "who": "bot.ref1", "link": "/demo-player/?..."} ],
+                "who": "bot.ref1", "link": "/demo-player/?..."},
+               {"demo": "t2-....mvd", "metric": "speed_100ms", "at_s": 271.4,
+                "detail": "snabbaste 100 ms-provet", "link": "/demo-player/?..."} ],
   "verdict": "MEASURED"
 }
 ```
@@ -132,8 +148,12 @@ stops before T1 when T0 import is missing or FAIL.
   not from a counter of our own, and `sources` names the origin per metric.
   Availability is a property of the demo: a non-KTX rig has no demoinfo block, so
   those metrics keep our own measurement and stay out of `sources`.
-- `evidence` opens the whole demo; `moments` links individual events (a powerup
-  taken, the longest motionless stretch) and `cells[].evidence` opens the first
+- `evidence` opens the whole demo and every metric in `stats` that can be tied to a
+  moment gets one in `moments`, keyed by metric name: what the analyzer read comes
+  from the event it read (a powerup taken), what the runner measured itself comes
+  from the sample that produced it — the fastest 100 ms sample, the fastest second,
+  the longest motionless stretch, and the first firing in the busiest stall zone.
+  `detail` says in plain words which sample it is. `cells[].evidence` opens the first
   firing of each stall zone. Speed over the 100 m profile belongs to T1's dash,
   not here.
 - `still_s_per_bot` divides by `stats.bots` (recorded, not assumed 4).
@@ -211,6 +231,11 @@ question with the POV locked to the bot the number is about.
 
 - Links are host-relative (`/demo-player/?demoUrl=%2Fdemos%2F<file>&map=<map>&duration=<s>&from=<s>&track=<userid>`),
   so the same evidence file works on the LAN hub and behind the gated dashboard.
+- `from` is whole seconds — the player parses it with `parseInt`, so a fractional
+  value would truncate silently and the URL would claim a start it never honours.
+  It is truncated downwards, which keeps the lead at or above three seconds. The
+  conformance checks recompute the lead from `at_s` and reject any link that does
+  not open when it claims to.
 - `track` is an FTE userid, read out of the demo's own `svc_updateuserinfo`
   records — no analyzer endpoint exposes it.
 - Demo file names in links follow the publisher's URL-safe rewrite, so a KTX

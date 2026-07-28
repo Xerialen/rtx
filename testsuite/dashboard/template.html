@@ -481,7 +481,7 @@ const TERM_TITLES = {
   "ägartid": "Tiden ägaren själv körde sträckan på i sitt eget demo. Ankarna för start och mål är hämtade ur samma körning.",
   "gränstid": "Långsammaste ankomst som fortfarande räknas som klarad: ägarens tid plus marginal. Långsammare ankomst blir slow, inte passed.",
   "framme": "Antal försök där botten nådde målet över huvud taget — oavsett om det gick inom gränstiden.",
-  "bäst": "Snabbaste ankomsten i körningen. Gul när även den bästa låg över gränstiden.",
+  "bäst": "Snabbaste ankomsten i körningen, och hur många gånger ägarens egen tid den var. Gul när även den bästa låg över gränstiden.",
   "körning": "Löpnummer i kronologisk ordning: #1 är den äldsta körningen, varje ny körning får ett högre nummer.",
   "bygge": "Commiten som testades (kort sha). Alla tiers i samma körning delar den; suffixet -dirty betyder att trädet hade oincheckade ändringar.",
   "passed": "nådde målet inom gränstiden",
@@ -728,8 +728,12 @@ function secs(value) {
 }
 
 function attemptTitle(result) {
-  const base = TERM_TITLES[result.status] || String(result.status || "okänt");
-  return result.demo_t_s == null ? base : base + " · demo " + fmt(result.demo_t_s) + " s";
+  const parts = [TERM_TITLES[result.status] || String(result.status || "okänt")];
+  if (result.min_possible_s != null) {
+    parts.push("kunde tidigast ha kommit fram på " + secs(result.min_possible_s));
+  }
+  if (result.demo_t_s != null) parts.push("demo " + fmt(result.demo_t_s) + " s");
+  return parts.join(" · ");
 }
 
 const T1_GROUPS = [
@@ -757,9 +761,14 @@ function drillRow(drill, refDrill) {
     ? " · " + term("framme " + drill.arrived + "/" + of, "framme")
     : "";
   const overLimit = timed && drill.bestTime != null && drill.bestTime > drill.maxTime;
+  // Hur många gånger ägarens tid den bästa körningen tog: det enda talet som
+  // gör två grenar jämförbara på en blick.
+  const ratio = timed && drill.bestTime != null && drill.referenceTime > 0
+    ? " · " + (drill.bestTime / drill.referenceTime).toFixed(1) + "×"
+    : "";
   const best = drill.bestTime != null
     ? '<span class="drill-best' + (overLimit ? " over" : "") + '" title="' +
-      esc(TERM_TITLES["bäst"]) + '">bäst ' + secs(drill.bestTime) + "</span>"
+      esc(TERM_TITLES["bäst"]) + '">bäst ' + secs(drill.bestTime) + ratio + "</span>"
     : "";
   const arrivedEvidence = drill.evidence &&
     (drill.evidence.status === "passed" || drill.evidence.status === "slow");

@@ -23,7 +23,8 @@
      {
       "status": "passed",
       "time_s": 5.37,
-      "demo_t_s": 12.5
+      "demo_t_s": 12.5,
+      "min_possible_s": 3.0
      },
      {
       "status": "slow",
