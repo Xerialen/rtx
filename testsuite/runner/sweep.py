@@ -172,9 +172,14 @@ def run(
                 f"{target['label']}: {repo} has uncommitted changes — commit them or "
                 "pass --allow-dirty to stamp the evidence dirty on purpose"
             )
-        prepared.append(
-            (target, target_config, repo, dirty, _git(repo, "rev-parse", "HEAD"))
-        )
+        prepared.append((
+            target,
+            target_config,
+            repo,
+            dirty,
+            _git(repo, "rev-parse", "HEAD"),
+            bool(_git(repo, "status", "--porcelain", "-uno")),
+        ))
 
     restore = sweep.get("restore")
     restore_library = None
@@ -189,18 +194,28 @@ def run(
     restored: str | None = None
     restore_error: str | None = None
     try:
-        for target, target_config, repo, dirty, commit in prepared:
+        for target, target_config, repo, dirty, commit, tracked_dirty in prepared:
             # Preflight settled the ground before the first measurement; by the
             # time this column's turn comes, minutes of other columns have
             # passed. A tree that moved in between would split this column
             # across two build ids while the manifest names only one, so the
-            # question is asked again immediately before the deploy.
+            # question is asked again immediately before the deploy. This
+            # narrows the window rather than closing it — a commit landing
+            # between this check and the run itself would still slip through,
+            # and nothing short of holding a lock on someone else's checkout
+            # can prevent that.
             if _git(repo, "rev-parse", "HEAD") != commit:
                 raise ConfigError(
                     f"{target['label']}: {repo} moved from {commit[:8]} during the "
                     "sweep — a column cannot span two commits"
                 )
-            if bool(_git(repo, "status", "--porcelain")) != dirty:
+            # Tracked changes only. A sweep writes its evidence into the
+            # checkout it is measuring, so an earlier column's envelopes show
+            # up here as new files; treating those as the tree moving would
+            # make a two-target sweep abort on its own output. What matters for
+            # build identity is what is committed and what is modified, and
+            # neither of those is an untracked file.
+            if bool(_git(repo, "status", "--porcelain", "-uno")) != tracked_dirty:
                 raise ConfigError(
                     f"{target['label']}: {repo} changed its working tree during "
                     "the sweep — the evidence would be stamped from preflight"

@@ -25,6 +25,10 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 KNOWN_SCHEMA = re.compile(r"^rtx-testflow/(\d+)$")
 LEVELS = ("t0", "t1", "t2", "t3", "t4")
+
+# Written into the evidence directory by the runner, but not evidence:
+# skipped without complaint rather than rejected as unknown.
+COMPANION_SCHEMAS = frozenset({"rtx-sweep/1"})
 LADDER_SKILLS = (10, 12, 14, 16, 18, 20)
 MISSING = "EJ KÖRD"
 
@@ -67,6 +71,11 @@ def discover(evidence_dir: Path) -> tuple[list[LoadedEvidence], list[str]]:
             warn(message)
             continue
         schema = document.get("schema")
+        # A sweep manifest describes a set of runs rather than being one, and it
+        # lives in the same directory by design. Warning about it every build
+        # trains the reader to ignore the warnings that matter.
+        if schema in COMPANION_SCHEMAS:
+            continue
         match = KNOWN_SCHEMA.fullmatch(schema) if isinstance(schema, str) else None
         if not match:
             message = f"{path}: rejected unknown schema {schema!r}"

@@ -294,7 +294,11 @@ def match_scoreboard(
     # An empty demo hashes to the sha of nothing, and the analyzer then answers
     # that it has no KTX block — which is true and useless, because it blames
     # the demo's contents for a file that has none. Say what is actually wrong.
-    if mvd_path.stat().st_size == 0:
+    try:
+        empty = mvd_path.stat().st_size == 0
+    except OSError:
+        return None  # it existed a line ago; it is not ours to complain about
+    if empty:
         print(
             f"no match card: {mvd_name} is an empty file — the server named a "
             "demo it never recorded",

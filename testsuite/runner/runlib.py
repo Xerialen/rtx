@@ -266,10 +266,16 @@ def engine_declares(
     path = config_path(config, binary)
     if not path.is_file():
         return None
-    reported = _server_digest(server_status)
-    if reported and reported != _engine_digest(config):
-        # The file on disk is not the one that was loaded, so reading it would
-        # describe a build that is not playing.
+    try:
+        reported = _server_digest(server_status)
+        if reported and reported != _engine_digest(config):
+            # The file on disk is not the one that was loaded, so reading it
+            # would describe a build that is not playing.
+            return None
+    except (OSError, ConfigError):
+        # Digesting opens the same file the scan below does, and can fail the
+        # same ways. Unknown, not absent — the promise holds from the first
+        # byte read, not just the second.
         return None
     needle = name.encode("ascii")
     previous = b""
@@ -601,15 +607,24 @@ class RunRecorder(AbstractContextManager["RunRecorder"]):
                 self.status = "failed"
             self.error = str(exc) or exc.__class__.__name__
         document = self.document()
-        if exc is not None:
-            # The envelope is written even for a failed run, so whoever catches
-            # this should be able to name it. A caller that reports `run_id:
-            # null` would be omitting evidence that exists on disk.
+
+        def name_the_evidence(error: BaseException) -> None:
+            """Tell the caller which file this failure was written to.
+
+            The envelope is written even for a failed run, so a caller that
+            reported `run_id: null` would be sending the reader looking for
+            something it already has. Annotating must never become the failure
+            itself: an exception that refuses attributes is a nuisance, while
+            losing the tier's real error would be a disaster.
+            """
             try:
-                exc.run_id = self.run_id
-                exc.envelope_path = str(self.path)
-            except AttributeError:  # some builtins refuse attributes
+                error.run_id = self.run_id
+                error.envelope_path = str(self.path)
+            except Exception:
                 pass
+
+        if exc is not None:
+            name_the_evidence(exc)
         validation_error: ValidationError | None = None
         try:
             validate_result(document, str(self.path))
@@ -623,5 +638,8 @@ class RunRecorder(AbstractContextManager["RunRecorder"]):
             validate_result(document, str(self.path))
         atomic_write_json(self.path, document)
         if validation_error is not None:
+            # This one is raised from here, so it was never annotated above —
+            # and its envelope is on disk exactly like any other failure's.
+            name_the_evidence(validation_error)
             raise validation_error
         return False

@@ -172,11 +172,19 @@ def _scoreboard(value: Any, path: str) -> None:
                 _fail(f"{player_path}.link", "expected a host-relative link")
 
 
+# Everything that exists only because the engine emits stall telemetry. Naming
+# any of these is the same statement as `telemetry: false`, so the two have to
+# agree — a block that contradicts itself explains nothing.
+TELEMETRY_DERIVED = frozenset({"stall_firings", "cells", "t1:stall"})
+
+
 def _capabilities(value: Any, path: str) -> dict[str, Any]:
     """What the build under test could not be asked about, and why.
 
     The block only exists to explain an absence, so an empty one is not a
-    weaker claim — it is noise, and it is rejected.
+    weaker claim — it is noise, and it is rejected. Checked here rather than in
+    each tier: a self-contradictory declaration is wrong whichever payload it
+    travels with, and T1 was accepting ones T2 already refused.
     """
     block = _fields(value, path, {"telemetry", "unavailable", "note"})
     _bool(block["telemetry"], f"{path}.telemetry")
@@ -189,6 +197,19 @@ def _capabilities(value: Any, path: str) -> dict[str, Any]:
         _fail(f"{path}.unavailable", "duplicate entries")
     if not _str(block["note"], f"{path}.note").strip():
         _fail(f"{path}.note", "an absence has to be explained, not just declared")
+    derived = TELEMETRY_DERIVED & set(names)
+    if block["telemetry"] and derived:
+        _fail(
+            f"{path}.unavailable",
+            f"names {', '.join(sorted(derived))} as missing while"
+            " capabilities.telemetry says the engine emits it",
+        )
+    if not block["telemetry"] and not derived:
+        _fail(
+            f"{path}.unavailable",
+            "says the engine emits no telemetry but names nothing that"
+            f" depends on it (expected one of {', '.join(sorted(TELEMETRY_DERIVED))})",
+        )
     return block
 
 
@@ -247,6 +268,19 @@ def _t0(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
 
 
 def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
+    # T1 reads arrival off `status`, so every drill is graded the same on a
+    # build with no telemetry. What changes is that the `stall` outcome cannot
+    # occur, and an attempt the engine would have called a stall is recorded as
+    # a timeout instead. That reclassification has to be stated in this
+    # envelope's own terms — a block that only names T2's fields leaves a
+    # reader of the drills none the wiser.
+    if capabilities is not None and capabilities.get("telemetry") is False:
+        if "t1:stall" not in (capabilities.get("unavailable") or []):
+            _fail(
+                f"{path}",
+                "a T1 run on a build without telemetry must declare 't1:stall'"
+                " as unavailable: its stalls were recorded as timeouts",
+            )
     data = _fields(
         payload, path, {"scenarios", "dash", "verdict"}, {"regime_note", "demo"}
     )
