@@ -172,6 +172,26 @@ def _scoreboard(value: Any, path: str) -> None:
                 _fail(f"{player_path}.link", "expected a host-relative link")
 
 
+def _capabilities(value: Any, path: str) -> dict[str, Any]:
+    """What the build under test could not be asked about, and why.
+
+    The block only exists to explain an absence, so an empty one is not a
+    weaker claim — it is noise, and it is rejected.
+    """
+    block = _fields(value, path, {"telemetry", "unavailable", "note"})
+    _bool(block["telemetry"], f"{path}.telemetry")
+    names = _list(block["unavailable"], f"{path}.unavailable")
+    if not names:
+        _fail(f"{path}.unavailable", "a capabilities block with nothing missing")
+    for index, name in enumerate(names):
+        _str(name, f"{path}.unavailable[{index}]")
+    if len(set(names)) != len(names):
+        _fail(f"{path}.unavailable", "duplicate entries")
+    if not _str(block["note"], f"{path}.note").strip():
+        _fail(f"{path}.note", "an absence has to be explained, not just declared")
+    return block
+
+
 def _build(value: Any, path: str) -> None:
     build = _fields(
         value, path, {"branch", "commit", "digest_md5", "dirty"}
@@ -185,7 +205,7 @@ def _build(value: Any, path: str) -> None:
     _bool(build["dirty"], f"{path}.dirty")
 
 
-def _t0(payload: Any, path: str) -> None:
+def _t0(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
     data = _fields(
         payload, path, {"modules", "total", "quality_floors", "verdict"}
     )
@@ -226,7 +246,7 @@ def _t0(payload: Any, path: str) -> None:
         _fail(f"{path}.verdict", f"expected {expected}")
 
 
-def _t1(payload: Any, path: str) -> None:
+def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
     data = _fields(
         payload, path, {"scenarios", "dash", "verdict"}, {"regime_note", "demo"}
     )
@@ -293,6 +313,15 @@ def _t1(payload: Any, path: str) -> None:
                 "died",
             }:
                 _fail(f"{attempt_path}.status", "unknown outcome")
+            # `stall` is read off the telemetry event, so a build that emits
+            # none cannot have produced one; such an attempt was recorded as a
+            # timeout instead, which is what the declaration is there to say.
+            if attempt["status"] == "stall" and capabilities is not None and \
+                    capabilities.get("telemetry") is False:
+                _fail(
+                    f"{attempt_path}.status",
+                    "the build emits no stall events, so this cannot be one",
+                )
             _num_or_null(attempt["time_s"], f"{attempt_path}.time_s")
             if (attempt["status"] in {"passed", "slow"}) != (
                 attempt["time_s"] is not None
@@ -396,7 +425,7 @@ def _t1(payload: Any, path: str) -> None:
         _fail(f"{path}.verdict", f"expected {expected_verdict}")
 
 
-def _t2(payload: Any, path: str) -> None:
+def _t2(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
     data = _fields(
         payload,
         path,
@@ -430,8 +459,27 @@ def _t2(payload: Any, path: str) -> None:
             "bots",
         },
     )
-    for field in ("quad_takes", "pent_takes", "stall_firings", "polls"):
+    # A build with no stall instrumentation cannot report a stall count, and a
+    # zero there would read as the best column on the page. Null is the only
+    # honest value, and it has to come with the reason attached — otherwise a
+    # missing number is indistinguishable from a dropped one.
+    telemetry = capabilities is None or capabilities.get("telemetry") is not False
+    if stats["stall_firings"] is None:
+        if telemetry:
+            _fail(
+                f"{path}.stats.stall_firings",
+                "a measurement that did not happen must declare why in"
+                " capabilities.telemetry",
+            )
+    elif not telemetry:
+        _fail(
+            f"{path}.stats.stall_firings",
+            "the build cannot emit stall events, so it cannot have counted them",
+        )
+    for field in ("quad_takes", "pent_takes", "polls"):
         _int(stats[field], f"{path}.stats.{field}")
+    if stats["stall_firings"] is not None:
+        _int(stats["stall_firings"], f"{path}.stats.stall_firings")
     _int(stats["bots"], f"{path}.stats.bots", 1)
     for field in (
         "quad_lay_avg",
@@ -467,7 +515,14 @@ def _t2(payload: Any, path: str) -> None:
             _str(link, f"{item_path}.links key")
             _int(count, f"{item_path}.links.{link}")
     firings = stats["stall_firings"]
-    if firings != count_sum or firings != reason_sum:
+    if firings is None:
+        # Nothing was counted, so nothing can have a place on the map either.
+        if data["cells"]:
+            _fail(
+                f"{path}.cells",
+                "zones from a build that emits no stall events",
+            )
+    elif firings != count_sum or firings != reason_sum:
         _fail(
             path,
             "invariant failed: stall_firings != sum(cells.n) != sum(reasons)",
@@ -476,7 +531,7 @@ def _t2(payload: Any, path: str) -> None:
         _fail(f"{path}.verdict", "expected 'MEASURED'")
 
 
-def _t3(payload: Any, path: str) -> None:
+def _t3(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
     data = _fields(
         payload,
         path,
@@ -552,7 +607,7 @@ def _t3(payload: Any, path: str) -> None:
         _fail(f"{path}.verdict", "single-match T3 must be 'PIPELINE-OK'")
 
 
-def _t4(payload: Any, path: str) -> None:
+def _t4(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
     data = _fields(
         payload,
         path,
@@ -610,7 +665,7 @@ def _t4(payload: Any, path: str) -> None:
         _fail(f"{path}.verdict", "expected 'COMPLETE'")
 
 
-_PAYLOAD_CHECKS: dict[str, Callable[[Any, str], None]] = {
+_PAYLOAD_CHECKS: dict[str, Callable[[Any, str, "dict[str, Any] | None"], None]] = {
     "T0": _t0,
     "T1": _t1,
     "T2": _t2,
@@ -637,7 +692,7 @@ def validate_result(document: Any, source: str = "<result>") -> dict[str, Any]:
             "provenance",
             "payload",
         },
-        {"error"},
+        {"error", "capabilities"},
     )
     if root["schema"] != "rtx-testflow/1":
         _fail(
@@ -677,8 +732,13 @@ def validate_result(document: Any, source: str = "<result>") -> dict[str, Any]:
         _fail(f"{source}.config_digest", "expected sha256:<64 lowercase hex>")
     if root["provenance"] not in {"measured", "derived", "synthetic"}:
         _fail(f"{source}.provenance", "unknown provenance")
+    capabilities = (
+        _capabilities(root["capabilities"], f"{source}.capabilities")
+        if "capabilities" in root
+        else None
+    )
     if root["status"] == "complete":
-        _PAYLOAD_CHECKS[tier](root["payload"], f"{source}.payload")
+        _PAYLOAD_CHECKS[tier](root["payload"], f"{source}.payload", capabilities)
     else:
         _dict(root["payload"], f"{source}.payload")
     return root

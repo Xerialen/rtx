@@ -44,6 +44,25 @@ codec is vendored in `runner/mpwire.py`.
   engine binary actually running (server-reported), `dirty` from git status at build.
 - For T3 the envelope `build` is the branch-under-test; the reference build lives in
   the payload side entry.
+- `capabilities` is optional and present only when the build under test could not be
+  asked about something the tier normally reports:
+
+  ```json
+  "capabilities": {
+    "telemetry": false,
+    "unavailable": ["stall_firings", "cells"],
+    "note": "build exposes no rtx_telemetry cvar; stall events are not emitted"
+  }
+  ```
+
+  Absence of the block means everything the tier needed was available, which is the
+  common case. A number a run could not measure is `null`, never `0` — a build with
+  no stall instrumentation would otherwise sit at the top of the column precisely
+  because it cannot see. The block is detected once during preflight: the cvar is
+  read back off the server itself (`CvarRestore.server_has`), never off our own
+  `[restore]` baseline, which vouches for what to put back and not for what the
+  binary has. An empty `unavailable` or a blank `note` is rejected: the block exists
+  to explain an absence, so an unexplained one is worse than none.
 
 ## T0 payload (import adapter — cargo runs stay upstream)
 
@@ -163,6 +182,12 @@ stops before T1 when T0 import is missing or FAIL.
 - `still_s_per_bot` divides by `stats.bots` (recorded, not assumed 4).
 - Invariant, checked by the writer: `stall_firings == sum(cells[].n) == sum over
   cells of sum(reasons.values())`. Violation ⇒ `status: "failed"`.
+- `stall_firings` is `null` with `cells: []` when the envelope declares
+  `capabilities.telemetry: false`, and the invariant is then read the other way
+  round: nothing was counted, so nothing may appear on the map. A null without that
+  declaration is rejected, and so is a count alongside it — the first hides a
+  dropped measurement, the second claims one the build could not make. Everything
+  else T2 reports comes from `status` polling and the analyzer and is unaffected.
 - T2 has no thresholds: `verdict` is always the literal `MEASURED`.
 
 ## T3 payload (branch vs reference, 4on4)
@@ -283,5 +308,6 @@ question with the POV locked to the bot the number is about.
 
 `schema/fixtures/` holds one valid example per tier + deliberately broken ones
 (bad major version, missing field, violated T2 invariant, T4 ladder that continues
-after a loss). `runner/selftest.py` validates all fixtures with the hand-rolled
+after a loss, an unmeasured stall count with no declared reason, a declared absence
+that nonetheless carries a count, and one that carries map zones). `runner/selftest.py` validates all fixtures with the hand-rolled
 checkers — this is the schema conformance suite and runs offline in CI.

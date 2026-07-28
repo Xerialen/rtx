@@ -14,6 +14,15 @@ from .runlib import CvarRestore, RigLock, RunRecorder, config_path, connect
 
 NOLINK = 4_294_967_295
 
+# Declared when the build under test has no `rtx_telemetry` cvar. Everything T2
+# reads off `status` and the demo is unaffected; only what the engine would have
+# had to emit is missing.
+TELEMETRY_ABSENT = {
+    "telemetry": False,
+    "unavailable": ["stall_firings", "cells"],
+    "note": "build exposes no rtx_telemetry cvar; stall events are not emitted",
+}
+
 
 def _mean(values: list[float]) -> float | None:
     return round(sum(values) / len(values), 1) if values else None
@@ -106,6 +115,7 @@ def _collect(
     control: Control,
     duration_s: int,
     recording: evidence_mod.Recording | None = None,
+    telemetry: bool = True,
 ) -> dict[str, Any]:
     speed_samples: list[float] = []
     per_second: list[float] = []
@@ -195,7 +205,7 @@ def _collect(
                 )
             except ControlError:
                 pass
-        if loop_began - last_telemetry_assert >= 10.0:
+        if telemetry and loop_began - last_telemetry_assert >= 10.0:
             control.request("set rtx_telemetry 1", timeout=4.0)
             last_telemetry_assert = loop_began
         for event in control.events:
@@ -217,7 +227,9 @@ def _collect(
         "speed_1s": _mean(per_second),
         "speed_100ms": _mean(speed_samples),
         "still_s_per_bot": round(still_s / bots, 1),
-        "stall_firings": len(stalls),
+        # No instrumentation means no count, not a count of none: a zero here
+        # would put the build that cannot see stalls at the top of the column.
+        "stall_firings": len(stalls) if telemetry else None,
         "polls": polls,
         "bots": bots,
     }
@@ -331,8 +343,17 @@ def run(
                     control,
                     ["rtx_telemetry", "rtx_bot_pacifist", "rtx_bot_count"],
                     baseline=config.get("restore", {}),
-                ):
-                    control.request("set rtx_telemetry 1")
+                ) as cvars:
+                    telemetry = cvars.server_has("rtx_telemetry")
+                    if not telemetry:
+                        recorder.capabilities = dict(TELEMETRY_ABSENT)
+                        print(
+                            "rtx_telemetry: build does not expose it — stall "
+                            "firings will be reported as unmeasured",
+                            flush=True,
+                        )
+                    else:
+                        control.request("set rtx_telemetry 1")
                     control.request("set rtx_bot_pacifist 1")
                     control.request("set rtx_bot_count 4")
                     _wait_for_bots(control, 4)
@@ -355,7 +376,9 @@ def run(
                     )
                     recording.start()
                     try:
-                        measured = _collect(control, duration, recording)
+                        measured = _collect(
+                            control, duration, recording, telemetry=telemetry
+                        )
                     finally:
                         recording.stop()
                     roster = (

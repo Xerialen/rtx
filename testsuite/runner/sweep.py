@@ -191,6 +191,12 @@ def run(
                             "verdict": (document.get("payload") or {}).get("verdict"),
                         }
                     )
+                    # A column that could not be asked about something is not
+                    # comparable to one that could, so the manifest says so at
+                    # the level a reader compares at.
+                    capabilities = document.get("capabilities")
+                    if isinstance(capabilities, dict):
+                        column["capabilities"] = capabilities
                 except RunAborted:
                     raise
                 except Exception as exc:  # one tier failing must not cost the sweep

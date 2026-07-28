@@ -353,18 +353,38 @@ def _cvar_values(status: Any) -> dict[str, str]:
 
 
 class CvarRestore(AbstractContextManager["CvarRestore"]):
-    """Restore named cvars on every exit.
+    """Restore named cvars on every exit, and record who vouched for each.
 
     Preferred source is a live snapshot from server status; engines that do not
     expose cvars in status (the current control protocol does not) fall back to
     the config-declared `[restore]` baseline — the rig's documented idle state.
-    A cvar available from neither source is a hard preflight error."""
+    A cvar available from neither source is a hard preflight error.
+
+    The baseline fallback is right for *restoring* a value and wrong as evidence
+    that the build under test has the cvar at all: our own configuration would
+    then vouch for a capability the binary does not have, and a tier that asked
+    "can this build measure X" would get yes. So the two questions are kept
+    apart — `restore_source` says what will be put back, `server_has` says
+    whether the server itself answered."""
 
     def __init__(self, control: Control, names: list[str], baseline: dict[str, str] | None = None):
         self.control = control
         self.names = names
         self.baseline = {str(k): str(v) for k, v in (baseline or {}).items()}
         self.snapshot: dict[str, str] = {}
+        self.sources: dict[str, str] = {}
+
+    def restore_source(self, name: str) -> str | None:
+        """Where the value that will be restored came from."""
+        return self.sources.get(name)
+
+    def server_has(self, name: str) -> bool:
+        """Did the server itself answer for this cvar.
+
+        This is the capability probe: a build without the cvar cannot produce
+        the signal behind it, whatever our config says about the idle value.
+        """
+        return self.sources.get(name) in {"status", "get"}
 
     def __enter__(self) -> "CvarRestore":
         status = self.control.request("status")["data"]
@@ -373,15 +393,25 @@ class CvarRestore(AbstractContextManager["CvarRestore"]):
         for name in self.names:
             if name in values:
                 self.snapshot[name] = values[name]
+                self.sources[name] = "status"
                 continue
-            try:
-                reply = self.control.request(f"get {name}", timeout=8.0)["data"]
-                self.snapshot[name] = str(reply["string"])
+            # Two attempts before concluding the build lacks the cvar: one
+            # dropped reply would otherwise be recorded as a missing capability,
+            # which is a lie in the more damaging direction — it would mark a
+            # build that measures fine as unable to measure.
+            for _ in range(2):
+                try:
+                    reply = self.control.request(f"get {name}", timeout=8.0)["data"]
+                    self.snapshot[name] = str(reply["string"])
+                    self.sources[name] = "get"
+                    break
+                except Exception:
+                    continue
+            if name in self.sources:
                 continue
-            except Exception:
-                pass
             if name in self.baseline:
                 self.snapshot[name] = self.baseline[name]
+                self.sources[name] = "baseline"
             else:
                 missing.append(name)
         if missing:
@@ -426,6 +456,11 @@ class RunRecorder(AbstractContextManager["RunRecorder"]):
         stamp = self.started.strftime("%Y%m%dT%H%M%SZ")
         self.run_id = f"{tier.lower()}-{stamp}-{self.build['commit'][:8]}"
         self.payload: dict[str, Any] = {}
+        # What the build under test could not be asked about. A property of the
+        # binary and the rig rather than of one tier's numbers, so it sits
+        # beside the payload rather than inside it. Absent means everything the
+        # tier needed was available, which is the common case.
+        self.capabilities: dict[str, Any] | None = None
         self.status = "complete"
         self.error: str | None = None
         self.path = (
@@ -463,6 +498,8 @@ class RunRecorder(AbstractContextManager["RunRecorder"]):
             "provenance": self.provenance,
             "payload": self.payload,
         }
+        if self.capabilities is not None:
+            document["capabilities"] = self.capabilities
         if self.error is not None:
             document["error"] = self.error
         return document

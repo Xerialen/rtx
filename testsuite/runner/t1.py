@@ -10,6 +10,15 @@ from typing import Any
 from . import evidence as evidence_mod
 from .control import Control, ControlError
 from .runlib import CvarRestore, RigLock, RunRecorder, config_path, connect
+
+# Declared when the build under test has no `rtx_telemetry` cvar: the drills all
+# still run, but the `stall` outcome cannot occur on such a build.
+TELEMETRY_ABSENT = {
+    "telemetry": False,
+    "unavailable": ["t1:stall"],
+    "note": "build exposes no rtx_telemetry cvar; a stalled attempt is recorded"
+            " as a timeout",
+}
 from .scenario import load_scenarios
 
 
@@ -456,7 +465,19 @@ def run(
                 )
                 restorer.__enter__()
                 snapshot = restorer.snapshot
-                control.request("set rtx_telemetry 1")
+                if restorer.server_has("rtx_telemetry"):
+                    control.request("set rtx_telemetry 1")
+                else:
+                    # Arrival is read off `status`, so every drill is still
+                    # graded exactly as before. What changes is that an attempt
+                    # the engine would have called a stall lands as a timeout,
+                    # and a reader comparing columns has to be told that.
+                    recorder.capabilities = dict(TELEMETRY_ABSENT)
+                    print(
+                        "rtx_telemetry: build does not expose it — a stalled "
+                        "attempt will be recorded as a timeout",
+                        flush=True,
+                    )
                 bot_id = _wait_for_bots(control, 1)[0]
                 recording = evidence_mod.open_recording(
                     control, recorder.run_id, config, main_map, config_path

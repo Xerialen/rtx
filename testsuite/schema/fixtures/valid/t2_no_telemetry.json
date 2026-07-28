@@ -1,0 +1,64 @@
+{
+ "schema": "rtx-testflow/1",
+ "run_id": "t2-20260728T120000Z-22222222",
+ "tier": "T2",
+ "status": "complete",
+ "started_utc": "2026-07-28T12:00:00Z",
+ "ended_utc": "2026-07-28T12:10:00Z",
+ "map": "dm3",
+ "build": {
+  "branch": "meganav-stock",
+  "commit": "2222222222222222222222222222222222222222",
+  "digest_md5": "7fc55d7e",
+  "dirty": false
+ },
+ "config_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "runner_version": "0.1.0",
+ "provenance": "synthetic",
+ "payload": {
+  "duration_s": 600,
+  "regime_note": null,
+  "stats": {
+   "quad_takes": 4,
+   "quad_lay_avg": 8.1,
+   "pent_takes": 1,
+   "pent_lay_avg": 2.5,
+   "speed_1s": 182.0,
+   "speed_100ms": 182.4,
+   "still_s_per_bot": 226.6,
+   "stall_firings": null,
+   "polls": 5996,
+   "bots": 4
+  },
+  "cells": [],
+  "verdict": "MEASURED",
+  "demo": "t2-20260727T200000Z-11111111.mvd",
+  "evidence": {
+   "demo": "t2-20260727T200000Z-11111111.mvd",
+   "at_s": 0.0,
+   "link": "/demo-player/?demoUrl=%2Fdemos%2Ft2-20260727T200000Z-11111111.mvd&map=dm3&duration=600&from=0.0"
+  },
+  "sources": {
+   "quad_takes": "qw-analyze/items",
+   "quad_lay_avg": "qw-analyze/items"
+  },
+  "moments": [
+   {
+    "demo": "t2-20260727T200000Z-11111111.mvd",
+    "metric": "quad_takes",
+    "at_s": 33.2,
+    "who": "bot.ref1",
+    "link": "/demo-player/?demoUrl=%2Fdemos%2Ft2-20260727T200000Z-11111111.mvd&map=dm3&duration=600&from=30.2&track=5",
+    "detail": "quad taget"
+   }
+  ]
+ },
+ "capabilities": {
+  "telemetry": false,
+  "unavailable": [
+   "stall_firings",
+   "cells"
+  ],
+  "note": "build exposes no rtx_telemetry cvar; stall events are not emitted"
+ }
+}

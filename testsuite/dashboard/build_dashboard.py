@@ -214,6 +214,9 @@ def default_level(level: str) -> dict[str, Any]:
         "comparisonKey": f"{level}:full",
         "sources": [],
         "snapshotIds": [],
+        # What the build behind this column could not be asked about. Null is
+        # the common case and means everything the tier needed was there.
+        "capabilities": None,
     }
     if level == "t0":
         common.update(modules=[], qualityFloors=[], total={"tests": None, "passed": None})
@@ -292,6 +295,27 @@ def sources_from(payload: dict[str, Any]) -> list[dict[str, str]]:
     return sources
 
 
+def normalize_capabilities(value: Any) -> dict[str, Any] | None:
+    """The declaration that some number in this column was never measured.
+
+    A malformed block is dropped rather than half-trusted: a partial excuse
+    would let the page show a missing measurement as if it were explained.
+    """
+    if not isinstance(value, dict):
+        return None
+    unavailable = [
+        name for name in value.get("unavailable", []) if isinstance(name, str) and name
+    ]
+    note = value.get("note")
+    if not unavailable or not isinstance(note, str) or not note.strip():
+        return None
+    return {
+        "telemetry": value.get("telemetry") is not False,
+        "unavailable": unavailable,
+        "note": note.strip(),
+    }
+
+
 def base_level(level: str, envelope: dict[str, Any]) -> dict[str, Any]:
     item = default_level(level)
     status = text(envelope.get("status"), "incomplete").lower()
@@ -303,6 +327,7 @@ def base_level(level: str, envelope: dict[str, Any]) -> dict[str, Any]:
         runId=envelope.get("run_id"),
         startedUtc=envelope.get("started_utc"),
         error=envelope.get("error"),
+        capabilities=normalize_capabilities(envelope.get("capabilities")),
     )
     if status != "complete":
         shown = status.upper() if status in {"failed", "aborted"} else "OFULLSTÄNDIG"
@@ -555,9 +580,12 @@ def t2_level(
         if isinstance(source, str) and source
     }
     snap_id = f"{snapshot_id}:t2"
+    firings = number(raw_stats.get("stall_firings"))
     item.update(
         verdict="MÄTT",
-        key=f"{number(raw_stats.get('stall_firings')) or 0} stall",
+        # The one-line summary is the first thing read, so it must not turn an
+        # absent measurement into a best-in-class zero.
+        key="stall ej mätbar" if firings is None else f"{firings} stall",
         stats=stats,
         regimeNote=regime_note,
         comparisonKey=f"t2:{regime_note or 'full'}",
@@ -1004,6 +1032,20 @@ def selftest() -> None:
         ]
         smoke = next(run for run in runs if run["branch"] == "null-fields")
         assert smoke["levels"]["t2"]["comparisonKey"] == "t2:smoke"
+        # A build that could not be asked about stalls: the count stays null,
+        # the map keeps no zones, and the summary line says so rather than
+        # reading as the best column on the page.
+        blind = next(run for run in runs if run["branch"] == "no-telemetry")
+        blind_t2 = blind["levels"]["t2"]
+        assert blind_t2["capabilities"]["telemetry"] is False
+        assert blind_t2["capabilities"]["unavailable"] == ["stall_firings", "cells"]
+        assert blind_t2["stats"]["stall_firings"] is None
+        assert blind_t2["key"] == "stall ej mätbar"
+        assert blind_t2["snapshotIds"] == []
+        assert golden["levels"]["t2"]["capabilities"] is None
+        # The two phrases the page owes such a column, in the code that renders
+        # it; the browser check drives the page itself.
+        assert "ej mätbar" in html and "ej jämförbar" in html
     print("dashboard selftest: PASS")
 
 
