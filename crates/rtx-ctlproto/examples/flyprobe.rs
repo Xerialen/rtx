@@ -290,7 +290,7 @@ fn main() {
         let bot = first_bot(&mut c);
         let mut rows = String::from(
             "seg,human_secs,human_path,human_ups,entry_ups,direct,arrived,secs,ratio,cross_p50,\
-             cross_p95,cross_max,speed,late_speed,yaw_p95,reverse,wall\n",
+             cross_p95,cross_max,speed,late_speed,yaw_p95,reverse,wall,bot_path,comparable\n",
         );
         // Kept apart because they answer different questions: on an indirect reference the bot is
         // asked for a chord the human never ran, so its *time* is not comparable — but whether it
@@ -319,8 +319,8 @@ fn main() {
                 b.z,
                 v0.truncate().length(),
                 direct,
-                if direct < line::DIRECT_ENOUGH {
-                    "  (untimed: the chord is not the run)"
+                if direct < 0.5 {
+                    "  (chord may be far shorter)"
                 } else {
                     ""
                 },
@@ -394,7 +394,7 @@ fn main() {
                     s.wall_events,
                 );
                 rows.push_str(&format!(
-                    "{idx},{:.3},{:.0},{:.0},{:.0},{:.3},{},{:.3},{:.3},{:.1},{:.1},{:.1},{:.3},{:.3},{:.0},{},{}\n",
+                    "{idx},{:.3},{:.0},{:.0},{:.0},{:.3},{},{:.3},{:.3},{:.1},{:.1},{:.1},{:.3},{:.3},{:.0},{},{}",
                     seg.duration(),
                     seg.path_length(),
                     seg.mean_speed(),
@@ -416,6 +416,7 @@ fn main() {
                     s.reverse_frames,
                     s.wall_events,
                 ));
+                rows.push_str(&format!(",{:.0},{}\n", s.path_length, s.comparable() as u8));
                 scores.push(s);
                 std::thread::sleep(Duration::from_millis(200));
             }
@@ -435,11 +436,17 @@ fn main() {
                 mean(|s| s.mean_speed_ratio),
                 mean(|s| s.wall_events as f32),
             );
-            if direct >= line::DIRECT_ENOUGH {
+            // Split on what each run actually covered, not on the reference's shape: the same
+            // movement can be a fair race for one trial and a shortcut for the next.
+            if scores.iter().any(|s| s.comparable()) {
                 timed += 1;
-                all.extend(scores);
-            } else {
-                indirect.extend(scores);
+            }
+            for s in scores {
+                if s.comparable() {
+                    all.push(s);
+                } else {
+                    indirect.push(s);
+                }
             }
         }
 
@@ -465,11 +472,15 @@ fn main() {
         if !indirect.is_empty() {
             let arrived = indirect.iter().filter(|s| s.arrived).count();
             let wall: Vec<f32> = indirect.iter().map(|s| s.wall_events as f32).collect();
+            let short: Vec<f32> = indirect
+                .iter()
+                .map(|s| s.path_length / s.reference_path.max(1.0))
+                .collect();
             println!(
-                "\n{} runs on references too indirect to time (directness < {:.1}): \
-                 arrived {arrived}/{}, wall events p50 {:.0}",
+                "\n{} runs took a shorter journey than the human ({:.0}% of the ground at p50), \
+                 so their clocks are not comparable: arrived {arrived}/{}, wall events p50 {:.0}",
                 indirect.len(),
-                line::DIRECT_ENOUGH,
+                100.0 * pct(short, 0.5),
                 indirect.len(),
                 pct(wall, 0.5),
             );

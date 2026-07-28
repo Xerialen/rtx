@@ -340,6 +340,15 @@ pub struct LineScore {
     pub yaw_jitter_p95: f32,
     /// Frames spent travelling *away* from the next point on the line.
     pub reverse_frames: u32,
+    /// Ground the bot actually covered, and what the human covered on the same reference.
+    ///
+    /// The pair is what says whether the two runs are the *same journey*. Segments are cut every so
+    /// many units travelled, so a human who spent that circling produces a reference whose endpoints
+    /// nearly coincide; a bot told to reach the end cuts the chord, covers a third of the distance,
+    /// and finishes in a third of the time while never straying from a line that doubles back past
+    /// itself. Comparing those two clocks is meaningless — see [`LineScore::comparable`].
+    pub path_length: f32,
+    pub reference_path: f32,
     /// Grounded frames that lost more than [`WALL_LOSS`] of speed in one step — running into
     /// geometry. The count that "stops bumping into things" has to move.
     pub wall_events: u32,
@@ -356,18 +365,37 @@ pub const ARRIVE_RADIUS: f32 = 64.0;
 /// metrics use for the same reason.
 pub const YAW_MIN_SPEED: f32 = 100.0;
 
-/// Below this straight-line-over-path ratio, a reference is too indirect for its *time* to be a fair
-/// comparison — see [`Traversal::directness`]. Such movements still belong in the suite; they are
-/// scored on arrival and on how cleanly they are executed, not on the clock.
-pub const DIRECT_ENOUGH: f32 = 0.7;
+/// A run has to cover at least this share of the human's ground for the two clocks to mean the same
+/// thing — see [`LineScore::comparable`].
+///
+/// One-sided on purpose: a bot that travels *further* than the human is simply worse at the route,
+/// and timing that is exactly the point. Only travelling much less makes the comparison invalid.
+/// 0.6 leaves room for the weave a strafe-jumping human adds (5-15%) without admitting a chord.
+pub const PATH_COMPARABLE: f32 = 0.6;
 
 impl LineScore {
+    /// Whether this run's time can be compared to the human's at all.
+    ///
+    /// False when the bot covered far less ground — it found a shorter journey between the same two
+    /// points than the human took, so the clocks measure different things. That is a finding, not a
+    /// failure, and the run is still scored on arrival and on how cleanly it moved; it just does not
+    /// belong in a time distribution.
+    ///
+    /// Measured rather than predicted. A reference's own directness ([`Traversal::directness`])
+    /// tells you a chord *might* be much shorter, but a single right-angle corridor turn scores 0.71
+    /// on it and is a perfectly fair A-to-B task, because the walls give the bot no chord to take.
+    /// What the bot actually travelled settles it either way.
+    pub fn comparable(&self) -> bool {
+        self.reference_path < 1.0 || self.path_length >= PATH_COMPARABLE * self.reference_path
+    }
+
     /// Score a bot trajectory — `(time, origin)` samples — against a human line.
     pub fn score(samples: &[(f32, Vec3)], reference: &ReferenceLine) -> LineScore {
         let mut cross = Vec::with_capacity(samples.len());
         let mut yaw_steps: Vec<f32> = Vec::new();
         let mut bins: [(f32, u32); 20] = [(0.0, 0); 20];
         let (mut reverse_frames, mut wall_events) = (0u32, 0u32);
+        let mut path_length = 0.0f32;
         let len = reference.length().max(1.0);
 
         /// Carried between samples: everything the next step is measured against.
@@ -391,6 +419,7 @@ impl LineScore {
                 let dt = time - p.time;
                 if dt > 0.0 {
                     let step = (pos - p.pos).truncate();
+                    path_length += step.length();
                     speed = step.length() / dt;
                     bins[((progress / len).clamp(0.0, 0.999) * 20.0) as usize].0 += speed;
                     bins[((progress / len).clamp(0.0, 0.999) * 20.0) as usize].1 += 1;
@@ -490,6 +519,8 @@ impl LineScore {
             yaw_jitter_p95: pct(&yaw_steps, 0.95),
             reverse_frames,
             wall_events,
+            path_length,
+            reference_path: len,
         }
     }
 }
@@ -806,30 +837,55 @@ mod tests {
 
     /// A doubled-back reference is not a fair time comparison, and it hides that fact well: the bot
     /// cutting the chord *also* reads as hugging the line, because a path that returns on itself is
-    /// never far from any point on itself. Directness is what separates the two.
+    /// never far from any point on itself. Only the ground actually covered gives it away.
     #[test]
-    fn a_loop_reads_as_indirect_and_still_hugs_the_line() {
+    fn a_shortcut_is_not_a_faster_run() {
         // Out 400 units and back, so start and end are 8 units apart over 800 of path.
         let mut pts = run_along(Vec3::ZERO, Vec3::new(8.0, 0.0, 0.0), 51, 0.0125);
         let t0 = pts.last().unwrap().0;
         pts.extend((1..=50).map(|i| (t0 + 0.0125 * i as f32, Vec3::new(400.0 - 8.0 * i as f32, 0.0, 0.0))));
         let seg = track(&demo_of(&pts), 0).segments(192.0, 4096.0, 60.0).remove(0);
         assert!(seg.directness() < 0.1, "a loop is indirect: {}", seg.directness());
-        assert!(seg.directness() < DIRECT_ENOUGH);
 
-        // A bot that goes nowhere is "on the line" the whole time and lands within the arrival
-        // radius of the end — which is why time alone would call this a win.
+        // A bot that barely moves is "on the line" the whole time and lands within the arrival
+        // radius of the end — which is why arrival, cross-track and the clock *all* flatter it.
         let samples: Vec<(f32, Vec3)> = (0..=10).map(|i| (0.05 * i as f32, Vec3::new(4.0, 0.0, 0.0))).collect();
         let s = LineScore::score(&samples, &seg.reference("loop"));
         assert!(s.arrived, "the chord of a loop is no distance at all");
-        assert!(s.cross_track_p95 < 1.0, "and it never leaves the line: {}", s.cross_track_p95);
+        assert!(
+            s.cross_track_p95 < 1.0,
+            "and it never leaves the line: {}",
+            s.cross_track_p95
+        );
         assert!(s.time < s.reference_time, "so the clock flatters it");
+        assert!(!s.comparable(), "only the ground covered catches it");
 
-        // A straight run of the same length is direct, and is timed.
-        let straight = track(&demo_of(&run_along(Vec3::ZERO, Vec3::new(8.0, 0.0, 0.0), 100, 0.0125)), 0)
-            .segments(192.0, 4096.0, 60.0)
-            .remove(0);
+        // The same reference, run properly: covering the human's ground makes it timeable — even
+        // though the reference is exactly as indirect as before.
+        let full: Vec<(f32, Vec3)> = pts.iter().map(|&(t, p)| (t * 2.0, p)).collect();
+        let s = LineScore::score(&full, &seg.reference("loop"));
+        assert!(s.comparable(), "it went where the human went");
+        assert!(s.time > s.reference_time, "at half the speed: {:.2}s", s.time);
+
+        // And a bot that takes a *longer* route is still timed — that is the finding, not an excuse.
+        let straight = track(
+            &demo_of(&run_along(Vec3::ZERO, Vec3::new(8.0, 0.0, 0.0), 100, 0.0125)),
+            0,
+        )
+        .segments(192.0, 4096.0, 60.0)
+        .remove(0);
         assert!(straight.directness() > 0.99, "{}", straight.directness());
+        let detour: Vec<(f32, Vec3)> = (0..=100)
+            .map(|i| {
+                let x = 7.9 * i as f32;
+                (
+                    0.02 * i as f32,
+                    Vec3::new(x, if i % 2 == 0 { 40.0 } else { -40.0 }, 0.0),
+                )
+            })
+            .collect();
+        let s = LineScore::score(&detour, &straight.reference("straight"));
+        assert!(s.comparable(), "a longer path is comparable: {:.0}u", s.path_length);
     }
 
     /// Redundancy is about ground covered, not endpoints — the case endpoint bucketing gets wrong,
