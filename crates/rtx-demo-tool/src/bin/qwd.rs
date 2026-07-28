@@ -15,25 +15,32 @@ use std::process::ExitCode;
 
 use rtx_demo_tool::analysis::{self, Motion};
 use rtx_demo_tool::{parse_demo, Demo, DemoCmd, Frame};
-use rtx_proto::svc::{self, MoveVars, Usercmd};
+use rtx_proto::svc::{MoveVars, Usercmd};
 
 const USAGE: &str = "\
 usage: qwd <command> [options] [FILE...]
 
-Inspect QuakeWorld .qwd demos. With no FILE, reads *.qwd in the current directory.
+Inspect QuakeWorld demos: single-client .qwd and server-side multi-view .mvd, told
+apart by content. With no FILE, reads *.qwd and *.mvd in the current directory.
+
+A .qwd records one client — its own inputs and the velocities the server sent it.
+An .mvd records the whole game: every player, no velocities (speeds are derived
+from successive positions), and inputs only where the recorder embedded them.
 
 commands:
+  players   list the players in a demo
   dump      write position/velocity/usercmd fields as CSV
   analyze   print a per-player movement report
 
 dump options:
   --raw           emit raw dem_cmd and playerinfo events (plus a movevars row)
-  --player N      restrict to one player slot; defaults to the local player
-  --all-players   include every svc_playerinfo player
+  --player P      one player, by slot number or (substring of) name; defaults to
+                  the recording client, or to everyone in an .mvd
+  --all-players   include every player
   --no-header     omit the CSV header
 
 analyze options:
-  --player N      one player slot; defaults to the local player
+  --player P      one player, by slot number or (substring of) name
   --all-players   report every player
   --waypoints N   also print N evenly-spaced trajectory waypoints (default: none)
 
@@ -43,6 +50,7 @@ analyze options:
 fn main() -> ExitCode {
     let mut argv = std::env::args().skip(1);
     match argv.next().as_deref() {
+        Some("players") => run_players(argv),
         Some("dump") => run_dump(argv),
         Some("analyze") => run_analyze(argv),
         None | Some("-h") | Some("--help") => {
@@ -66,10 +74,88 @@ fn resolve_paths(files: Vec<PathBuf>) -> Vec<PathBuf> {
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("qwd")))
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("qwd") || x.eq_ignore_ascii_case("mvd"))
+        })
         .collect();
     paths.sort();
     paths
+}
+
+// ── players ───────────────────────────────────────────────────────────────────────────────────
+
+/// List who is in a demo. The first thing you want from a file you haven't seen: a multi-view
+/// recording of a 4-on-4 holds eight players plus spectators across thirty-two slots, and every
+/// other subcommand needs a slot or a name to talk about.
+fn run_players(argv: impl Iterator<Item = String>) -> ExitCode {
+    let mut files = Vec::new();
+    for arg in argv {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            _ if arg.starts_with('-') && arg != "-" => return usage_err(&format!("unknown option {arg}")),
+            _ => files.push(PathBuf::from(arg)),
+        }
+    }
+    let paths = resolve_paths(files);
+    if paths.is_empty() {
+        eprintln!("qwd: no .qwd or .mvd files found");
+        return ExitCode::FAILURE;
+    }
+    let mut had_error = false;
+    for path in &paths {
+        let demo = match parse_demo(path) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("qwd: {}: {e}", path.display());
+                had_error = true;
+                continue;
+            }
+        };
+        let span = demo
+            .frames
+            .last()
+            .zip(demo.frames.first())
+            .map_or(0.0, |(l, f)| l.time - f.time);
+        println!(
+            "{} [{}] {} — {:.1}s, {} frames",
+            basename(&demo.path),
+            demo.format.as_str(),
+            if demo.levelname.is_empty() {
+                "?"
+            } else {
+                &demo.levelname
+            },
+            span,
+            demo.frames.len()
+        );
+        for (slot, p) in demo.players.iter().enumerate() {
+            if !p.present() {
+                continue;
+            }
+            let mut tags = Vec::new();
+            if p.spectator {
+                tags.push("spectator".to_string());
+            }
+            if !p.team.is_empty() {
+                tags.push(format!("team {}", p.team));
+            }
+            if demo.local_player == Some(slot as u8) {
+                tags.push("recorder".to_string());
+            }
+            println!(
+                "  {slot:>2}  {:<20} {:>7} frames{}{}",
+                p.label(slot as u8),
+                p.frames,
+                if tags.is_empty() { "" } else { "  " },
+                tags.join(", ")
+            );
+        }
+    }
+    exit_code(had_error)
 }
 
 // ── dump ──────────────────────────────────────────────────────────────────────────────────────
@@ -140,7 +226,7 @@ struct ResolvedCmd {
 struct DumpArgs {
     files: Vec<PathBuf>,
     raw: bool,
-    player: Option<u8>,
+    player: Option<String>,
     all_players: bool,
     no_header: bool,
     help: bool,
@@ -162,14 +248,11 @@ fn run_dump(argv: impl Iterator<Item = String>) -> ExitCode {
             "--all-players" => a.all_players = true,
             "--no-header" => a.no_header = true,
             "-h" | "--help" => a.help = true,
-            "--player" => match it.next().and_then(|v| v.parse().ok()) {
-                Some(p) => a.player = Some(p),
-                None => return usage_err("--player needs a slot number"),
+            "--player" => match it.next() {
+                Some(v) => a.player = Some(v),
+                None => return usage_err("--player needs a slot number or name"),
             },
-            _ if arg.starts_with("--player=") => match arg["--player=".len()..].parse() {
-                Ok(p) => a.player = Some(p),
-                Err(_) => return usage_err("--player needs a slot number"),
-            },
+            _ if arg.starts_with("--player=") => a.player = Some(arg["--player=".len()..].to_string()),
             "--" => a.files.extend(it.by_ref().map(PathBuf::from)),
             _ if arg.starts_with('-') && arg != "-" => return usage_err(&format!("unknown option {arg}")),
             _ => a.files.push(PathBuf::from(arg)),
@@ -182,7 +265,7 @@ fn run_dump(argv: impl Iterator<Item = String>) -> ExitCode {
 
     let paths = resolve_paths(a.files);
     if paths.is_empty() {
-        eprintln!("qwd: no .qwd files found");
+        eprintln!("qwd: no .qwd or .mvd files found");
         return ExitCode::FAILURE;
     }
 
@@ -218,10 +301,19 @@ fn run_dump(argv: impl Iterator<Item = String>) -> ExitCode {
             had_error = true;
         }
 
+        let slot = match a.player.as_deref().map(|v| resolve_player(&demo, v)) {
+            Some(Ok(s)) => Some(s),
+            Some(Err(e)) => {
+                eprintln!("qwd: {}: {e}", path.display());
+                had_error = true;
+                continue;
+            }
+            None => None,
+        };
         let rows = if a.raw {
-            raw_rows(&demo, a.player, a.all_players)
+            raw_rows(&demo, slot, a.all_players)
         } else {
-            combined_rows(&demo, a.player, a.all_players)
+            combined_rows(&demo, slot, a.all_players)
         };
         for row in rows {
             let cells: Vec<&str> = row.iter().map(String::as_str).collect();
@@ -240,13 +332,42 @@ fn run_dump(argv: impl Iterator<Item = String>) -> ExitCode {
 }
 
 /// Which player's frames to emit: an explicit slot, the local player, or all of them (`None`).
+///
+/// A `.qwd` has an obvious default — the client that recorded it. A multi-view demo does not: it is
+/// a recording of everybody, so defaulting to a slot would silently report one of eight players as
+/// if it were *the* player. There, no selection means all of them.
 fn selected_player(demo: &Demo, explicit: Option<u8>, all: bool) -> Option<u8> {
     if all {
         None
-    } else if let Some(p) = explicit {
-        Some(p)
+    } else if explicit.is_some() {
+        explicit
     } else {
-        Some(demo.local_player.unwrap_or(0))
+        demo.local_player
+    }
+}
+
+/// Resolve a `--player` argument that may name a slot *or* a player. Names are matched
+/// case-insensitively and by substring, because QuakeWorld names are full of punctuation and
+/// colour codes that are miserable to type exactly.
+fn resolve_player(demo: &Demo, arg: &str) -> Result<u8, String> {
+    if let Ok(slot) = arg.parse::<u8>() {
+        return Ok(slot);
+    }
+    let needle = arg.to_ascii_lowercase();
+    let hits: Vec<u8> = demo
+        .players
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.present() && p.name.to_ascii_lowercase().contains(&needle))
+        .map(|(i, _)| i as u8)
+        .collect();
+    match hits.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(format!("no player matching {arg:?}")),
+        many => {
+            let names: Vec<String> = many.iter().map(|&s| demo.players[s as usize].label(s)).collect();
+            Err(format!("{arg:?} matches several players: {}", names.join(", ")))
+        }
     }
 }
 
@@ -271,7 +392,7 @@ fn nearest_demo_cmd(cmds: &[DemoCmd], time: f32) -> Option<&DemoCmd> {
 /// The usercmd to report for one frame: the echoed command if present, else the nearest `dem_cmd`
 /// — but only for the local player (or every player when the demo never told us who that is).
 fn command_for_frame(demo: &Demo, frame: &Frame) -> Option<ResolvedCmd> {
-    if let Some(cmd) = frame.info.command {
+    if let Some(cmd) = frame.command {
         return Some(ResolvedCmd {
             source: CmdSource::PlayerInfo,
             time: frame.time,
@@ -280,7 +401,7 @@ fn command_for_frame(demo: &Demo, frame: &Frame) -> Option<ResolvedCmd> {
     }
     let use_demo = match demo.local_player {
         None => true,
-        Some(local) => frame.info.player == local,
+        Some(local) => frame.player == local,
     };
     if use_demo {
         nearest_demo_cmd(&demo.demo_cmds, frame.time).map(|c| ResolvedCmd {
@@ -297,7 +418,7 @@ fn combined_rows(demo: &Demo, explicit: Option<u8>, all: bool) -> Vec<Vec<String
     let player = selected_player(demo, explicit, all);
     demo.frames
         .iter()
-        .filter(|f| player.is_none_or(|p| f.info.player == p))
+        .filter(|f| player.is_none_or(|p| f.player == p))
         .map(|f| row_for_frame(demo, f, command_for_frame(demo, f).as_ref()))
         .collect()
 }
@@ -325,10 +446,10 @@ fn raw_rows(demo: &Demo, explicit: Option<u8>, all: bool) -> Vec<Vec<String>> {
         events.push((c.time, i * 2 + 1, row));
     }
     for (j, f) in demo.frames.iter().enumerate() {
-        if player.is_some_and(|p| f.info.player != p) {
+        if player.is_some_and(|p| f.player != p) {
             continue;
         }
-        let resolved = f.info.command.map(|cmd| ResolvedCmd {
+        let resolved = f.command.map(|cmd| ResolvedCmd {
             source: CmdSource::PlayerInfo,
             time: f.time,
             cmd,
@@ -349,19 +470,20 @@ fn raw_rows(demo: &Demo, explicit: Option<u8>, all: bool) -> Vec<Vec<String>> {
 
 /// A combined/playerinfo row: the frame's position and velocity, plus a resolved usercmd's fields.
 fn row_for_frame(demo: &Demo, frame: &Frame, cmd: Option<&ResolvedCmd>) -> Vec<String> {
-    let info = &frame.info;
-    let velocity_present = (0..3).any(|i| info.flags & (svc::pf::VELOCITY1 << i) != 0);
+    // `velocity_present` says whether the *wire* carried a velocity, not whether one can be had:
+    // an MVD never does, and its speeds come from differencing successive origins instead.
+    let v = frame.velocity;
     vec![
         basename(&demo.path),
         fmt_float(frame.time),
-        info.player.to_string(),
-        fmt_float(info.origin.x),
-        fmt_float(info.origin.y),
-        fmt_float(info.origin.z),
-        if velocity_present { "1" } else { "0" }.to_string(),
-        opt_int(velocity_present.then_some(info.velocity.x as i64)),
-        opt_int(velocity_present.then_some(info.velocity.y as i64)),
-        opt_int(velocity_present.then_some(info.velocity.z as i64)),
+        frame.player.to_string(),
+        fmt_float(frame.origin.x),
+        fmt_float(frame.origin.y),
+        fmt_float(frame.origin.z),
+        if v.is_some() { "1" } else { "0" }.to_string(),
+        opt_int(v.map(|v| v.x as i64)),
+        opt_int(v.map(|v| v.y as i64)),
+        opt_int(v.map(|v| v.z as i64)),
         cmd.map_or(String::new(), |c| c.source.as_str().to_string()),
         cmd.map_or(String::new(), |c| fmt_float(c.time)),
         cmd.map_or(String::new(), |c| c.cmd.msec.to_string()),
@@ -458,7 +580,7 @@ fn csv_escape(s: &str) -> Cow<'_, str> {
 /// Parsed `qwd analyze` options.
 struct AnalyzeArgs {
     files: Vec<PathBuf>,
-    player: Option<u8>,
+    player: Option<String>,
     all_players: bool,
     waypoints: usize,
     help: bool,
@@ -477,14 +599,11 @@ fn run_analyze(argv: impl Iterator<Item = String>) -> ExitCode {
         match arg.as_str() {
             "--all-players" => a.all_players = true,
             "-h" | "--help" => a.help = true,
-            "--player" => match it.next().and_then(|v| v.parse().ok()) {
-                Some(p) => a.player = Some(p),
-                None => return usage_err("--player needs a slot number"),
+            "--player" => match it.next() {
+                Some(v) => a.player = Some(v),
+                None => return usage_err("--player needs a slot number or name"),
             },
-            _ if arg.starts_with("--player=") => match arg["--player=".len()..].parse() {
-                Ok(p) => a.player = Some(p),
-                Err(_) => return usage_err("--player needs a slot number"),
-            },
+            _ if arg.starts_with("--player=") => a.player = Some(arg["--player=".len()..].to_string()),
             "--waypoints" => match it.next().and_then(|v| v.parse().ok()) {
                 Some(n) => a.waypoints = n,
                 None => return usage_err("--waypoints needs a count"),
@@ -505,7 +624,7 @@ fn run_analyze(argv: impl Iterator<Item = String>) -> ExitCode {
 
     let paths = resolve_paths(a.files);
     if paths.is_empty() {
-        eprintln!("qwd: no .qwd files found");
+        eprintln!("qwd: no .qwd or .mvd files found");
         return ExitCode::FAILURE;
     }
 
@@ -527,10 +646,23 @@ fn run_analyze(argv: impl Iterator<Item = String>) -> ExitCode {
             had_error = true;
         }
 
-        let players = if a.all_players {
-            analysis::players(&demo)
-        } else {
-            vec![a.player.or(demo.local_player).unwrap_or(0)]
+        // With no `--player`, report the recording client — or, in a multi-view demo that has no
+        // such thing, everyone. Picking a slot arbitrarily there would report one of eight players
+        // as though the file were about them.
+        let players = match (a.all_players, a.player.as_deref()) {
+            (true, _) => analysis::players(&demo),
+            (_, Some(v)) => match resolve_player(&demo, v) {
+                Ok(s) => vec![s],
+                Err(e) => {
+                    eprintln!("qwd: {}: {e}", path.display());
+                    had_error = true;
+                    continue;
+                }
+            },
+            (_, None) => match demo.local_player {
+                Some(p) => vec![p],
+                None => analysis::players(&demo),
+            },
         };
         let _ = writeln!(out, "{}", basename(&demo.path));
         for p in players {
@@ -551,7 +683,15 @@ fn report_player(out: &mut impl Write, demo: &Demo, player: u8, waypoints: usize
     if s.frames == 0 {
         return writeln!(out, "  player {player}: no frames");
     }
-    writeln!(out, "  player {player}: {} frames over {:.2}s", s.frames, s.duration)?;
+    let label = demo
+        .players
+        .get(player as usize)
+        .map_or_else(|| format!("#{player}"), |p| p.label(player));
+    writeln!(
+        out,
+        "  player {player} ({label}): {} frames over {:.2}s",
+        s.frames, s.duration
+    )?;
     writeln!(
         out,
         "    start ({:.0}, {:.0}, {:.0})  ->  end ({:.0}, {:.0}, {:.0})   climb {:+.0}",
@@ -562,6 +702,50 @@ fn report_player(out: &mut impl Write, demo: &Demo, player: u8, waypoints: usize
         "    horizontal speed: peak {:.0}  mean {:.0} ups   path {:.0}u   z {:.0}..{:.0}",
         s.peak_speed, s.mean_speed, s.path_length, s.min_z, s.max_z,
     )?;
+    // Percentiles over moving frames: a whole match is mostly standing still, so a mean says very
+    // little about how fast the player actually travels.
+    let [_, p50, p90, p99, max] = track.speed_percentiles();
+    writeln!(
+        out,
+        "    while moving: p50 {p50:.0}  p90 {p90:.0}  p99 {p99:.0}  max {max:.0} ups",
+    )?;
+    let jumps = track.jumps();
+    if !jumps.is_empty() {
+        let gained = jumps.iter().filter(|j| j.peak_speed > j.takeoff_speed + 5.0).count();
+        let longest = jumps.iter().fold(None::<&analysis::Jump>, |b, j| {
+            Some(match b {
+                Some(b) if b.distance >= j.distance => b,
+                _ => j,
+            })
+        });
+        writeln!(
+            out,
+            "    jumps: {} ({} gained speed in the air)   mean {:.0}u / {:.2}s",
+            jumps.len(),
+            gained,
+            jumps.iter().map(|j| j.distance).sum::<f32>() / jumps.len() as f32,
+            jumps.iter().map(|j| j.airtime).sum::<f32>() / jumps.len() as f32,
+        )?;
+        if let Some(j) = longest {
+            writeln!(
+                out,
+                "      longest {:.0}u at t={:.1}s: ({:.0}, {:.0}, {:.0}) -> ({:.0}, {:.0}, {:.0})  \
+                 takeoff {:.0} peak {:.0} ups, apex {:+.0}, {:.2}s",
+                j.distance,
+                j.takeoff_time,
+                j.takeoff.x,
+                j.takeoff.y,
+                j.takeoff.z,
+                j.landing.x,
+                j.landing.y,
+                j.landing.z,
+                j.takeoff_speed,
+                j.peak_speed,
+                j.apex,
+                j.airtime,
+            )?;
+        }
+    }
     if waypoints >= 2 {
         writeln!(out, "    waypoints (t  x  y  z  hspeed  vspeed):")?;
         let t0 = track.motions.first().map_or(0.0, |m| m.time);
@@ -570,6 +754,7 @@ fn report_player(out: &mut impl Write, demo: &Demo, player: u8, waypoints: usize
             origin,
             horizontal_speed,
             vertical_speed,
+            ..
         } in track.waypoints(waypoints)
         {
             writeln!(

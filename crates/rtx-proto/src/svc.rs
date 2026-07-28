@@ -921,7 +921,15 @@ fn parse_one(proto: &mut ProtoState, r: &mut Reader, svc: u8, offset: usize) -> 
     let ev = match svc {
         op::BAD => return Err(ParseError::Bad { offset }),
         op::NOP => SvcEvent::Nop,
-        op::DISCONNECT => SvcEvent::Disconnect,
+        // A demo's last block is `svc_disconnect` followed by the literal string "EndOfDemo" — the
+        // recorder's end marker, where a live server sends the opcode alone. Consuming the string
+        // is what keeps the final block from reading as a stream of garbage opcodes.
+        op::DISCONNECT => {
+            if proto.mvd {
+                let _reason = r.string()?;
+            }
+            SvcEvent::Disconnect
+        }
         op::UPDATESTAT => SvcEvent::UpdateStat {
             stat: r.u8()?,
             value: r.u8()? as i32,

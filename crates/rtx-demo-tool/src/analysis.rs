@@ -12,6 +12,16 @@ use glam::Vec3;
 
 use crate::Demo;
 
+/// Implied speed above which a step between frames is a **discontinuity**, not motion.
+///
+/// Positions are differenced, so a teleport, a respawn, or a map change all read as one enormous
+/// stride. QuakeWorld clamps real velocity at `sv_maxvelocity` (2000 by default) and even a
+/// quad-boosted rocket jump stays far below this, so anything past it is the player being *moved*
+/// rather than moving. Without the guard a single dm3 teleport puts a 200,000 ups peak in the
+/// summary and adds its own length to the path. (ezquake draws the same line as a flat 150-unit
+/// step; a speed keeps it right when the recorder's frame rate drops.)
+pub const TELEPORT_SPEED: f32 = 3000.0;
+
 /// One player's motion at a single frame: where they were, and how fast they got there from the
 /// previous frame (the first frame of a track reads zero).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -24,6 +34,15 @@ pub struct Motion {
     pub horizontal_speed: f32,
     /// Vertical (z) speed in units/sec; positive is upward.
     pub vertical_speed: f32,
+    /// Direction of travel in the xy-plane, degrees. `None` while too slow to have a meaningful
+    /// heading.
+    pub heading: Option<f32>,
+    /// Change of heading since the previous frame, degrees/sec — how hard the player is turning.
+    /// This is the signal a "did they arc or did they corner" question is asked of.
+    pub turn_rate: f32,
+    /// The player was *moved* into this position (teleport, respawn) rather than travelling there,
+    /// so the speeds above are zeroed and the step contributes no path length.
+    pub warped: bool,
 }
 
 /// One player's motion across a whole demo, in ascending time.
@@ -33,6 +52,33 @@ pub struct Track {
     pub player: u8,
     /// Per-frame motion, in file (time) order.
     pub motions: Vec<Motion>,
+}
+
+/// One airborne span, found by [`Track::jumps`].
+///
+/// Everything here is measured, not modelled: a demo says where the player was, and a jump is the
+/// arc between leaving the ground and arriving back on it. `takeoff_speed` against `distance` is
+/// the pair that says whether a crossing was comfortable or at the limit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Jump {
+    pub takeoff_time: f32,
+    pub landing_time: f32,
+    /// Seconds off the ground.
+    pub airtime: f32,
+    pub takeoff: Vec3,
+    pub landing: Vec3,
+    /// Horizontal distance covered, in units — the gap that was cleared.
+    pub distance: f32,
+    /// Net height change over the jump; negative for a drop.
+    pub rise: f32,
+    /// Height gained above the takeoff at the top of the arc. A standing QuakeWorld jump peaks
+    /// ~45 units, so anything far above that had help (a lift, a ramp, a rocket).
+    pub apex: f32,
+    /// Horizontal speed at the moment of leaving the ground.
+    pub takeoff_speed: f32,
+    /// Fastest horizontal speed at any point in the flight — a strafe jump *gains* speed in the
+    /// air, so this exceeding the takeoff speed is the signature of one.
+    pub peak_speed: f32,
 }
 
 /// Reduced stats for a [`Track`] — the headline numbers a movement report shows.
@@ -65,32 +111,72 @@ pub struct Summary {
 /// Build the motion track for `player`: their `svc_playerinfo` origins in time order, each carrying
 /// the horizontal and vertical speed to reach it from the previous frame.
 pub fn track(demo: &Demo, player: u8) -> Track {
-    let mut motions = Vec::new();
+    /// Below this, a heading is noise rather than a direction.
+    const HEADING_MIN_SPEED: f32 = 20.0;
+
+    let mut motions: Vec<Motion> = Vec::new();
     let mut prev: Option<(f32, Vec3)> = None;
-    for frame in demo.frames.iter().filter(|f| f.info.player == player) {
-        let origin = frame.info.origin;
-        let (horizontal_speed, vertical_speed) = match prev {
-            Some((pt, po)) if frame.time > pt => {
+    for frame in demo.frames.iter().filter(|f| f.player == player) {
+        let origin = frame.origin;
+        let (mut horizontal_speed, mut vertical_speed) = (0.0, 0.0);
+        let mut warped = false;
+        if let Some((pt, po)) = prev {
+            if frame.time > pt {
                 let dt = frame.time - pt;
                 let d = origin - po;
-                (d.truncate().length() / dt, d.z / dt)
+                let (h, v) = (d.truncate().length() / dt, d.z / dt);
+                // A step no player could have travelled is one they were moved through.
+                if h > TELEPORT_SPEED || v.abs() > TELEPORT_SPEED {
+                    warped = true;
+                } else {
+                    (horizontal_speed, vertical_speed) = (h, v);
+                }
             }
-            _ => (0.0, 0.0),
+        }
+        let heading = (horizontal_speed > HEADING_MIN_SPEED)
+            .then(|| {
+                prev.map(|(_, po)| {
+                    let d = (origin - po).truncate();
+                    d.y.atan2(d.x).to_degrees()
+                })
+            })
+            .flatten();
+        // Turn rate needs a heading on both sides and a real interval between them.
+        let turn_rate = match (heading, motions.last()) {
+            (Some(h), Some(m)) if !warped => match (m.heading, frame.time - m.time) {
+                (Some(ph), dt) if dt > 0.0 => wrap180(h - ph) / dt,
+                _ => 0.0,
+            },
+            _ => 0.0,
         };
         motions.push(Motion {
             time: frame.time,
             origin,
             horizontal_speed,
             vertical_speed,
+            heading,
+            turn_rate,
+            warped,
         });
         prev = Some((frame.time, origin));
     }
     Track { player, motions }
 }
 
+/// Fold an angle difference into ±180°, so a sweep past due-north reads as a small turn.
+fn wrap180(deg: f32) -> f32 {
+    let mut d = deg % 360.0;
+    if d > 180.0 {
+        d -= 360.0;
+    } else if d < -180.0 {
+        d += 360.0;
+    }
+    d
+}
+
 /// Every player slot that appears in the demo's frames, ascending.
 pub fn players(demo: &Demo) -> Vec<u8> {
-    let mut ps: Vec<u8> = demo.frames.iter().map(|f| f.info.player).collect();
+    let mut ps: Vec<u8> = demo.frames.iter().map(|f| f.player).collect();
     ps.sort_unstable();
     ps.dedup();
     ps
@@ -116,7 +202,9 @@ impl Track {
             peak_speed = peak_speed.max(m.horizontal_speed);
             min_z = min_z.min(m.origin.z);
             max_z = max_z.max(m.origin.z);
-            if i > 0 {
+            // A warped step is a jump in space, not distance covered — counting it would add a
+            // teleport's length to how far the player is said to have run.
+            if i > 0 && !m.warped {
                 path_length += (m.origin - self.motions[i - 1].origin).truncate().length();
             }
         }
@@ -136,6 +224,87 @@ impl Track {
         }
     }
 
+    /// Split the track into airborne spans — the demo's jumps.
+    ///
+    /// A multi-view demo carries no ground flag, so "airborne" has to be inferred from the shape of
+    /// the height trace. The rule is deliberately conservative: a span begins where the player
+    /// starts rising fast enough that only a jump explains it, ends where the height settles again,
+    /// and is kept only if it lasted long enough to be a jump rather than a stair-step or the
+    /// 1/8-unit quantisation of the wire jittering. Ramps and lifts move a player upward too, which
+    /// is why the *rate* matters rather than the height alone.
+    ///
+    /// This is the general form of what the tool used to be pointed at by hand: instead of reading
+    /// out one jump you already know the timestamps of, every jump in a 20-minute 4-on-4 falls out.
+    pub fn jumps(&self) -> Vec<Jump> {
+        /// Upward speed that means "left the ground under their own power" — a walked ramp or a
+        /// lift is far slower, a jump starts at `JUMP_VZ` = 270.
+        const TAKEOFF_VZ: f32 = 150.0;
+        /// Shortest span worth calling a jump. A full-height jump hangs ~0.68 s; this admits the
+        /// clipped ones (hopping up a step) while rejecting single-frame noise.
+        const MIN_AIRTIME: f32 = 0.15;
+        /// Longest span still called a jump. Past this the player is *falling* — off a ledge, down
+        /// a shaft — or swimming, none of which is a jump even though all are airborne. A jump from
+        /// dm3's highest reachable point lands well inside this.
+        const MAX_AIRTIME: f32 = 2.0;
+
+        let mut out = Vec::new();
+        let mut open: Option<usize> = None;
+        for (i, m) in self.motions.iter().enumerate() {
+            if m.warped {
+                open = None; // a teleport mid-flight is not a landing
+                continue;
+            }
+            match open {
+                None if m.vertical_speed > TAKEOFF_VZ => open = Some(i.saturating_sub(1)),
+                // Airborne until the player is descending no more and has stopped moving down —
+                // i.e. the frame where the fall arrests is the landing.
+                Some(start) if m.vertical_speed >= 0.0 && self.motions[i - 1].vertical_speed < 0.0 => {
+                    let (a, b) = (&self.motions[start], m);
+                    let airtime = b.time - a.time;
+                    if (MIN_AIRTIME..=MAX_AIRTIME).contains(&airtime) {
+                        let peak_z = self.motions[start..=i].iter().fold(f32::MIN, |z, k| z.max(k.origin.z));
+                        out.push(Jump {
+                            takeoff_time: a.time,
+                            landing_time: b.time,
+                            airtime,
+                            takeoff: a.origin,
+                            landing: b.origin,
+                            distance: (b.origin - a.origin).truncate().length(),
+                            rise: b.origin.z - a.origin.z,
+                            apex: peak_z - a.origin.z,
+                            takeoff_speed: a.horizontal_speed,
+                            peak_speed: self.motions[start..=i]
+                                .iter()
+                                .fold(0.0f32, |s, k| s.max(k.horizontal_speed)),
+                        });
+                    }
+                    open = None;
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Speed distribution over the track, as `[p0, p50, p90, p99, max]` of horizontal speed across
+    /// frames the player was actually moving. Percentiles rather than a mean because a 20-minute
+    /// game is mostly standing still, waiting, and dying — the mean of that says nothing about how
+    /// fast the player *travels*.
+    pub fn speed_percentiles(&self) -> [f32; 5] {
+        let mut v: Vec<f32> = self
+            .motions
+            .iter()
+            .filter(|m| !m.warped && m.horizontal_speed > 1.0)
+            .map(|m| m.horizontal_speed)
+            .collect();
+        if v.is_empty() {
+            return [0.0; 5];
+        }
+        v.sort_by(f32::total_cmp);
+        let at = |q: f32| v[((v.len() - 1) as f32 * q) as usize];
+        [at(0.0), at(0.5), at(0.9), at(0.99), v[v.len() - 1]]
+    }
+
     /// Down-sample the track to at most `n` roughly evenly spaced waypoints, always keeping the
     /// first and last frame. `n < 2` (or a shorter track) returns every frame unchanged.
     pub fn waypoints(&self, n: usize) -> Vec<Motion> {
@@ -150,29 +319,20 @@ impl Track {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Demo, Frame};
+    use crate::{Demo, Format, Frame, PlayerSlot};
     use rtx_proto::protocol::ProtoState;
-    use rtx_proto::svc::PlayerInfo;
 
     fn frame(time: f32, player: u8, origin: Vec3) -> Frame {
         Frame {
             time,
-            info: PlayerInfo {
-                player,
-                flags: 0,
-                origin,
-                frame: 0,
-                msec: None,
-                command: None,
-                velocity: Vec3::ZERO,
-                modelindex: None,
-                skinnum: None,
-                effects: None,
-                weaponframe: None,
-                alpha: None,
-                pm_type: None,
-                jump_held: false,
-            },
+            player,
+            origin,
+            angles: Vec3::ZERO,
+            velocity: None,
+            command: None,
+            dead: false,
+            on_ground: None,
+            weaponframe: None,
         }
     }
 
@@ -180,7 +340,10 @@ mod tests {
         Demo {
             path: "test.qwd".into(),
             proto: ProtoState::new(),
+            format: Format::Qwd,
             local_player: Some(0),
+            players: vec![PlayerSlot::default(); 32],
+            levelname: String::new(),
             movevars: None,
             demo_cmds: Vec::new(),
             frames,

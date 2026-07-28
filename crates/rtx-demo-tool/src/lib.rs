@@ -19,22 +19,12 @@ use std::path::{Path, PathBuf};
 use binrw::{BinRead, BinReaderExt};
 use glam::Vec3;
 use rtx_proto::protocol::ProtoState;
-use rtx_proto::svc::{self, MoveVars, PlayerInfo, SvcEvent, Usercmd};
+use rtx_proto::svc::{self, MoveVars, SvcEvent, Usercmd};
 
 pub mod analysis;
 pub mod mvd;
 
 pub use analysis::{Motion, Summary, Track};
-
-/// Demo record kinds (`dem_*`), the one-byte tag after each record's float timestamp.
-mod dem {
-    /// The local client's own `usercmd` for this frame (a fixed 24-byte struct + 12 view-angle bytes).
-    pub const CMD: u8 = 0;
-    /// A recorded server→client packet: a `u32` length then that many bytes of message stream.
-    pub const READ: u8 = 1;
-    /// A camera/viewangle set; 8 bytes we skip.
-    pub const SET: u8 = 2;
-}
 
 /// The fixed `usercmd_t` embedded in a `dem_cmd` record — the local player's raw input, not a
 /// delta. Byte-for-byte the engine's C layout: `msec`, 3 alignment bytes, `vec3_t` view angles,
@@ -78,6 +68,24 @@ struct RecordHeader {
 /// that lead every recorded `dem_read` packet ahead of the svc message stream.
 const NETCHAN_HEADER: usize = 8;
 
+/// Which demo container a [`Demo`] was read from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    /// A single client's recording: absolute timestamps, its own inputs, wire velocities.
+    Qwd,
+    /// A server-side multi-view recording: delta timestamps, every player, no velocities.
+    Mvd,
+}
+
+impl Format {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Format::Qwd => "qwd",
+            Format::Mvd => "mvd",
+        }
+    }
+}
+
 /// The local client's own input for one frame, from a `dem_cmd` record.
 #[derive(Clone, Copy, Debug)]
 pub struct DemoCmd {
@@ -87,13 +95,77 @@ pub struct DemoCmd {
     pub cmd: Usercmd,
 }
 
-/// One `svc_playerinfo` occurrence, tagged with the demo time of the packet that carried it.
+/// One player's state at one instant — the common currency of both containers.
+///
+/// A `.qwd` and a `.mvd` say very different things on the wire (see [`mvd`]), and normalising here
+/// is what lets [`analysis`] and the CLI treat them alike. The cost is that a field absent from one
+/// format is `Option` for both: an MVD carries no velocity at all, and a `.qwd` records only the
+/// players its recorder could see.
 #[derive(Clone, Debug)]
 pub struct Frame {
-    /// Demo timestamp of the enclosing `dem_read` record.
+    /// Demo timestamp in seconds from the start of the file.
     pub time: f32,
-    /// The player state, as decoded by [`rtx_proto::svc`].
-    pub info: PlayerInfo,
+    /// Player slot, 0..32. Stable across the file; [`Demo::players`] names it.
+    pub player: u8,
+    pub origin: Vec3,
+    /// View angles in degrees. An MVD stores pitch pre-multiplied by −3 (a recorder quirk) and
+    /// this undoes it, so pitch means the same thing in both formats.
+    pub angles: Vec3,
+    /// Velocity **as the wire stated it**. `None` for MVD, which never carries any — derive it
+    /// from successive origins instead ([`analysis::Track`] does).
+    pub velocity: Option<Vec3>,
+    /// The player's own input, when the format carries it: `PF_COMMAND` in a `.qwd`, or a hidden
+    /// `usercmd` block in an MVD.
+    pub command: Option<Usercmd>,
+    /// Whether the recorder marked this player dead this frame.
+    pub dead: bool,
+    /// Ground contact, when the protocol carried it (`Z_EXT_PF_ONGROUND`). `None` in an MVD.
+    pub on_ground: Option<bool>,
+    /// Animation frame of the player's weapon — a usable proxy for firing.
+    pub weaponframe: Option<u8>,
+}
+
+/// What a demo knows about one player slot.
+#[derive(Clone, Debug, Default)]
+pub struct PlayerSlot {
+    /// `\name\` from the slot's userinfo.
+    pub name: String,
+    /// `\team\` from the slot's userinfo.
+    pub team: String,
+    /// Whether the slot joined as a spectator (`\*spectator\`).
+    pub spectator: bool,
+    /// The raw `\k\v\` userinfo string, last seen.
+    pub userinfo: String,
+    /// How many frames this slot appeared in — the cheap way to tell players from empty slots.
+    pub frames: usize,
+}
+
+impl PlayerSlot {
+    /// Whether this slot ever carried a player. Empty slots exist in every demo; a 4-on-4 fills
+    /// eight of the thirty-two.
+    pub fn present(&self) -> bool {
+        self.frames > 0 || !self.name.is_empty()
+    }
+
+    /// The slot's display name, falling back to its number when userinfo never arrived.
+    pub fn label(&self, slot: u8) -> String {
+        if self.name.is_empty() {
+            format!("#{slot}")
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
+/// Pull `key` out of a `\k\v\k\v` userinfo string.
+fn info_value(userinfo: &str, key: &str) -> String {
+    let mut it = userinfo.split('\\').skip(1);
+    while let (Some(k), Some(v)) = (it.next(), it.next()) {
+        if k == key {
+            return v.to_string();
+        }
+    }
+    String::new()
 }
 
 /// Everything one demo yields: the framing-derived context plus the two event streams.
@@ -103,8 +175,16 @@ pub struct Demo {
     pub path: PathBuf,
     /// The negotiated protocol state at end of file (coord/angle widths, extension masks).
     pub proto: ProtoState,
-    /// The recording client's own player slot, from the last `svc_serverdata`.
+    /// Which container this came from — the two carry different information, and a consumer that
+    /// silently assumes velocity or usercmds exist will read zeros off an MVD.
+    pub format: Format,
+    /// The recording client's own player slot, from the last `svc_serverdata`. `None` for an MVD,
+    /// which records the whole game rather than one client's view.
     pub local_player: Option<u8>,
+    /// What each of the 32 slots was — name, team, spectator flag.
+    pub players: Vec<PlayerSlot>,
+    /// The map, from `svc_serverdata`.
+    pub levelname: String,
     /// The server's physics constants, from the last `svc_serverdata`.
     pub movevars: Option<MoveVars>,
     /// The local player's own `dem_cmd` inputs, in file order (ascending time).
@@ -164,23 +244,223 @@ impl From<std::io::Error> for Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-/// Parse a `.qwd` file into its movement data.
+/// Accumulates decoded messages into a [`Demo`], for either container.
 ///
-/// Framing errors (a truncated record, a bad length, an unknown tag) return `Err`. A packet whose
-/// svc stream fails to decode is recorded in [`Demo::warnings`] and skipped, so one corrupt frame
-/// near the end doesn't cost you the whole demo.
+/// Both formats reduce to "here is a message stream, and here is when it happened", so everything
+/// downstream of the framing lives here. The MVD-only state is the per-player carry-forward: those
+/// `svc_playerinfo` deltas are relative to that player's *last* update, so the resolver has to hold
+/// one absolute state per slot and patch it.
+struct Feed {
+    proto: ProtoState,
+    format: Format,
+    local_player: Option<u8>,
+    movevars: Option<MoveVars>,
+    levelname: String,
+    players: Vec<PlayerSlot>,
+    frames: Vec<Frame>,
+    warnings: Vec<String>,
+    /// Per-slot absolute state, for resolving MVD deltas. Origin and angles only — those are the
+    /// fields the format deltas.
+    last: Vec<(Vec3, Vec3)>,
+    /// Hidden-channel usercmds, keyed by slot, awaiting the frame they belong to.
+    pending_cmds: Vec<Option<Usercmd>>,
+}
+
+/// A recorder quirk: MVD pitch is written pre-multiplied by −3 (it packs a wider useful range into
+/// the byte), so it has to be undone to mean degrees again. Roll is always written as zero.
+const MVD_PITCH_SCALE: f32 = -3.0;
+
+impl Feed {
+    fn new(format: Format) -> Self {
+        Feed {
+            proto: if format == Format::Mvd {
+                ProtoState::new_mvd()
+            } else {
+                ProtoState::new()
+            },
+            format,
+            local_player: None,
+            movevars: None,
+            levelname: String::new(),
+            players: vec![PlayerSlot::default(); 32],
+            frames: Vec::new(),
+            warnings: Vec::new(),
+            last: vec![(Vec3::ZERO, Vec3::ZERO); 32],
+            pending_cmds: vec![None; 32],
+        }
+    }
+
+    /// Decode one svc message stream and fold what it says into the demo.
+    fn packet(&mut self, time: f32, msg: &[u8], at: usize) {
+        let events = match svc::parse(&mut self.proto, msg) {
+            Ok(evs) => evs,
+            Err(e) => {
+                self.warnings.push(format!("packet at offset {at}: {e}"));
+                return;
+            }
+        };
+        for ev in events {
+            match ev {
+                SvcEvent::PlayerInfo(info) => {
+                    let velocity_present = (0..3).any(|i| info.flags & (svc::pf::VELOCITY1 << i) != 0);
+                    let slot = info.player as usize;
+                    if let Some(p) = self.players.get_mut(slot) {
+                        p.frames += 1;
+                    }
+                    self.frames.push(Frame {
+                        time,
+                        player: info.player,
+                        origin: info.origin,
+                        // A `.qwd` has no angle field of its own — a player's facing rides on the
+                        // usercmd the server echoed back, so it is present exactly when that is.
+                        angles: info.command.map_or(Vec3::ZERO, |c| c.angles),
+                        velocity: velocity_present.then_some(info.velocity),
+                        command: info.command,
+                        dead: info.dead(),
+                        on_ground: self
+                            .proto
+                            .has_z_ext(rtx_proto::protocol::z_ext::PF_ONGROUND)
+                            .then(|| info.on_ground()),
+                        weaponframe: info.weaponframe,
+                    });
+                }
+                SvcEvent::MvdPlayerInfo(info) => {
+                    let slot = info.player as usize;
+                    if slot >= self.last.len() {
+                        continue;
+                    }
+                    // Resolve the delta: a field the recorder omitted is unchanged, not zero.
+                    let (origin, angles) = &mut self.last[slot];
+                    for i in 0..3 {
+                        if let Some(v) = info.origin[i] {
+                            origin[i] = v;
+                        }
+                        if let Some(a) = info.angles[i] {
+                            angles[i] = if i == 0 { a / MVD_PITCH_SCALE } else { a };
+                        }
+                    }
+                    let (origin, angles) = (*origin, *angles);
+                    self.players[slot].frames += 1;
+                    self.frames.push(Frame {
+                        time,
+                        player: info.player,
+                        origin,
+                        angles,
+                        velocity: None, // an MVD carries none; differencing is the only source
+                        command: self.pending_cmds[slot].take(),
+                        dead: info.dead(),
+                        on_ground: None,
+                        weaponframe: info.weaponframe,
+                    });
+                }
+                SvcEvent::ServerData(sd) => {
+                    if self.format == Format::Qwd {
+                        self.local_player = Some(sd.playernum);
+                    }
+                    self.movevars = Some(sd.movevars);
+                    self.levelname = sd.levelname.clone();
+                }
+                SvcEvent::UpdateUserinfo { player, userinfo, .. } => self.set_userinfo(player, userinfo),
+                SvcEvent::SetInfo { player, key, value } => {
+                    if let Some(p) = self.players.get_mut(player as usize) {
+                        match key.as_str() {
+                            "name" => p.name = value,
+                            "team" => p.team = value,
+                            "*spectator" => p.spectator = !value.is_empty() && value != "0",
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn set_userinfo(&mut self, player: u8, userinfo: String) {
+        let Some(p) = self.players.get_mut(player as usize) else {
+            return;
+        };
+        p.name = info_value(&userinfo, "name");
+        p.team = info_value(&userinfo, "team");
+        p.spectator = !info_value(&userinfo, "*spectator").is_empty();
+        p.userinfo = userinfo;
+    }
+
+    fn finish(self, path: PathBuf, demo_cmds: Vec<DemoCmd>) -> Demo {
+        Demo {
+            path,
+            proto: self.proto,
+            format: self.format,
+            local_player: self.local_player,
+            players: self.players,
+            levelname: self.levelname,
+            movevars: self.movevars,
+            demo_cmds,
+            frames: self.frames,
+            warnings: self.warnings,
+        }
+    }
+}
+
+/// Parse a demo file, choosing the container by content.
+///
+/// Neither format has a magic number, so the choice is structural — see [`mvd::looks_like_mvd`].
+/// Content beats the extension deliberately: demos get renamed, and misreading the container is
+/// silent rather than loud.
 pub fn parse_demo(path: impl AsRef<Path>) -> Result<Demo> {
     let path = path.as_ref().to_path_buf();
     let data = std::fs::read(&path)?;
-    let total = data.len() as u64;
-    let mut cur = Cursor::new(data.as_slice());
+    if mvd::looks_like_mvd(&data) {
+        Ok(parse_mvd_bytes(&data, path))
+    } else {
+        parse_qwd_bytes(&data, path)
+    }
+}
 
-    let mut proto = ProtoState::new();
-    let mut local_player = None;
-    let mut movevars = None;
+/// Parse multi-view demo bytes. Framing problems end the file rather than failing it — a demo cut
+/// short by a crashed server is normal, and everything before the tear is good.
+pub fn parse_mvd_bytes(data: &[u8], path: PathBuf) -> Demo {
+    let mut feed = Feed::new(Format::Mvd);
+    let mut r = mvd::Reader::new(data);
+    let mut cmds = Vec::new();
+    while let Some(b) = r.next_block() {
+        match b.kind {
+            mvd::dem::SET => {}
+            // Not an svc stream — the hidden channel, which is where the real usercmds live.
+            _ if b.to.is_hidden_channel() => {
+                cmds.clear();
+                mvd::hidden_usercmds(b.body, &mut cmds);
+                for c in cmds.drain(..) {
+                    if let Some(slot) = feed.pending_cmds.get_mut(c.player as usize) {
+                        *slot = Some(Usercmd {
+                            msec: c.msec,
+                            angles: Vec3::from_array(c.angles),
+                            forward: c.forward,
+                            side: c.side,
+                            up: c.up,
+                            buttons: c.buttons,
+                            impulse: c.impulse,
+                        });
+                    }
+                }
+            }
+            _ => feed.packet(b.time, b.body, b.at),
+        }
+    }
+    feed.finish(path, Vec::new())
+}
+
+/// Parse `.qwd` bytes: a single client's recording.
+///
+/// Framing errors (a truncated record, a bad length, an unknown tag) return `Err` — unlike an MVD,
+/// a `.qwd` is not a joinable stream, so a broken record means the file is wrong rather than cut.
+/// A packet whose svc stream fails to decode is recorded in [`Demo::warnings`] and skipped, so one
+/// corrupt frame near the end doesn't cost you the whole demo.
+pub fn parse_qwd_bytes(data: &[u8], path: PathBuf) -> Result<Demo> {
+    let total = data.len() as u64;
+    let mut cur = Cursor::new(data);
+    let mut feed = Feed::new(Format::Qwd);
     let mut demo_cmds = Vec::new();
-    let mut frames = Vec::new();
-    let mut warnings = Vec::new();
 
     // Require `n` more bytes before a read, so a truncated record is a clear error rather than a
     // binrw underflow with no context.
@@ -201,7 +481,7 @@ pub fn parse_demo(path: impl AsRef<Path>) -> Result<Demo> {
         })?;
 
         match header.kind {
-            dem::CMD => {
+            mvd::dem::CMD => {
                 let body_at = cur.position();
                 require(body_at, (USERCMD_BYTES + VIEWANGLES_BYTES) as u64, "dem_cmd")?;
                 let raw: RawUsercmd = cur.read_le().map_err(|_| Error::Truncated {
@@ -214,7 +494,7 @@ pub fn parse_demo(path: impl AsRef<Path>) -> Result<Demo> {
                     cmd: raw.into_usercmd(),
                 });
             }
-            dem::READ => {
+            mvd::dem::READ => {
                 let len_at = cur.position();
                 require(len_at, 4, "dem_read length")?;
                 let length: u32 = cur.read_le().map_err(|_| Error::Truncated {
@@ -234,29 +514,12 @@ pub fn parse_demo(path: impl AsRef<Path>) -> Result<Demo> {
                 if packet.starts_with(&rtx_proto::protocol::CONNECTIONLESS) {
                     continue;
                 }
-                // A normal packet leads with the netchan sequence header; the svc stream, which is
-                // what rtx-proto decodes, starts after it.
+                // A `.qwd` records whole datagrams, so the svc stream starts after the netchan
+                // sequence header. (An MVD records only the stream — no header to skip.)
                 let msg = &packet[NETCHAN_HEADER.min(packet.len())..];
-                match svc::parse(&mut proto, msg) {
-                    Ok(events) => {
-                        for ev in events {
-                            match ev {
-                                SvcEvent::PlayerInfo(info) => frames.push(Frame {
-                                    time: header.time,
-                                    info: *info,
-                                }),
-                                SvcEvent::ServerData(sd) => {
-                                    local_player = Some(sd.playernum);
-                                    movevars = Some(sd.movevars);
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    Err(e) => warnings.push(format!("dem_read at offset {start}: {e}")),
-                }
+                feed.packet(header.time, msg, start);
             }
-            dem::SET => {
+            mvd::dem::SET => {
                 require(cur.position(), 8, "dem_set")?;
                 cur.seek(SeekFrom::Current(8))?;
             }
@@ -264,15 +527,7 @@ pub fn parse_demo(path: impl AsRef<Path>) -> Result<Demo> {
         }
     }
 
-    Ok(Demo {
-        path,
-        proto,
-        local_player,
-        movevars,
-        demo_cmds,
-        frames,
-        warnings,
-    })
+    Ok(feed.finish(path, demo_cmds))
 }
 
 /// Size of the embedded `usercmd_t` in a `dem_cmd` record.
@@ -291,7 +546,7 @@ mod tests {
         let mut buf = Vec::new();
         // dem_cmd record: time=1.5, kind=0, then the 24-byte usercmd + 12 view-angle bytes.
         buf.extend_from_slice(&1.5f32.to_le_bytes());
-        buf.push(dem::CMD);
+        buf.push(mvd::dem::CMD);
         buf.push(13); // msec
         buf.extend_from_slice(&[0, 0, 0]); // alignment padding
         buf.extend_from_slice(&10.0f32.to_le_bytes()); // pitch
@@ -305,7 +560,7 @@ mod tests {
         buf.extend_from_slice(&[0u8; VIEWANGLES_BYTES]); // trailing view angles, skipped
                                                          // dem_set record: time=1.5, kind=2, 8 payload bytes.
         buf.extend_from_slice(&1.5f32.to_le_bytes());
-        buf.push(dem::SET);
+        buf.push(mvd::dem::SET);
         buf.extend_from_slice(&[0u8; 8]);
 
         let dir = std::env::temp_dir();
