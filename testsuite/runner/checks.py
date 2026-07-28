@@ -463,19 +463,40 @@ def _t2(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
     # zero there would read as the best column on the page. Null is the only
     # honest value, and it has to come with the reason attached — otherwise a
     # missing number is indistinguishable from a dropped one.
+    #
+    # The declaration is checked against the field it is supposed to be about,
+    # not merely against the `telemetry` flag: a block that says telemetry is
+    # gone while naming something else does not excuse this null, and one that
+    # names this field while a number sits in it is claiming both that the
+    # measurement happened and that it could not.
     telemetry = capabilities is None or capabilities.get("telemetry") is not False
+    declared = "stall_firings" in (
+        (capabilities or {}).get("unavailable") or []
+    )
     if stats["stall_firings"] is None:
+        if not declared:
+            _fail(
+                f"{path}.stats.stall_firings",
+                "a measurement that did not happen must be named in"
+                " capabilities.unavailable",
+            )
         if telemetry:
             _fail(
                 f"{path}.stats.stall_firings",
-                "a measurement that did not happen must declare why in"
-                " capabilities.telemetry",
+                "declared unmeasurable while capabilities.telemetry says the"
+                " build can emit stall events",
             )
-    elif not telemetry:
-        _fail(
-            f"{path}.stats.stall_firings",
-            "the build cannot emit stall events, so it cannot have counted them",
-        )
+    else:
+        if declared:
+            _fail(
+                f"{path}.stats.stall_firings",
+                "named in capabilities.unavailable, yet a count is reported",
+            )
+        if not telemetry:
+            _fail(
+                f"{path}.stats.stall_firings",
+                "the build cannot emit stall events, so it cannot have counted them",
+            )
     for field in ("quad_takes", "pent_takes", "polls"):
         _int(stats[field], f"{path}.stats.{field}")
     if stats["stall_firings"] is not None:

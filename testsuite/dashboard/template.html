@@ -888,12 +888,18 @@ function unmeasured(item) {
 
 // En siffra som aldrig mättes får inte se ut som en nolla, och inte heller som
 // det tankstreck vi använder för null i payloaden — båda läses som ett mätvärde.
+// Frånvaron avgörs av värdet, inte av deklarationen: ett odeklarerat null är
+// fortfarande en utebliven mätning, och att rita det som "–" vore att låta ett
+// kuvert som saknar sin förklaring se prydligare ut än ett som har den.
 function measurement(item, missing, name) {
-  if (missing.has(name)) {
-    const note = item.capabilities ? item.capabilities.note : "";
+  const value = (item.stats || {})[name];
+  // stall_firings är det enda mätetal som får vara null utan att fältet saknas,
+  // och då är null just "gick inte att mäta" — deklarerat eller ej.
+  if (missing.has(name) || (name === "stall_firings" && value == null)) {
+    const note = item.capabilities ? item.capabilities.note : "utan angivet skäl";
     return '<b class="unmeasured" title="' + esc(note) + '">ej mätbar</b>';
   }
-  return "<b>" + fmt((item.stats || {})[name]) + "</b>";
+  return "<b>" + fmt(value) + "</b>";
 }
 
 function metricsTable(item, ref) {
@@ -914,9 +920,13 @@ function metricsTable(item, ref) {
       // mätetalen, hur jämförbara de än är i övrigt.
       let reference = "";
       if (ref) {
-        reference = missing.has(metric[0]) || refMissing.has(metric[0])
+        const focusValue = (item.stats || {})[metric[0]];
+        const refValue = (ref.stats || {})[metric[0]];
+        const eitherMissing = missing.has(metric[0]) || refMissing.has(metric[0]) ||
+          (metric[0] === "stall_firings" && (focusValue == null || refValue == null));
+        reference = eitherMissing
           ? ' <span class="ref">(ej jämförbar)</span>'
-          : ' <span class="ref">(' + fmt((ref.stats || {})[metric[0]]) + ")</span>";
+          : ' <span class="ref">(' + fmt(refValue) + ")</span>";
       }
       return '<tr><td>' + label + source + '</td><td>' +
         measurement(item, missing, metric[0]) + reference +
@@ -929,10 +939,12 @@ function metricsTable(item, ref) {
 function mapHtml(level, item) {
   if (!item.snapshotIds.length) {
     const missing = unmeasured(item);
-    const blind = missing.has("cells") || missing.has("stall_firings");
+    const blind = missing.has("cells") || missing.has("stall_firings") ||
+      (item.stats || {}).stall_firings == null;
     const head = blind ? "bygget kan inte mäta stall" : "cells-data saknas";
     const body = blind
-      ? item.capabilities.note + " — en tom karta här betyder inte att zonerna saknas."
+      ? (item.capabilities ? item.capabilities.note : "inget skäl deklarerat") +
+        " — en tom karta här betyder inte att zonerna saknas."
       : "Ingen karta ritas utan underlag.";
     return '<div class="section-title">Kartvy · ' + level.toUpperCase() +
       '</div><div class="map-placeholder"><div class="map-label"><strong>' + esc(head) +

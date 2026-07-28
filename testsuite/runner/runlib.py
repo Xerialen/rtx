@@ -242,11 +242,17 @@ def engine_declares(
     that never registered it. The server's cvar table therefore says more about
     our configuration than about the build.
 
-    The binary does not lie about it: a build that registers the cvar carries
-    its name in its data, and one that does not, does not. Returns None rather
-    than False when that cannot be established — a binary we cannot read, or one
-    whose digest does not match what the server reports it is running. Unknown
-    and absent are different answers and only one of them is a finding.
+    The binary is a better witness: a build that registers the cvar carries its
+    name in its data, and one that does not, does not. It is not a proof —
+    the literal could survive in a build that no longer registers it, in dead
+    code or a help string — so this establishes absence far more reliably than
+    presence. Absence is the direction that matters here, because that is the
+    one that would otherwise be reported as a zero.
+
+    Returns None rather than False when nothing can be established: a binary we
+    cannot read, or one whose digest does not match what the server reports it
+    is running. Unknown and absent are different answers and only one of them is
+    a finding.
 
     The digest cross-check is as good as the server's willingness to report one,
     and the current control protocol reports none. Where it is silent, this
@@ -267,11 +273,17 @@ def engine_declares(
         return None
     needle = name.encode("ascii")
     previous = b""
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            if needle in previous + chunk:
-                return True
-            previous = chunk[-len(needle):]
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                if needle in previous + chunk:
+                    return True
+                previous = chunk[-len(needle):]
+    except OSError:
+        # `is_file` passing does not mean the bytes are readable: permissions,
+        # a file replaced underneath us, a failing disk. The promise above is
+        # that unreadable means unknown, so it has to hold here too.
+        return None
     return False
 
 
@@ -440,10 +452,13 @@ class CvarRestore(AbstractContextManager["CvarRestore"]):
         }
 
     def server_has(self, name: str) -> bool:
-        """Did the server itself answer for this cvar.
+        """Did the server itself answer for this cvar, with a value.
 
-        This is the capability probe: a build without the cvar cannot produce
-        the signal behind it, whatever our config says about the idle value.
+        Not a capability probe, and it must not be used as one: a boot config
+        that sets an unknown cvar makes mvdsv create it, so this answers yes on
+        a build that never registered it. `engine_declares` is the capability
+        question. What this is good for is knowing whether writing the value
+        back would restore something or invent it.
         """
         return self.sources.get(name) in {"status", "get"}
 
@@ -586,6 +601,15 @@ class RunRecorder(AbstractContextManager["RunRecorder"]):
                 self.status = "failed"
             self.error = str(exc) or exc.__class__.__name__
         document = self.document()
+        if exc is not None:
+            # The envelope is written even for a failed run, so whoever catches
+            # this should be able to name it. A caller that reports `run_id:
+            # null` would be omitting evidence that exists on disk.
+            try:
+                exc.run_id = self.run_id
+                exc.envelope_path = str(self.path)
+            except AttributeError:  # some builtins refuse attributes
+                pass
         validation_error: ValidationError | None = None
         try:
             validate_result(document, str(self.path))

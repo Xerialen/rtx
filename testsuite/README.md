@@ -205,8 +205,11 @@ are the ones a human actually used rather than derived from the navmesh.
 Comparing branches means running each of them through identical work on the same
 rig. `[sweep]` in the configuration declares the builds and
 `python3 testflow.py sweep` walks them one at a time: install that build's
-library, restart the server, run its tiers, move on, and put the baseline back
-at the end whatever happened.
+library, restart the server, run its tiers, move on. Name a target in
+`[sweep].restore` and that build's library goes back on the rig at the end
+whatever happened; leave it out and the rig keeps the last target deployed,
+which the manifest's `restored` field then reports as null rather than
+pretending otherwise.
 
 ```toml
 [sweep]
