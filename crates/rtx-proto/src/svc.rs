@@ -109,6 +109,29 @@ pub mod pf {
     pub const SOLID: u32 = 1 << 23;
 }
 
+/// The slot a multi-view demo's viewer occupies. An MVD has no real local client, so the recorder
+/// leaves the last slot for the synthetic spectator the player *is* while watching — matching
+/// ezquake, which sets `cl.playernum = MAX_CLIENTS - 1` on MVD playback.
+pub const MVD_SPECTATOR_SLOT: u8 = 31;
+
+/// `svc_playerinfo` flags **inside a multi-view demo** (`DF_*`).
+///
+/// A different, smaller set than [`pf`] — an MVD records what the *server* chose to write about
+/// each player, not what a client needs to predict itself, so there is no msec, no usercmd, and
+/// **no velocity**. Each bit means "this field changed since the last time I wrote about this
+/// player", which is why [`MvdPlayerInfo`] is all-`Option` and the reader must carry the rest
+/// forward. Origin bits are `ORIGIN << axis`, angle bits `ANGLES << axis`.
+pub mod df {
+    pub const ORIGIN: u16 = 1 << 0;
+    pub const ANGLES: u16 = 1 << 3;
+    pub const EFFECTS: u16 = 1 << 6;
+    pub const SKINNUM: u16 = 1 << 7;
+    pub const DEAD: u16 = 1 << 8;
+    pub const GIB: u16 = 1 << 9;
+    pub const WEAPONFRAME: u16 = 1 << 10;
+    pub const MODEL: u16 = 1 << 11;
+}
+
 /// Entity delta bits (`U_*`), as they appear in the leading 16-bit word.
 mod u {
     pub const ORIGIN1: u32 = 1 << 9;
@@ -286,6 +309,56 @@ pub enum PmType {
     None,
     /// The server owns the view angles.
     Lock,
+}
+
+/// One player's state as a **multi-view demo** records it — the `.mvd` form of `svc_playerinfo`.
+///
+/// Three things make this a separate type rather than a flag on [`PlayerInfo`]:
+///
+/// * **It is a delta, and the baseline is per-player.** A field is on the wire only when it
+///   differs from what the recorder last wrote *for that player* — not from a frame baseline, and
+///   not from `svc_spawnbaseline`. So every field is `Option`, and a caller that wants absolute
+///   state keeps its own `[MvdPlayerInfo; 32]` and carries the `None`s forward. A player standing
+///   perfectly still sends `flags == 0` and no coordinates at all, which is emphatically *not*
+///   "no data for this player" — it means "unchanged". This mirrors [`EntityDelta`]: the parser
+///   holds no baselines, the caller resolves.
+/// * **There is no velocity, and no usercmd.** The recorder writes positions only, so speed has to
+///   be differenced from successive origins. Guard that difference against teleports — ezquake
+///   treats a step over ~150 units as a jump in space rather than motion.
+/// * The flag set is [`df`], not [`pf`], and the two overlap numerically while meaning different
+///   things — reading one as the other yields plausible nonsense rather than an error.
+///
+/// Angles arrive as 16-bit (~0.0055°) regardless of the negotiated angle width, and pitch is
+/// stored pre-multiplied by −3 by the recorder.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MvdPlayerInfo {
+    /// Player slot, 0..32. The same namespace as `dem_single`/`dem_stats` targets, the bits of a
+    /// `dem_multiple` mask, and `svc_updateuserinfo`.
+    pub player: u8,
+    /// Raw `DF_*` bits, kept so a caller can tell "absent" from "absent but flagged".
+    pub flags: u16,
+    /// Model animation frame — always present.
+    pub frame: u8,
+    /// Per-axis origin; `None` where unchanged since this player's last update.
+    pub origin: [Option<f32>; 3],
+    /// Per-axis view angles in degrees; `None` where unchanged.
+    pub angles: [Option<f32>; 3],
+    pub modelindex: Option<u8>,
+    pub skinnum: Option<u8>,
+    pub effects: Option<u8>,
+    pub weaponframe: Option<u8>,
+}
+
+impl MvdPlayerInfo {
+    /// Whether the recorder marked this player dead this frame.
+    pub fn dead(&self) -> bool {
+        self.flags & df::DEAD != 0
+    }
+
+    /// Whether the recorder marked this player gibbed this frame.
+    pub fn gib(&self) -> bool {
+        self.flags & df::GIB != 0
+    }
 }
 
 /// One player's state, from `svc_playerinfo`. Sent every frame for every player in our PVS,
@@ -511,6 +584,11 @@ pub struct ServerData {
     pub levelname: String,
     /// Physics constants — see [`MoveVars`].
     pub movevars: MoveVars,
+    /// The recording server's clock when the demo started, in place of our player slot. `Some`
+    /// only for multi-view demos (see [`ProtoState::mvd`](crate::protocol::ProtoState::mvd)); a
+    /// live stream or a `.qwd` names a slot instead. Demo timestamps still start at zero — this
+    /// just says where zero sat on the server's timeline.
+    pub server_time: Option<f32>,
 }
 
 /// The server's physics constants, from `svc_serverdata`.
@@ -772,6 +850,9 @@ pub enum SvcEvent {
     Download(DownloadMessage),
     /// A player's per-frame state.
     PlayerInfo(Box<PlayerInfo>),
+    /// A player's per-frame state **as a multi-view demo records it** — a per-field delta against
+    /// whatever that player's state was the last time the recorder wrote about them.
+    MvdPlayerInfo(Box<MvdPlayerInfo>),
     /// Entity updates for this frame.
     PacketEntities(PacketEntities),
     /// Flying nails.
@@ -884,8 +965,10 @@ fn parse_one(proto: &mut ProtoState, r: &mut Reader, svc: u8, offset: usize) -> 
         op::STUFFTEXT => SvcEvent::StuffText(r.string()?),
         op::SETANGLE => {
             // Under HIGHLAGTELEPORT the server says *why*, so a client can fix up the moves
-            // already in flight instead of walking the wrong way for a round-trip.
-            let kind = if proto.has_mvd1(mvd1::HIGHLAGTELEPORT) {
+            // already in flight instead of walking the wrong way for a round-trip. A demo always
+            // carries the byte — there it names *which player* is being turned, since a recording
+            // has no single "us" the angle could belong to.
+            let kind = if proto.mvd || proto.has_mvd1(mvd1::HIGHLAGTELEPORT) {
                 Some(r.u8()?)
             } else {
                 None
@@ -992,6 +1075,7 @@ fn parse_one(proto: &mut ProtoState, r: &mut Reader, svc: u8, offset: usize) -> 
                 }
             }
         }
+        op::PLAYERINFO if proto.mvd => SvcEvent::MvdPlayerInfo(Box::new(read_mvd_playerinfo(r)?)),
         op::PLAYERINFO => SvcEvent::PlayerInfo(Box::new(read_playerinfo(proto, r)?)),
         op::NAILS => SvcEvent::Nails(read_nails(r, false)?),
         op::NAILS2 => SvcEvent::Nails(read_nails(r, true)?),
@@ -1055,7 +1139,14 @@ fn parse_serverdata(proto: &mut ProtoState, r: &mut Reader) -> Result<SvcEvent, 
 
     let servercount = r.i32()?;
     let gamedir = r.string()?;
-    let pnum = r.u8()?;
+    // Where a client stream names our player slot, a demo puts the recording server's clock: an
+    // MVD's viewer is a synthetic spectator, so there is no slot to name. Keeping the float lets a
+    // reader place the demo on the server's timeline; demo time itself still starts at zero.
+    let (pnum, server_time) = if proto.mvd {
+        (MVD_SPECTATOR_SLOT, Some(r.f32()?))
+    } else {
+        (r.u8()?, None)
+    };
     let levelname = r.string()?;
     let movevars = MoveVars {
         gravity: r.f32()?,
@@ -1081,6 +1172,7 @@ fn parse_serverdata(proto: &mut ProtoState, r: &mut Reader) -> Result<SvcEvent, 
         spectator: pnum & 0x80 != 0,
         levelname,
         movevars,
+        server_time,
     })))
 }
 
@@ -1206,6 +1298,41 @@ fn read_resource_list(r: &mut Reader, short_start: bool) -> Result<ResourceList,
 }
 
 /// `svc_playerinfo`.
+/// `svc_playerinfo` as written into a multi-view demo. See [`MvdPlayerInfo`] for why this is a
+/// separate message rather than a variant of the client form.
+fn read_mvd_playerinfo(r: &mut Reader) -> Result<MvdPlayerInfo, Underflow> {
+    let player = r.u8()?;
+    let flags = r.u16()?;
+    let frame = r.u8()?;
+
+    // Field order is fixed: all present origin axes, then all present angle axes, then the four
+    // optional bytes. The recorder writes coords through the ordinary coord path, so they follow
+    // the negotiated width — but angles here are always 16-bit, independent of it.
+    let mut origin = [None; 3];
+    for (i, o) in origin.iter_mut().enumerate() {
+        if flags & (df::ORIGIN << i) != 0 {
+            *o = Some(r.coord()?);
+        }
+    }
+    let mut angles = [None; 3];
+    for (i, a) in angles.iter_mut().enumerate() {
+        if flags & (df::ANGLES << i) != 0 {
+            *a = Some(r.angle16()?);
+        }
+    }
+    Ok(MvdPlayerInfo {
+        player,
+        flags,
+        frame,
+        origin,
+        angles,
+        modelindex: (flags & df::MODEL != 0).then(|| r.u8()).transpose()?,
+        skinnum: (flags & df::SKINNUM != 0).then(|| r.u8()).transpose()?,
+        effects: (flags & df::EFFECTS != 0).then(|| r.u8()).transpose()?,
+        weaponframe: (flags & df::WEAPONFRAME != 0).then(|| r.u8()).transpose()?,
+    })
+}
+
 fn read_playerinfo(proto: &ProtoState, r: &mut Reader) -> Result<PlayerInfo, Underflow> {
     let player = r.u8()?;
     let mut flags = r.u16()? as u32;

@@ -459,6 +459,7 @@ fn name_of(ev: &SvcEvent) -> &'static str {
         SvcEvent::SetPause(_) => "setpause",
         SvcEvent::Download(_) => "download",
         SvcEvent::PlayerInfo(_) => "playerinfo",
+        SvcEvent::MvdPlayerInfo(_) => "mvd_playerinfo",
         // Worth splitting: a session that only ever saw full updates never exercised the delta
         // path, which is what carries essentially all real gameplay traffic.
         SvcEvent::PacketEntities(pe) if pe.delta_from.is_some() => "deltapacketentities",

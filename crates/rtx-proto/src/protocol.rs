@@ -221,6 +221,16 @@ pub struct ProtoState {
     pub coord_bytes: u8,
     /// Width of an angle on the wire: 1 (1/256 turn) or 2 (1/65536 turn).
     pub angle_bytes: u8,
+    /// This stream came out of a **multi-view demo** (`.mvd`), not a live connection or a `.qwd`.
+    ///
+    /// Unlike every other field here this is *not* negotiated — the wire never says so. It is a
+    /// property of the container, which the reader knows and the message parser cannot infer, and
+    /// several messages change shape under it: `svc_serverdata` carries the recording server's
+    /// clock where a client stream carries our player slot, `svc_setangle` gains a leading player
+    /// byte (a demo has no single "us" to aim), and `svc_playerinfo` is a different message
+    /// altogether — see [`MvdPlayerInfo`](super::svc::MvdPlayerInfo). Leaving this false on MVD
+    /// bytes does not fail loudly; it silently misreads every player position in the file.
+    pub mvd: bool,
 }
 
 impl ProtoState {
@@ -233,6 +243,15 @@ impl ProtoState {
             z_ext: 0,
             coord_bytes: 2,
             angle_bytes: 1,
+            mvd: false,
+        }
+    }
+
+    /// The same, for bytes read out of a multi-view demo. See [`ProtoState::mvd`].
+    pub fn new_mvd() -> Self {
+        ProtoState {
+            mvd: true,
+            ..ProtoState::new()
         }
     }
 

@@ -199,6 +199,7 @@ fn kind(ev: &SvcEvent) -> String {
         SvcEvent::SetPause(_) => "setpause",
         SvcEvent::Download(_) => "download",
         SvcEvent::PlayerInfo(_) => "playerinfo",
+        SvcEvent::MvdPlayerInfo(_) => "mvd_playerinfo",
         SvcEvent::PacketEntities(pe) => {
             // Full and delta updates take different paths, and a capture that only ever saw full
             // updates hasn't tested the one that matters in a real game.
