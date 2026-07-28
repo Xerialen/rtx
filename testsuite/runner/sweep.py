@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import t0_import, t1, t2, t3, t4
+from . import t1, t2
 from .runlib import (
     ConfigError,
     RunAborted,
@@ -32,8 +32,14 @@ from .runlib import (
     utc_text,
 )
 
-# T0 has no live phase — it imports a cargo summary — so a sweep cannot run it.
-RUNNABLE = ("t1", "t2", "t3", "t4")
+# What a sweep can vary is the server library it deploys, so it can only run the
+# tiers that measure one. T0 has no live phase at all — it imports a cargo
+# summary. T3 and T4 measure the *client* binary against a stock KTX server
+# (`t3ktx/qwprogs.so` is KTX's own), so deploying a library would change nothing
+# they observe while stamping their evidence with that library's commit: a
+# column that names a build it never measured.
+RUNNABLE = ("t1", "t2")
+CLIENT_TIERS = ("t3", "t4")
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -84,10 +90,18 @@ def _targets(config: dict[str, Any], source: str) -> list[dict[str, Any]]:
         # here; a target with no tiers would deploy a build and measure nothing.
         if not isinstance(tiers, list) or not tiers:
             raise ConfigError(f"{source}: {target['label']}: needs at least one tier")
-        if any(tier not in RUNNABLE for tier in tiers):
-            raise ConfigError(
-                f"{source}: {target['label']}: tiers must be from {RUNNABLE}"
-            )
+        for tier in tiers:
+            if tier in CLIENT_TIERS:
+                raise ConfigError(
+                    f"{source}: {target['label']}: {tier} measures the client "
+                    "binary against a stock KTX server, so a sweep that swaps "
+                    "the server library would stamp it with a build it did not "
+                    "measure — run it directly with the config for that client"
+                )
+            if tier not in RUNNABLE:
+                raise ConfigError(
+                    f"{source}: {target['label']}: tiers must be from {RUNNABLE}"
+                )
         target["tiers"] = list(tiers)
     return targets
 
@@ -118,11 +132,7 @@ def _run_tier(tier: str, config: dict[str, Any], scenarios: str, quick: bool) ->
         return t1.run(config, scenarios, quick=quick)
     if tier == "t2":
         return t2.run(config)
-    if tier == "t3":
-        return t3.run(config)
-    if tier == "t4":
-        return t4.run(config)
-    raise ConfigError(f"{tier}: not runnable from a sweep (T0 imports a summary)")
+    raise ConfigError(f"{tier}: not runnable from a sweep")
 
 
 def run(
