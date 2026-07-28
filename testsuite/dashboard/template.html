@@ -543,10 +543,12 @@ function linkTag(href, label, title, className) {
 
 function evidenceTitle(evidence) {
   const parts = [];
+  if (evidence.detail) parts.push(String(evidence.detail));
   if (evidence.demo) parts.push(String(evidence.demo));
   if (evidence.at_s != null) parts.push(fmt(evidence.at_s) + " s in i demot");
   if (evidence.who) parts.push(String(evidence.who));
-  return "Öppnar demospelaren i ny flik" + (parts.length ? " · " + parts.join(" · ") : "");
+  return "Öppnar demospelaren tre sekunder före ögonblicket, i ny flik" +
+    (parts.length ? " · " + parts.join(" · ") : "");
 }
 
 function evidenceLink(evidence, label) {

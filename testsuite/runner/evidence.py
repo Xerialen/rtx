@@ -120,13 +120,19 @@ def deep_link(
     *,
     lead_s: float = LEAD_S,
 ) -> str:
-    """A demo-player URL that opens `lead_s` before `at_s`, POV on `userid`."""
-    start = max(0.0, float(at_s) - lead_s)
+    """A demo-player URL that opens `lead_s` before `at_s`, POV on `userid`.
+
+    `from` is whole seconds because the player parses it with parseInt: a
+    fractional value would silently truncate, and the URL would then claim a
+    start the player never honours. Truncating downwards ourselves keeps the
+    lead at or above `lead_s` rather than dropping under it.
+    """
+    start = int(max(0.0, float(at_s) - lead_s))
     query = [
         ("demoUrl", f"/demos/{published_name(demo_name)}"),
         ("map", map_name.lower()),
         ("duration", str(int(round(duration_s)))),
-        ("from", f"{start:.1f}"),
+        ("from", str(start)),
     ]
     if userid is not None:
         query.append(("track", str(userid)))

@@ -68,7 +68,7 @@
     "metric": "quad_takes",
     "at_s": 33.2,
     "who": "bot.ref1",
-    "link": "/demo-player/?demoUrl=%2Fdemos%2Ft2-20260727T200000Z-11111111.mvd&map=dm3&duration=600&from=30.2&track=5",
+    "link": "/demo-player/?demoUrl=%2Fdemos%2Ft2-20260727T200000Z-11111111.mvd&map=dm3&duration=600&from=25.0&track=5",
     "detail": "quad taget"
    }
   ]

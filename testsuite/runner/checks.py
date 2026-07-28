@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 import re
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlparse
 
 from .scenario import ScenarioError, validate_scenario
 
@@ -81,13 +82,27 @@ def _evidence(value: Any, path: str) -> None:
         value,
         path,
         {"demo", "at_s", "link"},
-        {"attempt", "status", "dash", "metric", "who"},
+        {"attempt", "status", "dash", "metric", "who", "detail"},
     )
     _str(item["demo"], f"{path}.demo")
     _num_or_null(item["at_s"], f"{path}.at_s")
     link = _str(item["link"], f"{path}.link")
     if not link.startswith("/"):
         _fail(f"{path}.link", "expected a host-relative demo-player link")
+    # The whole point of the link is the three seconds of run-up, so the lead
+    # is part of the contract rather than a detail of how the URL was built.
+    start = parse_qs(urlparse(link).query).get("from")
+    if start and item["at_s"] is not None:
+        try:
+            lead = float(item["at_s"]) - float(start[0])
+        except ValueError:
+            _fail(f"{path}.link", "'from' must be a number of seconds")
+        else:
+            if float(start[0]) > 0 and not 3.0 <= lead < 4.0:
+                _fail(
+                    f"{path}.link",
+                    f"must open three seconds before the moment, opens {lead:.2f} s before",
+                )
 
 
 def _scoreboard(value: Any, path: str) -> None:

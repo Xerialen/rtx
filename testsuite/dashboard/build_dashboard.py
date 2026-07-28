@@ -107,7 +107,7 @@ def host_relative(value: Any) -> str | None:
     return value if isinstance(value, str) and value.startswith("/") else None
 
 
-EVIDENCE_EXTRAS = ("attempt", "status", "dash", "metric", "who")
+EVIDENCE_EXTRAS = ("attempt", "status", "dash", "metric", "who", "detail")
 
 
 def normalize_evidence(value: Any) -> dict[str, Any] | None:

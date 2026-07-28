@@ -66,6 +66,7 @@ def _summarize_cells(stalls: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "reasons": Counter(),
             "links": Counter(),
             "first_at_s": None,
+            "first_ent": None,
         }
     )
     for event in stalls:
@@ -74,6 +75,8 @@ def _summarize_cells(stalls: list[dict[str, Any]]) -> list[dict[str, Any]]:
         cell["n"] += 1
         if cell["first_at_s"] is None and event.get("_at_s") is not None:
             cell["first_at_s"] = event["_at_s"]
+            entity = event.get("ent")
+            cell["first_ent"] = int(entity) if isinstance(entity, int) else None
         cell["reasons"][str(event["reason"])] += 1
         origin = event.get("origin")
         if cell["pos"] is None and isinstance(origin, list) and len(origin) == 3:
@@ -93,6 +96,7 @@ def _summarize_cells(stalls: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "reasons": dict(cell["reasons"]),
                 "links": dict(cell["links"].most_common(4)),
                 "first_at_s": cell["first_at_s"],
+                "first_ent": cell["first_ent"],
             }
         )
     return output
@@ -108,6 +112,11 @@ def _collect(
     still_s = 0.0
     still_streak: dict[int, tuple[float, float]] = {}
     longest_still: tuple[float, int, float] | None = None
+    # Every metric we measure ourselves owes the reader a moment in the demo it
+    # can be checked against. For the two speeds that is the fastest sample we
+    # saw and which bot produced it.
+    fastest_sample: tuple[float, int, float] | None = None
+    fastest_second: tuple[float, int, float] | None = None
     bot_previous: dict[int, tuple[list[float], float]] = {}
     second_accumulator: dict[int, list[float | int]] = {}
     measured_bots = 0
@@ -149,6 +158,8 @@ def _collect(
                     )
                     if speed < 1500:
                         speed_samples.append(speed)
+                        if fastest_sample is None or speed > fastest_sample[0]:
+                            fastest_sample = (speed, entity, loop_began)
                         accumulator = second_accumulator.setdefault(
                             entity, [0.0, 0]
                         )
@@ -168,9 +179,12 @@ def _collect(
             bot_previous[entity] = (origin, loop_began)
         if loop_began - last_second >= 1.0:
             elapsed = loop_began - last_second
-            for distance, samples in second_accumulator.values():
+            for entity, (distance, samples) in second_accumulator.items():
                 if samples:
-                    per_second.append(float(distance) / elapsed)
+                    average = float(distance) / elapsed
+                    per_second.append(average)
+                    if fastest_second is None or average > fastest_second[0]:
+                        fastest_second = (average, entity, last_second)
             second_accumulator = {}
             last_second = loop_began
         if loop_began - last_items_poll >= 0.5:
@@ -207,15 +221,33 @@ def _collect(
         "polls": polls,
         "bots": bots,
     }
-    still_moment = None
-    if longest_still is not None and recording is not None:
-        length, entity, began_at = longest_still
-        still_moment = {
-            "entity": entity,
-            "length_s": round(length, 1),
-            "at_s": recording.at(began_at),
-        }
-    return {"stats": stats, "cells": cells, "still_moment": still_moment}
+    # One moment per metric we measured ourselves, each pointing at the sample
+    # that produced the number: the longest stand-still, the fastest bot, and
+    # the first firing in the zone that stalled most.
+    own_moments: list[dict[str, Any]] = []
+
+    def note(metric: str, peak: tuple[float, int, float] | None, detail: str) -> None:
+        if peak is None or recording is None:
+            return
+        _, entity, at = peak
+        own_moments.append(
+            {"metric": metric, "entity": entity, "at_s": recording.at(at), "detail": detail}
+        )
+
+    if longest_still is not None:
+        note("still_s_per_bot", longest_still, "längsta stillastående")
+    note("speed_100ms", fastest_sample, "snabbaste 100 ms-provet")
+    note("speed_1s", fastest_second, "snabbaste sekunden")
+    if cells and cells[0]["first_at_s"] is not None and recording is not None:
+        own_moments.append(
+            {
+                "metric": "stall_firings",
+                "entity": cells[0]["first_ent"],
+                "at_s": cells[0]["first_at_s"],
+                "detail": f"första fyrningen i {cells[0]['id']}, den mest drabbade zonen",
+            }
+        )
+    return {"stats": stats, "cells": cells, "own_moments": own_moments}
 
 
 def _analyzer_metrics(
@@ -333,12 +365,13 @@ def run(
                     )
                     stats = measured["stats"]
                     cells = measured["cells"]
-                    still_moment = measured.pop("still_moment", None)
+                    own_moments = measured.pop("own_moments", [])
                     sources, moments = _analyzer_metrics(
                         config, recording, stats, roster
                     )
                     for cell in cells:
                         at_s = cell.pop("first_at_s", None)
+                        cell.pop("first_ent", None)
                         link = recording.link(at_s)
                         cell["evidence"] = (
                             None
@@ -350,19 +383,21 @@ def run(
                                 "link": link,
                             }
                         )
-                    if still_moment is not None:
+                    for own in own_moments:
+                        entity = own.get("entity")
                         link = recording.link(
-                            still_moment["at_s"],
-                            evidence_mod.userid_for_slot(
-                                roster, still_moment["entity"] - 1
-                            ),
+                            own["at_s"],
+                            None
+                            if entity is None
+                            else evidence_mod.userid_for_slot(roster, entity - 1),
                         )
                         if link is not None:
                             moments.append(
                                 {
                                     "demo": recording.demo_name,
-                                    "metric": "still_s_per_bot",
-                                    "at_s": round(float(still_moment["at_s"]), 1),
+                                    "metric": own["metric"],
+                                    "at_s": round(float(own["at_s"]), 1),
+                                    "detail": own.get("detail"),
                                     "link": link,
                                 }
                             )
