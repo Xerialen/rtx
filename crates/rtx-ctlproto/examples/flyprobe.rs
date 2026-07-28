@@ -289,10 +289,14 @@ fn main() {
         println!("{}: {} distinct movements", path, suite.len());
         let bot = first_bot(&mut c);
         let mut rows = String::from(
-            "seg,human_secs,human_path,human_ups,entry_ups,arrived,secs,ratio,cross_p50,\
+            "seg,human_secs,human_path,human_ups,entry_ups,direct,arrived,secs,ratio,cross_p50,\
              cross_p95,cross_max,speed,late_speed,yaw_p95,reverse,wall\n",
         );
-        let mut all: Vec<line::LineScore> = Vec::new();
+        // Kept apart because they answer different questions: on an indirect reference the bot is
+        // asked for a chord the human never ran, so its *time* is not comparable — but whether it
+        // arrives, and how much it grinds along the way, still is.
+        let (mut all, mut indirect): (Vec<line::LineScore>, Vec<line::LineScore>) = (Vec::new(), Vec::new());
+        let mut timed = 0usize;
         for idx in (first..suite.len()).step_by(stride).take(count) {
             let seg = &suite[idx];
             let reference = seg.reference(format!("seg{idx}"));
@@ -300,8 +304,10 @@ fn main() {
             // The human entered this movement already travelling. Hand the bot the same momentum,
             // or the run measures its standing start rather than the movement.
             let v0 = seg.entry_velocity();
+            let direct = seg.directness();
             println!(
-                "\nseg {idx}: human {:.2}s {:.0}u {:.0} ups  ({:.0},{:.0},{:.0}) -> ({:.0},{:.0},{:.0})  entry {:.0} ups",
+                "\nseg {idx}: human {:.2}s {:.0}u {:.0} ups  ({:.0},{:.0},{:.0}) -> ({:.0},{:.0},{:.0})  \
+                 entry {:.0} ups  direct {:.2}{}",
                 seg.duration(),
                 seg.path_length(),
                 seg.mean_speed(),
@@ -312,6 +318,12 @@ fn main() {
                 b.y,
                 b.z,
                 v0.truncate().length(),
+                direct,
+                if direct < line::DIRECT_ENOUGH {
+                    "  (untimed: the chord is not the run)"
+                } else {
+                    ""
+                },
             );
             let mut scores = Vec::new();
             for _ in 0..trials {
@@ -382,11 +394,12 @@ fn main() {
                     s.wall_events,
                 );
                 rows.push_str(&format!(
-                    "{idx},{:.3},{:.0},{:.0},{:.0},{},{:.3},{:.3},{:.1},{:.1},{:.1},{:.3},{:.3},{:.0},{},{}\n",
+                    "{idx},{:.3},{:.0},{:.0},{:.0},{:.3},{},{:.3},{:.3},{:.1},{:.1},{:.1},{:.3},{:.3},{:.0},{},{}\n",
                     seg.duration(),
                     seg.path_length(),
                     seg.mean_speed(),
                     v0.truncate().length(),
+                    direct,
                     s.arrived as u8,
                     s.time,
                     if s.reference_time > 0.0 {
@@ -422,7 +435,12 @@ fn main() {
                 mean(|s| s.mean_speed_ratio),
                 mean(|s| s.wall_events as f32),
             );
-            all.extend(scores);
+            if direct >= line::DIRECT_ENOUGH {
+                timed += 1;
+                all.extend(scores);
+            } else {
+                indirect.extend(scores);
+            }
         }
 
         // One aggregate over the whole sweep — the number a baseline is quoted as, and the number a
@@ -433,23 +451,35 @@ fn main() {
             std::fs::write(f, &rows).expect("write csv");
             println!("\nwrote {f}");
         }
+        let pct = |mut v: Vec<f32>, q: f32| {
+            v.sort_by(f32::total_cmp);
+            v[(((v.len() - 1) as f32) * q) as usize]
+        };
+        let ratio = |s: &line::LineScore| {
+            if s.reference_time > 0.0 {
+                s.time / s.reference_time
+            } else {
+                0.0
+            }
+        };
+        if !indirect.is_empty() {
+            let arrived = indirect.iter().filter(|s| s.arrived).count();
+            let wall: Vec<f32> = indirect.iter().map(|s| s.wall_events as f32).collect();
+            println!(
+                "\n{} runs on references too indirect to time (directness < {:.1}): \
+                 arrived {arrived}/{}, wall events p50 {:.0}",
+                indirect.len(),
+                line::DIRECT_ENOUGH,
+                indirect.len(),
+                pct(wall, 0.5),
+            );
+        }
         let n = all.len();
         if n > 0 {
             let arrived = all.iter().filter(|s| s.arrived).count();
-            let pct = |mut v: Vec<f32>, q: f32| {
-                v.sort_by(f32::total_cmp);
-                v[(((v.len() - 1) as f32) * q) as usize]
-            };
             let col = |f: fn(&line::LineScore) -> f32| all.iter().map(f).collect::<Vec<_>>();
-            let ratio = |s: &line::LineScore| {
-                if s.reference_time > 0.0 {
-                    s.time / s.reference_time
-                } else {
-                    0.0
-                }
-            };
             println!(
-                "\n=== {n} runs over {} movements ===\n  \
+                "\n=== {n} runs over {} timed movements ===\n  \
                  arrived      {arrived}/{n} ({:.0}%)\n  \
                  time ratio   p50 {:.2}x  p90 {:.2}x  max {:.2}x\n  \
                  speed ratio  p50 {:.2}x  p10 {:.2}x   (late-line p50 {:.2}x)\n  \
@@ -457,7 +487,7 @@ fn main() {
                  yaw p95      p50 {:.0}deg/s  p90 {:.0}deg/s\n  \
                  reverse      p50 {:.0}  p90 {:.0}\n  \
                  wall events  p50 {:.0}  p90 {:.0}",
-                (first..suite.len()).step_by(stride).take(count).count(),
+                timed,
                 100.0 * arrived as f32 / n as f32,
                 pct(col(ratio), 0.5),
                 pct(col(ratio), 0.9),
