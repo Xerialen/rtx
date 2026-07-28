@@ -38,7 +38,13 @@ mvdsv when you need to run or observe bots live:
   expands a full route and `inspect_cell` explains the nav links around a cell. `items` lists the
   map's pickups with each one's nearest standable nav cell — the `goto` target (an item's own
   origin floats above the floor, so `goto` it and the bot stalls under the pickup).
-- Rocket-jump work: `list_rj_links` / `test_links`; curl links: `list_curl_links`.
+- Rocket-jump work: `list_rj_links` / `test_links` (these are RJ-only).
+- Speed-jump work: `list_curl_links` lists the whole speed-jump family (curls, straight and chained),
+  `fly_link` flies one and measures the landing, and `side_jump_test` measures a *short-ramp side
+  strafe jump* end to end on the `100m` runway — see
+  [docs/side-jump-harness.md](docs/side-jump-harness.md) for the sweeps that calibrate the side-jump
+  envelope. Ground truth for those jumps is `demos/dm3_rlstrafejump.qwd`; read it with
+  `cargo run --release -p rtx-demo-tool --bin qwd -- analyze|dump <demo>` (offline, no server).
 
 Link ids are not stable across `server_restart` or a `map` change — re-list after either. The
 bridge lives in `crates/rtx-mcp/`; see its [README](crates/rtx-mcp/README.md).

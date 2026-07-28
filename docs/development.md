@@ -167,6 +167,18 @@ Two more things to know when reading the output:
 Spot-check an `UNREACH` finding on a live server with the `rtx-mcp` `list_rj_links` /
 `list_curl_links` / `teleport` tools.
 
+The bucket table above is rocket-jump only: `Checker::gap` returns `None` for curl paths, so a curl
+or side jump that fails to reproduce gets a verdict but no attribution. Adding an equivalent set for
+the speed-jump envelope (`SIDE_MIN_RUNWAY`, `SIDE_PSI_MAX`, `SJ_MARGIN`) is open work.
+
+### Side jumps and the 100m harness
+
+The speed-jump family's own envelope is calibrated live rather than against authored waypoints — see
+[side-jump-harness.md](side-jump-harness.md) for the `side_jump_test` / `fly_link` MCP tools and the
+sweeps that set the `SIDE_*` constants. The offline counterpart is the env-gated
+`dm3_balcony_side_jump` test in `rtx-nav` (`RTX_TEST_BSP=…/dm3.bsp`), which asserts the generator
+still reproduces the `demos/dm3_rlstrafejump.qwd` crossing.
+
 ## The control channel
 
 Setting `rtx_control_port <port>` (or `--control-port` on the client) binds a localhost TCP

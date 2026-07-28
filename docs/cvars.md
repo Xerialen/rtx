@@ -81,7 +81,7 @@ Covered in depth in [bot navigation](bots.md#navigation).
 |------|---------|--------|
 | `rtx_bot_bhop` | `1` | Bunnyhop (air-strafe to build speed) on open stretches. |
 | `rtx_bot_zigzag` | `1` | Ground-zigzag (circle-strafe) on straight corridors too short to hop. Sub-toggle of bhop. |
-| `rtx_bot_curljump` | `0` | Generate curl jumps (run-up + air-turn onto an offset platform), certified by a pmove rollout. Sub-toggle of bhop. |
+| `rtx_bot_curljump` | `1` | Generate curl **and side** jumps (run-up + air-turn onto an offset platform; the side pass's run-up crosses the ledge rather than pointing at the gap), each certified by a pmove rollout. Sub-toggle of bhop. |
 | `rtx_bot_bandplan` | `1` | Plan over speed bands (kinodynamic A*), crediting speed carried between legs. `0` = plain A*. |
 | `rtx_bot_rocketjump` | `1` | Rocket-jump to ledges when it clearly beats the walk and the bot is fit to fly it. |
 | `rtx_bot_hazard_health` | `1` | A bot's health weights its willingness to shortcut through lava/slime. `0` = price every bot as a bare spawn. |

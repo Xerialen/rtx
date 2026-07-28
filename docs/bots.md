@@ -102,9 +102,23 @@ jump.
 
 ### Curl jumps
 
-With `rtx_bot_curljump` (off by default), the navmesh also generates **curl jumps** — a run-up
+With `rtx_bot_curljump` (on by default), the navmesh also generates **curl jumps** — a run-up
 down a corridor, then an air-turn onto an offset platform — each certified by a pmove rollout in
 the navmesh build. A sub-toggle of bhop (`rtx_bot_bhop 0` disables it too).
+
+### Side jumps
+
+The same toggle also generates **side jumps**: the run-up crosses a ledge and the leap goes off its
+*flank*, the two as much as 63° apart. This is the commonest human shortcut — run along a balcony,
+flick, and cross the gap — and it is invisible to the passes above, which all search *outward from a
+corridor* and so can only ever find a run-up pointing at the gap. The side pass searches the other way
+round: it picks the target first, derives candidate takeoff headings from the chord, and measures the
+run-up along whichever of them has floor. Like a curl it is proven by a physics rollout, not modelled,
+and the bot flies it with the same takeoff regime.
+
+Because such a run-up is often a narrow ledge, a side-jump link can also carry a **weave cap** — the
+speed-building serpentine normally swings ±30–45°, which walks a bot off a two-column shelf, so a link
+whose run-up was measured thin asks the controller to keep it tighter.
 
 ### Hook links
 

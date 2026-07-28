@@ -167,6 +167,7 @@ movement links carry their flight data in [side tables](#side-tables).
 | `DoubleJump` | `add_double_jumps` (`rtx_doublejump`) | wider reach, taller arc, only where no direct link exists |
 | `SpeedJump` | `add_speed_jumps` | a measured runway caps attainable bhop speed; the link *starts* at the runway, so a bot always runs the full approach |
 | `SpeedJump` (curl) | `solve_curl_jumps_from` (`rtx_bot_curljump`) | a full `pm_step` physics rollout certifies the air-turn lands |
+| `SpeedJump` (side) | `solve_side_jumps_from` (`rtx_bot_curljump`) | target-first search: takeoff headings derived from the chord, run-up measured along whichever has floor, then the same rollout certification. Finds run-ups *perpendicular* to the leap, which every corridor-first pass is blind to |
 | `Hook` | `add_hooks` (`rtx_grapple`) | an offline swing simulation against the BSP + a perturbation-robustness sweep |
 | `RocketJump` | `add_rocket_jumps` (`rtx_bot_rocketjump`) | a two-phase blast simulation + perturbation sweep; carries a health cost |
 | `Plat` / `Teleport` | entity splices (`add_plats` / `add_teleports`) | derived from `func_plat` / `trigger_teleport` entities |
