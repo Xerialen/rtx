@@ -100,6 +100,19 @@ fn main() {
     let mut c = Conn::open();
     let mode = argv.first().map(String::as_str).unwrap_or("list");
 
+    // set <cvar> <value> — so an A/B sweep can flip the thing under test without the MCP.
+    if mode == "set" {
+        let r = c.req(
+            Cmd::Set {
+                name: argv[1].clone(),
+                value: argv[2].clone(),
+            },
+            &mut |_| {},
+        );
+        println!("set {} = {} -> {r:?}", argv[1], argv[2]);
+        return;
+    }
+
     if mode == "list" || mode == "near" {
         let links = speed_jumps(&mut c);
         let near: Option<[f32; 3]> = if mode == "near" {

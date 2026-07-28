@@ -92,6 +92,14 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // down — they become the fallback for "no trackable line exists" rather than the first
         // responder, which is what made a bot brake mid-stride on a stair diagonal. See `bot::walksim`.
         ("rtx_bot_walkplan", Bool(true)),
+        // Shape the route into a lane before steering at it, instead of pursuing raw cell centres.
+        // Cells sit where the 32u grid fell, so a corner's centres sit *in* the corner and a straight
+        // corridor's zigzag by half a cell; a bot chasing that aims itself at the inside of every turn
+        // and leaves the reactive brakes to clean up a problem the line created. The lane relaxes the
+        // polyline toward straightness inside the room a pair of hull traces per point measures, so it
+        // arcs outward before a corner the way a player does and holds still where there is no room.
+        // Off by default until it has beaten `docs/baseline/`. See `rtx_nav::lane`.
+        ("rtx_bot_lane", Bool(false)),
         // A bot's health weights how willing it is to shortcut through lava/slime: hurt bots detour,
         // healthy (or armored, or biosuited) ones clip the corner. `0` prices every bot as a bare
         // spawn — hazards still cost, but the same to everyone. See `bot::bot_hazard_strength`.

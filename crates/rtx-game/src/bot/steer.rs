@@ -21,6 +21,7 @@ use crate::math::{angle_vectors, angles_to, yaw_of};
 use crate::nav_build::PlatStatus;
 use crate::navmesh::{CellId, Corridor, LinkCosts, LinkKind, NavGraph, RJ_UNFIT_PENALTY};
 use crate::nearfield;
+use rtx_nav::lane;
 use rtx_nav::qphys::ORIGIN_TO_FEET;
 
 /// The all-`Copy` frame snapshot `steer` reads: the [`Sense`] and [`Objective`] this frame, the
@@ -1696,6 +1697,20 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         && !rj_engaged
         && !magnet_bend
         && matches!(kind, Some(LinkKind::Walk | LinkKind::Step));
+    // The line everything below steers by, built once a frame so the certifier, the freshness check
+    // and the aim point cannot disagree about where the route is.
+    //
+    // Under `rtx_bot_lane` this is the *shaped* line rather than the raw cell centres. Cells sit
+    // where the 32u grid fell, so a corner's centres sit in the corner and a corridor's zigzag by
+    // half a cell; pursuing that aims the bot at the inside of every turn and hands the reactive
+    // brakes a problem the line created. `lane::build` relaxes it toward straightness inside the room
+    // a pair of hull traces per point actually measures, so the line arcs *outward* before a corner
+    // the way a player does, and stays put wherever there is no room to move.
+    let route_line =
+        walk_line_pts(graph, bot, cur_leg).map(|pts| match bsp.filter(|_| host.cvar_bool(c"rtx_bot_lane")) {
+            Some(b) => lane::build(&pts, |from, to| b.hull1_trace(from, to).fraction * (to - from).length()),
+            None => pts,
+        });
     if !walk_corridor {
         bot.walk = None; // another driver owns the frame, or this isn't ground to certify
     } else if on_ground {
@@ -1705,8 +1720,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         let fresh = bot.walk.is_some_and(|w| {
             now - w.since <= WALK_RECERT
                 && cur_leg.is_some_and(|l| w.legs[..w.n as usize].contains(&l))
-                && walk_line_pts(graph, bot, cur_leg).is_some_and(|pts| {
-                    walksim::off_line(&pts, origin)
+                && route_line.as_ref().is_some_and(|pts| {
+                    walksim::off_line(pts, origin)
                         .is_some_and(|off| off.lateral <= walksim::LATERAL_TOL && off.dz.abs() <= walksim::Z_TOL)
                 })
         });
@@ -1716,7 +1731,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             // the brakes are inert down there too). Otherwise re-roll, unless a fan just came back
             // boxed and the back-off hasn't lapsed.
             if speed > LEDGE_MIN_SPEED && now >= bot.walk_retry {
-                if let (Some(bsp), Some(route_pts)) = (bsp, walk_line_pts(graph, bot, cur_leg)) {
+                if let (Some(bsp), Some(route_pts)) = (bsp, route_line.clone()) {
                     let cvf = |name: &std::ffi::CStr, d: f32| {
                         let v = host.cvar(name);
                         if v > 0.0 {
@@ -1802,7 +1817,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     };
 
     // Where the feet aim: the certified pursuit when one is live, else the near-field glide.
-    let heading = if let Some((w, pts)) = bot.walk.zip(walk_line_pts(graph, bot, cur_leg)) {
+    let heading = if let Some((w, pts)) = bot.walk.zip(route_line.as_ref()) {
         // The certified policy, re-evaluated at the live state: project onto the same route-anchored
         // line the rollout used and take `aim_point` from there, so the bot pursues exactly the point
         // that was certified — including the lateral lane offset, which on a diagonal staircase is
