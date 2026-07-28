@@ -1,0 +1,1378 @@
+<meta charset="utf-8">
+<title>Testflöde T0–T4 — dashboard</title>
+<style>
+  :root {
+    --ground:   #0c0b0a;
+    --panel:    rgba(20, 18, 15, 0.9);
+    --panel-2:  rgba(30, 27, 22, 0.72);
+    --ink:      #ece7dd;
+    --ink-2:    #b3aa9c;
+    --muted:    #857c6f;
+    --rule:     #322d25;
+    --rule-2:   #201d18;
+    --accent:   #e0842f;
+    --good:     #58c07a;
+    --bad:      #e4483a;
+    --mesh-mid: #453d33;
+    --halo:     #0c0b0a;
+    --warn:     #ffd166;
+    --r-disp:   #e4483a;
+    --r-pre:    #e0842f;
+    --r-airoff: #b07fe0;
+    --r-airtime:#5d9bd6;
+    --r-sj:     #ffd166;
+    --arc:      #45b8a0;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground: #efe9de; --panel: rgba(252, 249, 244, 0.92); --panel-2: rgba(236, 229, 217, 0.75);
+      --ink: #221e18; --ink-2: #4d463c; --muted: #746b5e;
+      --rule: #cec4b3; --rule-2: #ddd4c4; --accent: #a75a12;
+      --good: #217a44; --bad: #b8291c; --mesh-mid: #9c9078; --halo: #fcf9f4; --warn: #8f6b00;
+      --r-disp: #b8291c; --r-pre: #a75a12; --r-airoff: #7c3fa8; --r-airtime: #2f5f9e; --r-sj: #8f6b00; --arc: #1c7a66;
+    }
+  }
+  :root[data-theme="light"] {
+    --ground: #efe9de; --panel: rgba(252, 249, 244, 0.92); --panel-2: rgba(236, 229, 217, 0.75);
+    --ink: #221e18; --ink-2: #4d463c; --muted: #746b5e;
+    --rule: #cec4b3; --rule-2: #ddd4c4; --accent: #a75a12;
+    --good: #217a44; --bad: #b8291c; --mesh-mid: #9c9078; --halo: #fcf9f4; --warn: #8f6b00;
+    --r-disp: #b8291c; --r-pre: #a75a12; --r-airoff: #7c3fa8; --r-airtime: #2f5f9e; --r-sj: #8f6b00; --arc: #1c7a66;
+  }
+  :root[data-theme="dark"] {
+    --ground: #0c0b0a; --panel: rgba(20, 18, 15, 0.9); --panel-2: rgba(30, 27, 22, 0.72);
+    --ink: #ece7dd; --ink-2: #b3aa9c; --muted: #857c6f;
+    --rule: #322d25; --rule-2: #201d18; --accent: #e0842f;
+    --good: #58c07a; --bad: #e4483a; --mesh-mid: #453d33; --halo: #0c0b0a; --warn: #ffd166;
+    --r-disp: #e4483a; --r-pre: #e0842f; --r-airoff: #b07fe0; --r-airtime: #5d9bd6; --r-sj: #ffd166; --arc: #45b8a0;
+  }
+  :root {
+    --mono: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--sans); }
+  button, select { font: inherit; }
+  button:focus-visible, select:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  .plate { background: var(--panel); border: 1px solid var(--rule); backdrop-filter: blur(6px); }
+  .eyebrow {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .term { text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
+
+  .flow-header {
+    position: sticky; top: 0; z-index: 10; padding: 14px 18px 12px;
+    background: color-mix(in srgb, var(--ground) 88%, transparent);
+    border-bottom: 1px solid var(--rule); backdrop-filter: blur(12px);
+  }
+  .titlebar {
+    max-width: 1240px; margin: 0 auto 11px; display: flex; align-items: end;
+    justify-content: space-between; gap: 18px;
+  }
+  .titlebar h1 { margin: 3px 0 0; font: 600 19px/1.2 var(--mono); }
+  .titlebar p { margin: 4px 0 0; color: var(--ink-2); font-size: 12px; }
+  .theme-btn {
+    appearance: none; border: 1px solid var(--rule); background: var(--panel-2);
+    color: var(--ink-2); padding: 6px 9px; cursor: pointer; font: 10px var(--mono);
+    text-transform: uppercase; letter-spacing: .08em; white-space: nowrap;
+  }
+  .theme-btn:hover { color: var(--ink); border-color: var(--muted); }
+
+  .stepper {
+    max-width: 1240px; margin: 0 auto; display: grid;
+    grid-template-columns: repeat(5, minmax(138px, 1fr)) minmax(138px, auto);
+    overflow-x: auto; scrollbar-width: thin;
+  }
+  .step {
+    position: relative; min-width: 138px; appearance: none; text-align: left;
+    padding: 10px 23px 10px 12px; border: 1px solid var(--rule); border-right: 0;
+    background: var(--panel); color: var(--ink-2); cursor: pointer;
+  }
+  .step.flow-last { border-right: 1px solid var(--rule); }
+  .step:not(.flow-last)::after {
+    content: "→"; position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    color: var(--muted); font: 14px var(--mono);
+  }
+  .step:hover { background: var(--panel-2); color: var(--ink); }
+  .step.active { background: var(--accent); color: var(--halo); border-color: var(--accent); }
+  .step.active::after { color: var(--halo); }
+  .step-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .step-badges { display: inline-flex; align-items: center; gap: 4px; }
+  .step-code { font: 700 12px var(--mono); letter-spacing: .09em; }
+  .step-name { display: block; margin-top: 4px; font: 10px/1.3 var(--mono); white-space: nowrap; }
+  .step-key { display: block; margin-top: 3px; font: 700 13px var(--mono); color: var(--ink); }
+  .step.active .step-key { color: var(--halo); }
+  .explain-tab {
+    min-width: 138px; margin-left: 14px; appearance: none; border: 1px dashed var(--muted);
+    background: var(--panel-2); color: var(--ink-2); padding: 10px 12px;
+    cursor: pointer; font: 700 10px var(--mono); letter-spacing: .08em; text-transform: uppercase;
+  }
+  .explain-tab:hover { color: var(--ink); border-color: var(--accent); }
+  .explain-tab.active { background: var(--ink); color: var(--ground); border-color: var(--ink); }
+
+  .verdict-chip, .data-chip, .regime-chip {
+    display: inline-flex; align-items: center; border: 1px solid currentColor;
+    padding: 2px 6px; font: 700 9px/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase;
+  }
+  .verdict-chip.pass { color: var(--good); }
+  .verdict-chip.fail { color: var(--bad); }
+  .verdict-chip.partial { color: var(--warn); }
+  .verdict-chip.not-run { color: var(--muted); }
+  .step.active .verdict-chip { color: var(--halo); }
+  .data-chip { color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+  .step-example-chip { padding-inline: 4px; }
+  .regime-chip { color: var(--ink-2); }
+
+  .workspace {
+    max-width: 1240px; margin: 0 auto; padding: 18px; display: grid;
+    grid-template-columns: 260px minmax(0, 1fr); gap: 16px;
+  }
+  .run-rail { align-self: start; position: sticky; top: 157px; padding: 13px 14px 14px; }
+  .run-rail h2 { margin: 4px 0 12px; font: 600 14px var(--mono); }
+  .field { margin-top: 11px; }
+  .field label { display: block; margin-bottom: 5px; color: var(--muted); font: 10px var(--mono); text-transform: uppercase; letter-spacing: .12em; }
+  .field select {
+    width: 100%; appearance: none; border: 1px solid var(--rule); border-radius: 0;
+    background: var(--panel-2); color: var(--ink); padding: 8px 28px 8px 9px; font: 11px var(--mono);
+  }
+  .field-row { display: flex; gap: 6px; align-items: stretch; }
+  .field-row select { flex: 1 1 auto; min-width: 0; }
+  .clear-btn {
+    flex: 0 0 auto; appearance: none; border: 1px solid var(--rule); background: var(--panel-2);
+    color: var(--muted); padding: 0 9px; cursor: pointer; font: 10px var(--mono);
+    text-transform: uppercase; letter-spacing: .08em;
+  }
+  .clear-btn:hover { color: var(--ink); border-color: var(--muted); }
+  .clear-btn[disabled] { opacity: .4; cursor: default; }
+  .clear-btn[disabled]:hover { color: var(--muted); border-color: var(--rule); }
+  .run-meta { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule-2); }
+  .run-meta div { margin: 3px 0; color: var(--ink-2); font: 10.5px/1.4 var(--mono); overflow-wrap: anywhere; }
+  .run-meta b { color: var(--ink); font-weight: 600; }
+  .compare-note { margin-top: 10px; color: var(--muted); font: 10px/1.45 var(--mono); }
+
+  .panel { display: none; min-width: 0; }
+  .panel.active { display: block; }
+  .panel-head {
+    display: flex; justify-content: space-between; gap: 14px; align-items: start;
+    padding: 16px 18px; border-bottom: 1px solid var(--rule-2);
+  }
+  .panel-head h2 { margin: 4px 0 2px; font: 600 20px/1.2 var(--mono); }
+  .panel-head p { margin: 5px 0 0; color: var(--ink-2); font-size: 12px; line-height: 1.45; }
+  .panel-body { padding: 18px; }
+  .panel-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  .section-title {
+    margin: 18px 0 8px; color: var(--muted); font: 600 10px var(--mono);
+    letter-spacing: .14em; text-transform: uppercase;
+  }
+  .section-title:first-child { margin-top: 0; }
+  .callout {
+    border-left: 2px solid var(--accent); background: var(--panel-2);
+    padding: 11px 13px; color: var(--ink-2); font-size: 12px; line-height: 1.5;
+  }
+  .callout strong { color: var(--ink); }
+  details.doc { margin-top: 18px; border-top: 1px solid var(--rule); padding-top: 11px; }
+  details.doc summary {
+    cursor: pointer; color: var(--ink-2); font: 600 11px var(--mono);
+    letter-spacing: .06em; text-transform: uppercase;
+  }
+  details.doc p { color: var(--ink-2); font-size: 12px; line-height: 1.55; max-width: 86ch; }
+
+  .module-grid { display: flex; flex-wrap: wrap; gap: 7px; }
+  .module-chip {
+    border: 1px solid var(--rule); border-left: 3px solid var(--good);
+    padding: 7px 9px; background: var(--panel-2); font: 11px var(--mono);
+  }
+  .module-chip.fail { border-left-color: var(--bad); }
+  .module-chip b { color: var(--ink); }
+  .module-chip span { color: var(--muted); }
+  .big-verdict {
+    display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: center;
+    margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--rule);
+  }
+  .big-verdict .word { font: 700 28px var(--mono); }
+  .big-verdict.pass .word { color: var(--good); }
+  .big-verdict.fail .word { color: var(--bad); }
+  .big-verdict.partial .word { color: var(--warn); }
+  .big-verdict .sub { color: var(--ink-2); font: 11px/1.45 var(--mono); }
+
+  .drills { overflow-x: auto; }
+  .drill-row {
+    min-width: 660px; display: grid; grid-template-columns: 205px minmax(220px, 1fr) 118px;
+    gap: 12px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--rule-2);
+  }
+  .drill-name { font: 11px var(--mono); }
+  .drill-name small { display: block; margin-top: 3px; color: var(--muted); }
+  /* .drill-name small sätter också färg, så tidsraden måste vinna på specificitet. */
+  .drill-name small.drill-time { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .drill-best { color: var(--ink-2); font: 10px var(--mono); font-variant-numeric: tabular-nums; }
+  .drill-best.over { color: var(--warn); }
+  .attempts { display: flex; gap: 5px; }
+  .attempt {
+    min-width: 42px; height: 34px; display: grid; place-items: center;
+    border: 1px solid color-mix(in srgb, currentColor 60%, var(--rule));
+    color: var(--halo); font: 700 9px/1.1 var(--mono); text-align: center;
+  }
+  .attempt.passed { background: var(--good); }
+  /* slow = framme, men över gränstiden: grön grund som passed, randad så att
+     "kom fram" och "för långsamt" syns som två olika saker. */
+  .attempt.slow {
+    background: repeating-linear-gradient(135deg, var(--good) 0 5px,
+      color-mix(in srgb, var(--good) 15%, var(--warn)) 5px 10px);
+    border-color: var(--warn); color: var(--ground);
+  }
+  .attempt.fell { background: var(--r-airoff); }
+  .attempt.timeout { background: var(--bad); }
+  .attempt.stall { background: var(--r-pre); }
+  .attempt.loop { background: var(--r-sj); color: var(--ground); }
+  .attempt.detoured { background: var(--r-airtime); }
+  .attempt.died { background: var(--mesh-mid); }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 13px; margin-top: 12px; color: var(--ink-2); font: 10px var(--mono); }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 9px; height: 9px; display: inline-block; }
+  .legend .passed { background: var(--good); } .legend .fell { background: var(--r-airoff); }
+  .legend .slow {
+    background: repeating-linear-gradient(135deg, var(--good) 0 2px,
+      color-mix(in srgb, var(--good) 15%, var(--warn)) 2px 4px);
+  }
+  .legend .timeout { background: var(--bad); } .legend .stall { background: var(--r-pre); }
+  .legend .loop { background: var(--r-sj); } .legend .detoured { background: var(--r-airtime); }
+  .legend .died { background: var(--mesh-mid); }
+  .dash {
+    margin-top: 14px; display: flex; align-items: baseline; justify-content: space-between;
+    gap: 16px; border: 1px solid var(--rule); padding: 11px 13px; flex-wrap: wrap;
+  }
+  .dash .value { font: 700 24px var(--mono); }
+  .dash .value.bad { color: var(--bad); }
+  .dash-verdict { display: flex; align-items: center; gap: 8px; }
+
+  a.evidence-link {
+    color: var(--accent); font: 10px var(--mono); white-space: nowrap;
+    text-decoration: underline dotted; text-underline-offset: 2px;
+  }
+  a.evidence-link:hover { color: var(--ink); }
+  a.evidence-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .group-note { margin: -4px 0 8px; color: var(--muted); font: 10.5px/1.4 var(--mono); }
+  .drill-place { display: block; margin-top: 3px; color: var(--ink-2); font: 10.5px/1.35 var(--mono); }
+  .drill-verdict { display: grid; gap: 5px; justify-items: start; }
+  .metric-source { display: block; margin-top: 2px; color: var(--muted); font: 9.5px var(--mono); }
+  .metric-evidence { display: block; margin-top: 3px; }
+
+  .metrics-wrap { overflow-x: auto; }
+  table.metrics { width: 100%; min-width: 560px; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  table.metrics th {
+    padding: 7px 9px; border-bottom: 1px solid var(--rule); color: var(--muted);
+    font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: .08em; text-align: right;
+  }
+  table.metrics th:first-child { text-align: left; }
+  table.metrics td { padding: 7px 9px; border-bottom: 1px solid var(--rule-2); text-align: right; font: 11px var(--mono); }
+  table.metrics td:first-child { text-align: left; color: var(--ink-2); }
+  table.metrics .ref { color: var(--muted); font-weight: 400; }
+  /* Får inte likna en siffra: en omätt sak är inte ett litet värde. */
+  .unmeasured {
+    color: var(--warn); font-weight: 500; font-style: italic;
+    border-bottom: 1px dotted var(--warn); cursor: help;
+  }
+
+  .map-placeholder {
+    position: relative; min-height: 245px; display: grid; place-items: center; overflow: hidden;
+    border: 1px solid var(--rule); background:
+      linear-gradient(28deg, transparent 47%, var(--rule-2) 48%, var(--rule-2) 50%, transparent 51%),
+      linear-gradient(152deg, transparent 47%, var(--rule-2) 48%, var(--rule-2) 50%, transparent 51%),
+      var(--panel-2);
+    background-size: 90px 60px;
+  }
+  .map-placeholder::before {
+    content: ""; position: absolute; inset: 13px; border: 1px solid var(--mesh-mid); box-shadow: inset 0 0 0 1px var(--rule-2);
+  }
+  .map-label { position: relative; max-width: 430px; padding: 15px 18px; background: var(--panel); border: 1px solid var(--rule); text-align: center; }
+  .map-label strong { display: block; font: 600 13px var(--mono); }
+  .map-label span { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+  .mv-frame-wrap {
+    position: relative; height: 640px; overflow: hidden;
+    border: 1px solid var(--rule); background: var(--ground);
+  }
+  .mv-frame {
+    display: block; width: 100%; height: 100%; border: 0;
+    background: var(--ground); color-scheme: light dark;
+  }
+
+  .scoreboard {
+    display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+    border: 1px solid var(--rule); background: var(--panel-2); padding: 18px;
+  }
+  .team { text-align: center; }
+  .team .name { color: var(--muted); font: 10px var(--mono); text-transform: uppercase; letter-spacing: .12em; }
+  .team .score { margin-top: 5px; font: 700 38px var(--mono); }
+  .score-diff { padding: 0 22px; text-align: center; }
+  .score-diff strong { display: block; color: var(--good); font: 700 31px var(--mono); }
+  .score-diff span { color: var(--muted); font: 10px var(--mono); text-transform: uppercase; }
+  .score-ref { margin-top: 7px; color: var(--muted); font: 10px var(--mono); text-align: center; }
+  .side-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .metric-column { border: 1px solid var(--rule); padding: 12px; min-width: 0; }
+  .metric-column h3 { margin: 0 0 8px; font: 600 11px var(--mono); }
+  .metric-line { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-top: 1px solid var(--rule-2); font: 10.5px var(--mono); }
+  .metric-line span:first-child { color: var(--muted); }
+
+  .matchcard { border: 1px solid var(--rule); background: var(--panel-2); }
+  .mc-title { padding: 12px 13px 2px; font: 600 15px/1.3 var(--mono); }
+  .mc-sub { padding: 0 13px 11px; color: var(--muted); font: 10.5px var(--mono); }
+  .mc-wrap { overflow-x: auto; }
+  table.mc-table { width: 100%; min-width: 900px; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  table.mc-table th {
+    padding: 6px 8px; border-bottom: 1px solid var(--rule); color: var(--muted);
+    font: 600 9.5px var(--mono); text-transform: uppercase; letter-spacing: .06em; text-align: right;
+    white-space: nowrap;
+  }
+  table.mc-table th:nth-child(2), table.mc-table th:nth-child(3) { text-align: left; }
+  table.mc-table td { padding: 5px 8px; border-bottom: 1px solid var(--rule-2); text-align: right; font: 10.5px var(--mono); }
+  table.mc-table td.mc-teamcell, table.mc-table td.mc-namecell { text-align: left; }
+  table.mc-table td.mc-teamcell { color: var(--muted); }
+  /* Fragrutan bär spelarens egna färger, som på hubben. */
+  .mc-fragcell { text-align: center !important; }
+  .mc-frags {
+    display: inline-block; min-width: 34px; padding: 1px 5px; background: var(--mesh-mid);
+    color: var(--halo); font: 700 11px var(--mono); text-align: center;
+    text-shadow: 0 0 2px rgba(0,0,0,.85);
+  }
+  .mc-row.team td { border-bottom: 1px solid var(--rule); font-weight: 600; }
+  .mc-row.team.winner .mc-frags { outline: 2px solid var(--good); outline-offset: 1px; }
+  .mc-gap td { height: 9px; border: 0; padding: 0; }
+  .mc-row.a td:first-child { border-left: 3px solid var(--accent); }
+  .mc-row.b td:first-child { border-left: 3px solid var(--arc); }
+  a.mc-player { color: var(--ink); text-decoration: underline dotted; text-underline-offset: 2px; }
+  a.mc-player:hover { color: var(--accent); }
+  .mc-meta {
+    display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 14px;
+    border-top: 1px solid var(--rule-2); color: var(--muted); font: 10px/1.5 var(--mono);
+  }
+  details.rung-card { margin-top: 9px; border: 1px solid var(--rule); padding: 9px 11px; }
+  details.rung-card summary { cursor: pointer; color: var(--ink-2); font: 600 11px var(--mono); }
+  details.rung-card[open] summary { margin-bottom: 10px; }
+
+  .reached {
+    text-align: center; padding: 18px 12px 10px; font: 700 clamp(30px, 6vw, 56px)/1 var(--mono);
+  }
+  .reached span { color: var(--accent); }
+  .reached-ref { text-align: center; color: var(--muted); font: 11px var(--mono); }
+  .ladder-block { margin-top: 18px; }
+  .ladder-label { margin-bottom: 8px; color: var(--muted); font: 10px var(--mono); text-transform: uppercase; letter-spacing: .12em; }
+  .ladder { display: grid; grid-template-columns: repeat(6, 1fr); gap: 7px; }
+  .rung { position: relative; min-height: 84px; border: 1px solid var(--rule); background: var(--panel-2); padding: 10px 7px; text-align: center; }
+  .rung::after { content: ""; position: absolute; left: 50%; bottom: -8px; width: 1px; height: 8px; background: var(--rule); }
+  .rung:last-child::after { display: none; }
+  .rung.won { border-color: var(--good); background: color-mix(in srgb, var(--good) 14%, var(--panel-2)); }
+  .rung.lost { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, var(--panel-2)); }
+  .rung.unplayed { color: var(--muted); opacity: .62; }
+  .rung .skill { font: 700 22px var(--mono); }
+  .rung .state { margin-top: 4px; font: 700 9px var(--mono); text-transform: uppercase; }
+  .rung.won .state { color: var(--good); } .rung.lost .state { color: var(--bad); }
+  .rung .score { margin-top: 5px; color: var(--ink-2); font: 10px var(--mono); }
+  .historical { margin-top: 15px; color: var(--muted); font: 10.5px/1.5 var(--mono); }
+  .explanations { display: grid; gap: 18px; }
+  .explanation-level { padding-bottom: 18px; border-bottom: 1px solid var(--rule-2); }
+  .explanation-level:last-child { padding-bottom: 0; border-bottom: 0; }
+  .explanation-level h3 { margin: 0 0 7px; font: 600 15px var(--mono); }
+  .explanation-level p { margin: 0; color: var(--ink-2); font-size: 12px; line-height: 1.65; }
+  .explanation-level ul { margin: 9px 0 0; padding-left: 22px; color: var(--ink-2); font-size: 12px; line-height: 1.65; }
+
+  @media (max-width: 820px) {
+    .flow-header { padding-inline: 10px; }
+    .workspace { grid-template-columns: 1fr; padding: 10px; }
+    .run-rail { position: static; }
+    .stepper { grid-template-columns: repeat(5, 158px) 158px; }
+    .panel-head { flex-direction: column; }
+    .panel-badges { justify-content: flex-start; }
+    .side-metrics { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 560px) {
+    .titlebar p { display: none; }
+    .scoreboard { grid-template-columns: 1fr; gap: 10px; }
+    .score-diff { order: -1; }
+    .ladder { grid-template-columns: repeat(3, 1fr); }
+    .big-verdict { grid-template-columns: 1fr; }
+  }
+</style>
+
+<header class="flow-header">
+  <div class="titlebar">
+    <div>
+      <div class="eyebrow">rtx · __MAP_NAME__ · sekventiell kvalitetsgrind</div>
+      <h1>Testflöde T0–T4</h1>
+      <p>Samma nivå jämförs med samma nivå. Ett bygge går vidare först när föregående grind är klar.</p>
+    </div>
+    <button class="theme-btn" id="theme-toggle" type="button" aria-label="Byt färgtema">tema: system</button>
+  </div>
+  <nav class="stepper" id="stepper" aria-label="Testflödets nivåer"></nav>
+</header>
+
+<main class="workspace">
+  <aside class="run-rail plate" aria-label="Run-väljare">
+    <div class="eyebrow">Urval</div>
+    <h2>Run och referens</h2>
+    <div class="field">
+      <label for="focus-select">Fokus</label>
+      <div class="field-row">
+        <select id="focus-select"></select>
+        <button class="clear-btn" id="focus-clear" type="button"
+          title="Återgå till den senaste körningen">rensa</button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="ref-select">Referens-run</label>
+      <div class="field-row">
+        <select id="ref-select"></select>
+        <button class="clear-btn" id="ref-clear" type="button"
+          title="Ta bort referensen och visa fokuskörningen utan jämförelse">rensa</button>
+      </div>
+    </div>
+    <div class="run-meta" id="run-meta"></div>
+    <div class="compare-note">Fokusvärdet visas först. Referensen visas inom parentes och jämförs alltid inom den valda nivån.</div>
+  </aside>
+
+  <div>
+    <section class="panel plate" id="panel-t0" role="tabpanel" aria-labelledby="step-t0"></section>
+    <section class="panel plate" id="panel-t1" role="tabpanel" aria-labelledby="step-t1"></section>
+    <section class="panel plate" id="panel-t2" role="tabpanel" aria-labelledby="step-t2"></section>
+    <section class="panel plate" id="panel-t3" role="tabpanel" aria-labelledby="step-t3"></section>
+    <section class="panel plate" id="panel-t4" role="tabpanel" aria-labelledby="step-t4"></section>
+    <section class="panel plate" id="panel-explanations" role="tabpanel" aria-labelledby="step-explanations"></section>
+  </div>
+</main>
+
+<script>
+window.PROPOSAL_DATA = {
+  graph: /*__GRAPH__*/,
+  entities: /*__ENTS__*/,
+  snapshots: /*__SNAPSHOTS__*/,
+  linkgeo: /*__LINKGEO__*/
+};
+</script>
+
+<script>
+"use strict";
+
+const MAP_VIEW_HTML = /*__MAP_VIEW__*/;
+
+const RUNS = /*__RUNS__*/;
+
+const LEVELS = [
+  { id: "t0", code: "T0", name: "Byggnadsgrind" },
+  { id: "t1", code: "T1", name: "Enbotsdrillar" },
+  { id: "t2", code: "T2", name: "Pacifist-frispel" },
+  { id: "t3", code: "T3", name: "Gren mot main" },
+  { id: "t4", code: "T4", name: "Frogbot-stegen" }
+];
+
+const TERM_TITLES = {
+  "stall-fyrningar": "Antal gånger stall-vakten löste ut: botten kom inte framåt och en räddningsåtgärd fyrades.",
+  "quad/pent liggtid": "Sekunder i snitt som föremålet låg framme innan någon bot plockade det. Lägre är bättre.",
+  "snittfart 1 s / 100 ms": "Medelfart över alla bottar, samplad i 1-sekunds- respektive 100-millisekundersfönster. u/s = enheter per sekund.",
+  "peak u/s (100m)": "Högsta fart på 100m-banans raka — separat dash-test per bygge, inte ur matchen. Golv 790; rött under.",
+  "combat lock": "Sekunder botten är beskjuten av en fiende inom sitt synfält utan att svara med egna skott. Räknas ur matchdemon i efterhand.",
+  "stilla s / bot": "Sekunder per bot där farten var nära noll. Mycket stillastående = botten står fast eller tvekar.",
+  "pacifist": "Serverläge där bottarna inte skjuter — navigationen kan mätas utan stridsbrus.",
+  "regim": "Testmiljöns nivå (T0–T4). Värden får bara jämföras inom samma regim.",
+  "cargo test": "Rusts inbyggda testkommando — kör alla offline-tester i rtx-repot vid bygget.",
+  "bhop-korpus": "Inspelade bunnyhop-sekvenser som facit; bygget måste nå 795 u/s på 100m-profilen i offline-oraklet.",
+  "offline-orakel": "Simulerad rörelsemodell som körs utan spelserver — snabbt och deterministiskt.",
+  "MVD-demo": "Serverinspelning av matchen (multi-view demo). Krävs för att räkna combat lock i efterhand.",
+  "frogbots": "Den klassiska QuakeWorld-botten som motståndarreferens; skill 0–20 styr dess nivå.",
+  "fragdiff": "Skillnaden i frags mellan lagen. Positiv = testgrenen vann.",
+  "matchkort": "Slutställningen som analysatorn läste ur matchdemon: lagens frags överst, sedan en rad per spelare. Namnet länkar till spelarens POV i demospelaren.",
+  "spree": "Längsta obrutna fragsvit spelaren hade under matchen.",
+  "teleport → goto": "Drillen startar med att botten teleporteras till startpunkten och får ett goto-mål — samma förutsättningar varje försök.",
+  "ägartid": "Tiden ägaren själv körde sträckan på i sitt eget demo. Ankarna för start och mål är hämtade ur samma körning.",
+  "gränstid": "Långsammaste ankomst som fortfarande räknas som klarad: ägarens tid plus marginal. Långsammare ankomst blir slow, inte passed.",
+  "framme": "Antal försök där botten nådde målet över huvud taget — oavsett om det gick inom gränstiden.",
+  "bäst": "Snabbaste ankomsten i körningen, och hur många gånger ägarens egen tid den var. Gul när även den bästa låg över gränstiden.",
+  "körning": "Löpnummer i kronologisk ordning: #1 är den äldsta körningen, varje ny körning får ett högre nummer.",
+  "bygge": "Commiten som testades (kort sha). Alla tiers i samma körning delar den; suffixet -dirty betyder att trädet hade oincheckade ändringar.",
+  "passed": "nådde målet inom gränstiden",
+  "slow": "nådde målet, men långsammare än gränstiden",
+  "fell": "föll från höjd på vägen",
+  "timeout": "hann inte fram",
+  "stall": "stall-vakten löste ut",
+  "loop": "fastnade i omtags-loop (goto gavs om 6 gånger utan framkomst)",
+  "detoured": "tog omväg i stället för hoppet",
+  "died": "dog under försöket",
+  "PASS": "alla trösklar klarade",
+  "FAIL": "minst en tröskel missad",
+  "PIPELINE-OK": "en singelmatch verifierar pipeline, inte grenkvalitet",
+  "COMPLETE": "stegen kördes korrekt till första icke-vinst",
+  "FAILED": "körningen misslyckades; eventuell delpayload används inte",
+  "ABORTED": "körningen avbröts; eventuell delpayload används inte",
+  "OFULLSTÄNDIG": "envelopen saknar komplett användbar payload",
+  "MÄTT": "mätnivå utan trösklar — inget verdikt",
+  "EJ KÖRD": "ingen data för denna nivå"
+};
+
+const DOCS = {
+  t0: "Cirka 400 offline-tester i rtx-repot körs med cargo test vid varje bygge, före deploy. Det är Nanos vanliga testsvit; T0 är vår etikett. Nästan alla är logiktester utan kvalitetsgolv. Undantaget är bhop-korpusen med offline-oraklet 795 u/s på 100m-profilen. Syftet är fail-fast: logikkorrekthet innan något deployas.",
+  t1: "Deterministiska enbotsdrillar med teleport → goto. Drillarna delas i grunddrillar och cellprover. Grunddrillarna är kartans fasta rutter, och de är tidsatta: ankarna för start och mål samt referenstiden kommer ur ägarens egna demon av samma sträcka, och gränstiden är hans tid plus marginal. Ett försök som når målet inom gränstiden är passed; ett som når målet men går över den är slow — det skiljer 'kan gå sträckan' från 'går den i spelbar fart'. Cellproverna är cellövergångarna ur mergekriterierna. Dash 100m har golv 790 u/s och visas röd under golvet; när dashen är graderad bär den ett eget verdikt som räknas in i T1-domen, annars är den bara informativ.",
+  t2: "Fyra bottar spelar utan skott i tio minuter. Pacifist-regimen isolerar navigationssignalen: pickups, fart, stillatid och stall-fyrningar. Snapshot-JSON innehåller stats, cells, länkdata och regime T2. Kartvyn hör hemma här.",
+  t3: "Fyra bottar från testgrenen möter fyra bottar från main på DM3 i fem minuter, med skott. Två byggen krävs och rtx-client-seats används mot servern. Matchresultat, sidornas snapshot-mätetal och stall-data jämförs. Combat lock kräver MVD-demo; verifierad inspelning saknas ännu.",
+  t4: "Fyra bottar från testgrenen möter fyra frogbots i fem minuter per match. Stegen går skill 10, 12, 14, 16, 18 och 20. Vinst går vidare; första förlust stoppar stegen. Huvudmåttet är högsta besegrade skill, eller 0 vid direkt förlust på skill 10."
+};
+
+let activeLevel = "t0";
+let focusIndex = 0;
+let refIndex = Math.min(1, RUNS.length - 1);
+// Referensen går att rensa bort helt. refIndex pekar då fortfarande på en
+// giltig körning — inget renderingsanrop får en trasig referens — men allt
+// jämförande är avstängt och panelerna visar bara fokuskörningen.
+let refOff = false;
+
+const esc = value => String(value).replace(/[&<>"']/g, char => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]
+));
+
+function term(label, key) {
+  const title = TERM_TITLES[key || label] || String(label);
+  return '<span class="term" title="' + esc(title) + '">' + esc(label) + "</span>";
+}
+
+// Bevislänkar är alltid host-relativa och öppnas i ny flik. Allt annat
+// (null, saknat fält, absolut URL) renderas inte alls.
+function hostRelative(value) {
+  // "//host/path" starts with a slash but is protocol-relative: another origin.
+  if (typeof value !== "string" || value.charAt(0) !== "/") return null;
+  return value.charAt(1) === "/" ? null : value;
+}
+
+function linkTag(href, label, title, className) {
+  const safe = hostRelative(href);
+  if (!safe) return "";
+  return '<a class="' + className + '" href="' + esc(safe) +
+    '" target="_blank" rel="noopener" title="' + esc(title || label) + '">' + esc(label) + "</a>";
+}
+
+function evidenceTitle(evidence) {
+  const parts = [];
+  if (evidence.detail) parts.push(String(evidence.detail));
+  if (evidence.demo) parts.push(String(evidence.demo));
+  if (evidence.at_s != null) parts.push(fmt(evidence.at_s) + " s in i demot");
+  if (evidence.who) parts.push(String(evidence.who));
+  return "Öppnar demospelaren tre sekunder före ögonblicket, i ny flik" +
+    (parts.length ? " · " + parts.join(" · ") : "");
+}
+
+function evidenceLink(evidence, label) {
+  if (!evidence || typeof evidence !== "object") return "";
+  return linkTag(evidence.link, label, evidenceTitle(evidence), "evidence-link");
+}
+
+function verdictClass(verdict) {
+  return ["PASS", "PIPELINE-OK", "COMPLETE"].includes(verdict) ? "pass" :
+    ["FAIL", "FAILED", "ABORTED"].includes(verdict) ? "fail" :
+    verdict === "MÄTT" ? "partial" : "not-run";
+}
+
+function verdictChip(verdict) {
+  return '<span class="verdict-chip term ' + verdictClass(verdict) + '" title="' +
+    esc(TERM_TITLES[verdict]) + '">' + esc(verdict) + "</span>";
+}
+
+function panelBadges(level, focus, ref) {
+  const hasSynthetic = focus.synthetic || (ref && ref.synthetic);
+  const parts = ['<span class="regime-chip term" title="' + esc(TERM_TITLES.regim) + '">' +
+    level.toUpperCase() + "</span>", verdictChip(focus.verdict)];
+  if (hasSynthetic) {
+    const where = focus.synthetic && ref && ref.synthetic ? "fokus + referens" : focus.synthetic ? "fokus" : "referens";
+    parts.push('<span class="data-chip">exempeldata · ' + where + "</span>");
+  }
+  if (focus.provenance === "derived") {
+    parts.push('<span class="regime-chip">derived · källhänvisning</span>');
+  }
+  return parts.join("");
+}
+
+function panelShell(level, title, subtitle, body) {
+  const focus = RUNS[focusIndex].levels[level];
+  const ref = refOff ? null : RUNS[refIndex].levels[level];
+  return '<div class="panel-head"><div><div class="eyebrow">' + level.toUpperCase() +
+    ' · samma nivå mot samma nivå</div><h2>' + title + "</h2><p>" + subtitle +
+    '</p></div><div class="panel-badges">' + panelBadges(level, focus, ref) +
+    '</div></div><div class="panel-body">' + body +
+    '<details class="doc"><summary>Vad &amp; varför</summary><p>' + DOCS[level] + "</p></details></div>";
+}
+
+function canCompare(level, focus, ref) {
+  return !refOff && focusIndex !== refIndex && focus.status === "complete" &&
+    ref.status === "complete" && focus.comparisonKey === ref.comparisonKey;
+}
+
+function regimeBadge(item) {
+  return item.regimeNote
+    ? '<span class="regime-chip">' + esc(item.regimeNote) + "</span>"
+    : "";
+}
+
+function sourceNotes(item) {
+  if (!item.sources || !item.sources.length) {
+    return item.provenance === "derived"
+      ? '<div class="callout"><strong>Härledd källa:</strong> källfält saknas i payload.</div>'
+      : "";
+  }
+  return '<div class="callout"><strong>Härledd källa:</strong> ' +
+    item.sources.map(source => esc(source.field) + " → " + esc(source.source)).join(" · ") +
+    "</div>";
+}
+
+function unavailable(item) {
+  if (item.status === "complete") return "";
+  const error = item.error ? " · " + esc(item.error) : "";
+  return '<div class="big-verdict ' + verdictClass(item.verdict) + '"><div class="word">' +
+    esc(item.verdict) + '</div><div class="sub">Ingen payload används som data' + error + "</div></div>";
+}
+
+function renderStepper() {
+  const focus = RUNS[focusIndex];
+  document.getElementById("stepper").innerHTML = LEVELS.map((level, index) => {
+    const item = focus.levels[level.id];
+    const selected = activeLevel === level.id;
+    return '<button class="step' + (index === LEVELS.length - 1 ? " flow-last" : "") +
+      (selected ? " active" : "") + '" id="step-' + level.id +
+      '" type="button" role="tab" aria-selected="' + selected + '" aria-controls="panel-' + level.id +
+      '" data-level="' + level.id + '"><span class="step-top"><span class="step-code">' + level.code +
+      '</span><span class="step-badges">' + verdictChip(item.verdict) +
+      (item.synthetic ? '<span class="data-chip step-example-chip" title="exempeldata — syntetiskt värde tills nivån körs skarpt">EX</span>' : "") +
+      regimeBadge(item) +
+      '</span></span><span class="step-name">' + level.name +
+      '</span><span class="step-key">' + esc(item.key) + "</span></button>";
+  }).join("") + '<button class="explain-tab' + (activeLevel === "explanations" ? " active" : "") +
+    '" id="step-explanations" type="button" role="tab" aria-selected="' +
+    (activeLevel === "explanations") + '" aria-controls="panel-explanations" data-level="explanations">Förklaringar</button>';
+  document.querySelectorAll("#stepper [data-level]").forEach(button => {
+    button.addEventListener("click", () => {
+      activeLevel = button.dataset.level;
+      renderAll();
+      document.getElementById("panel-" + activeLevel).focus({ preventScroll: true });
+    });
+  });
+}
+
+function renderRunControls() {
+  const focusSelect = document.getElementById("focus-select");
+  const refSelect = document.getElementById("ref-select");
+  // Rälsen är smal och rensa-knappen tar sin plats, så datumet får stå i
+  // run-meta nedanför i stället för att tränga ut grennamnet ur väljaren.
+  const options = RUNS.map((run, index) =>
+    '<option value="' + index + '" title="' + esc(run.date + " · " + run.build) + '">' +
+    "#" + run.number + " · " + esc(run.branch) + "</option>"
+  ).join("");
+  focusSelect.innerHTML = options;
+  refSelect.innerHTML = '<option value="">ingen referens</option>' + options;
+  focusSelect.value = String(focusIndex);
+  refSelect.value = refOff ? "" : String(refIndex);
+  Array.from(focusSelect.options).forEach(option => {
+    option.disabled = !refOff && Number(option.value) === refIndex;
+  });
+  Array.from(refSelect.options).forEach(option => {
+    option.disabled = option.value !== "" && Number(option.value) === focusIndex;
+  });
+  document.getElementById("focus-clear").disabled = focusIndex === 0;
+  document.getElementById("ref-clear").disabled = refOff;
+  const focus = RUNS[focusIndex], ref = RUNS[refIndex];
+  const failed = focus.attempts.filter(attempt => attempt.status !== "complete");
+  document.getElementById("run-meta").innerHTML =
+    '<div><span class="muted">fokus</span><br><b>' + term("körning #" + focus.number, "körning") +
+    " · " + esc(focus.branch) + "</b><br>" +
+    term(focus.build, "bygge") + " · " + esc(focus.date) + "</div>" +
+    '<div><span class="muted">referens</span><br>' + (refOff
+      ? "<b>ingen</b><br>inga värden jämförs"
+      : '<b>(' + term("körning #" + ref.number, "körning") + " · " + esc(ref.branch) + ")</b><br>(" +
+        term(ref.build, "bygge") + " · " + esc(ref.date) + ")") + "</div>" +
+    (failed.length ? '<div><span class="muted">problemkörningar</span><br>' +
+      failed.map(attempt => esc(attempt.tier) + " " + esc(attempt.status)).join(" · ") + "</div>" : "");
+}
+
+function renderT0() {
+  const focus = RUNS[focusIndex].levels.t0;
+  const ref = RUNS[refIndex].levels.t0;
+  if (focus.status !== "complete") {
+    document.getElementById("panel-t0").innerHTML = panelShell("t0", "Byggnadsgrind",
+      "Nanos " + term("cargo-tester", "cargo test") + " · före deploy", unavailable(focus));
+    return;
+  }
+  const cls = verdictClass(focus.verdict);
+  const compare = canCompare("t0", focus, ref);
+  const modules = focus.modules.map(module =>
+    '<div class="module-chip' + (module.passed === module.tests ? "" : " fail") + '"><b>' +
+    esc(module.name) + '</b> <span>' + fmt(module.passed) + "/" + fmt(module.tests) + "</span></div>"
+  ).join("");
+  const floors = focus.qualityFloors.length
+    ? focus.qualityFloors.map(floor => '<div class="callout"><strong>' + esc(floor.name) +
+      ": " + fmt(floor.floor) + " " + esc(floor.unit || "") + "</strong> · " +
+      (floor.passed ? "PASS" : "FAIL") + "</div>").join("")
+    : '<div class="callout">Inga kvalitetsgolv rapporterade.</div>';
+  const body =
+    '<div class="big-verdict ' + cls + '"><div class="word">' + esc(focus.verdict) +
+    '</div><div class="sub">Totalverdikt för fokusbygget' +
+    (compare ? " · referens (" + esc(ref.verdict) + ")" : " · ingen jämförbar referens") +
+    "</div></div>" +
+    '<div class="section-title">Moduler · evidence</div><div class="module-grid">' + modules + "</div>" +
+    '<div class="section-title">Kvalitetsgolv · evidence</div>' + floors + sourceNotes(focus);
+  document.getElementById("panel-t0").innerHTML = panelShell("t0", "Byggnadsgrind",
+    "Nanos " + term("cargo-tester", "cargo test") + " · före deploy", body);
+}
+
+function drillPasses(drill) {
+  return drill.results.filter(result => result.status === "passed").length;
+}
+
+// slow bär också en tid: den ska synas, annars går det inte att se hur långt
+// ifrån gränsen botten låg.
+function resultLabel(result) {
+  const arrived = result.status === "passed" || result.status === "slow";
+  if (arrived && typeof result.time_s === "number") return result.time_s.toFixed(2) + "s";
+  return result.status || "okänt";
+}
+
+function secs(value) {
+  return typeof value === "number" ? value.toFixed(2) + " s" : "–";
+}
+
+function attemptTitle(result) {
+  const parts = [TERM_TITLES[result.status] || String(result.status || "okänt")];
+  if (result.min_possible_s != null) {
+    parts.push("kunde tidigast ha kommit fram på " + secs(result.min_possible_s));
+  }
+  if (result.demo_t_s != null) parts.push("demo " + fmt(result.demo_t_s) + " s");
+  return parts.join(" · ");
+}
+
+const T1_GROUPS = [
+  ["grunddrill", "Grunddrillar",
+   "Kartans fasta rutter. Ankare och tider är hämtade ur ägarens egna demon: xer-tiden är vad han körde sträckan på, gränstiden är den långsammaste ankomst som fortfarande räknas."],
+  ["cellprov", "Cellprover", "Cellövergångarna ur mergekriterierna."]
+];
+
+function drillRow(drill, refDrill) {
+  const passed = drillPasses(drill);
+  const ok = passed >= drill.threshold;
+  const refPassed = refDrill ? drillPasses(refDrill) : null;
+  const of = drill.of || drill.results.length;
+  const place = drill.place
+    ? '<small class="drill-place">' + esc(drill.place) + "</small>"
+    : "";
+  // Tidsatta drillar bär ägarens egen tid och gränstiden; äldre drillar har
+  // varken och bedöms bara på ankomster.
+  const timed = drill.referenceTime != null && drill.maxTime != null;
+  const times = timed
+    ? '<small class="drill-time">' + term("xer " + secs(drill.referenceTime), "ägartid") +
+      " · " + term("gräns " + secs(drill.maxTime), "gränstid") + "</small>"
+    : "";
+  const arrived = drill.arrived != null
+    ? " · " + term("framme " + drill.arrived + "/" + of, "framme")
+    : "";
+  const overLimit = timed && drill.bestTime != null && drill.bestTime > drill.maxTime;
+  // Hur många gånger ägarens tid den bästa körningen tog: det enda talet som
+  // gör två grenar jämförbara på en blick.
+  const ratio = timed && drill.bestTime != null && drill.referenceTime > 0
+    ? " · " + (drill.bestTime / drill.referenceTime).toFixed(1) + "×"
+    : "";
+  const best = drill.bestTime != null
+    ? '<span class="drill-best' + (overLimit ? " over" : "") + '" title="' +
+      esc(TERM_TITLES["bäst"]) + '">bäst ' + secs(drill.bestTime) + ratio + "</span>"
+    : "";
+  const arrivedEvidence = drill.evidence &&
+    (drill.evidence.status === "passed" || drill.evidence.status === "slow");
+  const evidence = drill.evidence
+    ? evidenceLink(drill.evidence, arrivedEvidence ? "se hoppet" : "se försöket")
+    : "";
+  return '<div class="drill-row"><div class="drill-name">' + esc(drill.name) + place + times +
+    "<small>tröskel " + fmt(drill.threshold) + "/" + fmt(of) + arrived +
+    (refDrill ? " · ref (" + refPassed + "/" + refDrill.results.length + ")" : "") + "</small></div>" +
+    '<div class="attempts">' + drill.results.map(result =>
+      '<span class="attempt ' + esc(result.status) + '" title="' + esc(attemptTitle(result)) + '">' +
+      esc(resultLabel(result)) + "</span>"
+    ).join("") + '</div><div class="drill-verdict">' +
+    verdictChip(drill.verdict || (ok ? "PASS" : "FAIL")) + best + evidence + "</div></div>";
+}
+
+function drillGroups(focus, ref, compare) {
+  return T1_GROUPS.map(group => {
+    const drills = focus.data.drills.filter(drill => (drill.category || "grunddrill") === group[0]);
+    if (!drills.length) return "";
+    return '<div class="section-title">' + esc(group[1]) + '</div><div class="group-note">' +
+      esc(group[2]) + '</div><div class="drills">' + drills.map(drill =>
+        drillRow(drill, compare ? ref.data.drills.find(candidate => candidate.name === drill.name) : null)
+      ).join("") + "</div>";
+  }).join("");
+}
+
+function renderT1() {
+  const focus = RUNS[focusIndex].levels.t1;
+  const ref = RUNS[refIndex].levels.t1;
+  if (focus.status !== "complete") {
+    document.getElementById("panel-t1").innerHTML = panelShell("t1", "Enbotsdrillar",
+      "Deterministisk rörelse · " + term("teleport → goto"), unavailable(focus));
+    return;
+  }
+  const compare = canCompare("t1", focus, ref);
+  const dash = focus.data.dash;
+  const refDash = ref.data.dash;
+  const dashBad = dash.peak != null && dash.floor != null && dash.peak < dash.floor;
+  const note = focus.data.note ? '<div class="callout"><strong>Run-anmärkning:</strong> ' + esc(focus.data.note) + "</div>" : "";
+  const demoNote = focus.data.demo
+    ? ' · demo <span class="mono">' + esc(focus.data.demo) + "</span>"
+    : "";
+  const comparisonNote = compare
+    ? "Jämförbar referens inom samma regim."
+    : "Ingen jämförelse: quick/full eller körstatus skiljer.";
+  // Utan telemetri kan utfallet stall inte inträffa på det här bygget. Utan den
+  // upplysningen läses noll stall som att bygget aldrig fastnar.
+  const gap = focus.capabilities
+    ? '<div class="callout"><strong>Ej mätbart i det här bygget:</strong> ' +
+      esc(focus.capabilities.note) + "</div>"
+    : "";
+  const body = '<div class="callout"><strong>Regim:</strong> ' + esc(focus.regimeNote || "full") +
+    " · " + comparisonNote + demoNote + "</div>" + note + gap +
+    drillGroups(focus, ref, compare) +
+    '<div class="legend" aria-label="Utfallsklasser"><span><i class="passed"></i>' + term("passed") +
+    '</span><span><i class="slow"></i>' + term("slow") +
+    '</span><span><i class="fell"></i>' + term("fell") + '</span><span><i class="timeout"></i>' +
+    term("timeout") + '</span><span><i class="stall"></i>' + term("stall") +
+    '</span><span><i class="loop"></i>' + term("loop") + '</span><span><i class="detoured"></i>' +
+    term("detoured") + '</span><span><i class="died"></i>' + term("died") + "</span></div>" +
+    '<div class="dash"><div><div class="eyebrow">' + term("dash_100m", "peak u/s (100m)") +
+    " · golv " + fmt(dash.floor) + " u/s</div>" +
+    (dash.place ? '<span class="drill-place">' + esc(dash.place) + "</span>" : "") +
+    '<span class="muted mono">' + (compare ? "referens (" + fmt(refDash.peak) + " u/s)" : "ej jämförd") +
+    '</span></div><div class="dash-verdict">' +
+    (dash.informative || !dash.verdict
+      ? '<span class="regime-chip">informativ</span>'
+      : verdictChip(dash.verdict)) +
+    evidenceLink(dash.evidence, "se hoppet") +
+    '</div><div class="value' + (dashBad ? " bad" : "") + '">' + fmt(dash.peak) +
+    " u/s</div></div>" + sourceNotes(focus);
+  document.getElementById("panel-t1").innerHTML = panelShell("t1", "Enbotsdrillar",
+    "Deterministisk rörelse · " + term("teleport → goto"), body);
+}
+
+const T2_METRICS = [
+  ["quad_takes", "quad tagna"], ["quad_lay_avg", "quad liggtid s"], ["pent_takes", "pent tagna"],
+  ["pent_lay_avg", "pent liggtid s"], ["speed_1s", "snittfart 1 s"], ["speed_100ms", "snittfart 100 ms"],
+  ["still_s_per_bot", "stilla s / bot"],
+  ["stall_firings", "stall-fyrningar"], ["duration_s", "längd s"]
+];
+
+function fmt(value) {
+  if (value == null) return "–";
+  if (typeof value === "number" && !Number.isInteger(value)) return value.toFixed(1);
+  return String(value);
+}
+
+// Ett mätetals bevis kan ligga antingen som ett ögonblick i payloaden eller på
+// den cell som orsakade siffran. Båda matchas på metric-namnet.
+function metricEvidence(item, name) {
+  const pools = [item.moments || [], item.cellEvidence || []];
+  for (const pool of pools) {
+    const hit = pool.find(entry => entry && entry.metric === name);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// Vad bygget bakom en kolumn inte gick att fråga om. Tom mängd är det vanliga.
+function unmeasured(item) {
+  const names = item && item.capabilities ? item.capabilities.unavailable : null;
+  return new Set(Array.isArray(names) ? names : []);
+}
+
+// En siffra som aldrig mättes får inte se ut som en nolla, och inte heller som
+// det tankstreck vi använder för null i payloaden — båda läses som ett mätvärde.
+// Frånvaron avgörs av värdet, inte av deklarationen: ett odeklarerat null är
+// fortfarande en utebliven mätning, och att rita det som "–" vore att låta ett
+// kuvert som saknar sin förklaring se prydligare ut än ett som har den.
+function measurement(item, missing, name) {
+  const value = (item.stats || {})[name];
+  // stall_firings är det enda mätetal som får vara null utan att fältet saknas,
+  // och då är null just "gick inte att mäta" — deklarerat eller ej.
+  if (missing.has(name) || (name === "stall_firings" && value == null)) {
+    const note = item.capabilities ? item.capabilities.note : "utan angivet skäl";
+    return '<b class="unmeasured" title="' + esc(note) + '">ej mätbar</b>';
+  }
+  return "<b>" + fmt(value) + "</b>";
+}
+
+function metricsTable(item, ref) {
+  const sources = item.metricSources || {};
+  const missing = unmeasured(item);
+  const refMissing = unmeasured(ref);
+  return '<div class="metrics-wrap"><table class="metrics"><thead><tr><th>Mätetal</th><th>fokus (referens)</th></tr></thead><tbody>' +
+    T2_METRICS.map(metric => {
+      let label = esc(metric[1]);
+      if (metric[0] === "quad_lay_avg" || metric[0] === "pent_lay_avg") label = term(metric[1], "quad/pent liggtid");
+      if (metric[0] === "speed_1s" || metric[0] === "speed_100ms") label = term(metric[1], "snittfart 1 s / 100 ms");
+      if (metric[0] === "still_s_per_bot" || metric[0] === "stall_firings") label = term(metric[1]);
+      const source = sources[metric[0]]
+        ? '<span class="metric-source">' + esc(metric[0]) + " → " + esc(sources[metric[0]]) + "</span>"
+        : "";
+      const evidence = evidenceLink(metricEvidence(item, metric[0]), "se ögonblicket");
+      // Två kolumner som kunde mäta olika saker är inte jämförbara på just de
+      // mätetalen, hur jämförbara de än är i övrigt.
+      let reference = "";
+      if (ref) {
+        const focusValue = (item.stats || {})[metric[0]];
+        const refValue = (ref.stats || {})[metric[0]];
+        const eitherMissing = missing.has(metric[0]) || refMissing.has(metric[0]) ||
+          (metric[0] === "stall_firings" && (focusValue == null || refValue == null));
+        reference = eitherMissing
+          ? ' <span class="ref">(ej jämförbar)</span>'
+          : ' <span class="ref">(' + fmt(refValue) + ")</span>";
+      }
+      return '<tr><td>' + label + source + '</td><td>' +
+        measurement(item, missing, metric[0]) + reference +
+        (evidence ? '<span class="metric-evidence">' + evidence + "</span>" : "") +
+        "</td></tr>";
+    }).join("") +
+    "</tbody></table></div>";
+}
+
+function mapHtml(level, item) {
+  if (!item.snapshotIds.length) {
+    const missing = unmeasured(item);
+    const blind = missing.has("cells") || missing.has("stall_firings") ||
+      (item.stats || {}).stall_firings == null;
+    const head = blind ? "bygget kan inte mäta stall" : "cells-data saknas";
+    const body = blind
+      ? (item.capabilities ? item.capabilities.note : "inget skäl deklarerat") +
+        " — en tom karta här betyder inte att zonerna saknas."
+      : "Ingen karta ritas utan underlag.";
+    return '<div class="section-title">Kartvy · ' + level.toUpperCase() +
+      '</div><div class="map-placeholder"><div class="map-label"><strong>' + esc(head) +
+      "</strong><span>" + esc(body) + "</span></div></div>";
+  }
+  return '<div class="section-title">Kartvy · ' + level.toUpperCase() + '</div>' +
+    '<div class="mv-frame-wrap"><iframe class="mv-frame" id="mv-frame-' + level +
+    '" title="Interaktiv 3D-kartvy för ' +
+    level.toUpperCase() + '"></iframe></div>';
+}
+
+function renderT2() {
+  const focus = RUNS[focusIndex].levels.t2;
+  const ref = RUNS[refIndex].levels.t2;
+  if (focus.status !== "complete") {
+    document.getElementById("panel-t2").innerHTML = panelShell("t2",
+      term("Pacifist", "pacifist") + "-frispel",
+      "Fyra bottar · inga skott · ren navigationssignal", unavailable(focus));
+    return;
+  }
+  const compare = canCompare("t2", focus, ref);
+  const wholeDemo = evidenceLink(focus.evidence, "se hela demot");
+  const demoName = focus.demo || (focus.evidence ? focus.evidence.demo : null);
+  const demoCallout = wholeDemo || demoName
+    ? '<div class="callout"><strong>Demot:</strong> ' +
+      (demoName ? '<span class="mono">' + esc(demoName) + "</span> " : "") +
+      (wholeDemo || '<span class="muted mono">ingen spelbar länk</span>') + "</div>"
+    : "";
+  // Läsaren måste få veta att en siffra saknas av skäl innan hen jämför
+  // kolumnen med en som mätte.
+  const gap = focus.capabilities
+    ? '<div class="callout"><strong>Ej mätbart i det här bygget:</strong> ' +
+      esc(focus.capabilities.unavailable.join(", ")) + " · " +
+      esc(focus.capabilities.note) + "</div>"
+    : "";
+  const body = demoCallout + gap +
+    '<div class="callout"><strong>Regim:</strong> ' + esc(focus.regimeNote || "full") +
+    " · " + (compare ? "Fokusvärdet står först och jämförbar referens inom parentes." :
+      "Ingen jämförelse görs mot smoke/full eller en icke-komplett run.") +
+    ' “–” betyder null eller saknat fält.</div>' +
+    '<div class="section-title">Mätetal</div>' + metricsTable(focus, compare ? ref : null) +
+    sourceNotes(focus) + mapHtml("t2", focus);
+  document.getElementById("panel-t2").innerHTML = panelShell("t2",
+    term("Pacifist", "pacifist") + "-frispel", "Fyra bottar · inga skott · ren navigationssignal", body);
+}
+
+const T3_METRICS = [
+  ["speed_1s", "snittfart 1 s"], ["still_s_per_bot", "stilla s / bot"],
+  ["stall_firings", "stall-fyrningar"], ["combat_lock_s_per_bot", "combat lock s / bot"]
+];
+
+function sideColumn(title, side, refSide) {
+  return '<div class="metric-column"><h3>' + esc(title) + '</h3>' + T3_METRICS.map(metric => {
+    let label = esc(metric[1]);
+    if (metric[0] === "speed_1s") label = term(metric[1], "snittfart 1 s / 100 ms");
+    if (metric[0] === "still_s_per_bot" || metric[0] === "stall_firings") label = term(metric[1]);
+    if (metric[0] === "combat_lock_s_per_bot") label = term(metric[1], "combat lock");
+    return '<div class="metric-line"><span>' + label + '</span><b>' +
+      (metric[0] === "combat_lock_s_per_bot" && side[metric[0]] == null ? "kommer" :
+        fmt(side[metric[0]]) + (refSide ? ' <span class="muted">(' + fmt(refSide[metric[0]]) + ")</span>" : "")) +
+      "</b></div>";
+  }).join("") + "</div>";
+}
+
+// Hubbens spelsida, kolumn för kolumn ur dess egen källa
+// (vikpe/servers.qwlan.pl, DemoStats.tsx). Lagläge lägger till Team, TKs och
+// EWEP och tar bort S.Frags; teamplay lägger till Q/P/R. Vi kör alltid lagläge,
+// så listan nedan är den mallen — inte 1on1-mallen.
+const SCOREBOARD_COLUMNS = [
+  ["efficiency", "Eff", "%"], ["kills", "Kills"], ["deaths", "Deaths"],
+  ["suicides", "Bores"], ["tk", "TKs"],
+  ["dmg_given", "Given"], ["dmg_taken", "Taken"], ["dmg_enemy_weapons", "EWEP"],
+  ["taken_to_die", "To Die"],
+  ["ga", "GA"], ["ya", "YA"], ["ra", "RA"], ["mh", "MH"],
+  ["sg_acc", "SG%", "%"], ["lg_acc", "LG%", "%"], ["rl_direct", "RL#"],
+  ["quad", "Q"], ["pent", "P"], ["ring", "R"]
+];
+
+const SCOREBOARD_TITLES = {
+  "Eff": "Andelen av spelarens dueller som slutade med en frag: kills delat med kills plus deaths.",
+  "Bores": "Självmord.",
+  "TKs": "Frags på egna lagkamrater.",
+  "EWEP": "Skada gjord på fiendens vapen.",
+  "To Die": "Skada spelaren tålde i snitt per död.",
+  "GA": "Gröna rustningar tagna.", "YA": "Gula rustningar tagna.",
+  "RA": "Röda rustningar tagna.", "MH": "Megahealth tagna.",
+  "SG%": "Träffprocent med hagelbössan.", "LG%": "Träffprocent med blixtgeväret.",
+  "RL#": "Direktträffar med raketgeväret.",
+  "Q": "Quad tagna.", "P": "Pentagram tagna.", "R": "Ring tagna."
+};
+
+// QuakeWorlds spelarfärger, som hubben ritar dem i fragrutan.
+const QW_COLORS = ["#fff", "#8f5b2a", "#7a1a1a", "#1a4d7a", "#c8b400", "#8f2ac8",
+  "#e05b00", "#e0e0e0", "#7a3ac8", "#c800c8", "#00a0a0", "#00a000",
+  "#e0c800", "#2a5be0", "#e08000", "#e02020"];
+const qwColor = index => QW_COLORS[(index | 0) % 16] || "#666";
+
+function scoreCell(value, suffix) {
+  if (value == null) return "–";
+  return fmt(value) + (suffix || "");
+}
+
+// Fragrutan: siffran mot spelarens skjort- och byxfärg, som på hubben.
+function fragBox(line) {
+  const top = line.top_color == null ? null : qwColor(line.top_color);
+  const bottom = line.bottom_color == null ? null : qwColor(line.bottom_color);
+  const style = top && bottom
+    ? ' style="background:linear-gradient(180deg,' + top + ' 0 50%,' + bottom + ' 50% 100%)"'
+    : "";
+  return '<span class="mc-frags"' + style + ">" + fmt(line.frags) + "</span>";
+}
+
+function scoreRow(line, kind, label) {
+  return '<tr class="mc-row ' + kind + '"><td class="mc-fragcell">' + fragBox(line) +
+    '</td><td class="mc-teamcell">' + esc(line.team || line.name || "–") + "</td>" +
+    '<td class="mc-namecell">' + label + "</td>" +
+    SCOREBOARD_COLUMNS.map(column =>
+      "<td>" + scoreCell(line[column[0]], column[2]) + "</td>").join("") +
+    "</tr>";
+}
+
+// Matchkortet som hubbens spelsida: rubrikraden med läge, lag och karta, sedan
+// lagraderna och därefter spelarna — samma ordning, samma kolumner.
+function scoreboardCard(card) {
+  if (!card) return "";
+  const teams = Array.isArray(card.teams) ? card.teams : [];
+  const best = teams.reduce(
+    (top, team) => (team.frags != null && (top == null || team.frags > top) ? team.frags : top),
+    null);
+  const title = (teams.length
+    ? (card.mode ? esc(card.mode) + " " : "") +
+      teams.map(team => esc(team.name)).join(" vs ")
+    : "matchen") + (card.map ? " [" + esc(card.map) + "]" : "");
+  const subtitle = [
+    card.date ? esc(card.date) : null,
+    card.hostname ? "på " + esc(card.hostname) : null,
+    card.duration_s != null ? fmt(card.duration_s) + " s" : null
+  ].filter(Boolean).join(" · ");
+
+  const order = {};
+  teams.forEach((team, index) => { order[team.name] = index; });
+  const players = (Array.isArray(card.players) ? card.players.slice() : []).sort((a, b) => {
+    const teamA = order[a.team] == null ? 99 : order[a.team];
+    const teamB = order[b.team] == null ? 99 : order[b.team];
+    if (teamA !== teamB) return teamA - teamB;
+    return (b.frags == null ? -1e9 : b.frags) - (a.frags == null ? -1e9 : a.frags);
+  });
+
+  const teamRows = teams.map(team =>
+    scoreRow({ ...team, team: team.name },
+      "team" + (best != null && team.frags === best ? " winner" : ""),
+      "<b>" + esc(team.name) + "</b>")).join("");
+  const playerRows = players.length
+    ? players.map(player => scoreRow(player, order[player.team] === 0 ? "a" : "b",
+        linkTag(player.link, player.name, "Öppnar POV för " + player.name, "mc-player") ||
+          esc(player.name))).join("")
+    : '<tr><td colspan="' + (SCOREBOARD_COLUMNS.length + 3) +
+      '" class="muted">Inga spelarrader i kortet.</td></tr>';
+
+  const meta = [];
+  if (card.demo) meta.push("<span>demo " + esc(card.demo) + "</span>");
+  if (card.source) meta.push("<span>källa → " + esc(card.source) + "</span>");
+  const whole = linkTag(card.link, "se hela matchen", "Öppnar demospelaren i ny flik", "evidence-link");
+  if (whole) meta.push(whole);
+
+  return '<div class="matchcard"><div class="mc-title">' + title + "</div>" +
+    (subtitle ? '<div class="mc-sub">' + subtitle + "</div>" : "") +
+    '<div class="mc-wrap"><table class="mc-table"><thead><tr>' +
+    "<th>Frags</th><th>Team</th><th>Name</th>" +
+    SCOREBOARD_COLUMNS.map(column =>
+      "<th>" + (SCOREBOARD_TITLES[column[1]]
+        ? '<span class="term" title="' + esc(SCOREBOARD_TITLES[column[1]]) + '">' + esc(column[1]) + "</span>"
+        : esc(column[1])) + "</th>").join("") +
+    "</tr></thead><tbody>" + teamRows +
+    (teamRows ? '<tr class="mc-gap"><td colspan="' + (SCOREBOARD_COLUMNS.length + 3) + '"></td></tr>' : "") +
+    playerRows + "</tbody></table></div>" +
+    (meta.length ? '<div class="mc-meta">' + meta.join("") + "</div>" : "") + "</div>";
+}
+
+function renderT3() {
+  const focusRun = RUNS[focusIndex], refRun = RUNS[refIndex];
+  const focus = focusRun.levels.t3, ref = refRun.levels.t3;
+  if (focus.status !== "complete") {
+    document.getElementById("panel-t3").innerHTML = panelShell("t3", "Gren mot main",
+      "4 mot 4 på DM3 · skott på · fem minuter", unavailable(focus));
+    return;
+  }
+  if (focus.kind === "aggregate") {
+    const replicateCount = focus.aggregate && Array.isArray(focus.aggregate.replicates)
+      ? focus.aggregate.replicates.length : 0;
+    const body = '<div class="big-verdict ' + verdictClass(focus.verdict) +
+      '"><div class="word">' + esc(focus.verdict) +
+      '</div><div class="sub">T3-agg · kvalitetsverdikt över ' + replicateCount +
+      " replikat med sid-/spawnväxling.</div></div>" + sourceNotes(focus);
+    document.getElementById("panel-t3").innerHTML = panelShell("t3", "Gren mot main · aggregat",
+      "PASS/FAIL ges endast av T3-agg", body);
+    return;
+  }
+  const compare = canCompare("t3", focus, ref) && ref.kind === "pipeline";
+  const diff = focus.score.branch != null && focus.score.main != null
+    ? focus.score.branch - focus.score.main : null;
+  const refDiff = compare && ref.score.branch != null && ref.score.main != null
+    ? ref.score.branch - ref.score.main : null;
+  const sign = value => value == null ? "–" : value > 0 ? "+" + value : String(value).replace("-", "−");
+  const body =
+    '<div class="scoreboard"><div class="team"><div class="name">' + esc(focusRun.branch) +
+    ' · gren</div><div class="score">' + fmt(focus.score.branch) + '</div></div><div class="score-diff"><strong style="color:var(--' +
+    (diff != null && diff >= 0 ? "good" : "bad") + ')">' + sign(diff) + "</strong><span>" + term("fragdiff") +
+    '</span></div><div class="team"><div class="name">main</div><div class="score">' +
+    fmt(focus.score.main) + '</div></div></div><div class="score-ref">' +
+    (compare ? "referens (" + fmt(ref.score.branch) + " – " + fmt(ref.score.main) +
+      " · diff " + sign(refDiff) + ")" : "singelmatch · ingen kvalitetsjämförelse") + "</div>" +
+    (focus.scoreboard
+      ? '<div class="section-title">' + term("Matchkort", "matchkort") + "</div>" +
+        scoreboardCard(focus.scoreboard)
+      : "") +
+    '<div class="section-title">Mätetal per sida' + (compare ? " · fokus (referens)" : "") +
+    '</div><div class="side-metrics">' +
+    sideColumn(focusRun.branch, focus.sides.branch, compare ? ref.sides.branch : null) +
+    sideColumn("main", focus.sides.main, compare ? ref.sides.main : null) + "</div>" +
+    '<div class="callout" style="margin-top:12px"><strong>' + term("combat lock") +
+    ".</strong> “kommer” betyder att " + term("MVD-demo") + " inte analyserats.</div>" +
+    sourceNotes(focus) + mapHtml("t3", focus);
+  document.getElementById("panel-t3").innerHTML = panelShell("t3", "Gren mot main", "4 mot 4 på DM3 · skott på · fem minuter", body);
+}
+
+function rungHtml(rung, reference) {
+  const stateText = rung.state === "won" ? "vinst" : rung.state === "lost" ? "förlust" :
+    rung.state === "draw" ? "oavgjort" : "ospelad";
+  const score = rung.state === "unplayed" ? "—" : rung.for + "–" + rung.against;
+  return '<div class="rung ' + rung.state + '"><div class="skill">' +
+    (reference ? "(" + rung.skill + ")" : rung.skill) + '</div><div class="state">' +
+    (reference ? "(" + stateText + ")" : stateText) + '</div><div class="score">' +
+    (reference ? "(" + score + ")" : score) + "</div></div>";
+}
+
+function renderT4() {
+  const focus = RUNS[focusIndex].levels.t4;
+  const ref = RUNS[refIndex].levels.t4;
+  if (focus.status !== "complete") {
+    document.getElementById("panel-t4").innerHTML = panelShell("t4",
+      term("Frogbot", "frogbots") + "-stegen",
+      "Fem minuter per match · vinst går vidare", unavailable(focus));
+    return;
+  }
+  const compare = canCompare("t4", focus, ref);
+  const played = focus.rungs.filter(rung => rung.state !== "unplayed");
+  const cards = played.filter(rung => rung.scoreboard).map(rung =>
+    '<details class="rung-card"><summary>skill ' + esc(rung.skill) + " · " +
+    fmt(rung["for"]) + "–" + fmt(rung.against) + " · matchkort</summary>" +
+    scoreboardCard(rung.scoreboard) + "</details>"
+  ).join("");
+  const missing = played.filter(rung => !rung.scoreboard).map(rung => "skill " + rung.skill);
+  const cardBlock = played.length
+    ? '<div class="section-title">' + term("Matchkort", "matchkort") + " per stegpinne</div>" + cards +
+      (missing.length
+        ? '<div class="historical">Utan matchkort: ' + esc(missing.join(", ")) + ".</div>"
+        : "")
+    : "";
+  const body =
+    '<div class="reached">nådde skill <span>' + fmt(focus.reached) + '</span></div>' +
+    '<div class="reached-ref">' +
+    (compare ? "referens (nådde skill " + fmt(ref.reached) + ")" : "ingen jämförbar referens") + "</div>" +
+    '<div class="ladder-block"><div class="ladder-label">Fokus · stegen stoppar vid första förlust</div><div class="ladder">' +
+    focus.rungs.map(rung => rungHtml(rung, false)).join("") + "</div></div>" +
+    (compare ? '<div class="ladder-block"><div class="ladder-label">(Referens)</div><div class="ladder">' +
+      ref.rungs.map(rung => rungHtml(rung, true)).join("") + "</div></div>" : "") +
+    cardBlock + sourceNotes(focus);
+  document.getElementById("panel-t4").innerHTML = panelShell("t4",
+    term("Frogbot", "frogbots") + "-stegen", "Fem minuter per match · vinst går vidare", body);
+}
+
+function renderExplanations() {
+  const body =
+    '<div class="callout"><strong>Flödesprincip:</strong> ett bygge går vidare till nästa nivå först när föregående grind är klar, och värden jämförs aldrig mellan nivåer.</div>' +
+    '<div class="explanations" style="margin-top:18px">' +
+      '<section class="explanation-level"><h3>T0 — Byggnadsgrind</h3><p>Nanos ' +
+      term("cargo-tester", "cargo test") + ' (~400 st) körs vid varje bygge, före deploy. Logiktester per delsystem: ' +
+      'combat 58 (stridsbeslut), bhop 29 (bunnyhopfysik mot korpus — enda kvalitetsgolvet: 795 u/s), ' +
+      'navmesh 42 (cellgraf/geometri), hazard 23 (farozoner), goals 20 (målval), nearfield 19 ' +
+      '(närfältsmanöver), oracle 16 (offline-rörelseoraklet), model 13 (världsmodell), grenade 13 ' +
+      '(granatbanor), nätklient ~80 (protokoll). Fotnot: beskrivningarna per modul är härledda ur ' +
+      'modulnamnen i repot; de exakta testfallen finns i rtx-repots testkatalog. ' +
+      'Grinden svarar på: "är logiken hel?" — inte "spelar botten bra?".</p></section>' +
+      '<section class="explanation-level"><h3>T1 — Enbotsdrillar</h3><p>Deterministiska drillar på DM3 med ' +
+      term("teleport → goto") + ', en bot, ~8 min totalt:</p><ul>' +
+      '<li><strong>ra_klattring</strong> (10/10): från golvet vid RA-trappan upp till RA-plattformen på höjd 328. ' +
+      'Fallvakt: har botten nått över höjd 140 och sedan hamnar under 70 räknas försöket som fall.</li>' +
+      '<li><strong>sng_mega</strong> (≥8/10): från SNG-spawnen till mega. Testar ruttvalet över hyllan.</li>' +
+      '<li><strong>hexagon_sod_tur</strong> (≥9/10): hexagonhoppet, södra vägen tur — över gropen med planterad ' +
+      'SpeedJump-länk. Omväg runt (' + term("detoured") + ') eller fall i gropen underkänns.</li>' +
+      '<li><strong>cell_724_503</strong> och <strong>cell_503_194</strong> (10/10 vardera): cellövergångarna på SNG-hyllan ' +
+      'respektive vidare mot mega — Nanos mergekriterier.</li>' +
+      '<li><strong>dash_100m</strong> (golv 800 u/s): kartbyte till 100m, två raka dashar, bästa peak. ' +
+      'En graderad dash bär ett eget verdikt som räknas in i T1-domen; en informativ dash visas bara.</li>' +
+      '</ul><p style="margin-top:9px">Svarar på: "klarar botten de svåra passagerna isolerat?"</p></section>' +
+      '<section class="explanation-level"><h3>T2 — Pacifist-frispel</h3><p>Fyra bottar, inga skott, DM3. ' +
+      'Mäter ren navigation: quad-/pent-tagningar och liggtider, snittfart (1 s- och 100 ms-fönster), ' +
+      'stilla-tid per bot, ' + term("stall-fyrningar") + ' per orsak och var på kartan de sker (3D-kartvyn). ' +
+      'Svarar på: "flyter navigationen i samspel, utan stridsbrus?"</p></section>' +
+      '<section class="explanation-level"><h3>T3 — Gren mot main</h3><p>Fyra bottar från testgrenen mot fyra från main, ' +
+      'DM3, skott på, fem minuter. Två byggen (rtx-client-seats mot servern). Mäter frags och ' +
+      term("fragdiff") + ', per sida: snittfart, stilla-tid, stall-fyrningar; ' + term("combat lock") +
+      ' när MVD-inspelningen är verifierad. Svarar på: "är grenen bättre än main när allt är på?"</p></section>' +
+      '<section class="explanation-level"><h3>T4 — Frogbot-stegen</h3><p>Fyra bottar från testgrenen mot fyra ' +
+      term("frogbots") + ', fem minuter per match. Start på skill 10; vinst ger ny match mot 12, sedan 14, 16, 18, 20. ' +
+      'Första förlust stoppar stegen. Huvudmått: högsta besegrade skill (0 vid förlust direkt på 10). ' +
+      'Svarar på: "hur stark är grenen mot en extern, graderad referens?" — det bästa enskilda jämförelsetalet mellan grenar.</p></section>' +
+    "</div>";
+  document.getElementById("panel-explanations").innerHTML =
+    '<div class="panel-head"><div><div class="eyebrow">Dokumentation · inte ett teststeg</div>' +
+    '<h2>Förklaringar</h2><p>Vad som konkret testas på varje nivå.</p></div></div>' +
+    '<div class="panel-body">' + body + "</div>";
+}
+
+function renderPanels() {
+  renderT0(); renderT1(); renderT2(); renderT3(); renderT4(); renderExplanations();
+  LEVELS.forEach(level => {
+    const panel = document.getElementById("panel-" + level.id);
+    const active = level.id === activeLevel;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+    panel.tabIndex = active ? -1 : 0;
+  });
+  const explanations = document.getElementById("panel-explanations");
+  const explanationsActive = activeLevel === "explanations";
+  explanations.classList.toggle("active", explanationsActive);
+  explanations.hidden = !explanationsActive;
+  explanations.tabIndex = explanationsActive ? -1 : 0;
+  hydrateMap();
+}
+
+function mapState() {
+  const level = activeLevel;
+  const focus = RUNS[focusIndex].levels[level];
+  const ref = RUNS[refIndex].levels[level];
+  let refSnapshot = null;
+  if (level === "t3" && focus.snapshotIds.length > 1) {
+    refSnapshot = focus.snapshotIds[1];
+  } else if (canCompare(level, focus, ref) && ref.snapshotIds.length) {
+    refSnapshot = ref.snapshotIds[0];
+  }
+  return {
+    type: "proposal-map-state",
+    regime: level.toUpperCase(),
+    focusSnapshot: focus.snapshotIds[0] || null,
+    refSnapshot: refSnapshot,
+    theme: activeTheme
+  };
+}
+
+function sendMapState() {
+  const frame = document.querySelector("#panel-" + activeLevel + " .mv-frame");
+  if (frame && frame.contentWindow) frame.contentWindow.postMessage(mapState(), "*");
+}
+
+function hydrateMap() {
+  if (!["t2", "t3"].includes(activeLevel)) return;
+  const frame = document.querySelector("#panel-" + activeLevel + " .mv-frame");
+  if (!frame) return;
+  frame.addEventListener("load", sendMapState, { once: true });
+  frame.srcdoc = MAP_VIEW_HTML;
+}
+
+function renderAll() {
+  renderStepper();
+  renderRunControls();
+  renderPanels();
+}
+
+document.getElementById("focus-select").addEventListener("change", event => {
+  focusIndex = Number(event.target.value);
+  if (!refOff && RUNS.length > 1 && focusIndex === refIndex) refIndex = focusIndex === 0 ? 1 : 0;
+  renderAll();
+});
+
+document.getElementById("ref-select").addEventListener("change", event => {
+  refOff = event.target.value === "";
+  if (refOff) return renderAll();
+  refIndex = Number(event.target.value);
+  if (RUNS.length > 1 && refIndex === focusIndex) focusIndex = refIndex === 0 ? 1 : 0;
+  renderAll();
+});
+
+// Rensa fokus = tillbaka till den senaste körningen, som vid sidladdning.
+document.getElementById("focus-clear").addEventListener("click", () => {
+  focusIndex = 0;
+  if (!refOff && RUNS.length > 1 && refIndex === 0) refIndex = 1;
+  renderAll();
+});
+
+// Rensa referens = ingen jämförelse alls, inte en annan körning.
+document.getElementById("ref-clear").addEventListener("click", () => {
+  refOff = true;
+  renderAll();
+});
+
+const themeButton = document.getElementById("theme-toggle");
+const themes = ["system", "light", "dark"];
+const themeStorageKey = "rtx-testflow-theme";
+let activeTheme = "system";
+
+try {
+  const storedTheme = localStorage.getItem(themeStorageKey);
+  if (themes.includes(storedTheme)) activeTheme = storedTheme;
+} catch (error) {
+  // Lagring kan vara blockerad; systemläget är en säker fallback.
+}
+
+function applyTheme(theme) {
+  if (theme === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", theme);
+  themeButton.textContent = "tema: " + theme;
+  themeButton.setAttribute("aria-label", "Byt färgtema. Aktivt läge: " + theme);
+  sendMapState();
+}
+
+applyTheme(activeTheme);
+
+themeButton.addEventListener("click", () => {
+  activeTheme = themes[(themes.indexOf(activeTheme) + 1) % themes.length];
+  applyTheme(activeTheme);
+  try {
+    localStorage.setItem(themeStorageKey, activeTheme);
+  } catch (error) {
+    // Temat fungerar under sessionen även när lagring inte är tillgänglig.
+  }
+});
+
+renderAll();
+</script>

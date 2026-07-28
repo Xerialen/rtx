@@ -1,0 +1,23 @@
+schema = "rtx-scenario/1"
+name = "hex_ratop_to_ssg"
+map = "dm3"
+kind = "goto"
+category = "grunddrill"
+place = "RA → YA"
+description = "(hex)ratop-to-ssg: anchored on the owner's own run of the route (7.08 s, peak 715 u/s, ending at ssg@YA). The bot has to arrive within 7.93 s to pass."
+
+[run]
+# Anchors and reference time come from (hex)ratop-to-ssg.qwd via the owner's route
+# manifest (see scenarios/dm3/routes-v1.json).
+start = [263.6, -691.6, 328.0]
+target = [1797.4, -647.8, -24.0]
+attempts = 5
+timeout_s = 28
+pause_s = 1.0
+arrive_box = 70
+regoto_max = 6
+
+[threshold]
+required = 4
+reference_time_s = 7.08
+max_time_s = 7.93

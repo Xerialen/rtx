@@ -1,0 +1,27 @@
+{
+  "schema": "rtx-testflow/1",
+  "run_id": "t1-20260727T130000Z-eeeeeeee",
+  "tier": "T1",
+  "status": "failed",
+  "started_utc": "2026-07-27T13:00:00Z",
+  "ended_utc": "2026-07-27T13:00:05Z",
+  "map": "dm3",
+  "build": {
+    "branch": "failed-run",
+    "commit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "digest_md5": "eeeeffff",
+    "dirty": false
+  },
+  "config_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "runner_version": "0.1.0",
+  "provenance": "measured",
+  "error": "control channel closed",
+  "payload": {
+    "scenarios": [
+      {
+        "name": "partial-must-not-render",
+        "attempts": [{"status": "passed", "time_s": 1.0}]
+      }
+    ]
+  }
+}

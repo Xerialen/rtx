@@ -1,0 +1,23 @@
+schema = "rtx-scenario/1"
+name = "ring_to_rl"
+map = "dm3"
+kind = "goto"
+category = "grunddrill"
+place = "ring → RL"
+description = "ring-to-rl: anchored on the owner's own run of the route (5.80 s, peak 689 u/s, ending at rl@RL). The bot has to arrive within 6.50 s to pass."
+
+[run]
+# Anchors and reference time come from ring-to-rl.qwd via the owner's route
+# manifest (see scenarios/dm3/routes-v1.json).
+start = [188.1, -44.9, 56.0]
+target = [1488.0, 513.9, -88.0]
+attempts = 5
+timeout_s = 24
+pause_s = 1.0
+arrive_box = 70
+regoto_max = 6
+
+[threshold]
+required = 4
+reference_time_s = 5.8
+max_time_s = 6.5

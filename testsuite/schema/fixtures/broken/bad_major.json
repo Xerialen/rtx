@@ -1,0 +1,19 @@
+{
+  "schema": "rtx-testflow/2",
+  "run_id": "t0-20260727T190000Z-11111111",
+  "tier": "T0",
+  "status": "complete",
+  "started_utc": "2026-07-27T19:00:00Z",
+  "ended_utc": "2026-07-27T19:00:01Z",
+  "map": "n/a",
+  "build": {"branch": "testsuite", "commit": "1111111111111111111111111111111111111111", "digest_md5": null, "dirty": false},
+  "config_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runner_version": "0.1.0",
+  "provenance": "synthetic",
+  "payload": {
+    "modules": [{"name": "combat", "tests": 1, "passed": 1}],
+    "total": {"tests": 1, "passed": 1},
+    "quality_floors": [],
+    "verdict": "PASS"
+  }
+}

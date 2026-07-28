@@ -417,9 +417,13 @@ impl Client {
             };
             let session = match self.config.proto {
                 Protocol::Qw => {
-                    // The qport identifies us across a NAT rebinding, so a squad needs distinct ones.
-                    // Real clients randomize; deriving them keeps a capture readable.
-                    let qport = 0x4000u16.wrapping_add(i as u16);
+                    // The qport identifies us across a NAT rebinding, so a squad needs distinct
+                    // ones — and two *processes* on one machine (a branch squad vs a reference
+                    // squad in a testsuite match) must not collide either, or the server reads the
+                    // second connect as the first client rebinding. Real clients randomize; mixing
+                    // in the pid keeps captures readable per process while separating processes.
+                    let pid_hash = (std::process::id().wrapping_mul(2_654_435_761) >> 16) as u16;
+                    let qport = (0x4000u16 | (pid_hash & 0x3ff8)).wrapping_add(i as u16);
                     AnySession::Qw(Session::connect(
                         self.config.server,
                         ui,

@@ -1,0 +1,83 @@
+# rtx-testflow runner configuration — copy to config.toml and edit.
+# EVERYTHING environment-specific lives here; the code has no baked-in paths.
+schema = "rtx-testflow-config/1"
+
+[server]
+host = "127.0.0.1"
+control_port = 27980        # rtx control channel (game port + 450 by our convention)
+protocol = "auto"           # auto | msgpack | text
+
+[paths]
+evidence_dir = "evidence"   # where result JSON lands (absolute or repo-relative)
+demos_dir = "evidence/demos"
+
+[build]
+# How the runner identifies the engine build it is testing.
+# commit/dirty come from this repo checkout; the binary digest comes from the
+# server's status reply when it exposes one, else from hashing engine_binary.
+# Leave engine_binary empty only if the server reports its own digest —
+# evidence without a binary digest cannot be tied to what actually ran.
+repo_dir = "."
+engine_binary = ""          # e.g. ~/.local/share/qw-fasttrack/runtime/qw/qwprogs.so
+
+[t2]
+duration_s = 600            # acceptance regime; anything else is stamped in regime_note
+
+[t3]
+duration_s = 300            # MUST equal the match server's usermode timelimit * 60
+reference_client = ""       # path to the reference (main) rtx-client build - REQUIRED for t3
+branch_client = ""          # path to the branch-under-test rtx-client build - REQUIRED for t3
+seats_per_side = 4          # server default usermode must be <n>on<n> for this n
+match_server = "127.0.0.1:27700"  # dedicated mvdsv+KTX instance, idle in Standby
+basedir = ""                # quake basedir passed to both rtx-client processes
+control_port_base = 28100   # branch client control port; reference uses base+1
+reference_branch = "main"   # what the reference client was built from (operator claim)
+reference_commit = ""       # full 40-char commit of the reference build - REQUIRED for t3
+demoinfo_dir = ""           # KTX demo dir (demoinfo *.txt + MVD); empty = client-status oracle
+# Optional on-demand rig lifecycle: rig_up_cmd runs (shell, must succeed)
+# before the preflight, rig_down_cmd runs best-effort after the run - so the
+# match server only exists while a run needs it. Empty/absent = operator-managed.
+# rig_up_cmd = "systemctl --user start rtx-t3-server rtx-t3-hub rtx-t3-qtvtunnel"
+# rig_down_cmd = "systemctl --user stop rtx-t3-server rtx-t3-hub rtx-t3-qtvtunnel"
+# rig_boot_wait_s = 5       # boot grace between rig_up_cmd and the preflight
+
+[t4]
+duration_s = 300            # MUST equal the frogbot server's usermode timelimit * 60
+skills = [10, 12, 14, 16, 18, 20]
+frogbot_server = ""         # host:port of the KTX+frogbots server - REQUIRED for t4
+control_port = 28110        # control port for the branch client process
+demoinfo_dir = ""           # the frogbot server's demo dir - REQUIRED (score oracle)
+# rig_up_cmd / rig_down_cmd / rig_boot_wait_s work exactly as in [t3].
+
+[restore]
+# The rig's idle state, restored after every run (and on abort). Required when
+# the engine's status reply does not expose current cvar values (the current
+# control protocol does not), since the runner then cannot snapshot them.
+rtx_telemetry = "0"
+rtx_bot_pacifist = "1"
+rtx_bot_count = "0"
+
+[tools]
+qw_analyze = ""             # path to qw-analyze binary (combat lock); empty = combat_lock skipped
+
+# Optional: run the same tiers against several builds, one at a time.
+#   python3 testflow.py sweep
+# The sweep refuses to start while any target's checkout has uncommitted
+# changes, because build identity is captured when a run starts — a tree that
+# moves mid-sweep splits its own column across two build ids.
+[sweep]
+deploy_to = "/home/you/.local/share/qw-fasttrack/runtime/qw/qwprogs.so"
+restart_cmd = "systemctl --user restart fasttrack-server"
+boot_wait_s = 20
+tiers = ["t1", "t2"]        # default for targets that do not say otherwise
+restore = "branch"          # whose library goes back on the rig afterwards
+
+[[sweep.target]]
+label = "branch"
+config = "config.toml"
+library = "target/release/librtx.so"
+
+[[sweep.target]]
+label = "main"
+config = "config-main.toml"
+library = "/home/you/projects/rtx/target/release/librtx.so"

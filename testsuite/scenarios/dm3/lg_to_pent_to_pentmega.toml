@@ -1,0 +1,23 @@
+schema = "rtx-scenario/1"
+name = "lg_to_pent_to_pentmega"
+map = "dm3"
+kind = "goto"
+category = "grunddrill"
+place = "water LG → pent"
+description = "lg-to-pent-to-pentmega: anchored on the owner's own run of the route (10.65 s, peak 586 u/s, ending at mh@Pent). The bot has to arrive within 11.93 s to pass."
+
+[run]
+# Anchors and reference time come from lg-to-pent-to-pentmega.qwd via the owner's route
+# manifest (see scenarios/dm3/routes-v1.json).
+start = [1551.1, -194.1, -392.0]
+target = [1865.8, 631.2, -180.0]
+attempts = 5
+timeout_s = 40
+pause_s = 1.0
+arrive_box = 70
+regoto_max = 6
+
+[threshold]
+required = 4
+reference_time_s = 10.65
+max_time_s = 11.93

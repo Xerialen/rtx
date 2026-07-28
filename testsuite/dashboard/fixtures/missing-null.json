@@ -1,0 +1,37 @@
+{
+  "schema": "rtx-testflow/1",
+  "run_id": "t2-20260727T110000Z-cccccccc",
+  "tier": "T2",
+  "status": "complete",
+  "started_utc": "2026-07-27T11:00:00Z",
+  "ended_utc": "2026-07-27T11:01:00Z",
+  "map": "dm3",
+  "build": {
+    "branch": "null-fields",
+    "commit": "cccccccccccccccccccccccccccccccccccccccc",
+    "digest_md5": "ccccdddd",
+    "dirty": false
+  },
+  "config_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "runner_version": "0.1.0",
+  "provenance": "measured",
+  "payload": {
+    "duration_s": 60,
+    "regime_note": "smoke",
+    "stats": {
+      "quad_takes": 0,
+      "quad_lay_avg": null,
+      "pent_takes": 0,
+      "pent_lay_avg": null,
+      "speed_1s": null,
+      "speed_100ms": null,
+      "still_s_per_bot": null,
+      "stall_firings": 0,
+      "polls": 0,
+      "bots": 4,
+      "peak_100m": null
+    },
+    "cells": [],
+    "verdict": "MEASURED"
+  }
+}

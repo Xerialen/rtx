@@ -1,0 +1,40 @@
+{
+  "schema": "rtx-testflow/1",
+  "run_id": "t1-20260727T100100Z-aaaaaaaa",
+  "tier": "T1",
+  "status": "complete",
+  "started_utc": "2026-07-27T10:01:00Z",
+  "ended_utc": "2026-07-27T10:09:00Z",
+  "map": "dm3",
+  "build": {
+    "branch": "golden-complete",
+    "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "digest_md5": "aaaabbbb",
+    "dirty": false
+  },
+  "config_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runner_version": "0.1.0",
+  "provenance": "synthetic",
+  "payload": {
+    "regime_note": null,
+    "scenarios": [
+      {
+        "name": "ra_climb",
+        "attempts": [
+          {"status": "passed", "time_s": 5.37},
+          {"status": "fell", "time_s": null}
+        ],
+        "threshold": {"required": 1, "of": 2},
+        "passed": 1,
+        "verdict": "PASS"
+      }
+    ],
+    "dash": {
+      "peaks": [806, 812],
+      "peak": 812,
+      "floor": 800,
+      "informative": true
+    },
+    "verdict": "PASS"
+  }
+}

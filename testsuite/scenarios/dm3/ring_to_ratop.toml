@@ -1,0 +1,23 @@
+schema = "rtx-scenario/1"
+name = "ring_to_ratop"
+map = "dm3"
+kind = "goto"
+category = "grunddrill"
+place = "RA ingången → RA"
+description = "ring-to-ratop: anchored on the owner's own run of the route (7.52 s, peak 527 u/s, ending at ra@RA). The bot has to arrive within 8.42 s to pass."
+
+[run]
+# Anchors and reference time come from ring-to-ratop.qwd via the owner's route
+# manifest (see scenarios/dm3/routes-v1.json).
+start = [494.2, -384.6, 56.0]
+target = [241.5, -698.4, 328.0]
+attempts = 5
+timeout_s = 30
+pause_s = 1.0
+arrive_box = 70
+regoto_max = 6
+
+[threshold]
+required = 4
+reference_time_s = 7.52
+max_time_s = 8.42

@@ -1,0 +1,75 @@
+{
+ "schema": "rtx-testflow/1",
+ "run_id": "t2-20260727T151000Z-12121212",
+ "tier": "T2",
+ "status": "complete",
+ "started_utc": "2026-07-27T15:10:00Z",
+ "ended_utc": "2026-07-27T15:10:00Z",
+ "map": "dm3",
+ "build": {
+  "branch": "evidence-rich",
+  "commit": "1212121212121212121212121212121212121212",
+  "digest_md5": "12341234",
+  "dirty": false
+ },
+ "config_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+ "runner_version": "0.1.0",
+ "provenance": "synthetic",
+ "payload": {
+  "duration_s": 600,
+  "regime_note": null,
+  "stats": {
+   "quad_takes": 4,
+   "quad_lay_avg": 8.1,
+   "pent_takes": 1,
+   "pent_lay_avg": 2.5,
+   "speed_1s": 182.0,
+   "speed_100ms": 182.4,
+   "still_s_per_bot": 226.6,
+   "stall_firings": 2,
+   "polls": 5996,
+   "bots": 4
+  },
+  "cells": [
+   {
+    "id": "m4569",
+    "pos": [
+     1984,
+     -288,
+     -72
+    ],
+    "n": 2,
+    "reasons": {
+     "displacement": 2
+    },
+    "links": {},
+    "evidence": {
+     "demo": "t2-20260727T200000Z-11111111.mvd",
+     "metric": "stall_firings",
+     "at_s": 120.5,
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft2-20260727T200000Z-11111111.mvd&map=dm3&duration=600&from=117.5"
+    }
+   }
+  ],
+  "verdict": "MEASURED",
+  "demo": "t2-20260727T200000Z-11111111.mvd",
+  "evidence": {
+   "demo": "t2-20260727T200000Z-11111111.mvd",
+   "at_s": 0.0,
+   "link": "/demo-player/?demoUrl=%2Fdemos%2Ft2-20260727T200000Z-11111111.mvd&map=dm3&duration=600&from=0.0"
+  },
+  "sources": {
+   "quad_takes": "qw-analyze/items",
+   "quad_lay_avg": "qw-analyze/items"
+  },
+  "moments": [
+   {
+    "demo": "t2-20260727T200000Z-11111111.mvd",
+    "metric": "quad_takes",
+    "at_s": 33.2,
+    "who": "bot.ref1",
+    "link": "/demo-player/?demoUrl=%2Fdemos%2Ft2-20260727T200000Z-11111111.mvd&map=dm3&duration=600&from=30.2&track=5"
+   }
+  ]
+ }
+}

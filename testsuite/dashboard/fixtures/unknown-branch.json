@@ -1,0 +1,25 @@
+{
+  "schema": "rtx-testflow/1",
+  "run_id": "t0-20260727T120000Z-dddddddd",
+  "tier": "T0",
+  "status": "complete",
+  "started_utc": "2026-07-27T12:00:00Z",
+  "ended_utc": "2026-07-27T12:00:01Z",
+  "map": "n/a",
+  "build": {
+    "branch": null,
+    "commit": "dddddddddddddddddddddddddddddddddddddddd",
+    "digest_md5": "ddddeeee",
+    "dirty": false
+  },
+  "config_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "runner_version": "0.1.0",
+  "provenance": "derived",
+  "payload": {
+    "modules": [{"name": "combat", "tests": 1, "passed": 0}],
+    "total": {"tests": 1, "passed": 0},
+    "quality_floors": [],
+    "verdict_source": "t0-upstream-summary",
+    "verdict": "FAIL"
+  }
+}

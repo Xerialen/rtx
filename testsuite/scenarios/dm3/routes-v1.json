@@ -1,0 +1,1705 @@
+{
+  "source_dir": "/mnt/c/Users/benya/Downloads/dm3-drillar",
+  "map": "dm3",
+  "extractor": "qw-demo-miner qwd/v2 strict QWD extractor",
+  "units": {
+    "coordinates": "Quake units (x, y, z)",
+    "time": "seconds (demo-relative, t=0 at first playerinfo)",
+    "speed": "Quake units per second"
+  },
+  "definitions": {
+    "run": "a motion segment: cut at every stationary gap >= 0.1s, pieces covering less than 200.0 units of path discarded as warm-up jitter, then rejoined across stops shorter than 0.35s",
+    "start_pos/end_pos": "origin at the last stationary sample before the run and the first stationary sample after it",
+    "travel_time_s": "measured wall time between those two samples",
+    "min_acceptable_time_s": "travel_time_s * 1.12 \u2014 lowest acceptable level (12% slower than the recorded run)",
+    "*_nearest_item": "closest dm3 item spawn to that origin, from the mvd_analyzer entity corpus (dm3-items.json)",
+    "target": "the item the route name's last token promises, resolved from the mvd_analyzer dm3 entity corpus. closest_distance is the run's closest approach to it (reached <= 100.0, near <= 250.0, else off_target); reach_time_s is start -> that closest approach. When ends_at_target is false the drill ran past the item and stopped elsewhere, so reach_time_s \u2014 not travel_time_s \u2014 is the route time"
+  },
+  "regenerated_from": "only the .qwd files currently present in source_dir; removed demos drop out on every run",
+  "summary": {
+    "demos_found": 18,
+    "demos_parsed": 18,
+    "demos_unparsed": 0
+  },
+  "demos": [
+    {
+      "demo": "(hex)quad-to-sng.qwd",
+      "route": "(hex)quad-to-sng",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "9dbb092bc25864a7ac9e04a6d5776e75c957b7815a02ee4b94ae82dec301f983",
+      "demo_duration_s": 8.61,
+      "sample_count": 664,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            936.75,
+            336.0,
+            56.0
+          ],
+          "end_pos": [
+            -523.375,
+            453.25,
+            120.0
+          ],
+          "start_time_s": 1.519,
+          "end_time_s": 7.467,
+          "travel_time_s": 5.948,
+          "min_acceptable_time_s": 6.661,
+          "straight_line_distance": 1466.223,
+          "peak_speed": 582.218,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "quad",
+            "loc": "Quad",
+            "class": "item_artifact_super_damage",
+            "pos": [
+              952,
+              296,
+              56
+            ],
+            "distance": 42.808
+          },
+          "end_nearest_item": {
+            "kind": "sng",
+            "loc": "SNG",
+            "class": "weapon_supernailgun",
+            "pos": [
+              -512,
+              448,
+              96
+            ],
+            "distance": 27.073
+          }
+        }
+      ],
+      "route_tokens": [
+        "quad",
+        "sng"
+      ],
+      "target": {
+        "token": "sng",
+        "item": "sng@SNG",
+        "pos": [
+          -512,
+          448,
+          96
+        ],
+        "closest_distance": 26.394,
+        "end_distance": 27.073,
+        "reach_time_s": 5.247,
+        "min_acceptable_reach_time_s": 5.876,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          936.75,
+          336.0,
+          56.0
+        ],
+        "end_pos": [
+          -523.375,
+          453.25,
+          120.0
+        ],
+        "travel_time_s": 5.948,
+        "min_acceptable_time_s": 6.661
+      }
+    },
+    {
+      "demo": "(hex)ratop-to-ssg.qwd",
+      "route": "(hex)ratop-to-ssg",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "8b48522b7749eaaa097b5291c388b7467cda3781637611d89ab537af2aac4bf9",
+      "demo_duration_s": 10.935,
+      "sample_count": 843,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            263.625,
+            -691.625,
+            328.0
+          ],
+          "end_pos": [
+            1797.375,
+            -647.75,
+            -24.0
+          ],
+          "start_time_s": 1.377,
+          "end_time_s": 8.454,
+          "travel_time_s": 7.078,
+          "min_acceptable_time_s": 7.927,
+          "straight_line_distance": 1574.236,
+          "peak_speed": 714.697,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "ra",
+            "loc": "RA",
+            "class": "item_armorInv",
+            "pos": [
+              256,
+              -704,
+              304
+            ],
+            "distance": 28.059
+          },
+          "end_nearest_item": {
+            "kind": "ssg",
+            "loc": "YA",
+            "class": "weapon_supershotgun",
+            "pos": [
+              1776,
+              -656,
+              -48
+            ],
+            "distance": 33.181
+          }
+        }
+      ],
+      "route_tokens": [
+        "ratop",
+        "ssg"
+      ],
+      "target": {
+        "token": "ssg",
+        "item": "ssg@YA",
+        "pos": [
+          1776,
+          -656,
+          -48
+        ],
+        "closest_distance": 33.181,
+        "end_distance": 33.181,
+        "reach_time_s": 7.064,
+        "min_acceptable_reach_time_s": 7.912,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          263.625,
+          -691.625,
+          328.0
+        ],
+        "end_pos": [
+          1797.375,
+          -647.75,
+          -24.0
+        ],
+        "travel_time_s": 7.078,
+        "min_acceptable_time_s": 7.927
+      }
+    },
+    {
+      "demo": "(hex)sng-to-quad.qwd",
+      "route": "(hex)sng-to-quad",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "85fd9f10fb98c61fe2e108069170eefcd328beb0d6bcd2b985021772ba0581b8",
+      "demo_duration_s": 8.156,
+      "sample_count": 629,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            -518.625,
+            493.625,
+            120.0
+          ],
+          "end_pos": [
+            936.75,
+            336.0,
+            56.0
+          ],
+          "start_time_s": 0.74,
+          "end_time_s": 7.039,
+          "travel_time_s": 6.299,
+          "min_acceptable_time_s": 7.054,
+          "straight_line_distance": 1465.284,
+          "peak_speed": 670.923,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "sng",
+            "loc": "SNG",
+            "class": "weapon_supernailgun",
+            "pos": [
+              -512,
+              448,
+              96
+            ],
+            "distance": 51.976
+          },
+          "end_nearest_item": {
+            "kind": "quad",
+            "loc": "Quad",
+            "class": "item_artifact_super_damage",
+            "pos": [
+              952,
+              296,
+              56
+            ],
+            "distance": 42.808
+          }
+        }
+      ],
+      "route_tokens": [
+        "sng",
+        "quad"
+      ],
+      "target": {
+        "token": "quad",
+        "item": "quad@Quad",
+        "pos": [
+          952,
+          296,
+          56
+        ],
+        "closest_distance": 17.602,
+        "end_distance": 42.808,
+        "reach_time_s": 5.351,
+        "min_acceptable_reach_time_s": 5.993,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          -518.625,
+          493.625,
+          120.0
+        ],
+        "end_pos": [
+          936.75,
+          336.0,
+          56.0
+        ],
+        "travel_time_s": 6.299,
+        "min_acceptable_time_s": 7.054
+      }
+    },
+    {
+      "demo": "(hex)ssg-to-ratop.qwd",
+      "route": "(hex)ssg-to-ratop",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "99042e349e948001875cce80ff7f910a8aa141f3fa63a6d05579a9f837620312",
+      "demo_duration_s": 13.234,
+      "sample_count": 1020,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            1777.0,
+            -672.0,
+            -24.0
+          ],
+          "end_pos": [
+            257.25,
+            -706.375,
+            328.0
+          ],
+          "start_time_s": 1.013,
+          "end_time_s": 11.442,
+          "travel_time_s": 10.429,
+          "min_acceptable_time_s": 11.68,
+          "straight_line_distance": 1560.361,
+          "peak_speed": 569.723,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "ssg",
+            "loc": "YA",
+            "class": "weapon_supershotgun",
+            "pos": [
+              1776,
+              -656,
+              -48
+            ],
+            "distance": 28.862
+          },
+          "end_nearest_item": {
+            "kind": "ra",
+            "loc": "RA",
+            "class": "item_armorInv",
+            "pos": [
+              256,
+              -704,
+              304
+            ],
+            "distance": 24.15
+          }
+        }
+      ],
+      "route_tokens": [
+        "ssg",
+        "ratop"
+      ],
+      "target": {
+        "token": "ratop",
+        "item": "ra@RA",
+        "pos": [
+          256,
+          -704,
+          304
+        ],
+        "closest_distance": 24.129,
+        "end_distance": 24.15,
+        "reach_time_s": 10.338,
+        "min_acceptable_reach_time_s": 11.578,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          1777.0,
+          -672.0,
+          -24.0
+        ],
+        "end_pos": [
+          257.25,
+          -706.375,
+          328.0
+        ],
+        "travel_time_s": 10.429,
+        "min_acceptable_time_s": 11.68
+      }
+    },
+    {
+      "demo": "(spawn)lift-to-pent-to-pentmega.qwd",
+      "route": "(spawn)lift-to-pent-to-pentmega",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "ed39fc970752182aa4d743412f75fbf2a3908c4cb56c377b7077432f656e7b36",
+      "demo_duration_s": 12.311,
+      "sample_count": 949,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            511.375,
+            740.0,
+            216.0
+          ],
+          "end_pos": [
+            1166.375,
+            861.25,
+            -296.0
+          ],
+          "start_time_s": 0.766,
+          "end_time_s": 9.935,
+          "travel_time_s": 9.169,
+          "min_acceptable_time_s": 10.269,
+          "straight_line_distance": 840.161,
+          "peak_speed": 800.846,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "nails",
+            "loc": "Ring",
+            "class": "item_spikes",
+            "pos": [
+              336,
+              248,
+              32
+            ],
+            "distance": 553.784
+          },
+          "end_nearest_item": {
+            "kind": "pent",
+            "loc": "Pent",
+            "class": "item_artifact_invulnerability",
+            "pos": [
+              1008,
+              800,
+              -296
+            ],
+            "distance": 169.806
+          }
+        }
+      ],
+      "route_tokens": [
+        "lift",
+        "pent",
+        "pentmega"
+      ],
+      "target": {
+        "token": "pentmega",
+        "item": "mh@Pent",
+        "pos": [
+          1840,
+          624,
+          -204
+        ],
+        "closest_distance": 80.605,
+        "end_distance": 720.085,
+        "reach_time_s": 6.896,
+        "min_acceptable_reach_time_s": 7.724,
+        "status": "reached",
+        "ends_at_target": false,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          511.375,
+          740.0,
+          216.0
+        ],
+        "end_pos": [
+          1166.375,
+          861.25,
+          -296.0
+        ],
+        "travel_time_s": 9.169,
+        "min_acceptable_time_s": 10.269
+      }
+    },
+    {
+      "demo": "(spawn)ra-tunnel-to-lg.qwd",
+      "route": "(spawn)ra-tunnel-to-lg",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "cca3b4f135aa45d0c0fc20b044a6c8580f3f918f825b858fa4949ae8c7d79c08",
+      "demo_duration_s": 6.74,
+      "sample_count": 520,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            192.0,
+            -207.0,
+            -176.0
+          ],
+          "end_pos": [
+            1562.0,
+            -189.25,
+            -392.0
+          ],
+          "start_time_s": 0.662,
+          "end_time_s": 5.714,
+          "travel_time_s": 5.052,
+          "min_acceptable_time_s": 5.658,
+          "straight_line_distance": 1387.037,
+          "peak_speed": 617.791,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "nails",
+            "loc": "RA.tunnel",
+            "class": "item_spikes",
+            "pos": [
+              64,
+              -208,
+              -136
+            ],
+            "distance": 134.108
+          },
+          "end_nearest_item": {
+            "kind": "lg",
+            "loc": "water.LG",
+            "class": "weapon_lightning",
+            "pos": [
+              1544,
+              -192,
+              -416
+            ],
+            "distance": 30.126
+          }
+        }
+      ],
+      "route_tokens": [
+        "tunnel",
+        "lg"
+      ],
+      "target": {
+        "token": "lg",
+        "item": "lg@water.LG",
+        "pos": [
+          1544,
+          -192,
+          -416
+        ],
+        "closest_distance": 24.108,
+        "end_distance": 30.126,
+        "reach_time_s": 4.675,
+        "min_acceptable_reach_time_s": 5.237,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          192.0,
+          -207.0,
+          -176.0
+        ],
+        "end_pos": [
+          1562.0,
+          -189.25,
+          -392.0
+        ],
+        "travel_time_s": 5.052,
+        "min_acceptable_time_s": 5.658
+      }
+    },
+    {
+      "demo": "(spawn)rarox-to-quad.qwd",
+      "route": "(spawn)rarox-to-quad",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "3e5008dd743670269eac5d0fe07484507bd37a05e06e874ad8498ab666ba23ea",
+      "demo_duration_s": 6.169,
+      "sample_count": 476,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            -632.0,
+            -680.5,
+            -16.0
+          ],
+          "end_pos": [
+            946.375,
+            333.5,
+            56.0
+          ],
+          "start_time_s": 0.845,
+          "end_time_s": 4.637,
+          "travel_time_s": 3.792,
+          "min_acceptable_time_s": 4.247,
+          "straight_line_distance": 1877.404,
+          "peak_speed": 568.336,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "nails",
+            "loc": "SNG.tele",
+            "class": "item_spikes",
+            "pos": [
+              -680,
+              -752,
+              -40
+            ],
+            "distance": 89.399
+          },
+          "end_nearest_item": {
+            "kind": "quad",
+            "loc": "Quad",
+            "class": "item_artifact_super_damage",
+            "pos": [
+              952,
+              296,
+              56
+            ],
+            "distance": 37.92
+          }
+        }
+      ],
+      "route_tokens": [
+        "rarox",
+        "quad"
+      ],
+      "target": {
+        "token": "quad",
+        "item": "quad@Quad",
+        "pos": [
+          952,
+          296,
+          56
+        ],
+        "closest_distance": 14.156,
+        "end_distance": 37.92,
+        "reach_time_s": 3.467,
+        "min_acceptable_reach_time_s": 3.883,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          -632.0,
+          -680.5,
+          -16.0
+        ],
+        "end_pos": [
+          946.375,
+          333.5,
+          56.0
+        ],
+        "travel_time_s": 3.792,
+        "min_acceptable_time_s": 4.247
+      }
+    },
+    {
+      "demo": "(spawn)rl-to-ratop-xer.qwd",
+      "route": "(spawn)rl-to-ratop-xer",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "5930b78c36f1e59c8525e563300fd51e95cfec55282ebbbff0309af08f73ccfc",
+      "demo_duration_s": 19.792,
+      "sample_count": 1525,
+      "parsed": true,
+      "warmup_blocks_dropped": 2,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            1488.0,
+            436.625,
+            -88.0
+          ],
+          "end_pos": [
+            279.75,
+            -672.0,
+            328.0
+          ],
+          "start_time_s": 3.545,
+          "end_time_s": 18.052,
+          "travel_time_s": 14.507,
+          "min_acceptable_time_s": 16.248,
+          "straight_line_distance": 1691.737,
+          "peak_speed": 687.416,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "rl",
+            "loc": "RL",
+            "class": "weapon_rocketlauncher",
+            "pos": [
+              1520,
+              496,
+              -112
+            ],
+            "distance": 71.592
+          },
+          "end_nearest_item": {
+            "kind": "ra",
+            "loc": "RA",
+            "class": "item_armorInv",
+            "pos": [
+              256,
+              -704,
+              304
+            ],
+            "distance": 46.519
+          }
+        }
+      ],
+      "route_tokens": [
+        "rl",
+        "ratop"
+      ],
+      "target": {
+        "token": "ratop",
+        "item": "ra@RA",
+        "pos": [
+          256,
+          -704,
+          304
+        ],
+        "closest_distance": 28.419,
+        "end_distance": 46.519,
+        "reach_time_s": 14.156,
+        "min_acceptable_reach_time_s": 15.855,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          1488.0,
+          436.625,
+          -88.0
+        ],
+        "end_pos": [
+          279.75,
+          -672.0,
+          328.0
+        ],
+        "travel_time_s": 14.507,
+        "min_acceptable_time_s": 16.248
+      }
+    },
+    {
+      "demo": "(spawn)sngspawn-to-ring-to-ratop.qwd",
+      "route": "(spawn)sngspawn-to-ring-to-ratop",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "0f284b8837f16c2d75c5fe0288b88a284c705b94dabab975ad10a1aa32bca954",
+      "demo_duration_s": 12.182,
+      "sample_count": 939,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            -877.0,
+            -232.25,
+            -16.0
+          ],
+          "end_pos": [
+            277.75,
+            -691.625,
+            328.0
+          ],
+          "start_time_s": 1.701,
+          "end_time_s": 10.533,
+          "travel_time_s": 8.831,
+          "min_acceptable_time_s": 9.891,
+          "straight_line_distance": 1289.499,
+          "peak_speed": 550.62,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "cells",
+            "loc": "SNG.tele",
+            "class": "item_cells",
+            "pos": [
+              -952,
+              -296,
+              -40
+            ],
+            "distance": 101.317
+          },
+          "end_nearest_item": {
+            "kind": "ra",
+            "loc": "RA",
+            "class": "item_armorInv",
+            "pos": [
+              256,
+              -704,
+              304
+            ],
+            "distance": 34.673
+          }
+        }
+      ],
+      "route_tokens": [
+        "sngspawn",
+        "ring",
+        "ratop"
+      ],
+      "target": {
+        "token": "ratop",
+        "item": "ra@RA",
+        "pos": [
+          256,
+          -704,
+          304
+        ],
+        "closest_distance": 24.666,
+        "end_distance": 34.673,
+        "reach_time_s": 8.533,
+        "min_acceptable_reach_time_s": 9.557,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          -877.0,
+          -232.25,
+          -16.0
+        ],
+        "end_pos": [
+          277.75,
+          -691.625,
+          328.0
+        ],
+        "travel_time_s": 8.831,
+        "min_acceptable_time_s": 9.891
+      }
+    },
+    {
+      "demo": "highbridge-to-rl.qwd",
+      "route": "highbridge-to-rl",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "4f6e1863a12d1e047f7f70ef52326b0e3085d343ebd5352778b1a7c16453ac02",
+      "demo_duration_s": 6.026,
+      "sample_count": 465,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            1358.875,
+            -347.75,
+            -24.0
+          ],
+          "end_pos": [
+            1647.0,
+            491.5,
+            -88.0
+          ],
+          "start_time_s": 0.597,
+          "end_time_s": 3.688,
+          "travel_time_s": 3.091,
+          "min_acceptable_time_s": 3.462,
+          "straight_line_distance": 889.636,
+          "peak_speed": 548.333,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "shells",
+            "loc": "bridge.high",
+            "class": "item_shells",
+            "pos": [
+              1368,
+              -360,
+              -48
+            ],
+            "distance": 28.449
+          },
+          "end_nearest_item": {
+            "kind": "nails",
+            "loc": "RL",
+            "class": "item_spikes",
+            "pos": [
+              1600,
+              520,
+              -112
+            ],
+            "distance": 59.977
+          }
+        }
+      ],
+      "route_tokens": [
+        "highbridge",
+        "rl"
+      ],
+      "target": {
+        "token": "rl",
+        "item": "rl@RL",
+        "pos": [
+          1520,
+          496,
+          -112
+        ],
+        "closest_distance": 81.339,
+        "end_distance": 129.326,
+        "reach_time_s": 2.715,
+        "min_acceptable_reach_time_s": 3.04,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          1358.875,
+          -347.75,
+          -24.0
+        ],
+        "end_pos": [
+          1647.0,
+          491.5,
+          -88.0
+        ],
+        "travel_time_s": 3.091,
+        "min_acceptable_time_s": 3.462
+      }
+    },
+    {
+      "demo": "lg-to-pent-to-pentmega.qwd",
+      "route": "lg-to-pent-to-pentmega",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "38bdfe8e69cf3709a1fcfa9f3ad8d605eb602cf1ef927d4dc75d87b828dc2892",
+      "demo_duration_s": 13.065,
+      "sample_count": 1007,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            1551.125,
+            -194.125,
+            -392.0
+          ],
+          "end_pos": [
+            1865.75,
+            631.25,
+            -180.0
+          ],
+          "start_time_s": 0.468,
+          "end_time_s": 11.117,
+          "travel_time_s": 10.65,
+          "min_acceptable_time_s": 11.928,
+          "straight_line_distance": 908.392,
+          "peak_speed": 586.483,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "lg",
+            "loc": "water.LG",
+            "class": "weapon_lightning",
+            "pos": [
+              1544,
+              -192,
+              -416
+            ],
+            "distance": 25.125
+          },
+          "end_nearest_item": {
+            "kind": "mh",
+            "loc": "Pent",
+            "class": "item_health",
+            "pos": [
+              1840,
+              624,
+              -204
+            ],
+            "distance": 35.939
+          }
+        }
+      ],
+      "route_tokens": [
+        "lg",
+        "pent",
+        "pentmega"
+      ],
+      "target": {
+        "token": "pentmega",
+        "item": "mh@Pent",
+        "pos": [
+          1840,
+          624,
+          -204
+        ],
+        "closest_distance": 34.124,
+        "end_distance": 35.939,
+        "reach_time_s": 10.506,
+        "min_acceptable_reach_time_s": 11.767,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          1551.125,
+          -194.125,
+          -392.0
+        ],
+        "end_pos": [
+          1865.75,
+          631.25,
+          -180.0
+        ],
+        "travel_time_s": 10.65,
+        "min_acceptable_time_s": 11.928
+      }
+    },
+    {
+      "demo": "lifts-or-ring-to-sngmega.qwd",
+      "route": "lifts-or-ring-to-sngmega",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "3f38570fa07d7a03e1a3fbfa0129e49e11ccc92cdde5cd6890a29eeddfa5464b",
+      "demo_duration_s": 13.506,
+      "sample_count": 1041,
+      "parsed": true,
+      "warmup_blocks_dropped": 1,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            514.375,
+            759.625,
+            216.0
+          ],
+          "end_pos": [
+            -688.0,
+            78.125,
+            184.0
+          ],
+          "start_time_s": 0.61,
+          "end_time_s": 8.351,
+          "travel_time_s": 7.74,
+          "min_acceptable_time_s": 8.669,
+          "straight_line_distance": 1382.451,
+          "peak_speed": 539.413,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "nails",
+            "loc": "Ring",
+            "class": "item_spikes",
+            "pos": [
+              336,
+              248,
+              32
+            ],
+            "distance": 572.218
+          },
+          "end_nearest_item": {
+            "kind": "mh",
+            "loc": "SNG.MH",
+            "class": "item_health",
+            "pos": [
+              -720,
+              80,
+              160
+            ],
+            "distance": 40.044
+          }
+        }
+      ],
+      "route_tokens": [
+        "ring",
+        "sngmega"
+      ],
+      "target": {
+        "token": "sngmega",
+        "item": "mh@SNG.MH",
+        "pos": [
+          -720,
+          80,
+          160
+        ],
+        "closest_distance": 25.423,
+        "end_distance": 40.044,
+        "reach_time_s": 7.494,
+        "min_acceptable_reach_time_s": 8.393,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          514.375,
+          759.625,
+          216.0
+        ],
+        "end_pos": [
+          -688.0,
+          78.125,
+          184.0
+        ],
+        "travel_time_s": 7.74,
+        "min_acceptable_time_s": 8.669
+      }
+    },
+    {
+      "demo": "ralow-to-ratop.qwd",
+      "route": "ralow-to-ratop",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "6325e85420cc209c575540fb59ec65422c1781c682194a601a455876a8676838",
+      "demo_duration_s": 9.74,
+      "sample_count": 751,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            -12.5,
+            -574.125,
+            -16.0
+          ],
+          "end_pos": [
+            272.625,
+            -682.0,
+            328.0
+          ],
+          "start_time_s": 0.584,
+          "end_time_s": 8.363,
+          "travel_time_s": 7.779,
+          "min_acceptable_time_s": 8.713,
+          "straight_line_distance": 459.64,
+          "peak_speed": 538.113,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "ng",
+            "loc": "RA.low",
+            "class": "weapon_nailgun",
+            "pos": [
+              -64,
+              -704,
+              -40
+            ],
+            "distance": 141.76
+          },
+          "end_nearest_item": {
+            "kind": "ra",
+            "loc": "RA",
+            "class": "item_armorInv",
+            "pos": [
+              256,
+              -704,
+              304
+            ],
+            "distance": 36.557
+          }
+        }
+      ],
+      "route_tokens": [
+        "ralow",
+        "ratop"
+      ],
+      "target": {
+        "token": "ratop",
+        "item": "ra@RA",
+        "pos": [
+          256,
+          -704,
+          304
+        ],
+        "closest_distance": 25.45,
+        "end_distance": 36.557,
+        "reach_time_s": 7.481,
+        "min_acceptable_reach_time_s": 8.378,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          -12.5,
+          -574.125,
+          -16.0
+        ],
+        "end_pos": [
+          272.625,
+          -682.0,
+          328.0
+        ],
+        "travel_time_s": 7.779,
+        "min_acceptable_time_s": 8.713
+      }
+    },
+    {
+      "demo": "ring-to-ratop.qwd",
+      "route": "ring-to-ratop",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "1c77ef5dadad1160e49543b52dc0282546a25c38e07ff67e84754cf2594e595d",
+      "demo_duration_s": 15.156,
+      "sample_count": 1168,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            494.25,
+            -384.625,
+            56.0
+          ],
+          "end_pos": [
+            241.5,
+            -698.375,
+            328.0
+          ],
+          "start_time_s": 1.117,
+          "end_time_s": 8.636,
+          "travel_time_s": 7.52,
+          "min_acceptable_time_s": 8.422,
+          "straight_line_distance": 486.113,
+          "peak_speed": 526.705,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "rockets",
+            "loc": "Quad",
+            "class": "item_rockets",
+            "pos": [
+              760,
+              -360,
+              32
+            ],
+            "distance": 267.965
+          },
+          "end_nearest_item": {
+            "kind": "ra",
+            "loc": "RA",
+            "class": "item_armorInv",
+            "pos": [
+              256,
+              -704,
+              304
+            ],
+            "distance": 28.599
+          }
+        }
+      ],
+      "route_tokens": [
+        "ring",
+        "ratop"
+      ],
+      "target": {
+        "token": "ratop",
+        "item": "ra@RA",
+        "pos": [
+          256,
+          -704,
+          304
+        ],
+        "closest_distance": 24.347,
+        "end_distance": 28.599,
+        "reach_time_s": 6.974,
+        "min_acceptable_reach_time_s": 7.811,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          494.25,
+          -384.625,
+          56.0
+        ],
+        "end_pos": [
+          241.5,
+          -698.375,
+          328.0
+        ],
+        "travel_time_s": 7.52,
+        "min_acceptable_time_s": 8.422
+      }
+    },
+    {
+      "demo": "ring-to-rl.qwd",
+      "route": "ring-to-rl",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "6a49f39531c9cc4e3f583563ba88a84cd10cf5a73a606cdc4f8258f5273122b9",
+      "demo_duration_s": 8.13,
+      "sample_count": 627,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            188.125,
+            -44.875,
+            56.0
+          ],
+          "end_pos": [
+            1488.0,
+            513.875,
+            -88.0
+          ],
+          "start_time_s": 1.026,
+          "end_time_s": 6.831,
+          "travel_time_s": 5.805,
+          "min_acceptable_time_s": 6.502,
+          "straight_line_distance": 1422.186,
+          "peak_speed": 688.571,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "ring",
+            "loc": "Ring",
+            "class": "item_artifact_invisibility",
+            "pos": [
+              240,
+              -32,
+              56
+            ],
+            "distance": 53.449
+          },
+          "end_nearest_item": {
+            "kind": "rl",
+            "loc": "RL",
+            "class": "weapon_rocketlauncher",
+            "pos": [
+              1520,
+              496,
+              -112
+            ],
+            "distance": 43.812
+          }
+        }
+      ],
+      "route_tokens": [
+        "ring",
+        "rl"
+      ],
+      "target": {
+        "token": "rl",
+        "item": "rl@RL",
+        "pos": [
+          1520,
+          496,
+          -112
+        ],
+        "closest_distance": 24.891,
+        "end_distance": 43.812,
+        "reach_time_s": 5.559,
+        "min_acceptable_reach_time_s": 6.226,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          188.125,
+          -44.875,
+          56.0
+        ],
+        "end_pos": [
+          1488.0,
+          513.875,
+          -88.0
+        ],
+        "travel_time_s": 5.805,
+        "min_acceptable_time_s": 6.502
+      }
+    },
+    {
+      "demo": "rj-pent-to-lifts-to-window-to-quad.qwd",
+      "route": "rj-pent-to-lifts-to-window-to-quad",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "18b3f24f5ae874dffa20b7f646f334466902b01e8b69a0382235b1bfea544e85",
+      "demo_duration_s": 10.689,
+      "sample_count": 824,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            957.75,
+            787.75,
+            -296.0
+          ],
+          "end_pos": [
+            978.5,
+            301.5,
+            56.0
+          ],
+          "start_time_s": 2.026,
+          "end_time_s": 7.442,
+          "travel_time_s": 5.416,
+          "min_acceptable_time_s": 6.066,
+          "straight_line_distance": 600.644,
+          "peak_speed": 809.264,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "pent",
+            "loc": "Pent",
+            "class": "item_artifact_invulnerability",
+            "pos": [
+              1008,
+              800,
+              -296
+            ],
+            "distance": 51.722
+          },
+          "end_nearest_item": {
+            "kind": "quad",
+            "loc": "Quad",
+            "class": "item_artifact_super_damage",
+            "pos": [
+              952,
+              296,
+              56
+            ],
+            "distance": 27.065
+          }
+        }
+      ],
+      "route_tokens": [
+        "pent",
+        "lifts",
+        "window",
+        "quad"
+      ],
+      "target": {
+        "token": "quad",
+        "item": "quad@Quad",
+        "pos": [
+          952,
+          296,
+          56
+        ],
+        "closest_distance": 27.065,
+        "end_distance": 27.065,
+        "reach_time_s": 5.39,
+        "min_acceptable_reach_time_s": 6.037,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          957.75,
+          787.75,
+          -296.0
+        ],
+        "end_pos": [
+          978.5,
+          301.5,
+          56.0
+        ],
+        "travel_time_s": 5.416,
+        "min_acceptable_time_s": 6.066
+      }
+    },
+    {
+      "demo": "sngspawns-to-sngmega.qwd",
+      "route": "sngspawns-to-sngmega",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "1867a1a54fc610f112613530b3bfc0c9ddea7fb5e1cfbb2d32be0f7280c907b3",
+      "demo_duration_s": 10.87,
+      "sample_count": 838,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            -880.0,
+            -232.0,
+            -16.0
+          ],
+          "end_pos": [
+            -688.0,
+            79.125,
+            184.0
+          ],
+          "start_time_s": 0.818,
+          "end_time_s": 8.195,
+          "travel_time_s": 7.377,
+          "min_acceptable_time_s": 8.262,
+          "straight_line_distance": 416.729,
+          "peak_speed": 548.41,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "cells",
+            "loc": "SNG.tele",
+            "class": "item_cells",
+            "pos": [
+              -952,
+              -296,
+              -40
+            ],
+            "distance": 99.277
+          },
+          "end_nearest_item": {
+            "kind": "mh",
+            "loc": "SNG.MH",
+            "class": "item_health",
+            "pos": [
+              -720,
+              80,
+              160
+            ],
+            "distance": 40.01
+          }
+        }
+      ],
+      "route_tokens": [
+        "sngspawns",
+        "sngmega"
+      ],
+      "target": {
+        "token": "sngmega",
+        "item": "mh@SNG.MH",
+        "pos": [
+          -720,
+          80,
+          160
+        ],
+        "closest_distance": 24.008,
+        "end_distance": 40.01,
+        "reach_time_s": 7.169,
+        "min_acceptable_reach_time_s": 8.03,
+        "status": "reached",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          -880.0,
+          -232.0,
+          -16.0
+        ],
+        "end_pos": [
+          -688.0,
+          79.125,
+          184.0
+        ],
+        "travel_time_s": 7.377,
+        "min_acceptable_time_s": 8.262
+      }
+    },
+    {
+      "demo": "window-to-rl.qwd",
+      "route": "window-to-rl",
+      "map": "dm3",
+      "level_name": "The Abandoned Base",
+      "protocol": 28,
+      "demo_id_sha256": "ef8d074195690fbd789907debaf8669c6ede02761a7847a8a79cf3e55c703866",
+      "demo_duration_s": 5.597,
+      "sample_count": 432,
+      "parsed": true,
+      "warmup_blocks_dropped": 0,
+      "run_count": 1,
+      "runs": [
+        {
+          "run": 1,
+          "start_pos": [
+            1295.875,
+            445.5,
+            56.0
+          ],
+          "end_pos": [
+            1674.25,
+            460.875,
+            -88.0
+          ],
+          "start_time_s": 1.143,
+          "end_time_s": 4.26,
+          "travel_time_s": 3.117,
+          "min_acceptable_time_s": 3.491,
+          "straight_line_distance": 405.142,
+          "peak_speed": 620.008,
+          "start_anchored": true,
+          "end_anchored": true,
+          "start_nearest_item": {
+            "kind": "rl",
+            "loc": "RL",
+            "class": "weapon_rocketlauncher",
+            "pos": [
+              1520,
+              496,
+              -112
+            ],
+            "distance": 284.616
+          },
+          "end_nearest_item": {
+            "kind": "nails",
+            "loc": "RL",
+            "class": "item_spikes",
+            "pos": [
+              1600,
+              520,
+              -112
+            ],
+            "distance": 97.902
+          }
+        }
+      ],
+      "route_tokens": [
+        "window",
+        "rl"
+      ],
+      "target": {
+        "token": "rl",
+        "item": "rl@RL",
+        "pos": [
+          1520,
+          496,
+          -112
+        ],
+        "closest_distance": 117.778,
+        "end_distance": 160.009,
+        "reach_time_s": 2.493,
+        "min_acceptable_reach_time_s": 2.793,
+        "status": "near",
+        "ends_at_target": true,
+        "source": "mvd_analyzer dm3 entity corpus"
+      },
+      "fastest": {
+        "run": 1,
+        "start_pos": [
+          1295.875,
+          445.5,
+          56.0
+        ],
+        "end_pos": [
+          1674.25,
+          460.875,
+          -88.0
+        ],
+        "travel_time_s": 3.117,
+        "min_acceptable_time_s": 3.491
+      }
+    }
+  ]
+}

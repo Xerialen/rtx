@@ -1,0 +1,21 @@
+schema = "rtx-scenario/1"
+name = "rj_pent_window"
+map = "dm3"
+kind = "goto"
+category = "grunddrill"
+place = "pent → lifts → window → quad"
+description = "Rocket-jump out of the pent pit, ride the lifts up, cross through the window and end at quad. Anchored on a demo of the owner's own run of the route."
+
+[run]
+# Anchors read out of the owner's route demo (rj-pent-to-lifts-to-window-to-quad.qwd),
+# which took 8.7 s end to end.
+start = [958, 788, -296]
+target = [978, 302, 56]
+attempts = 10
+timeout_s = 25
+pause_s = 1.0
+arrive_box = 70
+regoto_max = 6
+
+[threshold]
+required = 8

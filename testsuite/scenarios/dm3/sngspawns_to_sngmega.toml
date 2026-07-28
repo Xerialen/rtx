@@ -1,0 +1,23 @@
+schema = "rtx-scenario/1"
+name = "sngspawns_to_sngmega"
+map = "dm3"
+kind = "goto"
+category = "grunddrill"
+place = "SNG tele → SNG mega"
+description = "sngspawns-to-sngmega: anchored on the owner's own run of the route (7.38 s, peak 548 u/s, ending at mh@SNG.MH). The bot has to arrive within 8.26 s to pass."
+
+[run]
+# Anchors and reference time come from sngspawns-to-sngmega.qwd via the owner's route
+# manifest (see scenarios/dm3/routes-v1.json).
+start = [-880.0, -232.0, -16.0]
+target = [-688.0, 79.1, 184.0]
+attempts = 5
+timeout_s = 29
+pause_s = 1.0
+arrive_box = 70
+regoto_max = 6
+
+[threshold]
+required = 4
+reference_time_s = 7.38
+max_time_s = 8.26

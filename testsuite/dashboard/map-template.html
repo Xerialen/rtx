@@ -1,0 +1,1358 @@
+<title>dm3 — stall-diagnostik över navmeshen</title>
+
+<style>
+  :root {
+    --ground:   #0c0b0a;
+    --panel:    rgba(20, 18, 15, 0.9);
+    --panel-2:  rgba(30, 27, 22, 0.72);
+    --ink:      #ece7dd;
+    --ink-2:    #b3aa9c;
+    --muted:    #857c6f;
+    --rule:     #322d25;
+    --rule-2:   #201d18;
+    --accent:   #e0842f;
+    --good:     #58c07a;
+    --bad:      #e4483a;
+    --mesh-mid: #453d33;
+    --halo:     #0c0b0a;
+    --r-disp:   #e4483a;
+    --r-pre:    #e0842f;
+    --r-airoff: #b07fe0;
+    --r-airtime:#5d9bd6;
+    --r-sj:     #ffd166;
+    --arc:      #45b8a0;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground: #efe9de; --panel: rgba(252, 249, 244, 0.92); --panel-2: rgba(236, 229, 217, 0.75);
+      --ink: #221e18; --ink-2: #4d463c; --muted: #746b5e;
+      --rule: #cec4b3; --rule-2: #ddd4c4; --accent: #a75a12;
+      --good: #217a44; --bad: #b8291c; --mesh-mid: #9c9078; --halo: #fcf9f4;
+      --r-disp: #b8291c; --r-pre: #a75a12; --r-airoff: #7c3fa8; --r-airtime: #2f5f9e; --r-sj: #8f6b00; --arc: #1c7a66;
+    }
+  }
+  :root[data-theme="light"] {
+    --ground: #efe9de; --panel: rgba(252, 249, 244, 0.92); --panel-2: rgba(236, 229, 217, 0.75);
+    --ink: #221e18; --ink-2: #4d463c; --muted: #746b5e;
+    --rule: #cec4b3; --rule-2: #ddd4c4; --accent: #a75a12;
+    --good: #217a44; --bad: #b8291c; --mesh-mid: #9c9078; --halo: #fcf9f4;
+    --r-disp: #b8291c; --r-pre: #a75a12; --r-airoff: #7c3fa8; --r-airtime: #2f5f9e; --r-sj: #8f6b00; --arc: #1c7a66;
+  }
+  :root[data-theme="dark"] {
+    --ground: #0c0b0a; --panel: rgba(20, 18, 15, 0.9); --panel-2: rgba(30, 27, 22, 0.72);
+    --ink: #ece7dd; --ink-2: #b3aa9c; --muted: #857c6f;
+    --rule: #322d25; --rule-2: #201d18; --accent: #e0842f;
+    --good: #58c07a; --bad: #e4483a; --mesh-mid: #453d33; --halo: #0c0b0a;
+    --r-disp: #e4483a; --r-pre: #e0842f; --r-airoff: #b07fe0; --r-airtime: #5d9bd6; --r-sj: #ffd166; --arc: #45b8a0;
+  }
+  :root {
+    --mono: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, sans-serif;
+  }
+
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--sans); overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  #scene { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  #scene.dragging { cursor: grabbing; }
+
+  .hud { position: fixed; z-index: 2; }
+  .plate { background: var(--panel); border: 1px solid var(--rule); backdrop-filter: blur(6px); }
+  .eyebrow {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--muted);
+  }
+
+  #leftcol {
+    left: 0; top: 0; width: 250px; max-height: calc(100vh - 46px);
+    overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+    padding: 0 0 8px; z-index: 2; position: fixed;
+  }
+  #leftcol .plate { padding: 11px 14px 12px; }
+
+  #ident h1 { margin: 4px 0 0; font-family: var(--mono); font-size: 17px; font-weight: 600; }
+  #ident p { margin: 6px 0 0; font-size: 12px; line-height: 1.45; color: var(--ink-2); }
+  #ident .stats {
+    margin-top: 7px; display: flex; flex-wrap: wrap; gap: 3px 14px;
+    font-family: var(--mono); font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted);
+  }
+  #ident .stats b { color: var(--ink); }
+
+  .snaprow {
+    display: grid; grid-template-columns: 10px 1fr auto; gap: 8px; align-items: center;
+    padding: 5px 4px; cursor: pointer; user-select: none;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+    border-top: 1px solid var(--rule-2);
+  }
+  .snaprow:first-of-type { border-top: none; }
+  .snaprow:hover { color: var(--ink); }
+  .snaprow .dot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--muted); }
+  .snaprow.focus .dot { background: var(--accent); border-color: var(--accent); }
+  .snaprow .lbl { line-height: 1.35; }
+  .snaprow .lbl .sub { color: var(--muted); font-size: 10px; }
+  .snaprow.focus .lbl { color: var(--ink); }
+  .refchip {
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em;
+    padding: 2px 7px; border: 1px solid var(--rule); color: var(--muted); cursor: pointer;
+  }
+  .refchip:hover { color: var(--ink); border-color: var(--muted); }
+  .snaprow.ref .refchip { background: var(--ink-2); color: var(--halo); border-color: var(--ink-2); }
+  #cmpnote { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 7px; line-height: 1.5; }
+  #cmpnote.warn { color: var(--bad); }
+  .snaprow .regime { font-family: var(--mono); font-size: 9px; padding: 0 4px; border: 1px solid var(--rule);
+    border-radius: 3px; color: var(--ink-2); vertical-align: 1px; }
+
+  .mrow {
+    display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: baseline;
+    padding: 2.5px 2px; font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+  }
+  .mrow .v { font-variant-numeric: tabular-nums; color: var(--ink); text-align: right; }
+  .mrow .v .ref { color: var(--muted); font-weight: 400; }
+  .mrow .v .up { color: var(--bad); }
+  .mrow .v .down { color: var(--good); }
+  .mrow .v .up.goodup { color: var(--good); }
+  .mrow .v .down.baddown { color: var(--bad); }
+  .nostats { font-family: var(--mono); font-size: 10.5px; color: var(--muted); padding: 4px 2px; }
+
+  .lrow {
+    display: flex; align-items: center; gap: 9px; padding: 3.5px 2px;
+    cursor: pointer; user-select: none;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+  }
+  .lrow:hover { color: var(--ink); }
+  .lrow.off { opacity: 0.35; }
+  .lrow .sw { width: 9px; height: 9px; flex: 0 0 auto; }
+  .lrow .sw.round { border-radius: 50%; }
+  .lrow .nm { flex: 1 1 auto; }
+  .lrow .ct { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .lnote { font-size: 10.5px; line-height: 1.45; color: var(--muted); margin-top: 5px; }
+  .rule { height: 1px; background: var(--rule); margin: 8px 0 7px; }
+
+  #index {
+    right: 0; top: 0; bottom: 0; width: 300px;
+    display: flex; flex-direction: column;
+    border-left: 1px solid var(--rule); border-top: none; border-right: none; border-bottom: none;
+  }
+  #index header { padding: 13px 16px 10px; border-bottom: 1px solid var(--rule-2); }
+  #index .scroll { overflow-y: auto; padding: 4px 0 20px; }
+  #index h2 {
+    margin: 14px 0 3px; padding: 0 16px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em;
+    text-transform: uppercase; font-weight: 600; color: var(--muted);
+  }
+  .row {
+    display: grid; grid-template-columns: 12px 1fr auto; align-items: center;
+    gap: 9px; padding: 3px 16px; cursor: pointer;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+  }
+  .row:hover { background: var(--panel-2); color: var(--ink); }
+  .row.sel { background: var(--accent); color: var(--halo); }
+  .row.sel .aux { color: var(--halo); }
+  .row .dot { width: 8px; height: 8px; border-radius: 50%; justify-self: center; }
+  .row .aux { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 10px; white-space: nowrap; }
+  .row .aux .d-up { color: var(--bad); }
+  .row .aux .d-down { color: var(--good); }
+
+  #readout {
+    left: 258px; bottom: 0; padding: 11px 16px 13px; z-index: 3;
+    min-width: 320px; max-width: 440px; max-height: 46vh; overflow-y: auto;
+  }
+  #readout .name { font-family: var(--mono); font-size: 13.5px; font-weight: 600; margin-top: 3px; }
+  #readout.idle .name { color: var(--muted); font-weight: 400; }
+  #readout .meta {
+    font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 5px;
+    font-variant-numeric: tabular-nums; display: flex; flex-wrap: wrap; gap: 4px 14px;
+  }
+  #readout .meta b { color: var(--ink-2); }
+  .rbars { margin-top: 8px; }
+  .rbar {
+    display: grid; grid-template-columns: 112px 1fr 52px; gap: 8px; align-items: center;
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-2); padding: 1.5px 0;
+  }
+  .rbar .track { height: 7px; background: var(--rule-2); position: relative; }
+  .rbar .fill { position: absolute; inset: 0 auto 0 0; }
+  .rbar .fillref { position: absolute; left: 0; bottom: -3px; height: 2px; opacity: 0.6; }
+  .rbar .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .linkline {
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-2);
+    padding: 2px 0; border-top: 1px dashed var(--rule-2);
+  }
+  .linkline b { color: var(--ink); }
+  .sample { font-family: var(--mono); font-size: 10px; color: var(--muted); padding: 1px 0; }
+  .verdict {
+    margin-top: 8px; padding: 7px 10px; border-left: 2px solid var(--accent);
+    background: var(--panel-2); font-size: 12px; color: var(--ink-2); line-height: 1.45;
+  }
+
+  #tabs { left: 50%; transform: translateX(-50%); top: 0; display: flex; }
+  #tabs button {
+    appearance: none; background: transparent; border: none; border-right: 1px solid var(--rule-2);
+    color: var(--ink-2); font-family: var(--mono); font-size: 10.5px;
+    letter-spacing: 0.12em; text-transform: uppercase; padding: 10px 18px; cursor: pointer;
+  }
+  #tabs button:last-child { border-right: none; }
+  #tabs button.on { color: var(--halo); background: var(--accent); }
+  #tabs button:hover:not(.on) { color: var(--ink); background: var(--panel-2); }
+
+  #tableview {
+    position: fixed; left: 258px; right: 308px; top: 46px; bottom: 46px;
+    z-index: 2; overflow: auto; padding: 16px 20px; display: none;
+  }
+  #tableview.on { display: block; }
+  #tableview h2 {
+    margin: 0 0 4px; font-family: var(--mono); font-size: 12px;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); font-weight: 600;
+  }
+  #tableview .note { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-bottom: 10px; }
+  table.matrix { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  table.matrix th {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600; text-align: right; padding: 5px 10px;
+    border-bottom: 1px solid var(--rule); white-space: nowrap;
+  }
+  table.matrix th:first-child { text-align: left; }
+  table.matrix td {
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2); text-align: right;
+    padding: 4px 10px; border-bottom: 1px solid var(--rule-2); white-space: nowrap;
+  }
+  table.matrix td:first-child { text-align: left; color: var(--ink); cursor: pointer; }
+  table.matrix tr:hover td { background: var(--panel-2); }
+  table.matrix td .ref { color: var(--muted); }
+  table.matrix td .d-up { color: var(--bad); }
+  table.matrix td .d-down { color: var(--good); }
+  table.matrix tr.sum td { border-top: 1.5px solid var(--rule); color: var(--ink); font-weight: 600; }
+  table.matrix td.zero { color: var(--rule); }
+
+  #controls { left: 50%; transform: translateX(-40px); bottom: 0; display: flex; }
+  #controls button {
+    appearance: none; background: transparent; border: none; border-right: 1px solid var(--rule-2);
+    color: var(--ink-2); font-family: var(--mono); font-size: 10.5px;
+    letter-spacing: 0.1em; text-transform: uppercase; padding: 11px 14px; cursor: pointer;
+  }
+  #controls button:last-child { border-right: none; }
+  #controls button:hover { color: var(--ink); background: var(--panel-2); }
+  #controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  @media (max-width: 1080px) {
+    #index { display: none; }
+    #readout { left: 0; bottom: 44px; max-width: 90vw; }
+    #controls { transform: translateX(-50%); }
+  }
+
+  /* Embedded T2 view: keep the source viewer's canvas and requested rails,
+     while the proposal already owns snapshot selection and metrics. The
+     iframe boundary isolates the viewer's original ids/classes. */
+  #leftcol > .plate:nth-child(-n + 3), #index, #tabs, #tableview { display: none !important; }
+  #leftcol { max-height: calc(100vh - 50px); }
+  #readout { left: 258px; right: 8px; min-width: 0; max-width: 520px; }
+  #controls { transform: translateX(30px); }
+  @media (max-width: 620px) {
+    #leftcol { width: 220px; }
+    #leftcol .plate { padding-inline: 10px; }
+    #readout { left: 0; right: 0; bottom: 42px; max-width: none; max-height: 30vh; }
+    #controls { left: auto; right: 0; transform: none; }
+    #controls button { padding-inline: 8px; font-size: 9px; }
+  }
+</style>
+
+<div id="stage"><canvas id="scene"></canvas></div>
+
+<div id="leftcol">
+  <div class="plate" id="ident">
+    <div class="eyebrow">RTX · dm3 · stall-diagnostik</div>
+    <h1 id="ident-title">—</h1>
+    <p>Stapel = navmesh-cell där styr-vakthunden fyrade. Höjd = antal, färg = orsak. Bågar = felande kliv (se legenden).
+    Klicka en stapel för hela telemetrin.</p>
+    <div class="stats">
+      <span><b id="s-total">0</b> fyrningar</span>
+      <span><b id="s-cells">0</b> celler</span>
+      <span id="s-cmp"></span>
+    </div>
+  </div>
+
+  <div class="plate">
+    <div class="eyebrow">Snapshots · klick = fokus · REF = referens</div>
+    <div id="snap-list"></div>
+    <div id="cmpnote"></div>
+  </div>
+
+  <div class="plate">
+    <div class="eyebrow">Mätetal<span id="mb-ref"></span></div>
+    <div id="matchbox"></div>
+  </div>
+
+  <div class="plate">
+    <div class="eyebrow">Stall-orsaker</div>
+    <div id="reason-list"></div>
+    <div class="rule"></div>
+    <div class="lrow" id="t-arcs" title="Bågen ritas mellan klivets start- och målcell när samma kliv felat minst 3 gånger i fokus-snapshotten. Stapeln står där botten stod när den gav upp — ofta en bit från bågen. Stapel utan båge i närheten: klivet felade färre än 3 gånger, klivets geometri saknas — eller så fanns inget aktivt kliv alls (botten stod utan rutt)."><span class="sw" style="background:var(--arc)"></span><span class="nm">Länk-bågar — felande kliv</span></div>
+  </div>
+
+  <div class="plate">
+    <div class="eyebrow">Kartlager</div>
+    <div class="lrow" id="t-zones" title="områdesnamn"><span class="sw" style="background:var(--accent)"></span><span class="nm">Zonetiketter</span></div>
+    <div class="lrow" id="t-items" title="plockbara saker"><span class="sw" style="background:#d4dae1"></span><span class="nm">Items</span></div>
+    <div class="lrow" id="t-spawns" title="startpunkter"><span class="sw round" style="background:#4fd77a"></span><span class="nm">Spawnpunkter</span></div>
+    <div class="lrow" id="t-mesh" title="golvytor"><span class="sw" style="background:var(--mesh-mid)"></span><span class="nm">Navmesh-golv</span></div>
+  </div>
+</div>
+
+<div class="hud plate" id="index">
+  <header><div class="eyebrow" id="index-head">Stall-celler</div></header>
+  <div class="scroll" id="index-body"></div>
+</div>
+
+<div class="hud plate idle" id="readout">
+  <div class="eyebrow" id="ro-eyebrow">Diagnos</div>
+  <div class="name" id="ro-name">Klicka en stall-stapel eller en rad i listan</div>
+  <div id="ro-body"></div>
+</div>
+
+<div class="hud plate" id="tabs">
+  <button data-tab="3d" class="on">3D-vy</button>
+  <button data-tab="table">Tabellvy</button>
+</div>
+
+<div class="hud plate" id="tableview">
+  <h2 id="tv-title">Fel per region</h2>
+  <div class="note" id="tv-note"></div>
+  <div id="tv-body"></div>
+</div>
+
+<div class="hud plate" id="controls">
+  <button data-view="iso">Iso</button>
+  <button data-view="top">Ovanifrån</button>
+  <button data-view="bron">Bron</button>
+  <button data-view="pent">Pent</button>
+  <button data-view="reset">Nollställ</button>
+</div>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ data */
+const GRAPH = parent.PROPOSAL_DATA.graph;
+const ENTDOC = parent.PROPOSAL_DATA.entities;
+const SNAPSHOTS = parent.PROPOSAL_DATA.snapshots;
+const LINKGEO = parent.PROPOSAL_DATA.linkgeo;
+
+let dirty = true; // before applyTheme() at load
+let renderAnnounced = false;
+
+const REASONS = [
+  { key: "displacement",       cssvar: "r-disp",    label: "displacement (kilad)",
+    tip: "Botten har knappt flyttat sig på en stund trots att den försöker — den står och stampar mot en kant, ett hörn eller en vägg. Vakthunden bryter, straffar klivet och låter botten välja om väg." },
+  { key: "prestrafe_deficit",  cssvar: "r-pre",     label: "prestrafe_deficit",
+    tip: "Botten är på väg mot ett fartkliv men beräknas inte hinna bygga tillräcklig fart fram till avstampet. Den avbryter hellre än hoppar för kort ner i hålet, straffar klivet och väljer om väg." },
+  { key: "air_commit_off",     cssvar: "r-airoff",  label: "air_commit_off",
+    tip: "Botten tog ett kliv genom luften och landade — men inte på klivets målcell. Fel landningsplats: klivet straffas och rutten görs om därifrån den faktiskt står." },
+  { key: "air_commit_timeout", cssvar: "r-airtime", label: "air_commit_timeout",
+    tip: "Botten tog ett kliv genom luften men registrerade aldrig någon landning i tid — den blev hängande, föll långt eller fastnade i luften. Klivet straffas och rutten görs om." },
+  { key: "speedjump_stall",    cssvar: "r-sj",      label: "speedjump_stall",
+    tip: "Ansatsen till ett fartkliv har stått still i över 4 sekunder — botten är blockerad, knuffad eller fick aldrig upp farten. Den överger ansatsen, straffar klivet och väljer om väg." },
+];
+const REASON_VAR = Object.fromEntries(REASONS.map(r => [r.key, r.cssvar]));
+
+const ZONES = [
+  { name: "1 · under bron",  pos: [1360, -16, -168], r: 340 },
+  { name: "2 · pent-rampen", pos: [1312, 1040, -270], r: 340 },
+  { name: "3 · ring/quad",   pos: [480, -30, 56], r: 420 },
+  { name: "4 · SNG-däcket",  pos: [-480, 640, 120], r: 260 },
+];
+function zoneOf(p) {
+  for (const z of ZONES) if (Math.hypot(p[0] - z.pos[0], p[1] - z.pos[1]) <= z.r) return z.name;
+  return "";
+}
+
+/* Finer partition for the table view: every cell belongs to its nearest
+   landmark — QW-läsbara regionnamn, ingen "övrigt"-hink. */
+const REGIONS = [
+  ["pent-ön", 1008, 800, -296], ["pent-rampen", 1312, 1040, -270],
+  ["under bron", 1360, -16, -168], ["bron hög", 1368, -360, -48],
+  ["water/LG", 1544, -192, -416], ["water/GL", 1216, 240, -416],
+  ["YA-boxen", 1232, -904, -48], ["RA", 256, -704, 304], ["RA-tunneln", 64, -208, -136],
+  ["ring", 240, -32, 56], ["quad", 952, 296, 56], ["ring/quad-stråket", 560, 60, 56],
+  ["SNG-däcket", -512, 448, 96], ["SNG-tele", -624, -240, -40], ["SNG lågt", -600, 620, -40],
+  ["lifts", 512, 768, 216], ["window", 1328, 544, 44], ["RL", 1520, 496, -112],
+  ["hill", 564, -48, -192],
+];
+function regionOf(p) {
+  let best = null, bd = Infinity;
+  for (const r of REGIONS) {
+    const d = Math.hypot(p[0] - r[1], p[1] - r[2]) + Math.abs(p[2] - r[3]) * 0.5;
+    if (d < bd) { bd = d; best = r; }
+  }
+  return best[0];
+}
+
+/* entities: one orientation layer */
+const KIND_STYLE = {
+  quad: { color: "#4a86ff", shape: "star", size: 9, label: "QUAD" },
+  pent: { color: "#ff4d3d", shape: "star", size: 9, label: "PENT" },
+  ring: { color: "#b06cff", shape: "star", size: 9, label: "RING" },
+  ra: { color: "#e2382c", shape: "diamond", size: 9, label: "RA" },
+  ya: { color: "#ffc21f", shape: "diamond", size: 9, label: "YA" },
+  mh: { color: "#ff8a5c", shape: "cross", size: 9, label: "MH" },
+  rl: { color: "#d4dae1", shape: "square", size: 7, label: "RL" },
+  lg: { color: "#d4dae1", shape: "square", size: 7, label: "LG" },
+  gl: { color: "#d4dae1", shape: "square", size: 7, label: "GL" },
+  sng: { color: "#d4dae1", shape: "square", size: 7, label: "SNG" },
+  ssg: { color: "#d4dae1", shape: "square", size: 7, label: "SSG" },
+  ng: { color: "#d4dae1", shape: "square", size: 7, label: "NG" },
+};
+const ENTS = [];
+for (const e of ENTDOC.entities) {
+  if (e.type === "spawn") {
+    ENTS.push({ x: e.x, y: e.y, z: e.z, loc: e.loc, label: "SPAWN", color: "#4fd77a", shape: "ring", baseSize: 9, major: false, isSpawn: true });
+  } else if (e.type === "item" && KIND_STYLE[e.kind]) {
+    const s = KIND_STYLE[e.kind];
+    ENTS.push({ x: e.x, y: e.y, z: e.z, loc: e.loc, label: s.label, color: s.color, shape: s.shape, baseSize: s.size,
+                major: ["quad", "pent", "ring", "ra", "ya", "mh"].includes(e.kind) });
+  }
+}
+
+/* ------------------------------------------------------------------ mesh */
+const GRID = GRAPH.grid, HALF = GRID / 2;
+const CELL_N = GRAPH.cells.length / 3;
+const CX = new Float32Array(CELL_N), CY = new Float32Array(CELL_N), CZ = new Float32Array(CELL_N);
+for (let i = 0; i < CELL_N; i++) {
+  CX[i] = GRAPH.cells[i * 3]; CY[i] = GRAPH.cells[i * 3 + 1]; CZ[i] = GRAPH.cells[i * 3 + 2];
+}
+const ID2POS = new Map();
+for (let i = 0; i < CELL_N; i++) ID2POS.set(GRAPH.cell_ids[i], [CX[i], CY[i], CZ[i]]);
+let zMin = Infinity, zMax = -Infinity, xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+for (let i = 0; i < CELL_N; i++) {
+  if (CZ[i] < zMin) zMin = CZ[i]; if (CZ[i] > zMax) zMax = CZ[i];
+  if (CX[i] < xMin) xMin = CX[i]; if (CX[i] > xMax) xMax = CX[i];
+  if (CY[i] < yMin) yMin = CY[i]; if (CY[i] > yMax) yMax = CY[i];
+}
+const CT = new Float32Array(CELL_N);
+for (let i = 0; i < CELL_N; i++) CT[i] = (CZ[i] - zMin) / (zMax - zMin || 1);
+
+/* ---------------------------------------------------------------- palette */
+const PALETTES = {
+  dark: { ground: "#0c0b0a", lo: [38, 42, 51], mid: [69, 61, 51], hi: [125, 109, 81], halo: "#0c0b0a", ink: "#ece7dd", muted: "#857c6f", edge: "rgba(0,0,0,0.45)" },
+  light: { ground: "#efe9de", lo: [182, 186, 196], mid: [156, 144, 120], hi: [85, 70, 46], halo: "#fcf9f4", ink: "#221e18", muted: "#746b5e", edge: "rgba(255,255,255,0.5)" },
+};
+let PAL = PALETTES.dark;
+function currentTheme() {
+  const forced = document.documentElement.getAttribute("data-theme");
+  if (forced === "light" || forced === "dark") return forced;
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+const MESH_RAMP = new Array(64);
+function buildRamp() {
+  for (let i = 0; i < 64; i++) {
+    const t = i / 63;
+    const a = t < 0.5 ? PAL.lo : PAL.mid, b = t < 0.5 ? PAL.mid : PAL.hi;
+    const k = t < 0.5 ? t * 2 : (t - 0.5) * 2;
+    MESH_RAMP[i] = "rgb(" + Math.round(a[0] + (b[0] - a[0]) * k) + "," +
+      Math.round(a[1] + (b[1] - a[1]) * k) + "," + Math.round(a[2] + (b[2] - a[2]) * k) + ")";
+  }
+}
+function cssColor(v) { return getComputedStyle(document.documentElement).getPropertyValue("--" + v).trim(); }
+let RC = {};
+function applyTheme() {
+  PAL = PALETTES[currentTheme()];
+  buildRamp();
+  RC = { "r-disp": cssColor("r-disp"), "r-pre": cssColor("r-pre"), "r-airoff": cssColor("r-airoff"),
+         "r-airtime": cssColor("r-airtime"), "r-sj": cssColor("r-sj"), arc: cssColor("arc"),
+         accent: cssColor("accent") };
+  dirty = true;
+}
+window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", applyTheme);
+new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+/* ----------------------------------------------------------------- camera */
+const HOME = {
+  yaw: 232 * Math.PI / 180, pitch: 34 * Math.PI / 180, dist: 3500,
+  target: [(xMin + xMax) / 2, (yMin + yMax) / 2, (zMin + zMax) / 2 + 40],
+};
+const cam = { yaw: HOME.yaw, pitch: HOME.pitch, dist: HOME.dist, target: HOME.target.slice() };
+const FOV = 52 * Math.PI / 180;
+let W = 0, H = 0, DPR = 1, focal = 800;
+let eye = [0, 0, 0], right = [1, 0, 0], upv = [0, 1, 0], fwd = [0, 0, 1];
+function updateCamera() {
+  const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  eye = [cam.target[0] + cam.dist * cp * Math.cos(cam.yaw),
+         cam.target[1] + cam.dist * cp * Math.sin(cam.yaw),
+         cam.target[2] + cam.dist * sp];
+  let fx = cam.target[0] - eye[0], fy = cam.target[1] - eye[1], fz = cam.target[2] - eye[2];
+  const fl = Math.hypot(fx, fy, fz) || 1;
+  fwd = [fx / fl, fy / fl, fz / fl];
+  let rx = fwd[1], ry = -fwd[0];
+  const rl = Math.hypot(rx, ry) || 1;
+  right = [rx / rl, ry / rl, 0];
+  upv = [right[1] * fwd[2] - right[2] * fwd[1],
+         right[2] * fwd[0] - right[0] * fwd[2],
+         right[0] * fwd[1] - right[1] * fwd[0]];
+  focal = (H / 2) / Math.tan(FOV / 2);
+}
+const NEAR = 24;
+let outX = 0, outY = 0, outZ = 0;
+function project(x, y, z) {
+  const dx = x - eye[0], dy = y - eye[1], dz = z - eye[2];
+  const vz = dx * fwd[0] + dy * fwd[1] + dz * fwd[2];
+  outZ = vz;
+  if (vz < NEAR) return false;
+  const vx = dx * right[0] + dy * right[1] + dz * right[2];
+  const vy = dx * upv[0] + dy * upv[1] + dz * upv[2];
+  const s = focal / vz;
+  outX = W / 2 + vx * s; outY = H / 2 - vy * s;
+  return true;
+}
+
+/* ------------------------------------------------------------------ state */
+const reasonsOn = new Set(REASONS.map(r => r.key));
+let arcsOn = true, zonesOn = true, meshOn = true, itemsOn = true, spawnsOn = true;
+let focusIdx = SNAPSHOTS.length - 1;
+let refIdx = null;            // null = single mode
+let selected = null, hovered = null;
+let dragging = false;
+
+/* view model: union of cells across focused + reference */
+let VIEW = [];
+function rebuildView() {
+  const focus = SNAPSHOTS[focusIdx];
+  const ref = refIdx != null ? SNAPSHOTS[refIdx] : null;
+  const map = new Map();
+  for (const c of focus.cells) map.set(c.cell, { cell: c.cell, f: c, r: null });
+  if (ref) {
+    for (const c of ref.cells) {
+      const v = map.get(c.cell);
+      if (v) v.r = c;
+      else map.set(c.cell, { cell: c.cell, f: null, r: c });
+    }
+  }
+  VIEW = [];
+  for (const v of map.values()) {
+    const pos = (v.f && v.f.pos) || (v.r && v.r.pos) || ID2POS.get(v.cell);
+    if (!pos) continue;
+    v.pos = pos;
+    v.zone = zoneOf(pos);
+    v.sx = 0; v.sy = 0; v.vz = -1; v.drawn = false;
+    VIEW.push(v);
+  }
+  VIEW.sort((a, b) => ((b.f ? b.f.n : 0) - (a.f ? a.f.n : 0)) || ((b.r ? b.r.n : 0) - (a.r ? a.r.n : 0)));
+}
+
+function visCount(c) {
+  if (!c) return 0;
+  let n = 0;
+  for (const r in c.reasons) if (reasonsOn.has(r)) n += c.reasons[r];
+  return n;
+}
+function dominantOn(c) {
+  let best = null, bn = -1;
+  for (const r in c.reasons) {
+    if (!reasonsOn.has(r)) continue;
+    if (c.reasons[r] > bn) { bn = c.reasons[r]; best = r; }
+  }
+  return best;
+}
+
+/* ---------------------------------------------------------------- canvas */
+const canvas = document.getElementById("scene");
+const ctx = canvas.getContext("2d", { alpha: false });
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = canvas.clientWidth; H = canvas.clientHeight;
+  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  dirty = true;
+}
+window.addEventListener("resize", resize);
+
+const qx = new Float32Array(CELL_N * 4), qy = new Float32Array(CELL_N * 4);
+const qd = new Float32Array(CELL_N);
+const order = new Int32Array(CELL_N);
+
+function drawMesh() {
+  let n = 0;
+  for (let i = 0; i < CELL_N; i++) {
+    const x = CX[i], y = CY[i], z = CZ[i];
+    let ok = true, depth = 0;
+    const o = i * 4;
+    for (let c = 0; c < 4; c++) {
+      const px = x + (c === 0 || c === 3 ? -HALF : HALF);
+      const py = y + (c < 2 ? -HALF : HALF);
+      if (!project(px, py, z)) { ok = false; break; }
+      qx[o + c] = outX; qy[o + c] = outY; depth += outZ;
+    }
+    if (ok) { qd[i] = depth * 0.25; order[n++] = i; }
+  }
+  const arr = Array.prototype.slice.call(order.subarray(0, n));
+  arr.sort((a, b) => qd[b] - qd[a]);
+  const outline = cam.dist < 1500;
+  ctx.lineWidth = 1; ctx.strokeStyle = PAL.edge;
+  for (let k = 0; k < arr.length; k++) {
+    const i = arr[k], o = i * 4;
+    ctx.beginPath();
+    ctx.moveTo(qx[o], qy[o]); ctx.lineTo(qx[o + 1], qy[o + 1]);
+    ctx.lineTo(qx[o + 2], qy[o + 2]); ctx.lineTo(qx[o + 3], qy[o + 3]);
+    ctx.closePath();
+    ctx.fillStyle = MESH_RAMP[(CT[i] * 63) | 0];
+    ctx.fill();
+    if (outline) ctx.stroke();
+  }
+}
+
+function markerPath(shape, x, y, s) {
+  ctx.beginPath();
+  switch (shape) {
+    case "diamond":
+      ctx.moveTo(x, y - s); ctx.lineTo(x + s * 0.78, y);
+      ctx.lineTo(x, y + s); ctx.lineTo(x - s * 0.78, y); ctx.closePath(); break;
+    case "square": ctx.rect(x - s * 0.72, y - s * 0.72, s * 1.44, s * 1.44); break;
+    case "cross": {
+      const a = s * 0.34, b = s;
+      ctx.moveTo(x - a, y - b); ctx.lineTo(x + a, y - b); ctx.lineTo(x + a, y - a);
+      ctx.lineTo(x + b, y - a); ctx.lineTo(x + b, y + a); ctx.lineTo(x + a, y + a);
+      ctx.lineTo(x + a, y + b); ctx.lineTo(x - a, y + b); ctx.lineTo(x - a, y + a);
+      ctx.lineTo(x - b, y + a); ctx.lineTo(x - b, y - a); ctx.lineTo(x - a, y - a);
+      ctx.closePath(); break;
+    }
+    case "star":
+      for (let i = 0; i < 12; i++) {
+        const r = i % 2 ? s * 0.44 : s * 1.05;
+        const a = -Math.PI / 2 + i * Math.PI / 6;
+        const px = x + Math.cos(a) * r, py = y + Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath(); break;
+    default: ctx.arc(x, y, s * 0.8, 0, Math.PI * 2);
+  }
+}
+
+function drawEntities() {
+  if (!itemsOn && !spawnsOn) {
+    for (const e of ENTS) e.drawn = false; // pickern och framtida läsare får aldrig se stale träffytor
+    return;
+  }
+  const mono = getComputedStyle(document.body).getPropertyValue("--mono");
+  const labels = [];
+  for (const e of ENTS) {
+    e.drawn = false;
+    if (e.isSpawn ? !spawnsOn : !itemsOn) continue;
+    if (!project(e.x, e.y, e.z)) continue;
+    e.sx = outX; e.sy = outY; e.vz = outZ; e.drawn = true;
+    const s = e.baseSize * Math.min(Math.max(1100 / outZ, 0.5), 2.2);
+    if (e.shape === "ring") {
+      ctx.lineWidth = 2; ctx.strokeStyle = PAL.halo;
+      markerPath("dot", e.sx, e.sy, s); ctx.stroke();
+      ctx.lineWidth = 1.6; ctx.strokeStyle = e.color;
+      markerPath("dot", e.sx, e.sy, s); ctx.stroke();
+    } else {
+      ctx.lineWidth = 2.2; ctx.strokeStyle = PAL.halo;
+      markerPath(e.shape, e.sx, e.sy, s); ctx.stroke();
+      ctx.fillStyle = e.color;
+      markerPath(e.shape, e.sx, e.sy, s); ctx.fill();
+    }
+    if (!dragging && e.major) labels.push([e, s]);
+  }
+  ctx.font = "600 10px " + mono;
+  ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+  for (const [e, s] of labels) {
+    ctx.lineWidth = 3; ctx.strokeStyle = PAL.halo;
+    ctx.strokeText(e.label, e.sx, e.sy - s * 1.5);
+    ctx.fillStyle = e.color;
+    ctx.fillText(e.label, e.sx, e.sy - s * 1.5);
+  }
+}
+
+/* one stall bar; returns head position or null */
+function drawBar(pos, n, color, alpha, xoff, dashed, pxref) {
+  const h = 26 + Math.sqrt(n) * 26;
+  const zb = pos[2] - 20;
+  if (!project(pos[0], pos[1], zb)) return null;
+  const bx = outX + xoff, by = outY, bvz = outZ;
+  if (!project(pos[0], pos[1], zb + h)) return null;
+  const tx = outX + xoff, ty = outY;
+  const px = Math.min(Math.max(1100 / bvz, 0.5), 2.4);
+  ctx.globalAlpha = alpha * 0.5;
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(bx, by, 5.5 * px, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = alpha;
+  ctx.lineWidth = Math.max(2.5, (2 + Math.log2(1 + n)) * px * 0.9);
+  ctx.strokeStyle = color;
+  if (dashed) ctx.setLineDash([5, 4]);
+  ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(tx, ty); ctx.stroke();
+  ctx.setLineDash([]);
+  const hr = (3.5 + Math.sqrt(n) * 1.15) * px;
+  ctx.lineWidth = 2; ctx.strokeStyle = PAL.halo;
+  ctx.beginPath(); ctx.arc(tx, ty, hr, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(tx, ty, hr, 0, Math.PI * 2);
+  if (dashed) { ctx.globalAlpha = alpha * 0.75; }
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  return { tx, ty, hr, px, bvz };
+}
+
+function drawStalls() {
+  const mono = getComputedStyle(document.body).getPropertyValue("--mono");
+  const compare = refIdx != null && refIdx !== focusIdx;
+  const vis = VIEW.filter(v => visCount(v.f) > 0 || (compare && visCount(v.r) > 0));
+  for (const v of vis) { project(v.pos[0], v.pos[1], v.pos[2]); v._d = outZ; }
+  vis.sort((a, b) => b._d - a._d);
+
+  for (const v of vis) {
+    v.drawn = false;
+    const fn = visCount(v.f), rn = compare ? visCount(v.r) : 0;
+    // reference first: fainter, dashed, nudged left
+    if (compare && rn > 0) {
+      const rcol = RC[REASON_VAR[dominantOn(v.r)] || "r-disp"];
+      drawBar(v.pos, rn, rcol, 0.35, -9, true, null);
+    }
+    if (fn > 0) {
+      const fcol = RC[REASON_VAR[dominantOn(v.f)] || "r-disp"];
+      const head = drawBar(v.pos, fn, fcol, compare ? 0.78 : 1.0, compare ? 5 : 0, false, null);
+      if (head) {
+        v.sx = head.tx; v.sy = head.ty; v.vz = head.bvz; v.drawn = true;
+        if (!dragging && fn >= 6) {
+          ctx.font = "700 " + Math.round(10 * Math.min(head.px, 1.6)) + "px " + mono;
+          ctx.textAlign = "center"; ctx.textBaseline = "middle";
+          ctx.fillStyle = PAL.halo;
+          ctx.fillText(String(fn), head.tx, head.ty + 0.5);
+        }
+      }
+    } else if (compare && rn > 0) {
+      // ref-only cell is still pickable via its position
+      if (project(v.pos[0], v.pos[1], v.pos[2] + 20)) {
+        v.sx = outX - 9; v.sy = outY; v.vz = outZ; v.drawn = true;
+      }
+    }
+  }
+  for (const pickObj of [selected, hovered]) {
+    if (!pickObj || pickObj.kind !== "stall" || !pickObj.v.drawn) continue;
+    const v = pickObj.v;
+    ctx.strokeStyle = pickObj === selected ? PAL.ink : RC.accent;
+    ctx.lineWidth = 1.6;
+    const n = Math.max(visCount(v.f), 1);
+    ctx.beginPath();
+    ctx.arc(v.sx, v.sy, (5 + Math.sqrt(n) * 1.15) * Math.min(Math.max(1100 / v.vz, 0.5), 2.4) + 4, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
+// Bågarna har en EGEN färg, skild från orsakspaletten: bågen är inte en orsak
+// utan det felande klivet självt (länken), oavsett orsaken som fällde det.
+function hotlinks() {
+  const focus = SNAPSHOTS[focusIdx];
+  const out = [];
+  for (const [id, n] of Object.entries(focus.linktotals || {})) {
+    const geo = LINKGEO[id];
+    if (n >= 3 && geo && geo.a) out.push({ id, n, ...geo });
+  }
+  return out;
+}
+function drawArcs() {
+  if (!arcsOn) return;
+  for (const L of hotlinks()) {
+    const col = RC.arc;
+    const peak = 46 + Math.max(L.dz || 0, 0) * 0.6;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1 + Math.log2(1 + L.n);
+    ctx.globalAlpha = 0.8;
+    ctx.beginPath();
+    let started = false, lx = 0, ly = 0;
+    for (let i = 0; i <= 14; i++) {
+      const t = i / 14;
+      const x = L.a[0] + (L.b[0] - L.a[0]) * t;
+      const y = L.a[1] + (L.b[1] - L.a[1]) * t;
+      const z = L.a[2] + (L.b[2] - L.a[2]) * t + peak * Math.sin(Math.PI * t);
+      if (!project(x, y, z)) { started = false; continue; }
+      if (!started) { ctx.moveTo(outX, outY); started = true; }
+      else ctx.lineTo(outX, outY);
+      lx = outX; ly = outY;
+    }
+    ctx.stroke();
+    if (project(L.b[0], L.b[1], L.b[2] + 6)) {
+      const dx = outX - lx, dy = outY - ly;
+      const d = Math.hypot(dx, dy) || 1;
+      const ux = dx / d, uy = dy / d;
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(outX, outY);
+      ctx.lineTo(outX - ux * 9 - uy * 4, outY - uy * 9 + ux * 4);
+      ctx.lineTo(outX - ux * 9 + uy * 4, outY - uy * 9 - ux * 4);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawZones() {
+  if (!zonesOn || dragging) return;
+  const mono = getComputedStyle(document.body).getPropertyValue("--mono");
+  ctx.font = "700 12px " + mono;
+  ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+  for (const z of ZONES) {
+    if (!project(z.pos[0], z.pos[1], z.pos[2] + 200)) continue;
+    ctx.lineWidth = 4; ctx.strokeStyle = PAL.halo;
+    ctx.strokeText(z.name, outX, outY);
+    ctx.fillStyle = RC.accent;
+    ctx.fillText(z.name, outX, outY);
+  }
+}
+
+function render() {
+  updateCamera();
+  ctx.fillStyle = PAL.ground;
+  ctx.fillRect(0, 0, W, H);
+  if (meshOn) drawMesh();
+  drawArcs();
+  drawEntities();
+  drawStalls();
+  drawZones();
+  if (!renderAnnounced) {
+    renderAnnounced = true;
+    parent.postMessage({ type: "proposal-map-rendered", focus: SNAPSHOTS[focusIdx].id }, "*");
+  }
+}
+
+let tween = null;
+function tweenTo(target, dist, yaw, pitch) {
+  tween = {
+    t: 0,
+    from: { target: cam.target.slice(), dist: cam.dist, yaw: cam.yaw, pitch: cam.pitch },
+    to: { target: target || cam.target.slice(), dist: dist != null ? dist : cam.dist,
+          yaw: yaw != null ? yaw : cam.yaw, pitch: pitch != null ? pitch : cam.pitch },
+  };
+}
+function stepTween() {
+  tween.t = Math.min(1, tween.t + 0.09);
+  const k = tween.t < 0.5 ? 2 * tween.t * tween.t : 1 - 2 * (1 - tween.t) * (1 - tween.t);
+  const f = tween.from, t = tween.to;
+  for (let i = 0; i < 3; i++) cam.target[i] = f.target[i] + (t.target[i] - f.target[i]) * k;
+  cam.dist = f.dist + (t.dist - f.dist) * k;
+  cam.yaw = f.yaw + (t.yaw - f.yaw) * k;
+  cam.pitch = f.pitch + (t.pitch - f.pitch) * k;
+  dirty = true;
+  if (tween.t >= 1) tween = null;
+}
+function frame() {
+  if (tween) stepTween();
+  if (dirty) { dirty = false; render(); }
+  requestAnimationFrame(frame);
+}
+
+/* ------------------------------------------------------------ interaction */
+let lastX = 0, lastY = 0, panning = false;
+canvas.addEventListener("pointerdown", ev => {
+  canvas.setPointerCapture(ev.pointerId);
+  dragging = true;
+  panning = ev.shiftKey || ev.button === 1 || ev.button === 2;
+  lastX = ev.clientX; lastY = ev.clientY;
+  canvas.classList.add("dragging");
+  tween = null;
+});
+canvas.addEventListener("contextmenu", ev => ev.preventDefault());
+canvas.addEventListener("pointermove", ev => {
+  if (dragging) {
+    const dx = ev.clientX - lastX, dy = ev.clientY - lastY;
+    lastX = ev.clientX; lastY = ev.clientY;
+    if (panning) {
+      const k = cam.dist / focal;
+      for (let i = 0; i < 3; i++) cam.target[i] += (-right[i] * dx + upv[i] * dy) * k;
+    } else {
+      cam.yaw -= dx * 0.006;
+      cam.pitch = Math.max(-1.48, Math.min(1.48, cam.pitch + dy * 0.005));
+    }
+    dirty = true;
+    return;
+  }
+  pick(ev.clientX, ev.clientY);
+});
+canvas.addEventListener("pointerup", ev => {
+  dragging = false; canvas.classList.remove("dragging");
+  canvas.releasePointerCapture(ev.pointerId);
+  dirty = true;
+});
+canvas.addEventListener("click", ev => { select(pick(ev.clientX, ev.clientY), false); });
+canvas.addEventListener("wheel", ev => {
+  ev.preventDefault();
+  cam.dist = Math.max(160, Math.min(9000, cam.dist * Math.exp(ev.deltaY * 0.0011)));
+  dirty = true;
+}, { passive: false });
+
+function pick(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  const mx = clientX - r.left, my = clientY - r.top;
+  let best = null, bestD = 20 * 20;
+  for (const v of VIEW) {
+    if (!v.drawn) continue;
+    const d = (v.sx - mx) ** 2 + (v.sy - my) ** 2;
+    if (d <= bestD) { bestD = d; best = { kind: "stall", v }; }
+  }
+  if (!best && (itemsOn || spawnsOn)) {
+    for (const e of ENTS) {
+      if (!e.drawn) continue;
+      const d = (e.sx - mx) ** 2 + (e.sy - my) ** 2;
+      if (d <= bestD) { bestD = d; best = { kind: "ent", e }; }
+    }
+  }
+  const same = hovered && best && hovered.kind === best.kind &&
+    (best.kind === "stall" ? hovered.v === best.v : hovered.e === best.e);
+  if (!same) { hovered = best; dirty = true; showReadout(best || selected); }
+  canvas.style.cursor = best ? "pointer" : (dragging ? "grabbing" : "grab");
+  return best;
+}
+
+/* ------------------------------------------------------------------- HUD */
+const roEyebrow = document.getElementById("ro-eyebrow");
+const roName = document.getElementById("ro-name");
+const roBody = document.getElementById("ro-body");
+const readout = document.getElementById("readout");
+function esc(t) { return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+function cmpActive() { return refIdx != null && refIdx !== focusIdx; }
+
+function reasonBarHtml(v) {
+  const f = v.f, r = cmpActive() ? v.r : null;
+  const total = Math.max(f ? f.n : 0, r ? r.n : 0, 1);
+  let html = '<div class="rbars">';
+  for (const rd of REASONS) {
+    const fn = f ? (f.reasons[rd.key] || 0) : 0;
+    const rn = r ? (r.reasons[rd.key] || 0) : 0;
+    if (!fn && !rn) continue;
+    html += '<div class="rbar"><span>' + rd.key + '</span>' +
+      '<span class="track"><span class="fill" style="width:' + Math.round(100 * fn / total) +
+      '%;background:var(--' + rd.cssvar + ')"></span>' +
+      (r ? '<span class="fillref" style="width:' + Math.round(100 * rn / total) + '%;background:var(--' + rd.cssvar + ')"></span>' : "") +
+      '</span><span class="val">' + fn + (r ? " (" + rn + ")" : "") + "</span></div>";
+  }
+  return html + "</div>";
+}
+
+function linkHtml(c) {
+  const ids = Object.keys((c && c.links) || {});
+  if (!ids.length) return '<div class="linkline">ingen aktiv länk vid fyrningarna (kilad mellan legs)</div>';
+  let html = "";
+  for (const id of ids) {
+    const L = LINKGEO[id];
+    const geo = L && L.a
+      ? (L.kind + " [" + L.a.join(" ") + "] → [" + L.b.join(" ") + "] · horiz " + L.horiz + "u · dz " + (L.dz >= 0 ? "+" : "") + L.dz)
+      : "oupplöst i overlay-grafen";
+    html += '<div class="linkline"><b>länk ' + id + '</b> ×' + c.links[id] + " — " + esc(geo) + "</div>";
+  }
+  return html;
+}
+
+function verdictFor(c) {
+  if (!c) return "";
+  const dom = c.reason;
+  if (dom === "displacement" && c.before_slow != null && c.before_slow >= 0.6) {
+    return "Kroppen var redan stilla i " + Math.round(c.before_slow * 100) +
+      " % av fönstren 2 s före fyrning — fastkilning mot geometri, inte ett misslyckat hopp.";
+  }
+  if (dom === "prestrafe_deficit") {
+    return "Botten commit:ar en speedjump-länk med för lite fart (median " + c.speed_med +
+      " ups). Runway-gate i routern är rätt verktyg.";
+  }
+  if (dom && dom.startsWith("air_commit")) {
+    return "Hoppet genomförs men landar fel eller timar ut — länkgeometrin ligger nära kuvertkanten. Margin-taxan prissätter den här klassen.";
+  }
+  if (dom === "speedjump_stall") return "Speedjump-uppstarten stannar av — kolla runway-cellerna bakom avstampet.";
+  return "";
+}
+
+function showReadout(pickObj) {
+  if (!pickObj) {
+    readout.classList.add("idle");
+    roEyebrow.textContent = "Diagnos";
+    roName.textContent = "Klicka en stall-stapel eller en rad i listan";
+    roBody.innerHTML = "";
+    return;
+  }
+  readout.classList.remove("idle");
+  if (pickObj.kind === "ent") {
+    const e = pickObj.e;
+    roEyebrow.textContent = "orientering";
+    roName.textContent = e.label + (e.loc ? " · " + e.loc : "");
+    roBody.innerHTML = '<div class="meta"><span><b>x</b> ' + e.x + '</span><span><b>y</b> ' + e.y +
+      '</span><span><b>z</b> ' + e.z + "</span></div>";
+    return;
+  }
+  const v = pickObj.v;
+  const f = v.f, r = cmpActive() ? v.r : null;
+  const main = f || r;
+  roEyebrow.textContent = (v.zone || "utanför namngiven zon") + " · cell " + v.cell;
+  roName.textContent = (f ? f.n : 0) + (r ? " (" + r.n + ")" : "") + " fyrningar · " + (main ? main.reason : "");
+  let html = '<div class="meta">' +
+    '<span><b>pos</b> ' + v.pos.map(Math.round).join(" ") + "</span>";
+  if (f) {
+    const ph = f.phases || {};
+    if (ph.trial) html += '<span><b>trial</b> ' + ph.trial + "</span>";
+    html += '<span><b>fart vid fyrning</b> med ' + f.speed_med +
+      (r ? " (" + r.speed_med + ")" : "") + " · max " + f.speed_max + "</span>";
+    if (f.before_med != null) {
+      html += '<span><b>2 s före (audit)</b> med ' + f.before_med + " ups · långsam i " +
+        Math.round((f.before_slow || 0) * 100) + " %</span>";
+    }
+  } else {
+    html += '<span><b>bara i referensen</b> — borta i fokus-snapshoten</span>';
+  }
+  html += "</div>";
+  html += reasonBarHtml(v);
+  html += linkHtml(main);
+  if (main && main.samples && main.samples.length) {
+    html += '<div class="rbars">';
+    for (const x of main.samples) {
+      html += '<div class="sample">t=' + x.t + " bot" + x.bot + " " + x.reason +
+        " @" + x.speed + "ups rutt " + x.route + " → " + x.action + "</div>";
+    }
+    html += "</div>";
+  }
+  const verdict = verdictFor(main);
+  if (verdict) html += '<div class="verdict">' + esc(verdict) + "</div>";
+  roBody.innerHTML = html;
+}
+
+function select(pickObj, recenter) {
+  selected = pickObj;
+  document.querySelectorAll(".row.sel").forEach(n => n.classList.remove("sel"));
+  if (pickObj && pickObj.kind === "stall") {
+    const node = document.querySelector('[data-si="' + VIEW.indexOf(pickObj.v) + '"]');
+    if (node) { node.classList.add("sel"); node.scrollIntoView({ block: "nearest" }); }
+    if (recenter) tweenTo([pickObj.v.pos[0], pickObj.v.pos[1], pickObj.v.pos[2] + 40], Math.min(cam.dist, 900));
+  }
+  showReadout(pickObj || hovered);
+  dirty = true;
+}
+
+/* ---- snapshots panel ---- */
+const snapList = document.getElementById("snap-list");
+function fmtStat(x, digits) {
+  if (x == null) return "–";
+  return typeof x === "number" ? (digits != null ? x.toFixed(digits) : String(x)) : String(x);
+}
+const METRICS = [
+  { k: "quad_takes", label: "quad tagna", good: +1 },
+  { k: "quad_lay_avg", label: "quad liggtid s", good: -1, d: 1 },
+  { k: "pent_takes", label: "pent tagna", good: +1 },
+  { k: "pent_lay_avg", label: "pent liggtid s", good: -1, d: 1 },
+  { k: "speed_1s", label: "snittfart 1 s", good: +1 },
+  { k: "speed_100ms", label: "snittfart 100 ms", good: +1 },
+  { k: "peak_100m", label: "peak u/s (100m)", good: +1, floor: 800,
+    tip: "Högsta uppmätta fart på 100m-banans raka — ett separat dash-test kört per bygge, inte ur matchen. Under 800 u/s ligger under referensgolvet och visas rött." },
+  { k: "still_s_per_bot", label: "stilla s / bot", good: -1, d: 1 },
+  { k: "combat_lock_s_per_bot", label: "combat lock s / bot", good: -1, d: 1,
+    tip: "Sekunder botten är beskjuten av en fiende inom sitt synfält utan att svara med egna skott. Räknas ur matchdemon i efterhand — kräver en match där någon faktiskt skjuter. I pacifist-frispel (som denna) finns inget värde; snapshot #0 (mot frogbots) har det." },
+  { k: "stall_firings", label: "stall-fyrningar", good: -1 },
+];
+function renderMatchbox() {
+  const f = SNAPSHOTS[focusIdx].stats;
+  const r = cmpActive() ? SNAPSHOTS[refIdx].stats : null;
+  const box = document.getElementById("matchbox");
+  document.getElementById("mb-ref").textContent = r ? " · (referens)" : "";
+  if (!f) {
+    box.innerHTML = '<div class="nostats">inga mätetal för denna snapshot — bara stall-data</div>';
+    return;
+  }
+  let html = "";
+  for (const m of METRICS) {
+    const fv = f[m.k], rv = r ? r[m.k] : null;
+    const belowFloor = m.floor != null && fv != null && fv < m.floor;
+    let val = "<b>" + (belowFloor ? '<span style="color:var(--bad)">' + fmtStat(fv, m.d) + "</span>" : fmtStat(fv, m.d)) + "</b>";
+    if (r) {
+      val += ' <span class="ref">(' + fmtStat(rv, m.d) + ")</span>";
+      if (fv != null && rv != null && fv !== rv) {
+        const up = fv > rv;
+        const goodChange = (m.good > 0) === up;
+        val += ' <span class="' + (up ? "up" : "down") + (goodChange ? (up ? " goodup" : "") : (up ? "" : " baddown")) + '">' +
+          (up ? "▲" : "▼") + "</span>";
+      }
+    }
+    html += '<div class="mrow"' + (m.tip ? ' title="' + m.tip + '"' : "") + '><span>' + m.label + '</span><span class="v">' + val + "</span></div>";
+  }
+  html += '<div class="mrow"><span>längd</span><span class="v">' + fmtStat(f.duration_s) + " s" +
+    (r && r.duration_s ? ' <span class="ref">(' + r.duration_s + ")</span>" : "") + "</span></div>";
+  box.innerHTML = html;
+}
+
+function renderSnapList() {
+  snapList.innerHTML = "";
+  SNAPSHOTS.forEach((s, i) => {
+    const row = document.createElement("div");
+    row.className = "snaprow" + (i === focusIdx ? " focus" : "") + (i === refIdx ? " ref" : "");
+    row.innerHTML = '<span class="dot"></span>' +
+      '<span class="lbl"><b>#' + s.run + '</b>' +
+      (s.regime ? ' <span class="regime">' + esc(s.regime) + "</span>" : "") + ' · ' + esc(s.label) +
+      '<br><span class="sub">' + s.date + (s.time ? " " + s.time : "") + " · " + esc(s.branch) + "</span></span>" +
+      '<span class="refchip">REF</span>';
+    row.addEventListener("click", ev => {
+      if (ev.target.classList.contains("refchip")) {
+        refIdx = (refIdx === i) ? null : i;
+        if (refIdx === focusIdx) refIdx = null;
+      } else {
+        focusIdx = i;
+        if (refIdx === focusIdx) refIdx = null;
+      }
+      refreshAll();
+    });
+    snapList.appendChild(row);
+  });
+  const note = document.getElementById("cmpnote");
+  if (!cmpActive()) {
+    note.textContent = "Välj REF på en annan snapshot för att jämföra.";
+    note.classList.remove("warn");
+  } else if (SNAPSHOTS[focusIdx].regime && SNAPSHOTS[refIdx].regime
+             && SNAPSHOTS[focusIdx].regime !== SNAPSHOTS[refIdx].regime) {
+    note.textContent = "⚠ OLIKA REGIMER (" + SNAPSHOTS[focusIdx].regime + " mot " + SNAPSHOTS[refIdx].regime +
+      ") — talen mäter olika saker och ska inte jämföras rakt av. " +
+      "Jämför: fokus heldragen, referens streckad. () = referensens värde.";
+    note.classList.add("warn");
+  } else {
+    note.textContent = "Jämför: fokus heldragen, referens streckad och blekare. () = referensens värde.";
+    note.classList.remove("warn");
+  }
+}
+
+/* reasons rail */
+const reasonList = document.getElementById("reason-list");
+function reasonTotalsOf(snap) {
+  const totals = {};
+  for (const c of snap.cells) {
+    for (const r in c.reasons) totals[r] = (totals[r] || 0) + c.reasons[r];
+  }
+  return totals;
+}
+function renderReasons() {
+  reasonList.innerHTML = "";
+  const totals = reasonTotalsOf(SNAPSHOTS[focusIdx]);
+  const refTotals = cmpActive() ? reasonTotalsOf(SNAPSHOTS[refIdx]) : null;
+  for (const r of REASONS) {
+    const row = document.createElement("div");
+    row.className = "lrow" + (reasonsOn.has(r.key) ? "" : " off");
+    row.title = r.tip;
+    const fn = totals[r.key] || 0;
+    let ct = String(fn);
+    if (refTotals) {
+      const rn = refTotals[r.key] || 0;
+      ct += " (" + rn + ")";
+      if (fn !== rn) ct += ' <span style="color:var(--' + (fn > rn ? "bad" : "good") + ')">' + (fn > rn ? "▲" : "▼") + "</span>";
+    }
+    row.innerHTML = '<span class="sw round" style="background:var(--' + r.cssvar + ')"></span>' +
+      '<span class="nm">' + r.label + '</span><span class="ct">' + ct + "</span>";
+    row.addEventListener("click", () => {
+      if (reasonsOn.has(r.key)) reasonsOn.delete(r.key); else reasonsOn.add(r.key);
+      row.classList.toggle("off", !reasonsOn.has(r.key));
+      dirty = true;
+    });
+    reasonList.appendChild(row);
+  }
+}
+
+/* index */
+const indexBody = document.getElementById("index-body");
+function renderIndex() {
+  indexBody.innerHTML = "";
+  document.getElementById("index-head").textContent =
+    "Stall-celler" + (cmpActive() ? " · fokus (ref)" : "") + " · klicka för diagnos";
+  const byZone = new Map();
+  for (const v of VIEW) {
+    const key = v.zone || "övriga celler";
+    if (!byZone.has(key)) byZone.set(key, []);
+    byZone.get(key).push(v);
+  }
+  const zoneOrder = [...ZONES.map(z => z.name), "övriga celler"];
+  for (const zname of zoneOrder) {
+    const rows = byZone.get(zname) || [];
+    if (!rows.length) continue;
+    const fsum = rows.reduce((a, v) => a + (v.f ? v.f.n : 0), 0);
+    const rsum = rows.reduce((a, v) => a + (v.r ? v.r.n : 0), 0);
+    const h = document.createElement("h2");
+    h.textContent = zname + " · " + fsum + (cmpActive() ? " (" + rsum + ")" : "") + " fyrn.";
+    indexBody.appendChild(h);
+    for (const v of rows) {
+      const main = v.f || v.r;
+      const row = document.createElement("div");
+      row.className = "row";
+      row.dataset.si = String(VIEW.indexOf(v));
+      let aux = "×" + (v.f ? v.f.n : 0);
+      if (cmpActive()) {
+        const fn = v.f ? v.f.n : 0, rn = v.r ? v.r.n : 0;
+        aux += " (" + rn + ")";
+        if (fn !== rn) aux += ' <span class="' + (fn > rn ? "d-up" : "d-down") + '">' + (fn > rn ? "▲" : "▼") + "</span>";
+      }
+      row.innerHTML = '<span class="dot" style="background:var(--' + (REASON_VAR[main.reason] || "r-disp") + ')"></span>' +
+        "<span>cell " + v.cell + " · " + main.reason.replace("_", " ") + "</span>" +
+        '<span class="aux">' + aux + "</span>";
+      row.addEventListener("click", () => select({ kind: "stall", v }, true));
+      row.addEventListener("mouseenter", () => { hovered = { kind: "stall", v }; showReadout(hovered); dirty = true; });
+      row.addEventListener("mouseleave", () => { hovered = null; showReadout(selected); dirty = true; });
+      indexBody.appendChild(row);
+    }
+  }
+}
+
+/* ---- table view ---- */
+function cellDiff(fn, rn, compare) {
+  if (!compare) return fn ? String(fn) : "";
+  if (!fn && !rn) return "";
+  let s = fn + ' <span class="ref">(' + rn + ")</span>";
+  if (fn !== rn) s += ' <span class="' + (fn > rn ? "d-up" : "d-down") + '">' + (fn > rn ? "▲" : "▼") + "</span>";
+  return s;
+}
+function regionMatrix(snap) {
+  const m = new Map();
+  for (const c of snap.cells) {
+    const pos = c.pos || ID2POS.get(c.cell);
+    if (!pos) continue;
+    const reg = regionOf(pos);
+    let row = m.get(reg);
+    if (!row) m.set(reg, row = {});
+    for (const r in c.reasons) row[r] = (row[r] || 0) + c.reasons[r];
+  }
+  return m;
+}
+function renderTable() {
+  const compare = cmpActive();
+  const F = regionMatrix(SNAPSHOTS[focusIdx]);
+  const R = compare ? regionMatrix(SNAPSHOTS[refIdx]) : new Map();
+  document.getElementById("tv-title").textContent =
+    "Fel per region · #" + SNAPSHOTS[focusIdx].run + " · " + SNAPSHOTS[focusIdx].label;
+  document.getElementById("tv-note").textContent = compare
+    ? "() = referensen #" + SNAPSHOTS[refIdx].run + " · klick på region flyger 3D-vyn dit"
+    : "klick på region flyger 3D-vyn dit · välj REF på en snapshot för jämförelse";
+  const regions = [...new Set([...F.keys(), ...R.keys()])];
+  const tot = reg => {
+    const f = F.get(reg) || {}, r = R.get(reg) || {};
+    return [Object.values(f).reduce((a, b) => a + b, 0), Object.values(r).reduce((a, b) => a + b, 0)];
+  };
+  regions.sort((a, b) => tot(b)[0] - tot(a)[0] || tot(b)[1] - tot(a)[1]);
+  let html = '<table class="matrix"><tr><th>region</th>';
+  for (const r of REASONS) html += "<th>" + r.key.replace("_", " ").replace("air commit ", "air ") + "</th>";
+  html += "<th>summa</th></tr>";
+  const colSum = { f: {}, r: {} };
+  for (const reg of regions) {
+    const f = F.get(reg) || {}, r = R.get(reg) || {};
+    html += '<tr data-region="' + reg + '"><td>' + reg + "</td>";
+    for (const rd of REASONS) {
+      const fn = f[rd.key] || 0, rn = r[rd.key] || 0;
+      colSum.f[rd.key] = (colSum.f[rd.key] || 0) + fn;
+      colSum.r[rd.key] = (colSum.r[rd.key] || 0) + rn;
+      const s = cellDiff(fn, rn, compare);
+      html += '<td class="' + (s ? "" : "zero") + '">' + (s || "·") + "</td>";
+    }
+    const [tf, tr] = tot(reg);
+    html += "<td><b>" + cellDiff(tf, tr, compare) + "</b></td></tr>";
+  }
+  html += '<tr class="sum"><td>summa</td>';
+  let gf = 0, gr = 0;
+  for (const rd of REASONS) {
+    const fn = colSum.f[rd.key] || 0, rn = colSum.r[rd.key] || 0;
+    gf += fn; gr += rn;
+    html += "<td>" + (cellDiff(fn, rn, compare) || "·") + "</td>";
+  }
+  html += "<td>" + cellDiff(gf, gr, compare) + "</td></tr></table>";
+  document.getElementById("tv-body").innerHTML = html;
+  document.querySelectorAll("#tv-body tr[data-region] td:first-child").forEach(td => {
+    td.addEventListener("click", () => {
+      const reg = REGIONS.find(r => r[0] === td.parentElement.dataset.region);
+      if (!reg) return;
+      setTab("3d");
+      tweenTo([reg[1], reg[2], reg[3] + 40], 1100);
+    });
+  });
+}
+
+let tab = "3d";
+function setTab(t) {
+  tab = t;
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
+  document.getElementById("tableview").classList.toggle("on", t === "table");
+  dirty = true;
+}
+document.querySelectorAll("#tabs button").forEach(b =>
+  b.addEventListener("click", () => setTab(b.dataset.tab)));
+
+function refreshAll() {
+  selected = null; hovered = null;
+  rebuildView();
+  const focus = SNAPSHOTS[focusIdx];
+  document.getElementById("ident-title").textContent = "#" + focus.run + " · " + focus.label;
+  document.getElementById("s-total").textContent =
+    String(focus.cells.reduce((a, c) => a + c.n, 0));
+  document.getElementById("s-cells").textContent = String(focus.cells.length);
+  document.getElementById("s-cmp").innerHTML = cmpActive()
+    ? 'ref: <b>#' + SNAPSHOTS[refIdx].run + " · " + esc(SNAPSHOTS[refIdx].label) + "</b>" : "";
+  renderSnapList();
+  renderMatchbox();
+  renderReasons();
+  renderIndex();
+  renderTable();
+  showReadout(null);
+  dirty = true;
+}
+
+function bindToggle(id, get, set) {
+  const node = document.getElementById(id);
+  node.classList.toggle("off", !get());
+  node.addEventListener("click", () => { set(!get()); node.classList.toggle("off", !get()); dirty = true; });
+}
+bindToggle("t-arcs", () => arcsOn, v => arcsOn = v);
+bindToggle("t-zones", () => zonesOn, v => zonesOn = v);
+bindToggle("t-items", () => itemsOn, v => itemsOn = v);
+bindToggle("t-spawns", () => spawnsOn, v => spawnsOn = v);
+bindToggle("t-mesh", () => meshOn, v => meshOn = v);
+
+const VIEWS = {
+  iso: { target: HOME.target, yaw: 232, pitch: 34, dist: 3500 },
+  top: { target: HOME.target, yaw: 270, pitch: 88, dist: 3400 },
+  bron: { target: [1360, -16, -168], yaw: 250, pitch: 30, dist: 1000 },
+  pent: { target: [1362, 1040, -260], yaw: 285, pitch: 26, dist: 1000 },
+};
+document.querySelectorAll("#controls button").forEach(b => {
+  b.addEventListener("click", () => {
+    const v = b.dataset.view;
+    if (v === "reset") { select(null, false); tweenTo(HOME.target.slice(), HOME.dist, HOME.yaw, HOME.pitch); return; }
+    const s = VIEWS[v];
+    tweenTo(s.target.slice(), s.dist, s.yaw * Math.PI / 180, s.pitch * Math.PI / 180);
+  });
+});
+window.addEventListener("keydown", ev => {
+  const step = ev.shiftKey ? 0.12 : 0.045;
+  switch (ev.key) {
+    case "ArrowLeft": cam.yaw -= step; break;
+    case "ArrowRight": cam.yaw += step; break;
+    case "ArrowUp": cam.pitch = Math.min(1.48, cam.pitch + step); break;
+    case "ArrowDown": cam.pitch = Math.max(-1.48, cam.pitch - step); break;
+    case "+": case "=": cam.dist = Math.max(160, cam.dist * 0.88); break;
+    case "-": cam.dist = Math.min(9000, cam.dist * 1.14); break;
+    case "r": case "R": tweenTo(HOME.target.slice(), HOME.dist, HOME.yaw, HOME.pitch); break;
+    case "Escape": select(null, false); break;
+    default: return;
+  }
+  ev.preventDefault();
+  dirty = true;
+});
+
+function applyExternalState(message) {
+  if (!message || message.type !== "proposal-map-state") return;
+  if (message.theme === "light" || message.theme === "dark") {
+    document.documentElement.setAttribute("data-theme", message.theme);
+  } else {
+    document.documentElement.removeAttribute("data-theme");
+  }
+  const regime = message.regime === "T3" ? "T3" : "T2";
+  const nextFocus = SNAPSHOTS.findIndex(s => s.id === message.focusSnapshot && s.regime === regime);
+  if (nextFocus < 0) return; // regimvakt: karta och cells måste höra till aktiv tier
+  const nextRef = SNAPSHOTS.findIndex(s =>
+    s.id === message.refSnapshot && s.regime === regime && s.id !== message.focusSnapshot);
+  focusIdx = nextFocus;
+  refIdx = nextRef >= 0 ? nextRef : null;
+  renderAnnounced = false;
+  refreshAll();
+  resize();
+}
+window.addEventListener("message", event => {
+  if (event.source === parent) applyExternalState(event.data);
+});
+
+applyTheme();
+refreshAll();
+resize();
+requestAnimationFrame(frame);
+parent.postMessage({ type: "proposal-map-ready" }, "*");
+</script>
