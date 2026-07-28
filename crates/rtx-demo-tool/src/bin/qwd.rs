@@ -19,6 +19,7 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use glam::Vec3;
 use rtx_demo_tool::analysis::{self, Motion};
 use rtx_demo_tool::{parse_demo, Demo, DemoCmd, Frame};
 use rtx_proto::svc::{MoveVars, Usercmd};
@@ -35,6 +36,7 @@ from successive positions), and inputs only where the recorder embedded them.
 
 commands:
   players   list the players in a demo
+  route     find every human run between two points, and how long it took
   dump      write position/velocity/usercmd fields as CSV
   analyze   print a per-player movement report
 
@@ -44,6 +46,13 @@ dump options:
                   the recording client, or to everyone in an .mvd
   --all-players   include every player
   --no-header     omit the CSV header
+
+route options (usage: qwd route FROM_X FROM_Y FROM_Z TO_X TO_Y TO_Z [FILE...]):
+  --radius N      how close counts as reaching a point (default 64)
+  --max-secs N    longest run to consider one traversal (default 20)
+  --max-detour N  reject runs whose path exceeds N x the straight-line distance
+                  (default 2). Without it, being at A and later at B counts as
+                  a traversal even when the player never went near the route.
 
 analyze options:
   --player P      one player, by slot number or (substring of) name
@@ -57,6 +66,7 @@ fn main() -> ExitCode {
     let mut argv = std::env::args().skip(1);
     match argv.next().as_deref() {
         Some("players") => run_players(argv),
+        Some("route") => run_route(argv),
         Some("dump") => run_dump(argv),
         Some("analyze") => run_analyze(argv),
         None | Some("-h") | Some("--help") => {
@@ -87,6 +97,113 @@ fn resolve_paths(files: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect();
     paths.sort();
     paths
+}
+
+// ── route ─────────────────────────────────────────────────────────────────────────────────────
+
+/// Find every time any player travelled from A to B, and report how they did it.
+///
+/// This is how a bot route gets a target. "The bot takes 10 s to get from the stairs to the red
+/// armour" means nothing on its own; "and eight humans did it 40 times, best 3.1 s, median 4.0 s"
+/// turns it into a gap with a size. The spread across runs matters as much as the best one — it
+/// separates a route the bot is merely slower on from one it is doing wrong.
+fn run_route(argv: impl Iterator<Item = String>) -> ExitCode {
+    let (mut files, mut nums) = (Vec::new(), Vec::new());
+    let (mut radius, mut max_secs, mut max_detour) = (64.0f32, 20.0f32, 2.0f32);
+    let mut it = argv;
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            "--radius" => match it.next().and_then(|v| v.parse().ok()) {
+                Some(r) => radius = r,
+                None => return usage_err("--radius needs a number"),
+            },
+            "--max-secs" => match it.next().and_then(|v| v.parse().ok()) {
+                Some(s) => max_secs = s,
+                None => return usage_err("--max-secs needs a number"),
+            },
+            "--max-detour" => match it.next().and_then(|v| v.parse().ok()) {
+                Some(d) => max_detour = d,
+                None => return usage_err("--max-detour needs a number"),
+            },
+            // Coordinates are negative half the time, so a leading `-` cannot mean "option" here:
+            // try to read every bare argument as a number first.
+            _ => match arg.parse::<f32>() {
+                Ok(n) => nums.push(n),
+                Err(_) if arg.starts_with('-') && arg != "-" => return usage_err(&format!("unknown option {arg}")),
+                Err(_) => files.push(PathBuf::from(arg)),
+            },
+        }
+    }
+    if nums.len() != 6 {
+        return usage_err("route needs six numbers: FROM_X FROM_Y FROM_Z TO_X TO_Y TO_Z");
+    }
+    let from = Vec3::new(nums[0], nums[1], nums[2]);
+    let to = Vec3::new(nums[3], nums[4], nums[5]);
+
+    let paths = resolve_paths(files);
+    if paths.is_empty() {
+        eprintln!("qwd: no .qwd or .mvd files found");
+        return ExitCode::FAILURE;
+    }
+    let mut had_error = false;
+    for path in &paths {
+        let demo = match parse_demo(path) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("qwd: {}: {e}", path.display());
+                had_error = true;
+                continue;
+            }
+        };
+        let mut runs: Vec<(u8, rtx_demo_tool::line::Traversal)> = Vec::new();
+        for p in analysis::players(&demo) {
+            for t in analysis::track(&demo, p).traversals(from, to, radius, max_secs, max_detour) {
+                runs.push((p, t));
+            }
+        }
+        println!(
+            "{}: {} run(s) from ({:.0},{:.0},{:.0}) to ({:.0},{:.0},{:.0}) within {radius:.0}u",
+            basename(&demo.path),
+            runs.len(),
+            from.x,
+            from.y,
+            from.z,
+            to.x,
+            to.y,
+            to.z
+        );
+        if runs.is_empty() {
+            continue;
+        }
+        runs.sort_by(|a, b| a.1.duration().total_cmp(&b.1.duration()));
+        let times: Vec<f32> = runs.iter().map(|(_, t)| t.duration()).collect();
+        let median = times[times.len() / 2];
+        println!(
+            "  best {:.2}s   median {:.2}s   worst {:.2}s",
+            times[0],
+            median,
+            times[times.len() - 1]
+        );
+        let reachable = ((to - from).length() - 2.0 * radius).max(1.0);
+        for (p, t) in runs.iter().take(5) {
+            println!(
+                "    {:.2}s  {:<16} path {:.0}u ({:.1}x straight)  mean {:.0} ups  t={:.1}s",
+                t.duration(),
+                demo.players
+                    .get(*p as usize)
+                    .map_or_else(|| format!("#{p}"), |s| s.label(*p)),
+                t.path_length(),
+                t.path_length() / reachable,
+                t.mean_speed(),
+                t.start_time,
+            );
+        }
+    }
+    exit_code(had_error)
 }
 
 // ── players ───────────────────────────────────────────────────────────────────────────────────

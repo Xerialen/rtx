@@ -30,6 +30,7 @@ use rtx_proto::protocol::ProtoState;
 use rtx_proto::svc::{self, MoveVars, SvcEvent, Usercmd};
 
 pub mod analysis;
+pub mod line;
 pub mod mvd;
 
 pub use analysis::{Motion, Summary, Track};

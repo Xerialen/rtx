@@ -1,0 +1,497 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Human reference lines, and scoring a bot run against one.
+//!
+//! The bot's movement has been judged, until now, by whether it arrived and how long it took. That
+//! answers "did it work" but not "does it move like a player", and the second question is the one
+//! that matters for a route the bot completes badly — grinding along a wall, braking into corners,
+//! falling off and recovering. A demo of a human doing the *same traversal on the same geometry* is
+//! the only honest reference for that, and a 4-on-4 MVD holds thousands of them.
+//!
+//! Two halves:
+//!
+//! * [`Track::traversals`] mines a demo for every time a player went from A to B — the discovery
+//!   step. You give it two points off the navmesh and it hands back each run, with its time and
+//!   speed profile. The *fastest* of those is what the bot should be measured against; the spread
+//!   across them says how much of the difference is skill and how much is noise.
+//! * [`LineScore`] compares one bot trajectory to one of those runs: not just elapsed time, but how
+//!   far off the human's line it strayed, where it lost speed, and how much it fought its own
+//!   steering.
+//!
+//! Everything here is pure — positions in, numbers out — so it can be unit-tested on synthetic
+//! paths and reused by both the CLI and the MCP bridge without dragging a server in.
+
+use glam::{Vec2, Vec3};
+
+use crate::analysis::{Motion, Track};
+
+/// One human run from A to B, lifted out of a demo.
+#[derive(Clone, Debug)]
+pub struct Traversal {
+    /// Which player made the run.
+    pub player: u8,
+    /// Demo time it started and ended.
+    pub start_time: f32,
+    pub end_time: f32,
+    /// The path itself, in file order.
+    pub motions: Vec<Motion>,
+}
+
+impl Traversal {
+    /// Seconds taken. This is the number a bot has to beat.
+    pub fn duration(&self) -> f32 {
+        self.end_time - self.start_time
+    }
+
+    /// Distance along the path — a wandering route is longer than the straight line, and the ratio
+    /// of the two is how directly the player travelled.
+    pub fn path_length(&self) -> f32 {
+        self.motions
+            .windows(2)
+            .filter(|w| !w[1].warped)
+            .map(|w| (w[1].origin - w[0].origin).truncate().length())
+            .sum()
+    }
+
+    /// Mean speed along the path.
+    pub fn mean_speed(&self) -> f32 {
+        let d = self.duration();
+        if d > 0.0 {
+            self.path_length() / d
+        } else {
+            0.0
+        }
+    }
+
+    /// Turn this run into a reference line to score against.
+    pub fn reference(&self, name: impl Into<String>) -> ReferenceLine {
+        ReferenceLine {
+            name: name.into(),
+            player: self.player,
+            duration: self.duration(),
+            pts: self.motions.iter().map(|m| m.origin).collect(),
+            speeds: self.motions.iter().map(|m| m.horizontal_speed).collect(),
+        }
+    }
+}
+
+/// A human path, prepared for comparison.
+#[derive(Clone, Debug)]
+pub struct ReferenceLine {
+    pub name: String,
+    /// The player whose run this was.
+    pub player: u8,
+    /// How long the human took.
+    pub duration: f32,
+    /// Positions along the run.
+    pub pts: Vec<Vec3>,
+    /// Horizontal speed at each position.
+    pub speeds: Vec<f32>,
+}
+
+impl ReferenceLine {
+    /// Cumulative horizontal arc length at each point — the x-axis every comparison is made
+    /// against, because two runs of the same route are only comparable by *progress*, not by time.
+    pub fn arc(&self) -> Vec<f32> {
+        let mut out = Vec::with_capacity(self.pts.len());
+        let mut s = 0.0;
+        for (i, p) in self.pts.iter().enumerate() {
+            if i > 0 {
+                s += (*p - self.pts[i - 1]).truncate().length();
+            }
+            out.push(s);
+        }
+        out
+    }
+
+    /// Total horizontal length of the line.
+    pub fn length(&self) -> f32 {
+        self.arc().last().copied().unwrap_or(0.0)
+    }
+
+    /// Distance from `p` to the line, and how far along the line the nearest point sits.
+    ///
+    /// Segment-wise rather than point-wise: at 72 Hz a human's samples are ~5 units apart, but a
+    /// bot's may not be, and comparing to the nearest *sample* would report a sawtooth that is an
+    /// artefact of sampling rather than of the bot's line.
+    pub fn nearest(&self, p: Vec3) -> (f32, f32) {
+        let arc = self.arc();
+        let (mut best_d, mut best_s) = (f32::MAX, 0.0);
+        for i in 1..self.pts.len() {
+            let (a, b) = (self.pts[i - 1], self.pts[i]);
+            let ab = (b - a).truncate();
+            let len = ab.length();
+            let t = if len > 1e-3 {
+                ((p - a).truncate().dot(ab) / (len * len)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let closest = a.truncate() + ab * t;
+            let d = (p.truncate() - closest).length();
+            if d < best_d {
+                best_d = d;
+                best_s = arc[i - 1] + len * t;
+            }
+        }
+        (best_d, best_s)
+    }
+}
+
+/// How a bot run compares to a human one.
+///
+/// Time alone hides the interesting failures: a bot can match the clock while scraping every wall,
+/// or lose two seconds to a single bad corner. These are the numbers that tell those apart.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LineScore {
+    /// Whether the bot finished within the arrival radius of the line's end.
+    pub arrived: bool,
+    /// Seconds the bot took, and what the human took for the same route.
+    pub time: f32,
+    pub reference_time: f32,
+    /// Distance from the human's line: the median is how differently the bot routes, the 95th and
+    /// the max are where it went somewhere else entirely.
+    pub cross_track_p50: f32,
+    pub cross_track_p95: f32,
+    pub cross_track_max: f32,
+    /// Bot speed as a fraction of the human's, in 20 bins of progress along the line. Where this
+    /// dips is *where* the bot is slow, which a single mean can never say.
+    pub speed_ratio: [f32; 20],
+    /// Mean of the above over bins the bot actually reached.
+    pub mean_speed_ratio: f32,
+    /// 95th percentile of per-frame heading change, degrees/sec. High means the bot is sawing at
+    /// its own steering rather than holding a line.
+    pub yaw_jitter_p95: f32,
+    /// Frames spent travelling *away* from the next point on the line.
+    pub reverse_frames: u32,
+    /// Grounded frames that lost more than [`WALL_LOSS`] of speed in one step — running into
+    /// geometry. The count that "stops bumping into things" has to move.
+    pub wall_events: u32,
+}
+
+/// Speed lost in a single frame that reads as hitting something rather than braking. Friction and
+/// deliberate stopping are far gentler; a wall takes most of the speed at once.
+pub const WALL_LOSS: f32 = 60.0;
+
+/// Arrival radius for "the bot finished the route".
+pub const ARRIVE_RADIUS: f32 = 64.0;
+
+impl LineScore {
+    /// Score a bot trajectory — `(time, origin)` samples — against a human line.
+    pub fn score(samples: &[(f32, Vec3)], reference: &ReferenceLine) -> LineScore {
+        let mut cross = Vec::with_capacity(samples.len());
+        let mut yaw_steps: Vec<f32> = Vec::new();
+        let mut bins: [(f32, u32); 20] = [(0.0, 0); 20];
+        let (mut reverse_frames, mut wall_events) = (0u32, 0u32);
+        let len = reference.length().max(1.0);
+
+        /// Carried between samples: everything the next step is measured against.
+        struct Prev {
+            time: f32,
+            pos: Vec3,
+            /// Unit heading, zero until the bot has moved far enough to have one.
+            heading: Vec2,
+            /// Progress along the reference, monotonic — so a bot that stalls doesn't churn bins.
+            progress: f32,
+            speed: f32,
+        }
+        let mut prev: Option<Prev> = None;
+
+        for &(time, pos) in samples {
+            let (dist, progress) = reference.nearest(pos);
+            cross.push(dist);
+            let mut heading = prev.as_ref().map_or(Vec2::ZERO, |p| p.heading);
+            let mut speed = 0.0;
+            if let Some(p) = &prev {
+                let dt = time - p.time;
+                if dt > 0.0 {
+                    let step = (pos - p.pos).truncate();
+                    speed = step.length() / dt;
+                    bins[((progress / len).clamp(0.0, 0.999) * 20.0) as usize].0 += speed;
+                    bins[((progress / len).clamp(0.0, 0.999) * 20.0) as usize].1 += 1;
+                    // Backwards *along the route*, which is different from being off it.
+                    if progress < p.progress - 1.0 {
+                        reverse_frames += 1;
+                    }
+                    // Losing most of the speed in one grounded step is running into something;
+                    // friction and deliberate braking are far gentler, and a drop is not a wall.
+                    if p.speed - speed > WALL_LOSS && (pos.z - p.pos.z).abs() < 8.0 {
+                        wall_events += 1;
+                    }
+                    // A heading needs a step long enough not to be quantisation noise.
+                    if step.length_squared() > 1.0 {
+                        let h = step.normalize();
+                        if p.heading.length_squared() > 0.0 {
+                            yaw_steps.push(p.heading.dot(h).clamp(-1.0, 1.0).acos().to_degrees() / dt);
+                        }
+                        heading = h;
+                    }
+                }
+            }
+            prev = Some(Prev {
+                time,
+                pos,
+                heading,
+                progress: prev.as_ref().map_or(progress, |p| progress.max(p.progress)),
+                speed,
+            });
+        }
+
+        cross.sort_by(f32::total_cmp);
+        yaw_steps.sort_by(f32::total_cmp);
+        let pct = |v: &[f32], q: f32| {
+            if v.is_empty() {
+                0.0
+            } else {
+                v[(((v.len() - 1) as f32) * q) as usize]
+            }
+        };
+
+        // Reference speed per progress bin, to divide by.
+        let ref_arc = reference.arc();
+        let mut ref_bins: [(f32, u32); 20] = [(0.0, 0); 20];
+        for (i, sp) in reference.speeds.iter().enumerate() {
+            let bin = ((ref_arc[i] / len).clamp(0.0, 0.999) * 20.0) as usize;
+            ref_bins[bin].0 += sp;
+            ref_bins[bin].1 += 1;
+        }
+        let mut speed_ratio = [0.0f32; 20];
+        let (mut sum, mut n) = (0.0f32, 0u32);
+        for i in 0..20 {
+            let bot = if bins[i].1 > 0 {
+                bins[i].0 / bins[i].1 as f32
+            } else {
+                0.0
+            };
+            let human = if ref_bins[i].1 > 0 {
+                ref_bins[i].0 / ref_bins[i].1 as f32
+            } else {
+                0.0
+            };
+            if human > 1.0 && bins[i].1 > 0 {
+                speed_ratio[i] = bot / human;
+                sum += speed_ratio[i];
+                n += 1;
+            }
+        }
+
+        let end = reference.pts.last().copied().unwrap_or(Vec3::ZERO);
+        let arrived = samples
+            .last()
+            .is_some_and(|&(_, p)| (p - end).truncate().length() <= ARRIVE_RADIUS);
+        let time = match (samples.first(), samples.last()) {
+            (Some(a), Some(b)) => b.0 - a.0,
+            _ => 0.0,
+        };
+
+        LineScore {
+            arrived,
+            time,
+            reference_time: reference.duration,
+            cross_track_p50: pct(&cross, 0.5),
+            cross_track_p95: pct(&cross, 0.95),
+            cross_track_max: cross.last().copied().unwrap_or(0.0),
+            speed_ratio,
+            mean_speed_ratio: if n > 0 { sum / n as f32 } else { 0.0 },
+            yaw_jitter_p95: pct(&yaw_steps, 0.95),
+            reverse_frames,
+            wall_events,
+        }
+    }
+}
+
+impl Track {
+    /// Every run this player made from near `from` to near `to`, within `max_secs`.
+    ///
+    /// The discovery step: given two points off the navmesh, find where a human actually did that
+    /// traversal so the bot has something to be measured against. A 20-minute team game crosses the
+    /// same ground dozens of times, and the spread over those runs is as informative as the best of
+    /// them — it says how much of a bot's shortfall is a real gap and how much is variance.
+    ///
+    /// A run ends at the *first* arrival at `to`, and runs cannot overlap: leaving `from` again
+    /// starts a new candidate. Warped frames abort the run in progress, since a player who
+    /// teleported did not travel the route.
+    ///
+    /// `max_detour` is what makes the result a *route* rather than a coincidence. In a real match a
+    /// player is constantly at A and later at B without having travelled between them — they fought,
+    /// took a detour for an item, died elsewhere. Bounding path length against the straight-line
+    /// distance keeps only runs that actually went there: on dm3, a stairs-to-armour pair that
+    /// yields one 5279-unit "run" over an 868-unit gap yields nothing once this is applied, which is
+    /// the honest answer.
+    pub fn traversals(&self, from: Vec3, to: Vec3, radius: f32, max_secs: f32, max_detour: f32) -> Vec<Traversal> {
+        // A run is clocked from the *edge* of the start zone to the edge of the end zone, so the
+        // ground it can possibly cover is the gap minus both radii. Comparing its path against the
+        // full centre-to-centre distance would make every short route look implausibly direct — on
+        // dm3's 278-unit balcony crossing with a 64-unit radius, a perfect run measures 0.6x.
+        let reachable = ((to - from).length() - 2.0 * radius).max(1.0);
+        let near = |a: Vec3, b: Vec3| (a - b).length() <= radius;
+        let mut out = Vec::new();
+        let mut start: Option<usize> = None;
+        for (i, m) in self.motions.iter().enumerate() {
+            if m.warped || m.dead {
+                start = None;
+                continue;
+            }
+            if near(m.origin, from) {
+                // Restart the clock while still in the start zone, so the run measures the journey
+                // rather than the loitering before it.
+                start = Some(i);
+                continue;
+            }
+            let Some(s) = start else { continue };
+            if m.time - self.motions[s].time > max_secs {
+                start = None;
+                continue;
+            }
+            if near(m.origin, to) {
+                let run = Traversal {
+                    player: self.player,
+                    start_time: self.motions[s].time,
+                    end_time: m.time,
+                    motions: self.motions[s..=i].to_vec(),
+                };
+                if run.path_length() <= reachable * max_detour {
+                    out.push(run);
+                }
+                start = None;
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::track;
+    use crate::{Demo, Format, Frame, PlayerSlot};
+
+    fn demo_of(pts: &[(f32, Vec3)]) -> Demo {
+        Demo {
+            path: "t.mvd".into(),
+            proto: rtx_proto::protocol::ProtoState::new_mvd(),
+            format: Format::Mvd,
+            local_player: None,
+            players: vec![PlayerSlot::default(); 32],
+            levelname: String::new(),
+            movevars: None,
+            demo_cmds: Vec::new(),
+            frames: pts
+                .iter()
+                .map(|&(time, origin)| Frame {
+                    time,
+                    player: 0,
+                    origin,
+                    angles: Vec3::ZERO,
+                    velocity: None,
+                    command: None,
+                    dead: false,
+                    on_ground: None,
+                    weaponframe: None,
+                })
+                .collect(),
+            warnings: Vec::new(),
+        }
+    }
+
+    /// A straight run out and back finds exactly one A→B traversal, timed from the last frame in
+    /// the start zone rather than the first.
+    #[test]
+    fn finds_one_traversal_per_trip() {
+        let mut pts = Vec::new();
+        // Loiter at A, run to B, come back.
+        for i in 0..5 {
+            pts.push((0.05 * i as f32, Vec3::new(0.0, 0.0, 0.0)));
+        }
+        for i in 1..=10 {
+            pts.push((0.25 + 0.05 * i as f32, Vec3::new(50.0 * i as f32, 0.0, 0.0)));
+        }
+        for i in 1..=10 {
+            pts.push((0.75 + 0.05 * i as f32, Vec3::new(500.0 - 50.0 * i as f32, 0.0, 0.0)));
+        }
+        let t = track(&demo_of(&pts), 0);
+        let runs = t.traversals(Vec3::ZERO, Vec3::new(500.0, 0.0, 0.0), 32.0, 10.0, 2.0);
+        assert_eq!(runs.len(), 1, "one out-and-back is one A->B run");
+        let r = &runs[0];
+        assert!((r.duration() - 0.5).abs() < 0.06, "duration {}", r.duration());
+        assert!(r.path_length() > 450.0, "path {}", r.path_length());
+        assert!(r.mean_speed() > 800.0, "mean {}", r.mean_speed());
+    }
+
+    /// Cross-track is measured to the line, not to its samples — a bot running the same route at a
+    /// different sample rate must not read as wandering.
+    #[test]
+    fn cross_track_is_segment_wise() {
+        let line = ReferenceLine {
+            name: "l".into(),
+            player: 0,
+            duration: 1.0,
+            pts: vec![Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0), Vec3::new(200.0, 0.0, 0.0)],
+            speeds: vec![300.0, 300.0, 300.0],
+        };
+        // A point halfway along the first segment, dead on the line.
+        let (d, s) = line.nearest(Vec3::new(50.0, 0.0, 0.0));
+        assert!(d < 0.01, "on the line, got {d}");
+        assert!((s - 50.0).abs() < 0.01, "progress {s}");
+        // And one 20 units to the side.
+        let (d, _) = line.nearest(Vec3::new(50.0, 20.0, 0.0));
+        assert!((d - 20.0).abs() < 0.01, "off the line, got {d}");
+        assert!((line.length() - 200.0).abs() < 0.01);
+    }
+
+    /// The score separates "slower" from "went somewhere else" from "hit a wall".
+    #[test]
+    fn scores_a_slow_but_accurate_run() {
+        let line = ReferenceLine {
+            name: "l".into(),
+            player: 0,
+            duration: 1.0,
+            pts: (0..=10).map(|i| Vec3::new(50.0 * i as f32, 0.0, 0.0)).collect(),
+            speeds: vec![500.0; 11],
+        };
+        // Same path, half the speed: on the line, but every bin at ~0.5.
+        let samples: Vec<(f32, Vec3)> = (0..=10)
+            .map(|i| (0.2 * i as f32, Vec3::new(50.0 * i as f32, 0.0, 0.0)))
+            .collect();
+        let s = LineScore::score(&samples, &line);
+        assert!(s.arrived);
+        assert!(s.cross_track_p95 < 1.0, "stayed on the line: {}", s.cross_track_p95);
+        assert!(
+            (s.mean_speed_ratio - 0.5).abs() < 0.05,
+            "half speed: {}",
+            s.mean_speed_ratio
+        );
+        assert_eq!(s.reverse_frames, 0);
+        assert_eq!(s.wall_events, 0);
+    }
+
+    /// A run that detours off the line is caught by cross-track even when it arrives on time.
+    #[test]
+    fn catches_a_detour() {
+        let line = ReferenceLine {
+            name: "l".into(),
+            player: 0,
+            duration: 1.0,
+            pts: (0..=10).map(|i| Vec3::new(50.0 * i as f32, 0.0, 0.0)).collect(),
+            speeds: vec![500.0; 11],
+        };
+        // Bulges 120 units off the line in the middle.
+        let samples: Vec<(f32, Vec3)> = (0..=10)
+            .map(|i| {
+                let bulge = if (3..=7).contains(&i) { 120.0 } else { 0.0 };
+                (0.1 * i as f32, Vec3::new(50.0 * i as f32, bulge, 0.0))
+            })
+            .collect();
+        let s = LineScore::score(&samples, &line);
+        assert!(s.arrived, "it still gets there");
+        assert!(s.cross_track_max > 100.0, "the detour shows: {}", s.cross_track_max);
+        assert!(
+            s.cross_track_p95 > 100.0,
+            "and across enough of the run to clear p95: {}",
+            s.cross_track_p95
+        );
+        // The median stays near zero, and that is right: most of this run *was* on the line. It is
+        // why the tails are reported too — a route that is mostly fine with one bad excursion is a
+        // different problem from one that is uniformly off, and p50 alone cannot tell them apart.
+        assert!(s.cross_track_p50 < 1.0, "p50 {}", s.cross_track_p50);
+    }
+}
