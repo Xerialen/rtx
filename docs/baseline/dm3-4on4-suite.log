@@ -1,0 +1,374 @@
+demos/20260507-2107_4on4_]sr[_vs_book[dm3].mvd: 544 distinct movements
+
+seg 0: human 0.92s 643u 700 ups  (462,-339,64) -> (440,242,56)  entry 1015 ups  direct 0.90
+    ok     1.74s (1.89x)  cross p50/p95/max   84/ 182/ 185  speed 0.77x late 0.86x  yaw p95 521deg/s  rev   6  wall  38  [.959875244455577...9]
+    ok     1.78s (1.94x)  cross p50/p95/max   88/ 198/ 200  speed 0.77x late 0.84x  yaw p95 364deg/s  rev   0  wall  36  [.8978652344566793..9]
+    ok     1.71s (1.86x)  cross p50/p95/max   82/ 169/ 171  speed 0.77x late 0.86x  yaw p95 439deg/s  rev   0  wall  37  [.9598552444457779..9]
+    => 3/3 arrived  mean 1.74s (1.90x)  cross p95 183  speed 0.77x  wall 37.0
+
+seg 9: human 1.03s 646u 628 ups  (1337,-424,19) -> (1430,5,-23)  entry 618 ups  direct 0.68
+    ok     1.25s (1.22x)  cross p50/p95/max   45/ 128/ 134  speed 0.71x late 0.73x  yaw p95 468deg/s  rev   4  wall  28  [786574......95667667]
+    ok     1.28s (1.24x)  cross p50/p95/max   45/ 128/ 136  speed 0.69x late 0.72x  yaw p95 581deg/s  rev   6  wall  28  [786474......96566767]
+    ok     1.38s (1.35x)  cross p50/p95/max   51/ 130/ 139  speed 0.69x late 0.63x  yaw p95 543deg/s  rev   8  wall  30  [986459.......6466657]
+    => 3/3 arrived  mean 1.30s (1.27x)  cross p95 128  speed 0.70x  wall 28.7
+
+seg 18: human 1.07s 648u 604 ups  (460,287,92) -> (120,582,71)  entry 571 ups  direct 0.70
+    ok     1.58s (1.47x)  cross p50/p95/max   25/  57/  61  speed 0.72x late 0.75x  yaw p95 737deg/s  rev   0  wall  32  [69974566665666767669]
+    ok     1.59s (1.48x)  cross p50/p95/max   25/  56/  58  speed 0.74x late 0.70x  yaw p95 627deg/s  rev   0  wall  34  [97974656675658666768]
+    ok     1.59s (1.48x)  cross p50/p95/max   25/  50/  52  speed 0.70x late 0.69x  yaw p95 687deg/s  rev   0  wall  33  [79974576665867577665]
+    => 3/3 arrived  mean 1.59s (1.48x)  cross p95 54  speed 0.72x  wall 33.0
+
+seg 27: human 1.09s 642u 588 ups  (551,8,-72) -> (999,-26,-146)  entry 482 ups  direct 0.71
+    ok     1.71s (1.56x)  cross p50/p95/max   14/ 113/ 126  speed 0.83x late 0.78x  yaw p95 464deg/s  rev   0  wall  34  [99998666967587678776]
+    ok     1.92s (1.76x)  cross p50/p95/max   30/  98/ 109  speed 0.80x late 0.69x  yaw p95 465deg/s  rev   0  wall  37  [98998946687766965645]
+    ok     1.78s (1.63x)  cross p50/p95/max   39/  73/  78  speed 0.76x late 0.68x  yaw p95 462deg/s  rev   0  wall  38  [99868776586677865555]
+    => 3/3 arrived  mean 1.80s (1.65x)  cross p95 95  speed 0.80x  wall 36.3
+
+seg 36: human 1.13s 644u 569 ups  (-789,868,159) -> (-513,460,120)  entry 575 ups  direct 0.77
+    ok     1.79s (1.58x)  cross p50/p95/max   16/  55/  58  speed 0.75x late 0.64x  yaw p95 953deg/s  rev   4  wall  39  [59998877878876834545]
+    ok     1.78s (1.58x)  cross p50/p95/max    9/  17/  17  speed 0.68x late 0.56x  yaw p95 390deg/s  rev   0  wall  34  [79799675655565445556]
+    ok     1.76s (1.55x)  cross p50/p95/max    9/  16/  16  speed 0.66x late 0.57x  yaw p95 314deg/s  rev   0  wall  35  [39989967556555445556]
+    => 3/3 arrived  mean 1.78s (1.57x)  cross p95 29  speed 0.70x  wall 36.0
+
+seg 45: human 1.16s 647u 557 ups  (889,82,82) -> (630,-453,99)  entry 535 ups  direct 0.92
+    ok     1.47s (1.26x)  cross p50/p95/max   22/  55/  59  speed 0.82x late 0.73x  yaw p95 367deg/s  rev   0  wall  31  [79989678988878685556]
+    ok     1.42s (1.22x)  cross p50/p95/max   23/  56/  57  speed 0.87x late 0.73x  yaw p95 357deg/s  rev   0  wall  32  [99999778978887974655]
+    ok     1.48s (1.27x)  cross p50/p95/max   22/  56/  58  speed 0.80x late 0.72x  yaw p95 362deg/s  rev   0  wall  36  [97998776797888676455]
+    => 3/3 arrived  mean 1.46s (1.25x)  cross p95 56  speed 0.83x  wall 33.0
+
+seg 54: human 1.18s 643u 547 ups  (514,451,65) -> (433,-156,92)  entry 519 ups  direct 0.95
+    MISS   1.67s (1.42x)  cross p50/p95/max   59/ 186/ 188  speed 0.92x late 0.85x  yaw p95 359deg/s  rev   0  wall  34  [99979997898887888966]
+    MISS   1.65s (1.40x)  cross p50/p95/max   57/ 184/ 187  speed 0.89x late 0.87x  yaw p95 351deg/s  rev   0  wall  37  [78999888888989878886]
+    MISS   1.69s (1.44x)  cross p50/p95/max   67/ 200/ 202  speed 0.92x late 0.90x  yaw p95 355deg/s  rev   0  wall  38  [99897988688888976898]
+    => 0/3 arrived  mean 1.67s (1.42x)  cross p95 190  speed 0.91x  wall 36.3
+
+seg 63: human 1.19s 647u 543 ups  (-180,434,160) -> (375,672,84)  entry 528 ups  direct 0.94
+    ok     1.35s (1.13x)  cross p50/p95/max   56/  76/  79  speed 0.91x late 0.92x  yaw p95 385deg/s  rev   0  wall  30  [79989976879888788989]
+    ok     1.34s (1.12x)  cross p50/p95/max   61/  88/  92  speed 0.91x late 0.89x  yaw p95 357deg/s  rev   0  wall  28  [99879699898879977968]
+    ok     1.29s (1.08x)  cross p50/p95/max   59/  91/  96  speed 0.99x late 0.96x  yaw p95 350deg/s  rev   0  wall  28  [99989899699688899898]
+    => 3/3 arrived  mean 1.32s (1.11x)  cross p95 85  speed 0.94x  wall 28.7
+
+seg 72: human 1.20s 643u 537 ups  (692,-142,-177) -> (1155,-119,-168)  entry 517 ups  direct 0.72
+    ok     2.57s (2.14x)  cross p50/p95/max   26/  63/  68  speed 0.76x late 0.70x  yaw p95 679deg/s  rev  17  wall  46  [89854789798897774654]
+    ok     4.10s (3.42x)  cross p50/p95/max   60/ 214/ 230  speed 0.76x late 0.71x  yaw p95 703deg/s  rev  76  wall  83  [79853798889896655664]
+    ok     2.56s (2.14x)  cross p50/p95/max   25/  58/  69  speed 0.75x late 0.70x  yaw p95 675deg/s  rev  16  wall  53  [79964697888868765555]
+    => 3/3 arrived  mean 3.08s (2.57x)  cross p95 111  speed 0.76x  wall 60.7
+
+seg 81: human 1.22s 646u 530 ups  (418,-210,56) -> (611,-526,97)  entry 409 ups  direct 0.58
+    no event
+    no event
+    no event
+    => 0/0 arrived  mean -0.00s (-0.00x)  cross p95 -0  speed -0.00x  wall -0.0
+
+seg 90: human 1.24s 647u 524 ups  (838,-276,-172) -> (1322,-145,-153)  entry 508 ups  direct 0.77
+    MISS   3.45s (2.80x)  cross p50/p95/max   95/ 203/ 216  speed 0.84x late 0.76x  yaw p95 484deg/s  rev  43  wall  81  [78988987888888666577]
+    MISS   3.98s (3.22x)  cross p50/p95/max   42/  84/  96  speed 0.80x late 0.80x  yaw p95 1038deg/s  rev  93  wall  77  [9988677665876787679.]
+    MISS   3.99s (3.23x)  cross p50/p95/max   42/  85/  96  speed 0.79x late 0.78x  yaw p95 829deg/s  rev  93  wall  81  [9997686575875785788.]
+    => 0/3 arrived  mean 3.81s (3.08x)  cross p95 124  speed 0.81x  wall 79.7
+
+seg 99: human 1.25s 641u 515 ups  (-579,360,227) -> (-84,543,92)  entry 483 ups  direct 0.85
+    ok     5.35s (4.29x)  cross p50/p95/max  115/ 362/ 397  speed 0.55x late 0.39x  yaw p95 3667deg/s  rev 103  wall  74  [485................4]
+    ok     8.29s (6.65x)  cross p50/p95/max   56/ 333/ 399  speed 0.65x late 0.39x  yaw p95 3062deg/s  rev 213  wall 118  [48937..............4]
+    ok     7.54s (6.05x)  cross p50/p95/max  154/ 331/ 386  speed 0.62x late 0.46x  yaw p95 3076deg/s  rev 210  wall 115  [66547..............4]
+    => 3/3 arrived  mean 7.06s (5.67x)  cross p95 342  speed 0.61x  wall 102.3
+
+seg 108: human 1.27s 644u 509 ups  (-470,858,147) -> (-421,315,155)  entry 478 ups  direct 0.85
+    ok     1.41s (1.12x)  cross p50/p95/max    8/  20/  20  speed 0.94x late 0.93x  yaw p95 338deg/s  rev   0  wall  29  [99789997899969997996]
+    ok     1.44s (1.14x)  cross p50/p95/max    8/  15/  33  speed 0.93x late 0.94x  yaw p95 289deg/s  rev   0  wall  32  [89979997989889979997]
+    ok     1.40s (1.11x)  cross p50/p95/max    8/  15/  29  speed 0.94x late 0.94x  yaw p95 298deg/s  rev   0  wall  35  [99869989887987999998]
+    => 3/3 arrived  mean 1.42s (1.12x)  cross p95 17  speed 0.94x  wall 32.0
+
+seg 117: human 1.27s 641u 503 ups  (1088,691,96) -> (1506,1106,-226)  entry 581 ups  direct 1.05
+    ok     6.72s (5.28x)  cross p50/p95/max   94/ 171/ 185  speed 0.49x late 0.59x  yaw p95 1101deg/s  rev 198  wall 106  [54322336643333556..9]
+    ok     4.42s (3.47x)  cross p50/p95/max   85/ 131/ 133  speed 0.53x late 0.61x  yaw p95 1032deg/s  rev  82  wall  65  [64333235685433656..9]
+    ok     7.71s (6.05x)  cross p50/p95/max   83/ 134/ 147  speed 0.62x late 0.70x  yaw p95 980deg/s  rev 250  wall 112  [23555656563333755699]
+    => 3/3 arrived  mean 6.29s (4.93x)  cross p95 146  speed 0.55x  wall 94.3
+
+seg 126: human 1.30s 644u 495 ups  (1824,-805,10) -> (1304,-745,6)  entry 463 ups  direct 0.81
+    ok     1.49s (1.14x)  cross p50/p95/max   20/  79/  81  speed 0.81x late 0.85x  yaw p95 497deg/s  rev   0  wall  30  [777649.7777778697896]
+    ok     1.47s (1.13x)  cross p50/p95/max   21/  87/  90  speed 0.82x late 0.86x  yaw p95 516deg/s  rev   0  wall  32  [986765.8778777888779]
+    ok     1.46s (1.12x)  cross p50/p95/max   21/  88/  89  speed 0.85x late 0.85x  yaw p95 445deg/s  rev   0  wall  34  [97779..7779788796869]
+    => 3/3 arrived  mean 1.47s (1.13x)  cross p95 85  speed 0.83x  wall 32.0
+
+seg 135: human 1.32s 644u 487 ups  (927,-64,-164) -> (471,-65,-170)  entry 447 ups  direct 0.71
+    ok     1.77s (1.34x)  cross p50/p95/max   23/  47/  47  speed 0.88x late 0.79x  yaw p95 443deg/s  rev   0  wall  39  [98798989998999575666]
+    ok     1.82s (1.37x)  cross p50/p95/max   25/  46/  47  speed 0.87x late 0.78x  yaw p95 365deg/s  rev   0  wall  36  [97788989899989674575]
+    ok     1.77s (1.34x)  cross p50/p95/max   23/  46/  47  speed 0.86x late 0.77x  yaw p95 379deg/s  rev   0  wall  37  [79787999897898966566]
+    => 3/3 arrived  mean 1.78s (1.35x)  cross p95 46  speed 0.87x  wall 37.3
+
+seg 144: human 1.34s 645u 481 ups  (1616,997,-171) -> (1702,653,-86)  entry 476 ups  direct 0.56
+    no event
+    no event
+    no event
+    => 0/0 arrived  mean -0.00s (-0.00x)  cross p95 -0  speed -0.00x  wall -0.0
+
+seg 153: human 1.35s 645u 478 ups  (357,-784,296) -> (140,-686,340)  entry 466 ups  direct 0.38  (chord may be far shorter)
+    MISS   1.46s (1.08x)  cross p50/p95/max   21/  46/  49  speed 0.74x late 0.74x  yaw p95 648deg/s  rev   0  wall  27  [7987447686996574....]
+    MISS   1.46s (1.08x)  cross p50/p95/max   22/  45/  49  speed 0.75x late 0.75x  yaw p95 616deg/s  rev   0  wall  28  [9877446777887665....]
+    MISS   1.44s (1.07x)  cross p50/p95/max   21/  44/  48  speed 0.76x late 0.77x  yaw p95 636deg/s  rev   0  wall  30  [8887547766896676....]
+    => 0/3 arrived  mean 1.45s (1.08x)  cross p95 45  speed 0.75x  wall 28.3
+
+seg 162: human 1.36s 640u 471 ups  (946,232,56) -> (722,-277,92)  entry 378 ups  direct 0.87
+    ok     1.70s (1.25x)  cross p50/p95/max   29/  61/  63  speed 0.80x late 0.78x  yaw p95 494deg/s  rev   0  wall  33  [88879676766777777778]
+    ok     1.72s (1.26x)  cross p50/p95/max   30/  61/  63  speed 0.80x late 0.78x  yaw p95 515deg/s  rev   0  wall  32  [96977.88678877778685]
+    ok     1.69s (1.24x)  cross p50/p95/max   30/  61/  65  speed 0.83x late 0.80x  yaw p95 531deg/s  rev   0  wall  37  [99888698677676778769]
+    => 3/3 arrived  mean 1.70s (1.25x)  cross p95 61  speed 0.81x  wall 34.0
+
+seg 171: human 1.38s 644u 466 ups  (228,-316,75) -> (746,-292,62)  entry 301 ups  direct 0.81
+    no event
+    no event
+    no event
+    => 0/0 arrived  mean -0.00s (-0.00x)  cross p95 -0  speed -0.00x  wall -0.0
+
+seg 180: human 1.39s 644u 462 ups  (1916,462,-86) -> (1833,-133,-125)  entry 455 ups  direct 0.93
+    ok     2.57s (1.84x)  cross p50/p95/max   10/  60/  61  speed 0.78x late 0.78x  yaw p95 604deg/s  rev   6  wall  41  [59629887878278788779]
+    ok     2.60s (1.86x)  cross p50/p95/max   12/  60/  63  speed 0.76x late 0.73x  yaw p95 602deg/s  rev   6  wall  42  [79726987797267787777]
+    ok     2.71s (1.94x)  cross p50/p95/max   10/  52/  53  speed 0.74x late 0.70x  yaw p95 689deg/s  rev  10  wall  41  [98537886979288896853]
+    => 3/3 arrived  mean 2.63s (1.88x)  cross p95 57  speed 0.76x  wall 41.3
+
+seg 189: human 1.41s 645u 456 ups  (362,-824,68) -> (111,-587,157)  entry 501 ups  direct 0.55
+    ok     2.09s (1.47x)  cross p50/p95/max   12/  47/  50  speed 0.75x late 0.78x  yaw p95 277deg/s  rev   0  wall  40  [9946675656776778867.]
+    ok     2.17s (1.53x)  cross p50/p95/max   14/  46/  50  speed 0.74x late 0.78x  yaw p95 402deg/s  rev   0  wall  41  [98467666667677698676]
+    ok     2.07s (1.46x)  cross p50/p95/max   16/  54/  57  speed 0.76x late 0.88x  yaw p95 346deg/s  rev   0  wall  37  [59357666567668997857]
+    => 3/3 arrived  mean 2.11s (1.49x)  cross p95 49  speed 0.75x  wall 39.3
+
+seg 198: human 1.44s 642u 446 ups  (-951,370,124) -> (-659,857,145)  entry 411 ups  direct 0.88
+    ok     1.59s (1.10x)  cross p50/p95/max    8/  22/  23  speed 0.97x late 0.93x  yaw p95 382deg/s  rev   0  wall  35  [99989889989888779799]
+    ok     1.54s (1.07x)  cross p50/p95/max    8/  28/  29  speed 0.95x late 0.91x  yaw p95 492deg/s  rev   0  wall  37  [98999899899978798789]
+    ok     1.62s (1.12x)  cross p50/p95/max    6/  22/  25  speed 0.93x late 0.87x  yaw p95 553deg/s  rev   0  wall  32  [99989989799968779788]
+    => 3/3 arrived  mean 1.58s (1.10x)  cross p95 24  speed 0.95x  wall 34.7
+
+seg 207: human 1.47s 646u 439 ups  (189,-528,264) -> (272,-803,371)  entry 387 ups  direct 0.47  (chord may be far shorter)
+    no event
+    no event
+    no event
+    => 0/0 arrived  mean -0.00s (-0.00x)  cross p95 -0  speed -0.00x  wall -0.0
+
+seg 216: human 1.48s 644u 435 ups  (1520,433,-88) -> (1693,181,-23)  entry 200 ups  direct 0.49  (chord may be far shorter)
+    ok     8.65s (5.84x)  cross p50/p95/max    8/ 275/ 291  speed 0.94x late 0.89x  yaw p95 1405deg/s  rev  39  wall  89  [99799779878898998992]
+    ok     8.69s (5.87x)  cross p50/p95/max   11/ 274/ 290  speed 0.97x late 0.93x  yaw p95 1091deg/s  rev  55  wall  88  [99899779887997999992]
+    ok     8.56s (5.78x)  cross p50/p95/max    7/ 279/ 291  speed 0.92x late 0.89x  yaw p95 1020deg/s  rev  43  wall  86  [99897869689899979892]
+    => 3/3 arrived  mean 8.64s (5.83x)  cross p95 276  speed 0.94x  wall 87.7
+
+seg 225: human 1.50s 642u 428 ups  (569,-158,98) -> (549,201,-168)  entry 471 ups  direct 0.70
+    ok     1.04s (0.69x)  cross p50/p95/max   40/ 103/ 114  speed 1.14x late 1.32x  yaw p95 365deg/s  rev   0  wall  17  [9798976...989.999999]
+    ok     1.10s (0.74x)  cross p50/p95/max   62/ 134/ 139  speed 0.98x late 1.06x  yaw p95 485deg/s  rev   0  wall  14  [8886.......88.9.9999]
+    ok     1.07s (0.71x)  cross p50/p95/max   55/ 121/ 130  speed 1.07x late 1.19x  yaw p95 385deg/s  rev   0  wall  21  [6888.......98.999999]
+    => 3/3 arrived  mean 1.07s (0.71x)  cross p95 119  speed 1.06x  wall 17.3
+
+seg 234: human 1.52s 643u 423 ups  (1255,-71,-168) -> (1623,-72,-148)  entry 330 ups  direct 0.57
+    ok     1.40s (0.92x)  cross p50/p95/max    6/  26/  34  speed 0.71x late 0.75x  yaw p95 427deg/s  rev  13  wall  28  [72........7677668697]
+    ok     1.42s (0.93x)  cross p50/p95/max    9/  26/  36  speed 0.70x late 0.70x  yaw p95 157deg/s  rev  13  wall  29  [7.........7577657666]
+    ok     1.42s (0.93x)  cross p50/p95/max   10/  25/  34  speed 0.70x late 0.69x  yaw p95 118deg/s  rev  12  wall  33  [7.........6765776666]
+    => 3/3 arrived  mean 1.41s (0.93x)  cross p95 26  speed 0.70x  wall 30.0
+
+seg 243: human 1.55s 647u 417 ups  (-388,253,-16) -> (57,612,84)  entry 315 ups  direct 0.90
+    ok     1.67s (1.08x)  cross p50/p95/max   12/  72/  76  speed 0.92x late 0.83x  yaw p95 352deg/s  rev   0  wall  31  [99998898696598985778]
+    ok     1.65s (1.06x)  cross p50/p95/max   16/  81/  86  speed 0.92x late 0.86x  yaw p95 359deg/s  rev   0  wall  28  [999996886..699997576]
+    ok     1.59s (1.03x)  cross p50/p95/max   14/  75/  79  speed 0.95x late 0.85x  yaw p95 360deg/s  rev   0  wall  34  [99898999965689997657]
+    => 3/3 arrived  mean 1.64s (1.06x)  cross p95 76  speed 0.93x  wall 31.0
+
+seg 252: human 1.57s 642u 408 ups  (2009,-389,-24) -> (1722,-182,-59)  entry 462 ups  direct 0.56
+    ok     7.40s (4.71x)  cross p50/p95/max    1/  86/ 108  speed 0.80x late 0.14x  yaw p95 3195deg/s  rev  10  wall  50  [9998697922.........1]
+    ok     7.47s (4.75x)  cross p50/p95/max    0/  84/ 107  speed 0.79x late 0.11x  yaw p95 699deg/s  rev  17  wall  42  [899896.953.........1]
+    ok     7.52s (4.79x)  cross p50/p95/max    0/  84/ 108  speed 0.79x late 0.11x  yaw p95 1417deg/s  rev  25  wall  46  [899696.953.........1]
+    => 3/3 arrived  mean 7.46s (4.75x)  cross p95 85  speed 0.79x  wall 46.0
+
+seg 261: human 1.62s 644u 399 ups  (1328,540,71) -> (743,441,82)  entry 271 ups  direct 0.92
+    ok     1.46s (0.91x)  cross p50/p95/max   13/  61/  64  speed 1.13x late 1.00x  yaw p95 376deg/s  rev   0  wall  27  [99999999994999999988]
+    ok     1.48s (0.92x)  cross p50/p95/max   14/  61/  67  speed 1.15x late 1.02x  yaw p95 391deg/s  rev   0  wall  35  [79999999998989999888]
+    ok     1.49s (0.92x)  cross p50/p95/max   12/  60/  67  speed 1.10x late 1.01x  yaw p95 385deg/s  rev   0  wall  33  [8999999996.999997978]
+    => 3/3 arrived  mean 1.48s (0.92x)  cross p95 61  speed 1.13x  wall 31.7
+
+seg 270: human 1.63s 642u 394 ups  (-549,778,143) -> (-388,253,-16)  entry 504 ups  direct 0.89
+    MISS   7.51s (4.61x)  cross p50/p95/max   69/ 300/ 344  speed 0.80x late 0.87x  yaw p95 569deg/s  rev 247  wall 118  [798217888775354999.9]
+    MISS   6.35s (3.89x)  cross p50/p95/max   67/ 278/ 317  speed 0.81x late 0.95x  yaw p95 1039deg/s  rev 165  wall 101  [83676675872756.9699.]
+    MISS   5.96s (3.66x)  cross p50/p95/max   79/ 297/ 331  speed 0.76x late 0.68x  yaw p95 1163deg/s  rev 139  wall  97  [82779898872777.975..]
+    => 0/3 arrived  mean 6.61s (4.05x)  cross p95 292  speed 0.79x  wall 105.3
+
+seg 279: human 1.68s 647u 384 ups  (-882,-232,-16) -> (-567,-440,21)  entry 227 ups  direct 0.59
+    ok     1.29s (0.76x)  cross p50/p95/max   23/  46/  50  speed 0.98x late 0.96x  yaw p95 533deg/s  rev   8  wall  25  [8.......989999986767]
+    ok     1.30s (0.77x)  cross p50/p95/max   22/  46/  51  speed 0.98x late 0.94x  yaw p95 712deg/s  rev   8  wall  23  [8.......999999997577]
+    ok     1.30s (0.77x)  cross p50/p95/max   22/  46/  51  speed 0.97x late 0.93x  yaw p95 740deg/s  rev   7  wall  28  [8.......999989996677]
+    => 3/3 arrived  mean 1.30s (0.77x)  cross p95 46  speed 0.98x  wall 25.3
+
+seg 288: human 0.96s 363u 378 ups  (1004,586,56) -> (696,434,86)  entry 232 ups  direct 0.95
+    ok     0.85s (0.88x)  cross p50/p95/max    2/  16/  18  speed 1.11x late 0.96x  yaw p95 367deg/s  rev   0  wall  17  [8999998979969979578.]
+    ok     0.85s (0.89x)  cross p50/p95/max    2/  15/  17  speed 1.10x late 0.95x  yaw p95 356deg/s  rev   0  wall  18  [9999987997979968857.]
+    ok     0.90s (0.93x)  cross p50/p95/max    6/  20/  23  speed 1.08x late 0.83x  yaw p95 360deg/s  rev   0  wall  15  [9999987999887977758.]
+    => 3/3 arrived  mean 0.87s (0.90x)  cross p95 17  speed 1.10x  wall 16.7
+
+seg 297: human 1.73s 642u 372 ups  (1373,929,-296) -> (1366,828,-252)  entry 284 ups  direct 0.17  (chord may be far shorter)
+    ok     0.40s (0.23x)  cross p50/p95/max   18/  48/  49  speed 0.86x late 0.69x  yaw p95 740deg/s  rev   2  wall   8  [89................58]
+    ok     0.40s (0.23x)  cross p50/p95/max   19/  46/  52  speed 0.89x late 0.82x  yaw p95 875deg/s  rev   0  wall   8  [89.................7]
+    ok     0.42s (0.24x)  cross p50/p95/max   18/  50/  52  speed 0.85x late 0.76x  yaw p95 864deg/s  rev   0  wall   7  [79.................7]
+    => 3/3 arrived  mean 0.41s (0.24x)  cross p95 48  speed 0.87x  wall 7.7
+
+seg 306: human 1.75s 640u 366 ups  (-252,376,36) -> (-22,458,40)  entry 417 ups  direct 0.38  (chord may be far shorter)
+    ok     0.96s (0.55x)  cross p50/p95/max   36/  45/  49  speed 0.72x late 0.77x  yaw p95 494deg/s  rev   6  wall  18  [54...........8877666]
+    ok     0.96s (0.55x)  cross p50/p95/max   35/  45/  50  speed 0.73x late 0.79x  yaw p95 681deg/s  rev   5  wall  17  [54...........9877667]
+    ok     0.96s (0.55x)  cross p50/p95/max   35/  45/  50  speed 0.72x late 0.77x  yaw p95 624deg/s  rev   6  wall  16  [54...........7976675]
+    => 3/3 arrived  mean 0.96s (0.55x)  cross p95 45  speed 0.72x  wall 17.0
+
+seg 315: human 1.78s 643u 361 ups  (1328,539,71) -> (1436,-2,-24)  entry 285 ups  direct 0.87
+    ok     1.31s (0.73x)  cross p50/p95/max   43/  60/  63  speed 1.16x late 1.20x  yaw p95 355deg/s  rev   0  wall  30  [89....99999999999999]
+    ok     1.33s (0.75x)  cross p50/p95/max   40/  59/  62  speed 1.16x late 1.16x  yaw p95 361deg/s  rev   0  wall  25  [99....99989999999999]
+    ok     2.13s (1.19x)  cross p50/p95/max   27/  59/  63  speed 0.93x late 0.88x  yaw p95 598deg/s  rev   0  wall  30  [99....89924868879799]
+    => 3/3 arrived  mean 1.59s (0.89x)  cross p95 60  speed 1.08x  wall 28.3
+
+seg 324: human 1.82s 641u 352 ups  (-253,516,-16) -> (-327,841,120)  entry 324 ups  direct 0.56
+    ok     1.89s (1.04x)  cross p50/p95/max   23/  47/  55  speed 0.94x late 0.98x  yaw p95 414deg/s  rev   0  wall  32  [39789..9899999779895]
+    ok     1.96s (1.08x)  cross p50/p95/max   23/  44/  54  speed 0.94x late 1.00x  yaw p95 499deg/s  rev   0  wall  33  [38889..9979998878998]
+    ok     2.02s (1.11x)  cross p50/p95/max   28/  44/  51  speed 0.86x late 0.92x  yaw p95 455deg/s  rev   0  wall  32  [47888..9669897779888]
+    => 3/3 arrived  mean 1.96s (1.08x)  cross p95 45  speed 0.92x  wall 32.3
+
+seg 333: human 1.18s 410u 347 ups  (467,-9,-177) -> (618,59,-182)  entry 464 ups  direct 0.40  (chord may be far shorter)
+    ok     0.65s (0.55x)  cross p50/p95/max   12/  58/  65  speed 0.98x late 1.30x  yaw p95 477deg/s  rev  12  wall  12  [49844....999......99]
+    ok     0.63s (0.54x)  cross p50/p95/max   12/  59/  67  speed 1.18x late 1.25x  yaw p95 449deg/s  rev  13  wall  14  [.8659...9999......99]
+    ok     0.74s (0.63x)  cross p50/p95/max   12/  56/  65  speed 0.97x late 1.27x  yaw p95 482deg/s  rev  12  wall  13  [49655....999......99]
+    => 3/3 arrived  mean 0.67s (0.57x)  cross p95 58  speed 1.04x  wall 13.0
+
+seg 342: human 1.88s 641u 341 ups  (1775,1009,-213) -> (1184,973,-215)  entry 330 ups  direct 0.92
+    ok     1.70s (0.91x)  cross p50/p95/max   14/  78/  85  speed 1.16x late 1.19x  yaw p95 462deg/s  rev   0  wall  33  [99979999999999..9999]
+    ok     1.73s (0.92x)  cross p50/p95/max   12/  71/  72  speed 1.16x late 1.22x  yaw p95 391deg/s  rev   0  wall  37  [89969999999999.99999]
+    ok     1.74s (0.92x)  cross p50/p95/max   15/  62/  70  speed 1.15x late 1.21x  yaw p95 512deg/s  rev   0  wall  34  [98969999999999.89999]
+    => 3/3 arrived  mean 1.72s (0.92x)  cross p95 70  speed 1.16x  wall 34.7
+
+seg 351: human 1.91s 645u 338 ups  (102,-707,328) -> (-150,-600,328)  entry 349 ups  direct 0.43  (chord may be far shorter)
+    ok     1.46s (0.76x)  cross p50/p95/max   17/  55/  58  speed 0.93x late 0.94x  yaw p95 365deg/s  rev  15  wall  27  [99....489975868..999]
+    ok     1.47s (0.77x)  cross p50/p95/max   17/  55/  58  speed 0.94x late 0.96x  yaw p95 352deg/s  rev  15  wall  29  [99....499878776..999]
+    ok    14.97s (7.84x)  cross p50/p95/max  131/ 230/ 276  speed 1.06x late 0.98x  yaw p95 505deg/s  rev 603  wall 277  [99999.79787799899939]
+    => 3/3 arrived  mean 5.96s (3.12x)  cross p95 114  speed 0.98x  wall 111.0
+
+seg 360: human 1.98s 648u 327 ups  (-232,-880,192) -> (-664,-642,-5)  entry 301 ups  direct 0.82
+    ok     1.68s (0.85x)  cross p50/p95/max   24/  61/  65  speed 0.86x late 0.84x  yaw p95 621deg/s  rev   0  wall  29  [89.97888877698977976]
+    ok     1.58s (0.80x)  cross p50/p95/max   29/  56/  57  speed 0.93x late 0.98x  yaw p95 470deg/s  rev   0  wall  29  [99.67888889897997988]
+    ok     1.76s (0.89x)  cross p50/p95/max   26/  63/  69  speed 0.85x late 0.82x  yaw p95 546deg/s  rev   0  wall  34  [87.97885878788649967]
+    => 3/3 arrived  mean 1.67s (0.84x)  cross p95 60  speed 0.88x  wall 30.7
+
+seg 369: human 2.02s 645u 320 ups  (97,-529,152) -> (-237,-752,166)  entry 373 ups  direct 0.62
+    ok     6.66s (3.30x)  cross p50/p95/max   80/ 450/ 492  speed 1.01x late 0.83x  yaw p95 703deg/s  rev 227  wall 126  [89999999.99...756779]
+    ok     6.27s (3.11x)  cross p50/p95/max   99/ 442/ 476  speed 1.12x late 0.90x  yaw p95 565deg/s  rev 212  wall 119  [89999999.99...456999]
+    ok    11.00s (5.45x)  cross p50/p95/max  160/ 454/ 487  speed 1.10x late 1.00x  yaw p95 612deg/s  rev 408  wall 207  [89999999.99...767999]
+    => 3/3 arrived  mean 7.98s (3.95x)  cross p95 449  speed 1.08x  wall 150.7
+
+seg 378: human 2.07s 649u 314 ups  (1329,538,71) -> (1165,738,59)  entry 289 ups  direct 0.40  (chord may be far shorter)
+    ok     1.31s (0.63x)  cross p50/p95/max   55/ 116/ 117  speed 1.04x late 1.04x  yaw p95 367deg/s  rev   9  wall  29  [99.......99889998899]
+    ok     1.33s (0.64x)  cross p50/p95/max   54/ 113/ 117  speed 1.03x late 1.00x  yaw p95 367deg/s  rev   7  wall  31  [99.......99997989799]
+    ok     1.37s (0.66x)  cross p50/p95/max   48/ 116/ 117  speed 1.03x late 1.01x  yaw p95 370deg/s  rev   8  wall  30  [99.......99989899979]
+    => 3/3 arrived  mean 1.34s (0.65x)  cross p95 115  speed 1.03x  wall 30.0
+
+seg 387: human 2.10s 644u 307 ups  (623,-438,88) -> (648,-682,88)  entry 344 ups  direct 0.38  (chord may be far shorter)
+    ok     0.73s (0.35x)  cross p50/p95/max   11/  20/  20  speed 1.17x late 1.44x  yaw p95 350deg/s  rev   0  wall  13  [9999799...........99]
+    ok     0.65s (0.31x)  cross p50/p95/max    9/  21/  22  speed 1.19x late 1.59x  yaw p95 348deg/s  rev   0  wall  15  [9999986...........99]
+    ok     0.67s (0.32x)  cross p50/p95/max   10/  22/  23  speed 1.23x late 1.75x  yaw p95 324deg/s  rev   0  wall  15  [9998889...........99]
+    => 3/3 arrived  mean 0.68s (0.33x)  cross p95 21  speed 1.20x  wall 14.3
+
+seg 396: human 2.14s 641u 299 ups  (1750,28,-131) -> (1607,-152,-244)  entry 455 ups  direct 0.40  (chord may be far shorter)
+    ok     1.32s (0.61x)  cross p50/p95/max   23/  53/  57  speed 0.96x late 1.13x  yaw p95 874deg/s  rev  10  wall  25  [64...........7988..9]
+    ok     1.32s (0.62x)  cross p50/p95/max   24/  55/  59  speed 0.95x late 1.09x  yaw p95 884deg/s  rev  17  wall  21  [74...........7989..9]
+    ok     1.32s (0.62x)  cross p50/p95/max   22/  51/  55  speed 0.95x late 1.09x  yaw p95 834deg/s  rev  14  wall  23  [74...........7979..9]
+    => 3/3 arrived  mean 1.32s (0.62x)  cross p95 53  speed 0.95x  wall 23.0
+
+seg 405: human 2.20s 643u 293 ups  (475,409,56) -> (460,301,56)  entry 352 ups  direct 0.17  (chord may be far shorter)
+    ok     0.51s (0.23x)  cross p50/p95/max    3/   8/   9  speed 0.84x late 0.94x  yaw p95 407deg/s  rev   6  wall   9  [4...............5999]
+    ok     0.53s (0.24x)  cross p50/p95/max   11/  21/  23  speed 0.82x late 0.87x  yaw p95 924deg/s  rev   0  wall  10  [5..............57899]
+    ok     0.53s (0.24x)  cross p50/p95/max   11/  21/  23  speed 0.80x late 0.84x  yaw p95 915deg/s  rev   0  wall   9  [5..............37899]
+    => 3/3 arrived  mean 0.52s (0.24x)  cross p95 17  speed 0.82x  wall 9.3
+
+seg 414: human 2.24s 642u 286 ups  (1776,-29,-124) -> (1937,254,-88)  entry 446 ups  direct 0.51
+    ok     1.19s (0.53x)  cross p50/p95/max   19/  49/  54  speed 0.97x late 1.32x  yaw p95 304deg/s  rev   0  wall  21  [788869678798....9...]
+    ok     1.20s (0.53x)  cross p50/p95/max   20/  50/  53  speed 0.92x late 1.19x  yaw p95 363deg/s  rev   0  wall  21  [8878659.7997....9...]
+    ok     1.20s (0.53x)  cross p50/p95/max   19/  50/  53  speed 0.96x late 1.23x  yaw p95 338deg/s  rev   0  wall  18  [6788698.7988....9...]
+    => 3/3 arrived  mean 1.20s (0.53x)  cross p95 50  speed 0.95x  wall 20.0
+
+seg 423: human 2.33s 641u 275 ups  (1522,432,-88) -> (1643,64,-287)  entry 219 ups  direct 0.68
+    ok     4.60s (1.98x)  cross p50/p95/max  137/ 306/ 313  speed 1.20x late 1.25x  yaw p95 817deg/s  rev  15  wall  84  [99998999999999459899]
+    ok     4.12s (1.77x)  cross p50/p95/max   93/ 343/ 353  speed 1.52x late 1.84x  yaw p95 749deg/s  rev  16  wall  83  [99999799999999999999]
+    ok     4.61s (1.98x)  cross p50/p95/max  133/ 302/ 306  speed 1.18x late 1.21x  yaw p95 826deg/s  rev  14  wall  89  [99999899999999649899]
+    => 3/3 arrived  mean 4.45s (1.91x)  cross p95 317  speed 1.30x  wall 85.3
+
+seg 432: human 2.40s 648u 270 ups  (-631,880,120) -> (-599,765,-16)  entry 346 ups  direct 0.28  (chord may be far shorter)
+    ok     1.12s (0.47x)  cross p50/p95/max   41/  53/  53  speed 0.71x late 0.69x  yaw p95 839deg/s  rev   7  wall  18  [7.................76]
+    ok     1.10s (0.46x)  cross p50/p95/max   41/  52/  53  speed 0.83x late 0.88x  yaw p95 856deg/s  rev   5  wall  18  [7.................96]
+    ok     1.06s (0.44x)  cross p50/p95/max   40/  52/  52  speed 0.86x late 0.85x  yaw p95 753deg/s  rev   4  wall  17  [8.................96]
+    => 3/3 arrived  mean 1.09s (0.46x)  cross p95 52  speed 0.80x  wall 17.7
+
+seg 441: human 2.45s 647u 264 ups  (512,767,216) -> (650,994,34)  entry 181 ups  direct 0.50  (chord may be far shorter)
+    ok     1.88s (0.77x)  cross p50/p95/max   14/  61/  64  speed 1.07x late 1.16x  yaw p95 987deg/s  rev  28  wall  29  [4.......99849.99788.]
+    ok     2.09s (0.85x)  cross p50/p95/max   19/  53/  63  speed 0.87x late 0.89x  yaw p95 1732deg/s  rev  35  wall  28  [4.......89987.993788]
+    ok     2.04s (0.83x)  cross p50/p95/max   19/  55/  65  speed 0.87x late 0.90x  yaw p95 2726deg/s  rev  34  wall  27  [4.......79997.984798]
+    => 3/3 arrived  mean 2.00s (0.82x)  cross p95 57  speed 0.94x  wall 28.0
+
+seg 450: human 2.50s 640u 256 ups  (335,-846,301) -> (416,-680,256)  entry 120 ups  direct 0.30  (chord may be far shorter)
+    ok     1.04s (0.41x)  cross p50/p95/max   29/  46/  49  speed 0.80x late 0.85x  yaw p95 1333deg/s  rev   8  wall  15  [5.......87......9984]
+    ok     1.13s (0.45x)  cross p50/p95/max   25/  37/  40  speed 0.82x late 0.87x  yaw p95 2027deg/s  rev   9  wall  17  [5.......95......8794]
+    ok     1.07s (0.43x)  cross p50/p95/max   25/  38/  40  speed 0.82x late 0.84x  yaw p95 900deg/s  rev   7  wall  13  [7.......95......9994]
+    => 3/3 arrived  mean 1.08s (0.43x)  cross p95 40  speed 0.81x  wall 15.0
+
+seg 459: human 2.60s 644u 248 ups  (1940,-51,-168) -> (2017,-71,-168)  entry 330 ups  direct 0.12  (chord may be far shorter)
+    ok     0.35s (0.14x)  cross p50/p95/max    8/  21/  23  speed 1.28x late 2.70x  yaw p95 1124deg/s  rev   3  wall   5  [5.......97.........9]
+    ok     0.36s (0.14x)  cross p50/p95/max    8/  21/  23  speed 1.29x late 2.79x  yaw p95 1046deg/s  rev   3  wall   6  [5.......97.........9]
+    ok     0.36s (0.14x)  cross p50/p95/max   10/  19/  24  speed 0.98x late 1.50x  yaw p95 1080deg/s  rev   1  wall   6  [6.......88.........9]
+    => 3/3 arrived  mean 0.36s (0.14x)  cross p95 20  speed 1.18x  wall 5.7
+
+seg 468: human 2.70s 643u 238 ups  (1640,-97,-158) -> (1623,225,-279)  entry 57 ups  direct 0.54
+    ok     1.44s (0.53x)  cross p50/p95/max   62/  88/  94  speed 0.95x late 1.16x  yaw p95 224deg/s  rev   0  wall  24  [9.....8676.........9]
+    ok     1.41s (0.52x)  cross p50/p95/max   61/  88/  94  speed 0.93x late 1.11x  yaw p95 195deg/s  rev   0  wall  24  [9.....9676.........9]
+    ok     1.43s (0.53x)  cross p50/p95/max   61/  88/  94  speed 0.94x late 1.10x  yaw p95 240deg/s  rev   0  wall  24  [9.....7667.........9]
+    => 3/3 arrived  mean 1.43s (0.53x)  cross p95 88  speed 0.94x  wall 24.0
+
+seg 477: human 2.92s 642u 220 ups  (921,77,-166) -> (1397,-128,-267)  entry 542 ups  direct 0.82
+    ok     2.38s (0.82x)  cross p50/p95/max   36/  69/  81  speed 1.66x late 2.62x  yaw p95 617deg/s  rev  19  wall  42  [89867778....99.99999]
+    ok     2.45s (0.84x)  cross p50/p95/max   32/  78/  83  speed 1.78x late 2.84x  yaw p95 896deg/s  rev  17  wall  42  [96976779....99.99999]
+    ok     2.42s (0.83x)  cross p50/p95/max   33/  77/  84  speed 1.69x late 2.61x  yaw p95 613deg/s  rev  21  wall  42  [99968677....99.99999]
+    => 3/3 arrived  mean 2.42s (0.83x)  cross p95 74  speed 1.71x  wall 42.0
+
+seg 486: human 1.31s 268u 204 ups  (1165,-927,88) -> (1290,-892,68)  entry 295 ups  direct 0.49  (chord may be far shorter)
+    ok     0.37s (0.28x)  cross p50/p95/max    6/  20/  24  speed 1.64x late 3.27x  yaw p95 454deg/s  rev   0  wall   6  [9799989.......9.....]
+    ok     0.37s (0.28x)  cross p50/p95/max    5/  21/  22  speed 1.59x late 3.55x  yaw p95 460deg/s  rev   0  wall   7  [5899979.......9.....]
+    ok     0.37s (0.29x)  cross p50/p95/max    6/  20/  24  speed 1.43x late 3.01x  yaw p95 396deg/s  rev   0  wall   6  [98.9999.......9.....]
+    => 3/3 arrived  mean 0.37s (0.28x)  cross p95 20  speed 1.56x  wall 6.3
+
+seg 495: human 3.32s 641u 193 ups  (1293,-96,-140) -> (1811,-363,-360)  entry 475 ups  direct 0.97
+    ok     3.94s (1.19x)  cross p50/p95/max   18/  84/  89  speed 0.94x late 1.05x  yaw p95 500deg/s  rev  36  wall  58  [798247.9999999998899]
+    ok     3.95s (1.19x)  cross p50/p95/max   19/  84/  89  speed 0.93x late 1.05x  yaw p95 452deg/s  rev  41  wall  62  [596247.9999998999999]
+    ok     3.95s (1.19x)  cross p50/p95/max   19/  84/  89  speed 0.95x late 1.07x  yaw p95 494deg/s  rev  40  wall  63  [797248.9999999989899]
+    => 3/3 arrived  mean 3.95s (1.19x)  cross p95 84  speed 0.94x  wall 61.0
+
+seg 504: human 3.49s 640u 183 ups  (1791,-128,-180) -> (1161,-178,-384)  entry 360 ups  direct 1.04
+    ok    11.58s (3.32x)  cross p50/p95/max   10/  63/  71  speed 0.53x late 0.46x  yaw p95 837deg/s  rev   6  wall  85  [97376454444545444541]
+    ok    11.58s (3.32x)  cross p50/p95/max   10/  63/  71  speed 0.53x late 0.47x  yaw p95 672deg/s  rev  17  wall  81  [84596464445545445642]
+    ok     7.44s (2.13x)  cross p50/p95/max   25/  66/  71  speed 0.56x late 0.52x  yaw p95 500deg/s  rev  15  wall  79  [94496454445545445457]
+    => 3/3 arrived  mean 10.20s (2.92x)  cross p95 64  speed 0.54x  wall 81.7
+
+seg 513: human 2.10s 366u 175 ups  (1412,-360,-232) -> (1257,-104,-300)  entry 184 ups  direct 0.84
+    ok    14.97s (7.13x)  cross p50/p95/max    8/ 207/ 207  speed 0.84x late 0.89x  yaw p95 5958deg/s  rev 309  wall 100  [76876767889.99899863]
+    ok    11.76s (5.60x)  cross p50/p95/max   11/ 207/ 207  speed 0.85x late 0.92x  yaw p95 1057deg/s  rev 392  wall  94  [86786677979.99898884]
+    ok    11.80s (5.62x)  cross p50/p95/max    9/ 207/ 207  speed 0.84x late 0.87x  yaw p95 753deg/s  rev 378  wall  86  [78777767989.98989854]
+    => 3/3 arrived  mean 12.85s (6.12x)  cross p95 207  speed 0.84x  wall 93.3
+
+seg 522: human 3.78s 641u 170 ups  (1091,-319,-281) -> (1201,146,-337)  entry 163 ups  direct 0.75
+    ok     6.48s (1.72x)  cross p50/p95/max   67/ 134/ 146  speed 0.88x late 0.83x  yaw p95 707deg/s  rev  52  wall  83  [787669999999778....4]
+    ok     3.08s (0.82x)  cross p50/p95/max   32/  70/  71  speed 0.95x late 1.02x  yaw p95 424deg/s  rev   0  wall  45  [788678999999999.....]
+    ok     6.33s (1.68x)  cross p50/p95/max   67/ 136/ 147  speed 0.91x late 0.91x  yaw p95 734deg/s  rev  53  wall  81  [778668999999779....5]
+    => 3/3 arrived  mean 5.30s (1.40x)  cross p95 113  speed 0.92x  wall 69.7
+
+seg 531: human 4.00s 638u 160 ups  (1643,-468,-328) -> (1132,-256,-253)  entry 178 ups  direct 0.87
+    MISS  11.41s (2.85x)  cross p50/p95/max   40/ 224/ 227  speed 0.99x late 0.99x  yaw p95 304deg/s  rev   2  wall  42  [988998999989999..963]
+    MISS  14.36s (3.59x)  cross p50/p95/max  126/ 224/ 226  speed 0.87x late 0.95x  yaw p95 617deg/s  rev   2  wall 120  [976..57...899.9..993]
+    MISS  14.32s (3.58x)  cross p50/p95/max  126/ 224/ 226  speed 0.86x late 0.94x  yaw p95 547deg/s  rev   4  wall 121  [976..57...889.9..983]
+    => 0/3 arrived  mean 13.37s (3.34x)  cross p95 224  speed 0.91x  wall 94.3
+
+wrote docs/baseline/dm3-4on4-suite.csv
+
+33 runs took a shorter journey than the human (38% of the ground at p50), so their clocks are not comparable: arrived 33/33, wall events p50 14
+
+=== 135 runs over 45 timed movements ===
+  arrived      120/135 (89%)
+  time ratio   p50 1.25x  p90 4.71x  max 7.84x
+  speed ratio  p50 0.87x  p10 0.70x   (late-line p50 0.87x)
+  cross p95    p50 71u  p90 274u
+  yaw p95      p50 500deg/s  p90 1038deg/s
+  reverse      p50 0  p90 103
+  wall events  p50 35  p90 94
