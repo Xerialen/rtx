@@ -39,6 +39,7 @@ rtx-nav = { path = "crates/rtx-nav" }
 rtx-proto = { path = "crates/rtx-proto" }
 rtx-auditlog = { path = "crates/rtx-auditlog" }
 rtx-ctlproto = { path = "crates/rtx-ctlproto" }
+rtx-demo-tool = { path = "crates/rtx-demo-tool" }
 # The MCP<->game control channel is framed msgpack of the `rtx-ctlproto` typed request/response
 # schema. `serde` derives the schema; `rmp-serde` is the compact codec on both sides.
 serde = { version = "1", features = ["derive"] }

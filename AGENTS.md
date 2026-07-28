@@ -79,6 +79,35 @@ On the 4-on-4 that gives **4330 segments → 544 distinct**, 334k units of dm3, 
 392 ups, with the top of the suite at 630-700 ups. (Endpoint bucketing, for comparison, only reached
 2870 — it is the wrong test.) `route` remains for interrogating one specific A→B by hand.
 
+### Scoring the bot against that suite — `flyprobe line`
+
+```
+cargo run --release -p rtx-ctlproto --example flyprobe -- line <demo> \
+    [--first N] [--count N] [--stride N] [--trials N] [--csv PATH]
+```
+
+Teleports the bot to a movement's start, tells it to reach the end, and scores the trajectory with
+`LineScore`: time vs the human, cross-track p50/p95/max, speed ratio per 5% of progress, yaw jitter,
+reverse frames, and **wall events** (grounded frames losing >60 ups — the "bumping into geometry"
+counter). It prints one aggregate block with percentiles at the end and optionally a CSV.
+
+Three things about it are load-bearing:
+
+- **Run it unattended, read the bottom.** A sweep is hundreds of runs. Do not drive this through the
+  MCP tool-by-tool — script it, background it, read the aggregate. `--stride` samples across the
+  whole suite instead of just its fast head (the suite is ordered fastest-first).
+- **The bot is told only "reach the end".** It picks its own path, which is the point: any path is
+  allowed. High `cross_track` therefore means *it chose a different route*, which is a different
+  finding from executing the same route badly — read it alongside the time ratio, not as a failure.
+- **`Teleport` carries a velocity** (`vel`, or `vx/vy/vz` on the MCP tool; zero elsewhere, which is
+  what rocket-jump tests need). The human entered each movement already travelling, so the harness
+  hands the bot the same momentum — measured over the first 0.1s, since a single differenced MVD
+  frame reads hundreds of ups high. Without it the run measures a standing start: on dm3's fastest
+  segment that alone was the difference between 0.48x and 0.73x of the human's speed.
+
+`late_speed_ratio` (back half of the line only) is the honest "does it execute this well" number;
+`mean_speed_ratio` still carries some of the entry transient.
+
 **Calibrate on this before judging a bot number.** The 4-on-4 in `demos/` — eight players, 20
 minutes, dm3 — sits at p50 ~300-340 and p90 ~450-480 ups, **above 200 ups for 60-74% of the
 match**, dead for only 3-6%, gaining speed in the air on 93-96% of jumps. Competitive play is

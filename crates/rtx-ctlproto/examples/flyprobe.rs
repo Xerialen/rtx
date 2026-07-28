@@ -12,6 +12,14 @@
 //   cargo run -q -p rtx-ctlproto --example flyprobe -- fly   <link> [trials]  # land-rate + launch spread
 //   cargo run -q -p rtx-ctlproto --example flyprobe -- trace <link> [trials]  # airborne trace of a miss
 //   cargo run -q -p rtx-ctlproto --example flyprobe -- goto  <x y z> <x y z> [trials]   # route + jumps + crawls
+//   cargo run -q -p rtx-ctlproto --example flyprobe -- line <demo> \
+//        [--first N] [--count N] [--stride N] [--trials N] [--csv PATH]
+//
+// `line` is the movement scoreboard: it rebuilds the human coverage suite from a demo (see
+// `qwd segments` for the same suite and the indices to name), then teleports the bot to a movement's
+// start *carrying the speed the human entered it with*, tells it to reach the end, and scores the
+// run against what the human did. It is meant to be run unattended over a stride of the suite and
+// read once at the bottom — a full sweep is hundreds of runs and nothing needs watching.
 //
 // A server must be up with `rtx_control_port 27950` (what `server_start` opens).
 
@@ -19,7 +27,9 @@ use std::io::Write;
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
+use glam::Vec3 as Vec3f;
 use rtx_ctlproto::{decode, read_frame, to_frame, Cmd, CurlLink, Event, Msg, Request, Resp, Vec3};
+use rtx_demo_tool::line;
 
 struct Conn {
     s: TcpStream,
@@ -136,7 +146,15 @@ fn main() {
         ];
         let trials: u32 = argv.get(7).and_then(|s| s.parse().ok()).unwrap_or(3);
         for i in 0..trials {
-            c.req(Cmd::Teleport { bot, pos: from }, &mut |_| {}).expect("teleport");
+            c.req(
+                Cmd::Teleport {
+                    bot,
+                    pos: from,
+                    vel: [0.0; 3],
+                },
+                &mut |_| {},
+            )
+            .expect("teleport");
             std::thread::sleep(Duration::from_millis(250));
             c.req(Cmd::Goto { bot, pos: to }, &mut |_| {}).expect("goto");
             // The plan, read the moment the order lands: "which path does it intend" is a different
@@ -235,6 +253,231 @@ fn main() {
         return;
     }
 
+    // line <demo> <first> [count] [trials] — score the bot against human movement.
+    //
+    // The references are not a curated list of routes: `line::suite` cuts every player's movement in
+    // the demo into pieces and drops the redundant ones, and the index is a position in that suite.
+    // The bot is told only "get to the end" and takes whatever path it wants, which is the point —
+    // any path is allowed, and what is being measured is how the movement is *executed*.
+    if mode == "line" {
+        let path = &argv[1];
+        let flag = |name: &str, dflt: usize| -> usize {
+            argv.iter()
+                .position(|a| a == name)
+                .and_then(|i| argv.get(i + 1))
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(dflt)
+        };
+        let first = flag("--first", 0);
+        let count = flag("--count", 1);
+        // Stride, so a sweep samples the whole suite instead of the fast head of it: the suite is
+        // ordered fastest-first, and scoring only its first N would baseline one kind of movement.
+        let stride = flag("--stride", 1).max(1);
+        let trials = flag("--trials", 5) as u32;
+        let csv = argv
+            .iter()
+            .position(|a| a == "--csv")
+            .and_then(|i| argv.get(i + 1).cloned());
+        let demo = rtx_demo_tool::parse_demo(std::path::Path::new(path)).expect("parse demo");
+        let suite = line::suite(
+            &demo,
+            line::SUITE_MIN_PATH,
+            line::SUITE_MAX_PATH,
+            line::SUITE_MAX_SECS,
+            line::SUITE_BUCKET,
+        );
+        println!("{}: {} distinct movements", path, suite.len());
+        let bot = first_bot(&mut c);
+        let mut rows = String::from(
+            "seg,human_secs,human_path,human_ups,entry_ups,arrived,secs,ratio,cross_p50,\
+             cross_p95,cross_max,speed,late_speed,yaw_p95,reverse,wall\n",
+        );
+        let mut all: Vec<line::LineScore> = Vec::new();
+        for idx in (first..suite.len()).step_by(stride).take(count) {
+            let seg = &suite[idx];
+            let reference = seg.reference(format!("seg{idx}"));
+            let (a, b) = (reference.pts[0], *reference.pts.last().unwrap());
+            // The human entered this movement already travelling. Hand the bot the same momentum,
+            // or the run measures its standing start rather than the movement.
+            let v0 = seg.entry_velocity();
+            println!(
+                "\nseg {idx}: human {:.2}s {:.0}u {:.0} ups  ({:.0},{:.0},{:.0}) -> ({:.0},{:.0},{:.0})  entry {:.0} ups",
+                seg.duration(),
+                seg.path_length(),
+                seg.mean_speed(),
+                a.x,
+                a.y,
+                a.z,
+                b.x,
+                b.y,
+                b.z,
+                v0.truncate().length(),
+            );
+            let mut scores = Vec::new();
+            for _ in 0..trials {
+                c.req(
+                    Cmd::Teleport {
+                        bot,
+                        pos: [a.x, a.y, a.z],
+                        vel: [v0.x, v0.y, v0.z],
+                    },
+                    &mut |_| {},
+                )
+                .expect("teleport");
+                // No settle sleep here, unlike the standstill tests: the injected momentum is the
+                // starting condition and every frame parked at `Hold` bleeds it away.
+                c.req(
+                    Cmd::Goto {
+                        bot,
+                        pos: [b.x, b.y, b.z],
+                    },
+                    &mut |_| {},
+                )
+                .expect("goto");
+                let ev = c.wait_event(
+                    30.0,
+                    |ev| matches!(ev, Event::Arrived { bot: t, .. } | Event::GotoStall { bot: t, .. } if *t == bot),
+                );
+                let traj = match ev {
+                    Some(Event::Arrived { traj, .. }) | Some(Event::GotoStall { traj, .. }) => traj,
+                    _ => {
+                        println!("    no event");
+                        continue;
+                    }
+                };
+                let samples: Vec<(f32, Vec3f)> = traj.iter().map(|r| (r[0], Vec3f::new(r[1], r[2], r[3]))).collect();
+                let s = line::LineScore::score(&samples, &reference);
+                // Speed as a fraction of the human's, one digit per 5% of the line: 9 means it
+                // matched, 0 means it stopped, '.' means it never got that far. The shape is the
+                // useful part — a ramp from 0 is a standing start, a notch in the middle is a
+                // corner it braked into.
+                let strip: String = s
+                    .speed_ratio
+                    .iter()
+                    .map(|&r| {
+                        if r <= 0.0 {
+                            '.'
+                        } else {
+                            char::from_digit(((r * 9.0).round() as u32).min(9), 10).unwrap()
+                        }
+                    })
+                    .collect();
+                println!(
+                    "    {}  {:5.2}s ({:4.2}x)  cross p50/p95/max {:4.0}/{:4.0}/{:4.0}  \
+                     speed {:.2}x late {:.2}x  yaw p95 {:3.0}deg/s  rev {:>3}  wall {:>3}  [{strip}]",
+                    if s.arrived { "ok  " } else { "MISS" },
+                    s.time,
+                    if s.reference_time > 0.0 {
+                        s.time / s.reference_time
+                    } else {
+                        0.0
+                    },
+                    s.cross_track_p50,
+                    s.cross_track_p95,
+                    s.cross_track_max,
+                    s.mean_speed_ratio,
+                    s.late_speed_ratio,
+                    s.yaw_jitter_p95,
+                    s.reverse_frames,
+                    s.wall_events,
+                );
+                rows.push_str(&format!(
+                    "{idx},{:.3},{:.0},{:.0},{:.0},{},{:.3},{:.3},{:.1},{:.1},{:.1},{:.3},{:.3},{:.0},{},{}\n",
+                    seg.duration(),
+                    seg.path_length(),
+                    seg.mean_speed(),
+                    v0.truncate().length(),
+                    s.arrived as u8,
+                    s.time,
+                    if s.reference_time > 0.0 {
+                        s.time / s.reference_time
+                    } else {
+                        0.0
+                    },
+                    s.cross_track_p50,
+                    s.cross_track_p95,
+                    s.cross_track_max,
+                    s.mean_speed_ratio,
+                    s.late_speed_ratio,
+                    s.yaw_jitter_p95,
+                    s.reverse_frames,
+                    s.wall_events,
+                ));
+                scores.push(s);
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            let n = scores.len().max(1) as f32;
+            let arrived = scores.iter().filter(|s| s.arrived).count();
+            let mean = |f: fn(&line::LineScore) -> f32| scores.iter().map(f).sum::<f32>() / n;
+            println!(
+                "    => {arrived}/{} arrived  mean {:.2}s ({:.2}x)  cross p95 {:.0}  speed {:.2}x  wall {:.1}",
+                scores.len(),
+                mean(|s| s.time),
+                mean(|s| if s.reference_time > 0.0 {
+                    s.time / s.reference_time
+                } else {
+                    0.0
+                }),
+                mean(|s| s.cross_track_p95),
+                mean(|s| s.mean_speed_ratio),
+                mean(|s| s.wall_events as f32),
+            );
+            all.extend(scores);
+        }
+
+        // One aggregate over the whole sweep — the number a baseline is quoted as, and the number a
+        // change has to move. Percentiles, not just means: a suite where most movements are fine and
+        // a tenth are catastrophic is a different problem from one that is uniformly mediocre, and
+        // the mean cannot tell them apart.
+        if let Some(f) = &csv {
+            std::fs::write(f, &rows).expect("write csv");
+            println!("\nwrote {f}");
+        }
+        let n = all.len();
+        if n > 0 {
+            let arrived = all.iter().filter(|s| s.arrived).count();
+            let pct = |mut v: Vec<f32>, q: f32| {
+                v.sort_by(f32::total_cmp);
+                v[(((v.len() - 1) as f32) * q) as usize]
+            };
+            let col = |f: fn(&line::LineScore) -> f32| all.iter().map(f).collect::<Vec<_>>();
+            let ratio = |s: &line::LineScore| {
+                if s.reference_time > 0.0 {
+                    s.time / s.reference_time
+                } else {
+                    0.0
+                }
+            };
+            println!(
+                "\n=== {n} runs over {} movements ===\n  \
+                 arrived      {arrived}/{n} ({:.0}%)\n  \
+                 time ratio   p50 {:.2}x  p90 {:.2}x  max {:.2}x\n  \
+                 speed ratio  p50 {:.2}x  p10 {:.2}x   (late-line p50 {:.2}x)\n  \
+                 cross p95    p50 {:.0}u  p90 {:.0}u\n  \
+                 yaw p95      p50 {:.0}deg/s  p90 {:.0}deg/s\n  \
+                 reverse      p50 {:.0}  p90 {:.0}\n  \
+                 wall events  p50 {:.0}  p90 {:.0}",
+                (first..suite.len()).step_by(stride).take(count).count(),
+                100.0 * arrived as f32 / n as f32,
+                pct(col(ratio), 0.5),
+                pct(col(ratio), 0.9),
+                pct(col(ratio), 1.0),
+                pct(col(|s| s.mean_speed_ratio), 0.5),
+                pct(col(|s| s.mean_speed_ratio), 0.1),
+                pct(col(|s| s.late_speed_ratio), 0.5),
+                pct(col(|s| s.cross_track_p95), 0.5),
+                pct(col(|s| s.cross_track_p95), 0.9),
+                pct(col(|s| s.yaw_jitter_p95), 0.5),
+                pct(col(|s| s.yaw_jitter_p95), 0.9),
+                pct(col(|s| s.reverse_frames as f32), 0.5),
+                pct(col(|s| s.reverse_frames as f32), 0.9),
+                pct(col(|s| s.wall_events as f32), 0.5),
+                pct(col(|s| s.wall_events as f32), 0.9),
+            );
+        }
+        return;
+    }
+
     // fly <link> [trials]
     let link: u32 = argv[1].parse().expect("link id");
     let trials: u32 = argv.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
@@ -249,7 +492,15 @@ fn main() {
 
     let (mut hits, mut n) = (0u32, 0u32);
     for i in 0..trials {
-        c.req(Cmd::Teleport { bot, pos: from }, &mut |_| {}).expect("teleport");
+        c.req(
+            Cmd::Teleport {
+                bot,
+                pos: from,
+                vel: [0.0; 3],
+            },
+            &mut |_| {},
+        )
+        .expect("teleport");
         std::thread::sleep(Duration::from_millis(250));
         c.req(Cmd::Fly { bot, link }, &mut |_| {}).expect("fly");
         let ev = c.wait_event(15.0, |ev| matches!(ev, Event::FlyResult(r) if r.bot == bot));

@@ -63,6 +63,34 @@ impl Traversal {
         }
     }
 
+    /// The velocity the player was carrying when this movement began.
+    ///
+    /// A segment is a slice out of continuous play, so the human entered it already travelling —
+    /// often at full speed. Anything reproducing the movement has to start from the same condition
+    /// or it is measuring a standing start instead.
+    ///
+    /// Measured over [`ENTRY_WINDOW`] rather than off the first frame. An MVD carries no velocity
+    /// field, so speed is differenced from positions, and a single frame divided by a
+    /// millisecond-quantised delta can read hundreds of units per second high — on dm3's fastest
+    /// segment, 1063 ups against a 700 ups mean. Averaging over a window is both robust to that and
+    /// closer to what is being reproduced anyway, since no engine grants an instantaneous spike.
+    pub fn entry_velocity(&self) -> Vec3 {
+        let Some(first) = self.motions.first() else {
+            return Vec3::ZERO;
+        };
+        let last = self
+            .motions
+            .iter()
+            .take_while(|m| m.time - first.time <= ENTRY_WINDOW && !m.warped)
+            .last()
+            .unwrap_or(first);
+        let dt = last.time - first.time;
+        if dt <= 0.0 {
+            return Vec3::ZERO;
+        }
+        (last.origin - first.origin) / dt
+    }
+
     /// Turn this run into a reference line to score against.
     pub fn reference(&self, name: impl Into<String>) -> ReferenceLine {
         ReferenceLine {
@@ -135,8 +163,31 @@ pub fn distinct(mut segments: Vec<Traversal>, bucket: f32) -> Vec<Traversal> {
     out
 }
 
+/// How much of the start of a movement [`Traversal::entry_velocity`] averages over. Long enough
+/// (several frames at 72 Hz) to survive one badly-timed delta, short enough to still be the entry.
+pub const ENTRY_WINDOW: f32 = 0.1;
+
 /// A quantised position plus the octant of travel through it.
 type Cell = (i32, i32, i32, i32);
+
+/// The whole coverage suite for a demo: every player's movement, cut into pieces and deduped.
+///
+/// This is the one entry point callers should use — the CLI and the live harness must build the
+/// same suite from the same demo or a baseline means nothing, and the segment *index* is only a
+/// stable name for a movement because both go through here with the same parameters.
+pub fn suite(demo: &crate::Demo, min_path: f32, max_path: f32, max_secs: f32, bucket: f32) -> Vec<Traversal> {
+    let mut all = Vec::new();
+    for p in crate::analysis::players(demo) {
+        all.extend(crate::analysis::track(demo, p).segments(min_path, max_path, max_secs));
+    }
+    distinct(all, bucket)
+}
+
+/// The default suite parameters, so every caller names the same movements by the same indices.
+pub const SUITE_MIN_PATH: f32 = 192.0;
+pub const SUITE_MAX_PATH: f32 = 640.0;
+pub const SUITE_MAX_SECS: f32 = 4.0;
+pub const SUITE_BUCKET: f32 = 128.0;
 
 /// How much of a segment's ground has to be already covered for it to count as redundant. Not 1.0:
 /// two runs of the same corridor differ at the ends, where one player entered a step earlier.
@@ -256,6 +307,14 @@ pub struct LineScore {
     pub speed_ratio: [f32; 20],
     /// Mean of the above over bins the bot actually reached.
     pub mean_speed_ratio: f32,
+    /// The same over the **back half** of the line only.
+    ///
+    /// Read this, not `mean_speed_ratio`, when asking whether the bot *executes* a movement well. A
+    /// reference is lifted out of a match where the human entered it already at speed, and a bot
+    /// placed at its start begins at rest — on a 640-unit segment the standing start is a large part
+    /// of the run, and it would otherwise swamp everything the movement is actually about. By the
+    /// back half the bot has whatever speed it is going to get, so this is the honest comparison.
+    pub late_speed_ratio: f32,
     /// 95th percentile of per-frame heading change, degrees/sec. High means the bot is sawing at
     /// its own steering rather than holding a line.
     pub yaw_jitter_p95: f32,
@@ -354,6 +413,7 @@ impl LineScore {
         }
         let mut speed_ratio = [0.0f32; 20];
         let (mut sum, mut n) = (0.0f32, 0u32);
+        let (mut late_sum, mut late_n) = (0.0f32, 0u32);
         for i in 0..20 {
             let bot = if bins[i].1 > 0 {
                 bins[i].0 / bins[i].1 as f32
@@ -369,6 +429,10 @@ impl LineScore {
                 speed_ratio[i] = bot / human;
                 sum += speed_ratio[i];
                 n += 1;
+                if i >= 10 {
+                    late_sum += speed_ratio[i];
+                    late_n += 1;
+                }
             }
         }
 
@@ -390,6 +454,7 @@ impl LineScore {
             cross_track_max: cross.last().copied().unwrap_or(0.0),
             speed_ratio,
             mean_speed_ratio: if n > 0 { sum / n as f32 } else { 0.0 },
+            late_speed_ratio: if late_n > 0 { late_sum / late_n as f32 } else { 0.0 },
             yaw_jitter_p95: pct(&yaw_steps, 0.95),
             reverse_frames,
             wall_events,

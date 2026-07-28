@@ -94,8 +94,13 @@ pub enum Cmd {
     Items,
     /// Make a bot fit for a rocket-jump test.
     Prep { bot: u32, health: f32, rockets: f32 },
-    /// Teleport a bot to a world point.
-    Teleport { bot: u32, pos: Vec3 },
+    /// Place a bot at a world point carrying `vel`.
+    ///
+    /// Velocity is part of placement because for a movement test it is part of the *starting
+    /// condition*: a human reference is lifted out of a match where the player entered the movement
+    /// already at speed, so dropping a bot at the same point from rest measures its standing start
+    /// rather than the movement. `[0, 0, 0]` is the plain "put it here" placement.
+    Teleport { bot: u32, pos: Vec3, vel: Vec3 },
     /// Order a bot to run to a world point (emits `Arrived` / `GotoStall`).
     Goto { bot: u32, pos: Vec3 },
     /// Order a bot to fly a rocket-jump link (emits `RjResult`).

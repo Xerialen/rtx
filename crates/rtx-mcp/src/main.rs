@@ -426,6 +426,7 @@ impl RtxMcp {
                 Cmd::Teleport {
                     bot,
                     pos: [src[0], src[1], src[2]],
+                    vel: [0.0; 3],
                 },
                 SHORT,
             )
@@ -488,7 +489,15 @@ impl RtxMcp {
                 return Ok(out);
             }
         } else {
-            self.req(Cmd::Teleport { bot, pos: from }, SHORT).await?;
+            self.req(
+                Cmd::Teleport {
+                    bot,
+                    pos: from,
+                    vel: [0.0; 3],
+                },
+                SHORT,
+            )
+            .await?;
         }
 
         let conn = self.conn().await?;
@@ -599,7 +608,15 @@ impl RtxMcp {
         let mut trial_rows = Vec::new();
         let (mut hits, mut miss_sum, mut spd_sum, mut measured) = (0u32, 0.0f64, 0.0f64, 0u32);
         for i in 0..trials {
-            self.req(Cmd::Teleport { bot, pos: start }, SHORT).await?;
+            self.req(
+                Cmd::Teleport {
+                    bot,
+                    pos: start,
+                    vel: [0.0; 3],
+                },
+                SHORT,
+            )
+            .await?;
             let conn = self.conn().await?;
             let rx = conn.events.subscribe();
             self.req(Cmd::Fly { bot, link }, SHORT).await?;
@@ -639,7 +656,15 @@ impl RtxMcp {
             }));
         }
         // Park the bot back where it started so the next parameter set begins from a known pose.
-        self.req(Cmd::Teleport { bot, pos: start }, SHORT).await?;
+        self.req(
+            Cmd::Teleport {
+                bot,
+                pos: start,
+                vel: [0.0; 3],
+            },
+            SHORT,
+        )
+        .await?;
         self.req(Cmd::Hold { bot }, SHORT).await?;
 
         let n = measured.max(1) as f64;
@@ -1019,6 +1044,12 @@ struct TeleportArgs {
     x: Option<f32>,
     y: Option<f32>,
     z: Option<f32>,
+    /// Velocity to arrive carrying, default zero. Use it to reproduce a *starting condition* rather
+    /// than just a position — a bot dropped at rest where a human was travelling at 700ups is being
+    /// measured on its standing start, not on the movement that follows.
+    vx: Option<f32>,
+    vy: Option<f32>,
+    vz: Option<f32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1515,7 +1546,8 @@ impl RtxMcp {
             } else {
                 [a.x.unwrap_or(0.0), a.y.unwrap_or(0.0), a.z.unwrap_or(0.0)]
             };
-            self.req(Cmd::Teleport { bot, pos }, SHORT).await
+            let vel = [a.vx.unwrap_or(0.0), a.vy.unwrap_or(0.0), a.vz.unwrap_or(0.0)];
+            self.req(Cmd::Teleport { bot, pos, vel }, SHORT).await
         }
         .await;
         finish(r)
@@ -1576,7 +1608,15 @@ impl RtxMcp {
             let mut results = Vec::with_capacity(trials as usize);
             let mut all_passed = true;
             for trial in 1..=trials {
-                self.req(Cmd::Teleport { bot, pos: start }, SHORT).await?;
+                self.req(
+                    Cmd::Teleport {
+                        bot,
+                        pos: start,
+                        vel: [0.0; 3],
+                    },
+                    SHORT,
+                )
+                .await?;
                 let rx = conn.events.subscribe();
                 self.req(Cmd::Goto { bot, pos: end }, SHORT).await?;
                 let ev = conn

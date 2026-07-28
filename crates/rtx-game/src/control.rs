@@ -467,7 +467,7 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
         Cmd::Links => links_resp(game).map(Resp::Links),
         Cmd::Items => items_resp(game).map(Resp::Items),
         Cmd::Prep { bot, health, rockets } => do_prep(game, bot, health, rockets),
-        Cmd::Teleport { bot, pos } => do_teleport(game, bot, v3(pos)),
+        Cmd::Teleport { bot, pos, vel } => do_teleport(game, bot, v3(pos), v3(vel)),
         Cmd::Goto { bot, pos } => do_goto(game, bot, v3(pos)),
         Cmd::Rj { bot, link } => do_rj(game, bot, link),
         Cmd::Fly { bot, link } => do_fly(game, bot, link),
@@ -543,13 +543,19 @@ fn do_prep(game: &mut GameState, bot: u32, health: f32, rockets: f32) -> Result<
     Ok(Resp::Prep { bot, health, rockets })
 }
 
-/// Place a bot at `pos` (feet on the ground it names), zero its momentum, and reset all navigation
+/// Place a bot at `pos` (feet on the ground it names) carrying `vel`, and reset all navigation
 /// commitments so nothing stale (a mid-flight route/jump) survives the jump. `+1z` avoids startsolid.
-fn do_teleport(game: &mut GameState, bot: u32, pos: Vec3) -> Result<Resp, String> {
+///
+/// `vel` is normally zero — a rocket-jump test has to start from a standstill or its launch
+/// measurement is contaminated. It is non-zero when the caller is reproducing a starting *condition*
+/// rather than just a position, which is what scoring against a human demo line needs: the human
+/// entered that movement at speed, and a bot dropped there at rest is measured on its standing start
+/// instead of on the movement.
+fn do_teleport(game: &mut GameState, bot: u32, pos: Vec3, vel: Vec3) -> Result<Resp, String> {
     let e = valid_bot(game, bot)?;
     let now = game.time();
     let at = pos + Vec3::new(0.0, 0.0, 1.0);
-    game.entities[e].v.velocity = Vec3::ZERO;
+    game.entities[e].v.velocity = vel;
     game.set_origin(e, at);
     reset_nav_state(&mut game.entities[e].bot, at, now);
     // Park the bot after placing it — otherwise, with no order, it would roam autonomously and arrive

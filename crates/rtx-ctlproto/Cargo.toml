@@ -11,3 +11,9 @@ serde = { workspace = true }
 serde_bytes = "0.11"
 rmp-serde = { workspace = true }
 rtx-auditlog = { workspace = true }
+
+# For the `flyprobe` example only — it scores a live bot run against a human demo line, which needs
+# the demo parser and `LineScore`. A dev-dependency so nothing in the shipped codec pulls it in.
+[dev-dependencies]
+rtx-demo-tool = { workspace = true }
+glam = { workspace = true }

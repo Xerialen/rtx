@@ -169,12 +169,11 @@ fn run_segments(argv: impl Iterator<Item = String>) -> ExitCode {
                 continue;
             }
         };
-        let mut all = Vec::new();
-        for p in analysis::players(&demo) {
-            all.extend(analysis::track(&demo, p).segments(min_path, max_path, max_secs));
-        }
-        let raw = all.len();
-        let suite = rtx_demo_tool::line::distinct(all, bucket);
+        let raw: usize = analysis::players(&demo)
+            .into_iter()
+            .map(|p| analysis::track(&demo, p).segments(min_path, max_path, max_secs).len())
+            .sum();
+        let suite = rtx_demo_tool::line::suite(&demo, min_path, max_path, max_secs, bucket);
         println!(
             "{}: {} movement segments -> {} distinct (bucket {:.0}u)",
             basename(&demo.path),
@@ -194,15 +193,16 @@ fn run_segments(argv: impl Iterator<Item = String>) -> ExitCode {
             median(suite.iter().map(|s| s.path_length()).collect()),
             median(suite.iter().map(|s| s.mean_speed()).collect()),
         );
-        // Fastest first. Path length is near-constant by construction (segments are cut by distance
-        // travelled), so speed is what separates them — and the fast ones are where a bot that
-        // cannot hold a line shows it.
-        let mut show: Vec<&rtx_demo_tool::line::Traversal> = suite.iter().collect();
-        show.sort_by(|a, b| b.mean_speed().total_cmp(&a.mean_speed()));
-        for s in show.iter().take(limit) {
+        // The suite is already fastest first, and that order *is* the segment's name: a live run
+        // scores "segment 7 of this demo", so the index printed here has to be the index the
+        // harness will index by. Path length is near-constant by construction (segments are cut by
+        // distance travelled), so speed is what separates them — and the fast ones are where a bot
+        // that cannot hold a line shows it.
+        for (i, s) in suite.iter().enumerate().take(limit) {
             let (a, b) = (s.motions[0].origin, s.motions[s.motions.len() - 1].origin);
+            print!("  {i:>4} ");
             println!(
-                "    {:.2}s  {:>5.0}u  {:>4.0} ups  ({:>6.0},{:>6.0},{:>5.0}) -> ({:>6.0},{:>6.0},{:>5.0})  {}",
+                "  {:.2}s  {:>5.0}u  {:>4.0} ups  ({:>6.0},{:>6.0},{:>5.0}) -> ({:>6.0},{:>6.0},{:>5.0})  {}",
                 s.duration(),
                 s.path_length(),
                 s.mean_speed(),
