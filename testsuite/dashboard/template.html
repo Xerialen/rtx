@@ -398,7 +398,8 @@ const TERM_TITLES = {
   "frogbots": "Den klassiska QuakeWorld-botten som motståndarreferens; skill 0–20 styr dess nivå.",
   "fragdiff": "Skillnaden i frags mellan lagen. Positiv = testgrenen vann.",
   "teleport → goto": "Drillen startar med att botten teleporteras till startpunkten och får ett goto-mål — samma förutsättningar varje försök.",
-  "build (md5)": "Kort kontrollsumma som identifierar exakt vilket bygge som testades.",
+  "körning": "Löpnummer i kronologisk ordning: #1 är den äldsta körningen, varje ny körning får ett högre nummer.",
+  "bygge": "Commiten som testades (kort sha). Alla tiers i samma körning delar den; suffixet -dirty betyder att trädet hade oincheckade ändringar.",
   "passed": "nådde målet inom tiden",
   "fell": "föll från höjd på vägen",
   "timeout": "hann inte fram",
@@ -532,7 +533,8 @@ function renderRunControls() {
   const focusSelect = document.getElementById("focus-select");
   const refSelect = document.getElementById("ref-select");
   const options = RUNS.map((run, index) =>
-    '<option value="' + index + '">' + esc(run.branch) + " · " + esc(run.build) + "</option>"
+    '<option value="' + index + '">' + "#" + run.number + " · " + esc(run.date) +
+    " · " + esc(run.branch) + " · " + esc(run.build) + "</option>"
   ).join("");
   focusSelect.innerHTML = options;
   refSelect.innerHTML = options;
@@ -543,10 +545,12 @@ function renderRunControls() {
   const focus = RUNS[focusIndex], ref = RUNS[refIndex];
   const failed = focus.attempts.filter(attempt => attempt.status !== "complete");
   document.getElementById("run-meta").innerHTML =
-    '<div><span class="muted">fokus</span><br><b>' + esc(focus.branch) + "</b><br>" +
-    term(focus.build, "build (md5)") + " · " + esc(focus.date) + "</div>" +
-    '<div><span class="muted">referens</span><br><b>(' + esc(ref.branch) + ")</b><br>(" +
-    term(ref.build, "build (md5)") + " · " + esc(ref.date) + ")</div>" +
+    '<div><span class="muted">fokus</span><br><b>' + term("körning #" + focus.number, "körning") +
+    " · " + esc(focus.branch) + "</b><br>" +
+    term(focus.build, "bygge") + " · " + esc(focus.date) + "</div>" +
+    '<div><span class="muted">referens</span><br><b>(' + term("körning #" + ref.number, "körning") +
+    " · " + esc(ref.branch) + ")</b><br>(" +
+    term(ref.build, "bygge") + " · " + esc(ref.date) + ")</div>" +
     (failed.length ? '<div><span class="muted">problemkörningar</span><br>' +
       failed.map(attempt => esc(attempt.tier) + " " + esc(attempt.status)).join(" · ") + "</div>" : "");
 }

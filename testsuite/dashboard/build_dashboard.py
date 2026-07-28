@@ -699,6 +699,11 @@ def group_evidence(
         )
 
     runs.sort(key=lambda run: iso_sort_key(run["startedUtc"]), reverse=True)
+    # Chronological run numbers: the oldest group is #1, so a new run always
+    # gets a higher number than every run before it. The list itself stays
+    # newest-first.
+    for position, run in enumerate(runs):
+        run["number"] = len(runs) - position
     return runs, snapshots, primary_map
 
 
