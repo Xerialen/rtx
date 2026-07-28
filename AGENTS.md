@@ -51,6 +51,8 @@ server-recorded multi-view `.mvd` alike — the container is picked by content, 
 ```
 cargo run --release -p rtx-demo-tool --bin qwd -- players <demo>            # who is in it
 cargo run --release -p rtx-demo-tool --bin qwd -- analyze --player <name|slot> <demo>
+cargo run --release -p rtx-demo-tool --bin qwd -- segments <demo>           # the coverage suite
+cargo run --release -p rtx-demo-tool --bin qwd -- route X Y Z X Y Z <demo>  # one A->B, if asked
 cargo run --release -p rtx-demo-tool --bin qwd -- dump [--raw] <demo> > out.csv
 ```
 
@@ -58,6 +60,24 @@ cargo run --release -p rtx-demo-tool --bin qwd -- dump [--raw] <demo> > out.csv
 distance, apex, and whether speed rose in the air — the strafe-jump signature), and optional
 waypoints. An `.mvd` of a team game gives every player at once, which is where human reference
 lines come from.
+
+`segments` is how a reference suite is built, and it does **not** take a list of routes. No route is
+hardcoded: which paths exist is a property of the map and of what the game asked for at that moment,
+so the tool cuts every player's whole track into movement pieces and collapses the redundant ones.
+What matters is not *which* path a bot takes but how it **executes** each piece of movement a human
+performed. Two knobs carry the design:
+
+- **Cut by distance travelled** (`--max-path`, 640u), not by stops. Competitive players essentially
+  never stop, so a stop-based rule yields a handful of 12-second spans that are not single
+  manoeuvres. `--max-secs` (4) survives only as a backstop for water and lifts.
+- **Collapse by ground covered**, not by matching endpoints — segments cut by distance start out of
+  phase with each other, so identical corridor runs share no endpoint. A segment is redundant when
+  `COVER_FRAC` (85%) of its cells are already covered *travelling the same way*; direction is part
+  of the key, because a staircase up and the same staircase down are different things to execute.
+
+On the 4-on-4 that gives **4330 segments → 544 distinct**, 334k units of dm3, median 1.54s / 642u /
+392 ups, with the top of the suite at 630-700 ups. (Endpoint bucketing, for comparison, only reached
+2870 — it is the wrong test.) `route` remains for interrogating one specific A→B by hand.
 
 **Calibrate on this before judging a bot number.** The 4-on-4 in `demos/` — eight players, 20
 minutes, dm3 — sits at p50 ~300-340 and p90 ~450-480 ups, **above 200 ups for 60-74% of the

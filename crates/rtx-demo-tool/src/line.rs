@@ -75,6 +75,104 @@ impl Traversal {
     }
 }
 
+/// Reduce a pile of segments to the distinct movements among them.
+///
+/// Eight players over twenty minutes produce thousands of segments, and most are the same movement
+/// done again — the same corridor, the same jump, the same drop. Those are redundant as tests: a
+/// bot that can execute one can execute the others. What is left after collapsing them is a
+/// coverage suite, derived from what the map and the game actually produced rather than from
+/// anyone's idea of which routes matter.
+///
+/// Redundancy is judged on **ground covered**, not on endpoints. Matching endpoints is the obvious
+/// test and it does not work: segments are cut every so many units travelled, so two players running
+/// the same corridor start their windows at different offsets along it and their endpoints land in
+/// different cells even though the movement is identical. Instead a segment is dropped when
+/// [`COVER_FRAC`] of the ground it covers is already covered by a kept segment *travelling the same
+/// way* — which is what "these overlap, so one of them is redundant" actually means.
+///
+/// Direction is part of the key because it is part of the movement: running a staircase up and
+/// running it down are different things to execute. Coverage is recorded for the travel octant and
+/// its two neighbours, so a path that merely straddles an octant boundary is not counted as new.
+///
+/// Segments are considered **fastest first**, so the one that survives a group is the demanding one:
+/// what a reference has to say is what is achievable, not what is typical — the slower runs over the
+/// same ground are usually a player doing something else on the way (fighting, collecting, waiting).
+///
+/// Deterministic: the order segments are considered in is a total order on (speed, player, time),
+/// coverage keys are integers, and the output is in that same considered order.
+pub fn distinct(mut segments: Vec<Traversal>, bucket: f32) -> Vec<Traversal> {
+    use std::collections::HashSet;
+    let bucket = bucket.max(1.0);
+
+    // Fastest first; the rest of the ordering only has to be total and stable across runs.
+    segments.sort_by(|a, b| {
+        b.mean_speed()
+            .total_cmp(&a.mean_speed())
+            .then(a.player.cmp(&b.player))
+            .then(a.start_time.total_cmp(&b.start_time))
+    });
+
+    let mut covered: HashSet<Cell> = HashSet::new();
+    let mut out = Vec::new();
+    for s in segments {
+        let cells = cover_cells(&s, bucket);
+        if cells.is_empty() {
+            continue;
+        }
+        let known = cells.iter().filter(|c| covered.contains(c)).count();
+        if known as f32 / cells.len() as f32 >= COVER_FRAC {
+            continue;
+        }
+        for &(x, y, z, oct) in &cells {
+            // Claim the neighbouring octants too: the *test* is exact, so a later path along the
+            // same line but a degree the other side of a boundary still reads as covered.
+            for d in -1..=1 {
+                covered.insert((x, y, z, (oct + d).rem_euclid(8)));
+            }
+        }
+        out.push(s);
+    }
+    out
+}
+
+/// A quantised position plus the octant of travel through it.
+type Cell = (i32, i32, i32, i32);
+
+/// How much of a segment's ground has to be already covered for it to count as redundant. Not 1.0:
+/// two runs of the same corridor differ at the ends, where one player entered a step earlier.
+pub const COVER_FRAC: f32 = 0.85;
+
+/// The cells a segment covers, resampled at half the cell size so the spacing of the demo's frames
+/// does not decide how much ground a fast run appears to touch.
+fn cover_cells(s: &Traversal, bucket: f32) -> Vec<Cell> {
+    let step = bucket * 0.5;
+    let mut out: Vec<Cell> = Vec::new();
+    for w in s.motions.windows(2) {
+        if w[1].warped {
+            continue;
+        }
+        let (a, b) = (w[0].origin, w[1].origin);
+        let len = (b - a).truncate().length();
+        if len < 1e-3 {
+            continue;
+        }
+        let dir = (b - a).truncate() / len;
+        let oct = (dir.y.atan2(dir.x).to_degrees() / 45.0).round().rem_euclid(8.0) as i32;
+        for i in 0..=(len / step).floor() as i32 {
+            let p = a + (b - a) * (i as f32 * step / len).min(1.0);
+            out.push((
+                (p.x / bucket).floor() as i32,
+                (p.y / bucket).floor() as i32,
+                (p.z / bucket).floor() as i32,
+                oct,
+            ));
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// A human path, prepared for comparison.
 #[derive(Clone, Debug)]
 pub struct ReferenceLine {
@@ -300,6 +398,92 @@ impl LineScore {
 }
 
 impl Track {
+    /// Cut this player's whole track into continuous movement segments.
+    ///
+    /// The point of this, rather than [`Track::traversals`], is that **no route should be
+    /// hardcoded**. Which paths exist is a property of the map and of what the game asked for at
+    /// that moment; a curated A-to-B list smuggles in an assumption about where players *ought* to
+    /// go. What actually matters is whether the bot can *execute* each piece of movement a human
+    /// performed. So: take everything, cut it where the player stopped being one continuous piece
+    /// of motion, and let the map decide what the segments are.
+    ///
+    /// A segment ends at a genuine break in continuity — death, a teleport, or standing still long
+    /// enough that whatever follows is a new movement rather than the same one.
+    ///
+    /// Those breaks alone are not enough, though, and the reason is the thing that makes this game
+    /// unusual: players essentially never stop. Continuous motion runs for tens of seconds, so
+    /// cutting only at stops yields a handful of enormous spans that share no endpoints and
+    /// therefore never collapse against each other. `max_path` is what makes the suite work — it
+    /// cuts travel into pieces of comparable size, so the same corridor run twice produces segments
+    /// that land in the same endpoint buckets and dedupe. `max_secs` remains as a backstop for slow
+    /// movement (water, a lift) that would otherwise run long.
+    ///
+    /// Segments shorter than `min_path` are dropped: that is manoeuvring, not travel.
+    pub fn segments(&self, min_path: f32, max_path: f32, max_secs: f32) -> Vec<Traversal> {
+        /// Standing still for longer than this ends a segment. Short enough that a pause to shoot
+        /// separates two movements; long enough that quantisation stalls (see `TELEPORT_SPEED`'s
+        /// note on 1/8-unit rounding) do not.
+        const STOP_SECS: f32 = 0.5;
+        /// Below this a player is not travelling.
+        const MOVING_UPS: f32 = 40.0;
+
+        let mut out = Vec::new();
+        let mut start: Option<usize> = None;
+        let mut stopped_since: Option<f32> = None;
+        let mut travelled = 0.0f32;
+        let mut flush = |start: &mut Option<usize>, end: usize, motions: &[Motion]| {
+            if let Some(s) = start.take() {
+                if end > s {
+                    let run = Traversal {
+                        player: self.player,
+                        start_time: motions[s].time,
+                        end_time: motions[end].time,
+                        motions: motions[s..=end].to_vec(),
+                    };
+                    if run.path_length() >= min_path {
+                        out.push(run);
+                    }
+                }
+            }
+        };
+
+        for (i, m) in self.motions.iter().enumerate() {
+            if m.warped || m.dead {
+                flush(&mut start, i.saturating_sub(1), &self.motions);
+                stopped_since = None;
+                continue;
+            }
+            if m.horizontal_speed < MOVING_UPS {
+                // A pause only breaks the segment once it has lasted; a momentary dip is still the
+                // same movement (landing, a step, a rounded-to-zero slow frame).
+                let since = *stopped_since.get_or_insert(m.time);
+                if m.time - since >= STOP_SECS {
+                    flush(&mut start, i, &self.motions);
+                }
+                continue;
+            }
+            stopped_since = None;
+            match start {
+                None => {
+                    start = Some(i);
+                    travelled = 0.0;
+                }
+                Some(s) => {
+                    travelled += (m.origin - self.motions[i - 1].origin).truncate().length();
+                    if travelled >= max_path || m.time - self.motions[s].time >= max_secs {
+                        flush(&mut start, i, &self.motions);
+                        // The next segment begins where this one ended, so the suite tiles the
+                        // player's path rather than sampling disconnected pieces of it.
+                        start = Some(i);
+                        travelled = 0.0;
+                    }
+                }
+            }
+        }
+        flush(&mut start, self.motions.len().saturating_sub(1), &self.motions);
+        out
+    }
+
     /// Every run this player made from near `from` to near `to`, within `max_secs`.
     ///
     /// The discovery step: given two points off the navmesh, find where a human actually did that
@@ -493,5 +677,66 @@ mod tests {
         // why the tails are reported too — a route that is mostly fine with one bad excursion is a
         // different problem from one that is uniformly off, and p50 alone cannot tell them apart.
         assert!(s.cross_track_p50 < 1.0, "p50 {}", s.cross_track_p50);
+    }
+
+    /// A run of `n` frames along +X at `step` units apart, starting at `from`, `dt` per frame.
+    fn run_along(from: Vec3, step: Vec3, n: usize, dt: f32) -> Vec<(f32, Vec3)> {
+        (0..n).map(|i| (dt * i as f32, from + step * i as f32)).collect()
+    }
+
+    /// Uninterrupted movement is cut by distance travelled, and the pieces tile: each begins where
+    /// the last ended. This is the rule that matters, because a match almost never gives us a stop
+    /// to cut at.
+    #[test]
+    fn segments_cut_by_distance_and_tile() {
+        // 2000 units of continuous running at ~400 ups.
+        let pts = run_along(Vec3::ZERO, Vec3::new(5.0, 0.0, 0.0), 401, 0.0125);
+        let segs = track(&demo_of(&pts), 0).segments(192.0, 640.0, 60.0);
+        assert_eq!(segs.len(), 3, "2000u at 640u a piece, last remainder dropped");
+        for s in &segs {
+            assert!(
+                (s.path_length() - 640.0).abs() < 10.0,
+                "cut at the distance, not the clock: {}",
+                s.path_length()
+            );
+        }
+        for w in segs.windows(2) {
+            let end = w[0].motions.last().unwrap().origin;
+            let start = w[1].motions[0].origin;
+            assert_eq!(end, start, "segments tile rather than sample");
+        }
+    }
+
+    /// Redundancy is about ground covered, not endpoints — the case endpoint bucketing gets wrong,
+    /// since the cutter starts two players' windows at different offsets along the same corridor.
+    #[test]
+    fn distinct_collapses_by_ground_covered() {
+        let mk = |player: u8, from: Vec3, dir: Vec3, dt: f32| {
+            let pts = run_along(from, dir, 100, dt);
+            let mut t = track(&demo_of(&pts), 0);
+            t.player = player;
+            t.segments(192.0, 4096.0, 60.0).remove(0)
+        };
+        // 792 units of corridor, and a second run 64 units out of phase with it. No endpoint
+        // matches, but 92% of the ground does, so it is the same movement.
+        let a = mk(0, Vec3::ZERO, Vec3::new(8.0, 0.0, 0.0), 0.0125);
+        let shifted = mk(1, Vec3::new(64.0, 0.0, 0.0), Vec3::new(8.0, 0.0, 0.0), 0.0125);
+        assert_eq!(distinct(vec![a.clone(), shifted], 128.0).len(), 1, "same ground");
+
+        // Far enough out of phase and it is no longer the same movement: 300 units of this run is
+        // ground nothing has covered, and a bot that can do the first half has not shown it can do
+        // the second. The threshold is [`COVER_FRAC`], and it is a coverage rule, not a phase fix.
+        let past = mk(2, Vec3::new(300.0, 0.0, 0.0), Vec3::new(8.0, 0.0, 0.0), 0.0125);
+        assert_eq!(distinct(vec![a.clone(), past], 128.0).len(), 2, "new ground survives");
+
+        // The reverse direction is a different movement over identical ground, and must survive.
+        let back = mk(3, Vec3::new(792.0, 0.0, 0.0), Vec3::new(-8.0, 0.0, 0.0), 0.0125);
+        assert_eq!(distinct(vec![a.clone(), back], 128.0).len(), 2, "direction counts");
+
+        // And of two runs over the same ground, the faster one is what is kept.
+        let slow = mk(4, Vec3::ZERO, Vec3::new(8.0, 0.0, 0.0), 0.05);
+        let kept = distinct(vec![slow, a.clone()], 128.0);
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].mean_speed() > 600.0, "kept {} ups", kept[0].mean_speed());
     }
 }

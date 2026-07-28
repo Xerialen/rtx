@@ -36,6 +36,7 @@ from successive positions), and inputs only where the recorder embedded them.
 
 commands:
   players   list the players in a demo
+  segments  cut all human movement into distinct segments (the coverage suite)
   route     find every human run between two points, and how long it took
   dump      write position/velocity/usercmd fields as CSV
   analyze   print a per-player movement report
@@ -46,6 +47,16 @@ dump options:
                   the recording client, or to everyone in an .mvd
   --all-players   include every player
   --no-header     omit the CSV header
+
+segments options:
+  --min-path N    ignore segments shorter than N units of path (default 192)
+  --max-path N    cut a segment every N units travelled (default 640). Players
+                  in a real match almost never stop, so this — not the stop
+                  rule — is what makes segments comparable and dedupable.
+  --max-secs N    backstop for slow movement: split after N seconds (default 4)
+  --bucket N      two segments are the same movement when both endpoints fall
+                  in the same N-unit cell (default 128)
+  --limit N       how many to print, longest first (default 20)
 
 route options (usage: qwd route FROM_X FROM_Y FROM_Z TO_X TO_Y TO_Z [FILE...]):
   --radius N      how close counts as reaching a point (default 64)
@@ -66,6 +77,7 @@ fn main() -> ExitCode {
     let mut argv = std::env::args().skip(1);
     match argv.next().as_deref() {
         Some("players") => run_players(argv),
+        Some("segments") => run_segments(argv),
         Some("route") => run_route(argv),
         Some("dump") => run_dump(argv),
         Some("analyze") => run_analyze(argv),
@@ -97,6 +109,116 @@ fn resolve_paths(files: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect();
     paths.sort();
     paths
+}
+
+// ── segments ──────────────────────────────────────────────────────────────────────────────────
+
+/// Cut every player's movement into segments, collapse the duplicates, and print what is left.
+///
+/// This is the coverage suite: not a curated list of routes, but every distinct piece of movement
+/// the map and the game actually produced. No route is privileged — the bot should be able to
+/// execute all of them, and how it executes each is what the score is about.
+fn run_segments(argv: impl Iterator<Item = String>) -> ExitCode {
+    let mut files = Vec::new();
+    let (mut min_path, mut max_path, mut bucket, mut limit) = (192.0f32, 640.0f32, 128.0f32, 20usize);
+    let mut max_secs = 4.0f32;
+    let mut it = argv;
+    while let Some(arg) = it.next() {
+        let num = |v: Option<String>, what: &str| v.and_then(|v| v.parse::<f32>().ok()).ok_or(what.to_string());
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            "--min-path" => match num(it.next(), "--min-path needs a number") {
+                Ok(v) => min_path = v,
+                Err(e) => return usage_err(&e),
+            },
+            "--max-path" => match num(it.next(), "--max-path needs a number") {
+                Ok(v) => max_path = v,
+                Err(e) => return usage_err(&e),
+            },
+            "--max-secs" => match num(it.next(), "--max-secs needs a number") {
+                Ok(v) => max_secs = v,
+                Err(e) => return usage_err(&e),
+            },
+            "--bucket" => match num(it.next(), "--bucket needs a number") {
+                Ok(v) => bucket = v,
+                Err(e) => return usage_err(&e),
+            },
+            "--limit" => match num(it.next(), "--limit needs a number") {
+                Ok(v) => limit = v as usize,
+                Err(e) => return usage_err(&e),
+            },
+            _ if arg.starts_with('-') && arg != "-" => return usage_err(&format!("unknown option {arg}")),
+            _ => files.push(PathBuf::from(arg)),
+        }
+    }
+    let paths = resolve_paths(files);
+    if paths.is_empty() {
+        eprintln!("qwd: no .qwd or .mvd files found");
+        return ExitCode::FAILURE;
+    }
+    let mut had_error = false;
+    for path in &paths {
+        let demo = match parse_demo(path) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("qwd: {}: {e}", path.display());
+                had_error = true;
+                continue;
+            }
+        };
+        let mut all = Vec::new();
+        for p in analysis::players(&demo) {
+            all.extend(analysis::track(&demo, p).segments(min_path, max_path, max_secs));
+        }
+        let raw = all.len();
+        let suite = rtx_demo_tool::line::distinct(all, bucket);
+        println!(
+            "{}: {} movement segments -> {} distinct (bucket {:.0}u)",
+            basename(&demo.path),
+            raw,
+            suite.len(),
+            bucket
+        );
+        let total: f32 = suite.iter().map(|s| s.path_length()).sum();
+        let median = |mut v: Vec<f32>| {
+            v.sort_by(f32::total_cmp);
+            v.get(v.len() / 2).copied().unwrap_or(0.0)
+        };
+        println!(
+            "  covering {:.0}u of distinct movement; median {:.2}s / {:.0}u / {:.0} ups per segment",
+            total,
+            median(suite.iter().map(|s| s.duration()).collect()),
+            median(suite.iter().map(|s| s.path_length()).collect()),
+            median(suite.iter().map(|s| s.mean_speed()).collect()),
+        );
+        // Fastest first. Path length is near-constant by construction (segments are cut by distance
+        // travelled), so speed is what separates them — and the fast ones are where a bot that
+        // cannot hold a line shows it.
+        let mut show: Vec<&rtx_demo_tool::line::Traversal> = suite.iter().collect();
+        show.sort_by(|a, b| b.mean_speed().total_cmp(&a.mean_speed()));
+        for s in show.iter().take(limit) {
+            let (a, b) = (s.motions[0].origin, s.motions[s.motions.len() - 1].origin);
+            println!(
+                "    {:.2}s  {:>5.0}u  {:>4.0} ups  ({:>6.0},{:>6.0},{:>5.0}) -> ({:>6.0},{:>6.0},{:>5.0})  {}",
+                s.duration(),
+                s.path_length(),
+                s.mean_speed(),
+                a.x,
+                a.y,
+                a.z,
+                b.x,
+                b.y,
+                b.z,
+                demo.players
+                    .get(s.player as usize)
+                    .map_or_else(|| format!("#{}", s.player), |p| p.label(s.player)),
+            );
+        }
+    }
+    exit_code(had_error)
 }
 
 // ── route ─────────────────────────────────────────────────────────────────────────────────────
