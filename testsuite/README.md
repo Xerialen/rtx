@@ -216,8 +216,12 @@ start unless the server is idle in Standby with the exact mode and timelimit:
   `configs/usermodes/<mode>/default.cfg` is the one file KTX executes after
   both the reset chain and its own mode re-initialisation — put every
   rig-critical override there (`timelimit`, `k_lockmode 0`,
-  `k_noframechecks 1`, `k_membercount`, `k_count 45`, `rcon_password`,
-  `sv_crypt_rcon 0`, `sv_timeout 30`, `sv_demodir`).
+  `k_noframechecks 1`, `k_membercount`, `k_count 45`, `k_overtime 0`,
+  `k_exttime 0`, `rcon_password`, `sv_crypt_rcon 0`, `sv_timeout 30`,
+  `sv_demodir`). The overtime pair is the sneakiest: a stock `ktx.cfg`
+  re-stamps `k_overtime 1` / `k_exttime 3`, which stays invisible until the
+  first drawn match — then overtime blows straight through the runner's
+  match-end window and the run fails as "match did not finish".
 - `maxclients 16` and `sv_timeout 30`: torn-down headless clients leave
   ghosts (they have no disconnect path), and with tight slots a ghost pushes
   the next run's fourth bot onto a spectator slot, where it silently never
