@@ -193,9 +193,23 @@ fn main() {
                 }
             };
             let secs = traj.last().map_or(0.0, |r| r[0]) - traj.first().map_or(0.0, |r| r[0]);
+            // Peak and sustained speed, so a corridor run says outright whether the bot can carry
+            // speed — the question every "it arrived late" finding has to be read against.
+            let mut speeds: Vec<f32> = traj.iter().map(|r| (r[4] * r[4] + r[5] * r[5]).sqrt()).collect();
+            speeds.sort_by(f32::total_cmp);
+            let at = |q: f32| {
+                speeds
+                    .get(((speeds.len().max(1) - 1) as f32 * q) as usize)
+                    .copied()
+                    .unwrap_or(0.0)
+            };
             println!(
-                "trial {i}: {label} dist {dist:.1} t {t:.1} frames {} over {secs:.1}s",
-                traj.len()
+                "trial {i}: {label} dist {dist:.1} t {t:.1} frames {} over {secs:.1}s  \
+                 speed peak {:.0} p90 {:.0} p50 {:.0}",
+                traj.len(),
+                at(1.0),
+                at(0.9),
+                at(0.5),
             );
             // Airborne segments: vz != 0 runs. Report takeoff and landing of each.
             let mut seg: Option<(usize, [f32; 7])> = None;

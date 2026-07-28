@@ -40,9 +40,13 @@ within 30s: the goto neither arrived nor stalled, which is its own bug.
 
 **The median movement is close to human, the tail is not.** 1.25x time at 0.87x speed while staying
 71u off the human's line is a bot that basically works. But p90 is 4.71x and cross-track p90 is
-274u — a tenth of the suite is a different order of failure. This is the shape the lane plan
-predicted: not a uniform speed deficit that better tuning would close, but a bot that is fine until
-geometry bites.
+274u — a tenth of the suite is a different order of failure.
+
+**None of that speed shortfall is a speed *ability* shortfall.** The same bot holds 795-803 ups down
+the 100m runway, well past the 630-700 ups at the head of this suite. So wherever it arrives late on
+dm3 it is not because it cannot carry speed — it is because navigation is costing it speed it
+demonstrably has. Read every ratio in the table above as a navigation number, not a movement-physics
+one; there is no tuning of the gait that closes it.
 
 **It fights its own steering everywhere.** 500 deg/s of yaw jitter at p50 is not a tail effect —
 that is the *median* movement sawing at its heading, and it is measured only over frames above
