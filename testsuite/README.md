@@ -137,8 +137,46 @@ offline using the hand-written validators in `runner/checks.py`. It covers all
 tiers, scenario schema compatibility, missing fields, unknown major versions,
 the T2 stall invariant, and the T4 stop-at-first-loss rule.
 
-T4 currently validates configuration and exits with an explicit E4
-not-implemented message.
+## T4: the frogbot ladder
+
+`python3 testflow.py t4` climbs skills 10, 12, 14, 16, 18, 20 against
+server-side frogbots on the `[t4].frogbot_server` KTX instance: one 4on4
+match per rung with the same branch build T3 uses, advancing on a win and
+stopping at the first loss or draw. The run is `COMPLETE` whenever the
+observed ladder obeys those rules — how far it climbs is a sporting result,
+not a pipeline verdict.
+
+Rig preparation is the T3 recipe plus frogbots: `k_fb_enabled 1` and the KTX
+`bots/` data directory present in the private gamedir. Frogbots cannot be
+seated over rcon (`botcmd` is a client console command), so the runner keeps a
+spectator client connected across the ladder and seats them through its
+control channel (`runcmd botcmd addbot <skill> <team>`). KTX echoes each
+seated bot's skill to that spectator's console; the runner verifies four
+matching echoes per rung and records the method in `skill_verified_by`. The
+KTX demoinfo JSON is the only score oracle for T4 — `[t4].demoinfo_dir` is
+required.
+
+Ordering is dictated by KTX, not by the runner: a bot added during a
+countdown or match is accepted but never enters, and the frogbots auto-ready
+the instant they seat — so each rung seats the frogbots first, and the player
+squad joins inside the countdown their ready-up starts. Three usermode
+settings make that survivable (put them with the other overrides):
+`k_membercount 4` (at 3, KTX silently refuses the fourth frogbot),
+`k_lockmode 0` (KTX's own mode re-initialisation stamps it back after every
+match, and locked mode silently drops the players as they join), and
+`k_count 45` — the rtx clients build their navmesh after joining, and with a
+stock 20 s countdown the match begins before the mesh exists, leaving the
+squad standing at spawn.
+
+## Combat lock (T3 enrichment)
+
+When `[tools].qw_analyze` points at a qw-analyze binary and the T3 match MVD
+is readable, the runner analyzes the demo and fills `combat_lock` in the T3
+payload: seconds per bot spent under enemy fire, with the attacker in the
+bot's field of view, without answering fire. The shot signal is an
+ammo-counter decrease (qw-analyze v21 emits no dedicated shot stream);
+respawn resets are filtered by their multi-stream signature. Analysis failure
+leaves `combat_lock` null — it never fails a measured match.
 
 ## T3: branch versus reference
 
@@ -162,6 +200,22 @@ start unless the server is idle in Standby with the exact mode and timelimit:
   private `configs/usermodes/<mode>/default.cfg`, which KTX executes last.
 - `k_noframechecks 1` (headless clients trip the illegal-FPS check),
   `k_lockmode 0` (network clients may join), no frogbots, no master servers.
+- Audit the whole reset chain, not only the boot cfg: KTX re-execs
+  `server.cfg`, `mvdsv.cfg`, `ktx.cfg` and `pwd.cfg` after every match, and a
+  stock `ktx.cfg` sets `k_noframechecks 0` — the first match after boot then
+  works while every later match anti-cheat-kicks all headless clients ~90 s
+  in. `pwd.cfg` likewise resets `rcon_password`, a stock `mvdsv.cfg` turns
+  `sv_crypt_rcon` back on and points `sv_demodir` somewhere else — after the
+  first reset the score oracle silently reads an empty directory. The private
+  `configs/usermodes/<mode>/default.cfg` is the one file KTX executes after
+  both the reset chain and its own mode re-initialisation — put every
+  rig-critical override there (`timelimit`, `k_lockmode 0`,
+  `k_noframechecks 1`, `k_membercount`, `k_count 45`, `rcon_password`,
+  `sv_crypt_rcon 0`, `sv_timeout 30`, `sv_demodir`).
+- `maxclients 16` and `sv_timeout 30`: torn-down headless clients leave
+  ghosts (they have no disconnect path), and with tight slots a ghost pushes
+  the next run's fourth bot onto a spectator slot, where it silently never
+  plays. Roomy slots plus a fast reap keep reruns clean.
 - MVD recording on with `k_demotxt_format json`: the demoinfo `.txt` written
   next to the MVD is the score oracle.
 

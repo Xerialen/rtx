@@ -385,8 +385,8 @@ def _t4(payload: Any, path: str) -> None:
             _fail(f"{item_path}.skill", "ladder must use 10,12,14,16,18,20")
         if stopped:
             _fail(item_path, "ladder continues after a loss or draw")
-        _int(item["frags_for"], f"{item_path}.frags_for")
-        _int(item["frags_against"], f"{item_path}.frags_against")
+        _int(item["frags_for"], f"{item_path}.frags_for", -10_000)
+        _int(item["frags_against"], f"{item_path}.frags_against", -10_000)
         win = _bool(item["win"], f"{item_path}.win")
         draw = item.get("draw", False)
         if "draw" in item:

@@ -36,9 +36,11 @@ reference_commit = ""       # full 40-char commit of the reference build - REQUI
 demoinfo_dir = ""           # KTX demo dir (demoinfo *.txt + MVD); empty = client-status oracle
 
 [t4]
-duration_s = 300
+duration_s = 300            # MUST equal the frogbot server's usermode timelimit * 60
 skills = [10, 12, 14, 16, 18, 20]
 frogbot_server = ""         # host:port of the KTX+frogbots server - REQUIRED for t4
+control_port = 28110        # control port for the branch client process
+demoinfo_dir = ""           # the frogbot server's demo dir - REQUIRED (score oracle)
 
 [restore]
 # The rig's idle state, restored after every run (and on abort). Required when

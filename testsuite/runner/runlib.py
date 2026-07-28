@@ -103,7 +103,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
     t4 = _strict_table(
         root["t4"],
         f"{config_path}.t4",
-        {"duration_s", "skills", "frogbot_server"},
+        {"duration_s", "skills", "frogbot_server", "control_port", "demoinfo_dir"},
     )
     _strict_table(root["tools"], f"{config_path}.tools", {"qw_analyze"})
     for table_name, table, key in (
@@ -112,6 +112,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
         ("t3", t3, "seats_per_side"),
         ("t3", t3, "control_port_base"),
         ("t4", t4, "duration_s"),
+        ("t4", t4, "control_port"),
     ):
         if (
             isinstance(table[key], bool)
@@ -131,7 +132,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
         ("tools", root["tools"]),
     ):
         for key, value in table.items():
-            if key in {"duration_s", "seats_per_side", "skills", "control_port_base"}:
+            if key in {"duration_s", "seats_per_side", "skills", "control_port_base", "control_port"}:
                 continue
             if not isinstance(value, str):
                 raise ConfigError(

@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import combat_lock as combat_lock_mod
 from .control import Control
 from .runlib import RigLock, RunRecorder, config_path
 from .t2 import _mean, _summarize_cells
@@ -97,6 +98,7 @@ class _Side:
         bots: int,
         soak_s: int,
         log_dir: Path,
+        log_prefix: str = "t3",
     ) -> None:
         colors = COLORS_BY_SIDE[self.side]
         command = [
@@ -105,11 +107,18 @@ class _Side:
             "--basedir", basedir,
             "--bots", str(bots),
             "--team", TEAM_BY_SIDE[self.side],
+            # A squad under --name gets numbered labels (brch1..brchN), which
+            # keeps every scoreboard name unique across both processes — the
+            # MVD analysis attributes damage by name and needs that.
+            "--name", TEAM_BY_SIDE[self.side],
             "--colors", colors[0], colors[1],
+            # Both sides play at max client skill: identical, and the extra
+            # engagements give the MVD analysis (combat lock) real signal.
+            "--skill", "7",
             "--control-port", str(self.control_port),
             "--soak", str(soak_s),
         ]
-        log_path = log_dir / f"t3-{self.side}.log"
+        log_path = log_dir / f"{log_prefix}-{self.side}.log"
         self.log = open(log_path, "w", encoding="utf-8")
         self.process = subprocess.Popen(
             command, stdout=self.log, stderr=subprocess.STDOUT
@@ -253,6 +262,10 @@ def _preflight_serverinfo(
     return info
 
 
+class GateError(RuntimeError):
+    """A readiness gate failed — the match never became a valid measurement."""
+
+
 def _seats_gate(sides: list[_Side], seats: int, timeout_s: float = 60.0) -> None:
     """Every seat must be alive (joined and spawned) before the match may start."""
     deadline = time.monotonic() + timeout_s
@@ -272,7 +285,7 @@ def _seats_gate(sides: list[_Side], seats: int, timeout_s: float = 60.0) -> None
 
 
 def _movement_check(
-    sides: list[_Side], seats: int, window_s: float = 45.0
+    sides: list[_Side], expected: int, window_s: float = 45.0
 ) -> int:
     """Every seat must move once the match runs.
 
@@ -284,6 +297,7 @@ def _movement_check(
     """
     first_seen: dict[tuple[str, int], list[float]] = {}
     moved: set[tuple[str, int]] = set()
+    last: dict[tuple[str, int], tuple[list[float], bool]] = {}
     deadline = time.monotonic() + window_s
     while time.monotonic() < deadline:
         for side in sides:
@@ -292,20 +306,31 @@ def _movement_check(
             except Exception:
                 continue
             for bot in bots:
+                key = (side.side, int(bot["ent"]))
+                last[key] = (bot.get("origin"), bool(bot.get("alive")))
                 if not bot.get("alive"):
                     continue
-                key = (side.side, int(bot["ent"]))
                 if key not in first_seen:
                     first_seen[key] = bot["origin"]
                 elif key not in moved:
                     if math.dist(bot["origin"], first_seen[key]) > 32:
                         moved.add(key)
-        if len(moved) >= 2 * seats:
+        if len(moved) >= expected:
             return len(moved)
         time.sleep(1.0)
-    raise RuntimeError(
-        f"movement gate failed: only {len(moved)}/{2 * seats} seats moved >32u "
-        f"within {window_s:.0f}s of match start"
+    detail = "; ".join(
+        f"{side_name}/ent{ent}: "
+        + (
+            "never seen"
+            if (side_name, ent) not in first_seen
+            else f"alive={alive} at {origin} from {first_seen[(side_name, ent)]}"
+        )
+        for (side_name, ent), (origin, alive) in sorted(last.items())
+        if (side_name, ent) not in moved
+    )
+    raise GateError(
+        f"movement gate failed: only {len(moved)}/{expected} seats moved >32u "
+        f"within {window_s:.0f}s of match start [{detail}]"
     )
 
 
@@ -337,13 +362,75 @@ def _wait_serverinfo(
     raise RuntimeError(f"match server did not {state} within {timeout_s:.0f}s")
 
 
-def _read_demoinfo(
-    config: dict[str, Any], started_wallclock: float
-) -> tuple[dict[str, int], str] | None:
-    directory = config["t3"].get("demoinfo_dir", "")
-    if not directory:
+def _combat_lock(
+    config: dict[str, Any], mvd_name: str
+) -> dict[str, Any] | None:
+    """Analyze the match MVD for per-side combat lock, or None if unable.
+
+    The result stays null (per the contract) rather than failing the run when
+    the analyzer or the demo is unavailable — the score and movement stats are
+    already measured; this is an enrichment pass.
+    """
+    analyzer = config.get("tools", {}).get("qw_analyze", "")
+    demo_dir = config["t3"].get("demoinfo_dir", "")
+    if not analyzer or not demo_dir or not mvd_name:
         return None
-    demo_dir = config_path(config, directory)
+    analyzer_path = config_path(config, analyzer)
+    mvd_path = config_path(config, demo_dir) / mvd_name
+    if not analyzer_path.is_file() or not mvd_path.is_file():
+        return None
+    # mvdfinish keeps flushing for several seconds after the match ends; an
+    # MVD read too early parses as a demo with no players. Wait until the file
+    # size holds still.
+    last_size = -1
+    for _ in range(15):
+        size = mvd_path.stat().st_size
+        if size > 0 and size == last_size:
+            break
+        last_size = size
+        time.sleep(2.0)
+    import json
+
+    try:
+        completed = subprocess.run(
+            [
+                str(analyzer_path),
+                "-view", "full",
+                "-include", "positions,view",
+                str(mvd_path),
+            ],
+            capture_output=True,
+            timeout=300,
+            check=True,
+        )
+        document = json.loads(completed.stdout)
+    except (subprocess.SubprocessError, OSError, ValueError) as exc:
+        print(f"combat lock skipped: {exc}", flush=True)
+        return None
+    by_team = combat_lock_mod.per_team_s_per_bot(document)
+    s_per_bot = {
+        side: by_team.get(team)
+        for side, team in TEAM_BY_SIDE.items()
+    }
+    if any(value is None for value in s_per_bot.values()):
+        print(
+            f"combat lock skipped: teams {sorted(by_team)} in the demo do not "
+            f"cover {sorted(TEAM_BY_SIDE.values())}",
+            flush=True,
+        )
+        return None
+    return {
+        "s_per_bot": s_per_bot,
+        "source": "qw-analyze",
+        "version": _md5_file(analyzer_path),
+    }
+
+
+def _read_demoinfo(
+    demo_dir: Path | None, started_wallclock: float
+) -> tuple[dict[str, int], str] | None:
+    if demo_dir is None:
+        return None
     candidates = [
         path
         for path in demo_dir.glob("*.txt")
@@ -421,7 +508,7 @@ def run(config: dict[str, Any]) -> Path:
                     host, port, until_running=True, timeout_s=120.0
                 )
                 match_began = time.monotonic()
-                seats_ok = _movement_check(sides, seats)
+                seats_ok = _movement_check(sides, 2 * seats)
                 readiness = {
                     "seats_ok": seats_ok,
                     "gate": "status+movement",
@@ -448,10 +535,20 @@ def run(config: dict[str, Any]) -> Path:
                     raise RuntimeError(
                         f"match did not finish within {duration + 180:.0f}s"
                     )
+                for side in sides:
+                    if side.process is None or side.process.poll() is not None:
+                        raise RuntimeError(
+                            f"{side.side} client process died before the match "
+                            "ended — the score does not cover the full match"
+                        )
                 time.sleep(3.0)  # let KTX finish the MVD and demoinfo embed
                 oracle = "control-status"
                 mvd = ""
-                demoinfo = _read_demoinfo(config, started_wallclock)
+                demo_dir_value = t3.get("demoinfo_dir", "")
+                demoinfo = _read_demoinfo(
+                    config_path(config, demo_dir_value) if demo_dir_value else None,
+                    started_wallclock,
+                )
                 if demoinfo is not None:
                     frags_by_team, mvd = demoinfo
                     for side in sides:
@@ -459,6 +556,7 @@ def run(config: dict[str, Any]) -> Path:
                         if team_frags is not None:
                             side.frags = team_frags
                     oracle = "ktx-demoinfo"
+                lock = _combat_lock(config, mvd)
                 payload_sides = [
                     side.payload_side(side_builds[side.side]) for side in sides
                 ]
@@ -478,7 +576,7 @@ def run(config: dict[str, Any]) -> Path:
                         "mvd": mvd,
                     },
                     "readiness": readiness,
-                    "combat_lock": None,
+                    "combat_lock": lock,
                     "replicate_of": None,
                     "verdict": "PIPELINE-OK",
                 }
