@@ -34,6 +34,12 @@ control_port_base = 28100   # branch client control port; reference uses base+1
 reference_branch = "main"   # what the reference client was built from (operator claim)
 reference_commit = ""       # full 40-char commit of the reference build - REQUIRED for t3
 demoinfo_dir = ""           # KTX demo dir (demoinfo *.txt + MVD); empty = client-status oracle
+# Optional on-demand rig lifecycle: rig_up_cmd runs (shell, must succeed)
+# before the preflight, rig_down_cmd runs best-effort after the run - so the
+# match server only exists while a run needs it. Empty/absent = operator-managed.
+# rig_up_cmd = "systemctl --user start rtx-t3-server rtx-t3-hub rtx-t3-qtvtunnel"
+# rig_down_cmd = "systemctl --user stop rtx-t3-server rtx-t3-hub rtx-t3-qtvtunnel"
+# rig_boot_wait_s = 5       # boot grace between rig_up_cmd and the preflight
 
 [t4]
 duration_s = 300            # MUST equal the frogbot server's usermode timelimit * 60
@@ -41,6 +47,7 @@ skills = [10, 12, 14, 16, 18, 20]
 frogbot_server = ""         # host:port of the KTX+frogbots server - REQUIRED for t4
 control_port = 28110        # control port for the branch client process
 demoinfo_dir = ""           # the frogbot server's demo dir - REQUIRED (score oracle)
+# rig_up_cmd / rig_down_cmd / rig_boot_wait_s work exactly as in [t3].
 
 [restore]
 # The rig's idle state, restored after every run (and on abort). Required when

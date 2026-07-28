@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .runlib import RigLock, RunRecorder, config_path
+from .runlib import RigLifecycle, RigLock, RunRecorder, config_path
 from .t3 import (
     _IDLE_STATUSES,
     GateError,
@@ -297,7 +297,7 @@ def run(config: dict[str, Any]) -> Path:
     evidence_dir.mkdir(parents=True, exist_ok=True)
     demo_dir_value = t4.get("demoinfo_dir", "")
     demo_dir = config_path(config, demo_dir_value) if demo_dir_value else None
-    with RigLock(port):
+    with RigLock(port), RigLifecycle(t4):
         serverinfo = _preflight(config, host, port)
         map_name = serverinfo.get("map", "unknown")
         with RunRecorder(

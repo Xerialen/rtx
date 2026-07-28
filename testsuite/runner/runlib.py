@@ -10,6 +10,7 @@ from pathlib import Path
 import signal
 import subprocess
 import tempfile
+import time
 from typing import Any
 import tomllib
 
@@ -99,11 +100,13 @@ def load_config(path: str | Path) -> dict[str, Any]:
             "reference_commit",
             "demoinfo_dir",
         },
+        optional={"rig_up_cmd", "rig_down_cmd", "rig_boot_wait_s"},
     )
     t4 = _strict_table(
         root["t4"],
         f"{config_path}.t4",
         {"duration_s", "skills", "frogbot_server", "control_port", "demoinfo_dir"},
+        optional={"rig_up_cmd", "rig_down_cmd", "rig_boot_wait_s"},
     )
     _strict_table(root["tools"], f"{config_path}.tools", {"qw_analyze"})
     for table_name, table, key in (
@@ -133,6 +136,12 @@ def load_config(path: str | Path) -> dict[str, Any]:
     ):
         for key, value in table.items():
             if key in {"duration_s", "seats_per_side", "skills", "control_port_base", "control_port"}:
+                continue
+            if key == "rig_boot_wait_s":
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                    raise ConfigError(
+                        f"{config_path}.{table_name}.{key}: expected non-negative number"
+                    )
                 continue
             if not isinstance(value, str):
                 raise ConfigError(
@@ -250,6 +259,35 @@ def atomic_write_json(path: str | Path, document: Any) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+class RigLifecycle(AbstractContextManager["RigLifecycle"]):
+    """Optional on-demand rig control.
+
+    When the tier's config table carries ``rig_up_cmd``, it is executed (shell)
+    before the run and must succeed; ``rig_boot_wait_s`` (default 5) then gives
+    the rig time to boot before the preflight probes it. ``rig_down_cmd`` runs
+    best-effort on the way out — including on failure and abort — so an
+    on-demand rig never stays up between runs. Both commands empty or absent
+    means the operator manages the rig, exactly as before.
+    """
+
+    def __init__(self, section: dict[str, Any]):
+        self.up = str(section.get("rig_up_cmd", "") or "")
+        self.down = str(section.get("rig_down_cmd", "") or "")
+        wait = section.get("rig_boot_wait_s", 5)
+        self.boot_wait = float(wait if isinstance(wait, (int, float)) else 5)
+
+    def __enter__(self) -> "RigLifecycle":
+        if self.up:
+            subprocess.run(self.up, shell=True, check=True)
+            if self.boot_wait:
+                time.sleep(self.boot_wait)
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        if self.down:
+            subprocess.run(self.down, shell=True, check=False)
 
 
 class RigLock(AbstractContextManager["RigLock"]):

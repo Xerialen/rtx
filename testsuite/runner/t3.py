@@ -19,7 +19,7 @@ from typing import Any
 
 from . import combat_lock as combat_lock_mod
 from .control import Control
-from .runlib import RigLock, RunRecorder, config_path
+from .runlib import RigLifecycle, RigLock, RunRecorder, config_path
 from .t2 import _mean, _summarize_cells
 
 TEAM_BY_SIDE = {"branch": "brch", "reference": "ref"}
@@ -471,7 +471,7 @@ def run(config: dict[str, Any]) -> Path:
     port_base = t3["control_port_base"]
     evidence_dir = config_path(config, config["paths"]["evidence_dir"])
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    with RigLock(port):
+    with RigLock(port), RigLifecycle(t3):
         serverinfo = _preflight_serverinfo(config, host, port)
         map_name = serverinfo.get("map", "unknown")
         with RunRecorder(

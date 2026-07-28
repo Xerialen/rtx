@@ -90,6 +90,12 @@ All machine-specific values belong in the configuration file.
   JSON is the score oracle and the MVD path is recorded; when empty, the
   runner falls back to the clients' own status frags.
 - `t4.*`: future frogbot endpoint, duration, and fixed skill ladder.
+- `t3.rig_up_cmd` / `t3.rig_down_cmd` / `t3.rig_boot_wait_s` (and the same
+  keys under `[t4]`): optional on-demand rig lifecycle. The up command runs
+  (shell, must succeed) before the preflight; the down command runs
+  best-effort after the run, including on failure and abort — so a dedicated
+  match server only exists while a run needs it. Absent keys mean the
+  operator manages the rig.
 - `tools.qw_analyze`: future combat-lock analyzer path.
 
 Relative filesystem values are resolved from the configuration file's
