@@ -886,11 +886,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // the deterministic A* hands back the identical route and the bot re-wedges every 0.7s.
         // Both branches penalize+repath; the force-jump is the extra unwedge, so name it when it
         // actually fired.
-        let action = if force_jump {
-            "force_jump"
-        } else {
-            "penalize+repath"
-        };
+        let action = if force_jump { "force_jump" } else { "penalize+repath" };
         note_stall(bot, &stall_frame, "displacement", action, cur_leg, kind);
         penalize_leg(bot, cur_leg, kind, now);
         bot.repath_time = now; // re-path next frame
@@ -977,15 +973,26 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // onto the shelf) is not a run-up — the bot must first shed speed and turn, which is exactly the
     // room the ledge policy exists to make. Exempting it let the ground zigzag pump the run to 490
     // ups straight past a lip the runup gate (correctly) refused to jump perpendicular to.
+    // For a speed jump the honest run-up direction is `from`→**takeoff**, not `from`→`to`: those are
+    // the same line for a straight jump but diverge by the whole curl angle for a curl or side jump,
+    // where the bot runs along a ledge and leaves off its flank. Measured against `to` a 60°+ side
+    // jump fails this test *while the bot is flying its own certified run-up line* — which re-arms the
+    // ledge brake on the approach and saps the very speed the leap needs. Plain jumps keep the
+    // source→target chord: they have no separate takeoff point, and the sideways-departure case above
+    // is exactly what their check is for.
     let jump_along_travel = |l: u32| {
-        let d = (graph.cell_origin(graph.link_target(l)).xy() - graph.cell_origin(graph.link_source(l)).xy())
-            .normalize_or_zero();
+        let src = graph.cell_origin(graph.link_source(l)).xy();
+        let aim = match graph.speed_jump_of_link(l) {
+            Some(tr) => tr.takeoff.xy(),
+            None => graph.cell_origin(graph.link_target(l)).xy(),
+        };
+        let d = (aim - src).normalize_or_zero();
         let v = v_xy.normalize_or_zero();
         v == Vec2::ZERO || d == Vec2::ZERO || d.dot(v) > 0.5
     };
     let is_jump_at_hand = |l: u32| is_jump(l) && jump_along_travel(l);
-    let jump_at_hand = cur_leg.is_some_and(&is_jump_at_hand)
-        || bot.route.get(bot.route_pos + 1).is_some_and(|&l| is_jump_at_hand(l));
+    let jump_at_hand =
+        cur_leg.is_some_and(&is_jump_at_hand) || bot.route.get(bot.route_pos + 1).is_some_and(|&l| is_jump_at_hand(l));
     let on_ledge = graph.is_ledge(bot_cell) && !jump_at_hand;
     let bhop_veto = !host.cvar_bool(c"rtx_bot_bhop")
         || combat_view
@@ -1141,6 +1148,12 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         .map(|tr| tr.curl_gain)
         .unwrap_or(0.0);
     let sj_curl = sj_active && sj_curl_gain > 0.0;
+    // How wide the run-up's floor lets the speed-building weave swing (∞ = uncapped; a side jump off a
+    // narrow ledge asks for less). See `SpeedJumpTraversal::weave_cap`.
+    let sj_weave_cap = cur_leg
+        .and_then(|l| graph.speed_jump_of_link(l))
+        .map(|tr| tr.weave_cap)
+        .unwrap_or(f32::INFINITY);
     // Signed along-corridor distance from the bot to a curl's takeoff (>0 behind the lip, <0 past it):
     // the run-up direction is the link's `from`→takeoff line. Used to trigger the leap on crossing the
     // takeoff *line* (not a radial ball the weave can skirt into a U-turn) and to gate the run-up aim.
@@ -1179,6 +1192,9 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         );
         if predicted < v_req * 0.85 {
             note_stall(bot, &stall_frame, "prestrafe_deficit", "penalize+repath", cur_leg, kind);
+            // A certified leg: strike it once so this repath prefers an alternative, but never let the
+            // surcharge escalate — the build proved the jump flyable, so arriving slow is a transient
+            // state to retry, not evidence the link is wrong for this bot.
             penalize_leg(bot, cur_leg, kind, now);
             bot.sj = None;
             bot.route.clear();
@@ -1482,6 +1498,9 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 } else {
                     0.0
                 },
+                // Only a committed jump leg carries a weave cap: off a jump leg the reactive edge
+                // guards are live and own the bot's footing, so the weave stays uncapped there.
+                weave_cap: if sj_active { sj_weave_cap } else { f32::INFINITY },
                 guide_gain: hop_guide, // the live predictive hop plan's pursuit gain (0 = no plan)
                 clear,
                 now,

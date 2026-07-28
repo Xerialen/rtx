@@ -498,7 +498,8 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
             takeoff,
             tgt,
             v_req,
-        } => plant_link_resp(game, v3(from), v3(takeoff), v3(tgt), v_req).map(Resp::PlanLink),
+            gain,
+        } => plant_link_resp(game, v3(from), v3(takeoff), v3(tgt), v_req, gain).map(Resp::PlanLink),
         Cmd::PlanCell { pos } => plant_cell_resp(game, v3(pos)).map(Resp::PlanCell),
         Cmd::PlanDrop { from, to } => plant_drop_resp(game, v3(from), v3(to)).map(Resp::PlanDrop),
     };
@@ -1325,6 +1326,7 @@ fn plant_link_resp(
     takeoff: Vec3,
     tgt: Vec3,
     v_req: f32,
+    gain: Option<f32>,
 ) -> Result<proto::PlanLinkResp, String> {
     use crate::navmesh::SpeedJumpTraversal;
     let gravity = {
@@ -1349,16 +1351,16 @@ fn plant_link_resp(
     // A hand-planted link is a curl by default (it's what we plant for the curl bring-up); the runtime
     // reads this gain to pick `air_correct` over the slalom. A fast run-up overshoots a gentle curl, so
     // the bring-up default is a firm gain that bleeds the excess onto the landing (see the harness gain
-    // sweep — ~12 lands the bravado LG dead-on). The cvar overrides it for tuning; step 4's solver will
-    // compute a per-link gain from the certified takeoff speed.
-    let curl_gain = {
+    // sweep — ~12 lands the bravado LG dead-on). An explicit `gain` on the command wins (a side-jump
+    // sweep varies it per plant, and a server-wide cvar can't express that); the cvar is the fallback.
+    let curl_gain = gain.filter(|g| *g > 0.0).unwrap_or_else(|| {
         let g = game.host.cvar(c"rtx_jump_curl_gain");
         if g > 0.0 {
             g
         } else {
             12.0
         }
-    };
+    });
     // Curl-link cost the banded planner now trusts (see `banded_step`): the honest run-up travel +
     // flight + a JumpGap-grade commitment (a rollout-certified envelope carries less risk than the
     // +1.0 charged to a modeled speed jump). Run-up is the `from`→lip distance at the mean build speed.
@@ -1370,6 +1372,9 @@ fn plant_link_resp(
         airtime,
         chained: false,
         curl_gain,
+        // A hand-planted link makes no claim about its run-up's width, so it keeps the uncapped weave
+        // — the harness measures the excursion rather than constraining it.
+        ..Default::default()
     };
     let li = g.plant_speed_jump(from_cell, to_cell, cost, tr);
     // Refresh the reachability + LOD tables so the new link is visible to steer's O(1) reachable()
@@ -1484,9 +1489,8 @@ fn curls_resp(game: &GameState) -> Result<Vec<proto::CurlLink>, String> {
             continue;
         }
         let Some(tr) = g.speed_jump_of_link(li) else { continue };
-        if tr.curl_gain <= 0.0 {
-            continue;
-        }
+        // The whole SpeedJump family, curls (`gain > 0`) and straight/chained alike. Filtering to
+        // curls left the straight family listed by nothing, so it could not be fly-tested by id.
         curls.push(proto::CurlLink {
             link: li,
             from: a3(g.cell_origin(g.link_source(li))),
@@ -1494,6 +1498,7 @@ fn curls_resp(game: &GameState) -> Result<Vec<proto::CurlLink>, String> {
             tgt: a3(g.cell_origin(g.link_target(li))),
             v_req: tr.v_req,
             gain: tr.curl_gain,
+            chained: tr.chained,
         });
     }
     Ok(curls)

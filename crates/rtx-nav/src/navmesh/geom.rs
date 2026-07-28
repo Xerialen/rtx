@@ -41,12 +41,19 @@ pub(super) fn descent_clear(bsp: &Bsp, from_z: f32, to: Vec3) -> bool {
 /// Whether the straight segment between two standing origins is free of solid (sampled at the
 /// higher origin so a wall or low ceiling between the cells blocks the move).
 pub(super) fn path_clear(bsp: &Bsp, a: Vec3, b: Vec3) -> bool {
+    path_clear_with(&|p| bsp.is_solid(p), a, b)
+}
+
+/// [`path_clear`] over an arbitrary solidity oracle, so a caller that already has one — or a test with
+/// a synthetic world and no BSP — can use the same corridor test. Same split, and same reason, as
+/// [`ground_along`] and [`steppable_rise`].
+pub(super) fn path_clear_with(is_solid: &impl Fn(Vec3) -> bool, a: Vec3, b: Vec3) -> bool {
     let z = a.z.max(b.z);
     let steps = ((b.xy() - a.xy()).length() / 16.0).ceil().max(1.0) as i32;
     (0..=steps).all(|i| {
         let t = i as f32 / steps as f32;
         let p = a.lerp(b, t);
-        !bsp.is_solid(Vec3::new(p.x, p.y, z))
+        !is_solid(Vec3::new(p.x, p.y, z))
     })
 }
 

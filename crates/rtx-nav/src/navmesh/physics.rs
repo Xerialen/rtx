@@ -50,6 +50,26 @@ pub const MAX_SPEED: f32 = 320.0;
 pub const SWIM_SPEED: f32 = 0.7 * MAX_SPEED;
 
 // --- speed jumps (bunnyhop-carried leaps across wide gaps) ---
+//
+// Two *different* run-up models live in this module, and which one a pass may use is not a taste
+// call — it follows from what the run-up physically is:
+//
+// * **Air-strafe** (`bhop_k` → [`attainable_speed`] → [`runway_len_for`]/[`runway_time`]) models a
+//   bunnyhop chain: speed grows as `(v0³+3k·len)^⅓` with `k` set by the *air* accel cap. It is the
+//   right model for a long carried runway and it is deliberately **pessimistic** — `bhop`'s
+//   `navmesh_speed_jump_model_is_conservative` pins the live controller at or above it, which is
+//   what lets the straight pass trust a closed form with no rollout. Its price is saturation: it
+//   needs ~316u to go 320→399 ups, so it can never fund a short run-up.
+// * **Ground prestrafe** ([`prestrafe_delivered`]) models a *committed* run-up along a corridor:
+//   circle-strafe on the floor, which builds ~4× faster and saturates near 1.5·maxspeed. It is
+//   **optimistic** (it counts ticks as if travelling at `MAX_SPEED` while the modelled speed climbs
+//   past it), so nothing may trust it on its own — every pass that funds a jump this way certifies
+//   the leap by `pm_step` rollout and takes the *lowest* speed whose envelope lands.
+//
+// So: long carried runways → air-strafe, closed form. Short committed run-ups → prestrafe, but only
+// behind certification. Do not cross the wires; in particular do not "fix" `bhop_k` by unclamping it
+// from `AIR_CAP` to make short runways work — that inverts the conservativeness guarantee the
+// straight pass rests on. Ground truth for both: `demos/dm3_rastairs.qwd`, `demos/dm3_rlstrafejump.qwd`.
 
 /// Conservative server tickrate assumed for the bhop acceleration model (see [`crate::qphys`] on why
 /// this deliberately differs from the live controller's ~77 Hz).
@@ -67,9 +87,14 @@ pub const BHOP_EFF: f32 = 0.8;
 /// 2048 cap forfeited everything past ~490 u/s. Race maps are what need the far end.
 pub(super) const RUNWAY_MAX: f32 = 4096.0;
 /// The measured runway must reach this multiple of the jump's required entry speed.
-pub(super) const SJ_MARGIN: f32 = 1.15;
-/// Walkable floor must continue this far past the landing (the takeoff-phase window).
-pub(super) const SJ_LANDING_DEPTH: f32 = 96.0;
+///
+/// Calibrated against `demos/dm3_rastairs.qwd`, not intuition: the human clears those two gaps
+/// carrying **438** and **395** ups where the straight chord needs 397 and 388 — margins of ×1.10
+/// and ×1.02. The old 1.15 demanded 457/446, *above what a human actually carries in either case*,
+/// so the generator refused crossings that are trivial in real play and left the bot detouring.
+/// 1.05 sits just above the tighter of the two measurements. Raising this is expensive twice over:
+/// [`runway_len_for`] is cubic in speed, so the runway demand grows ~3× faster than the margin.
+pub const SJ_MARGIN: f32 = 1.05;
 /// Speed-jump landing floor — separate from (and smaller than) [`MAX_DROP`] because the
 /// target-scan radius grows with fall airtime (`reach = v · t`): 1024 quadruples the old 240
 /// envelope while keeping the per-ledge scan bounded.
@@ -112,7 +137,15 @@ pub(super) const CURL_MISS_TOL: f32 = 24.0;
 pub(super) const CURL_Z_TOL: f32 = 24.0;
 /// Half-width (degrees) of the launch-heading envelope the certified gain must cover — the ground
 /// prestrafe exits mid-weave, so the real takeoff heading wanders this much around the corridor.
-pub(super) const CURL_PSI_TOL: f32 = 6.0;
+///
+/// **Measured, not chosen.** Flying dm3's balcony links repeatedly and reading the velocity heading on
+/// the frame the bot leaves the ground gives −7° to +12° around the run-up axis: the leap fires when
+/// the bot crosses the takeoff *line*, which can happen at any phase of the speed-building serpentine,
+/// and above `sv_maxspeed` a straight coast cannot pull the heading back (ground accel adds nothing
+/// once `v·wishdir` exceeds the wish speed). So the spread is a property of the takeoff regime, not
+/// something to tune away — the certifier has to prove the arc across it. At the old 6° the build
+/// certified a tighter envelope than the runtime delivers and links landed 3/5.
+pub(super) const CURL_PSI_TOL: f32 = 12.0;
 /// Run-up headings tried around the corridor's compass axis (degrees). A real lip's approach is rarely
 /// exactly on an axis and certification is sharply heading-sensitive, so the from-cell is placed along
 /// whichever of these certifies — the runtime then flies precisely the proven line. On-axis first, so
@@ -148,10 +181,70 @@ pub(super) const CURL_TAKEOFF_BACKOFF: f32 = 240.0;
 /// the frame it crosses the takeoff line (progress `< LIP_REACH`), so on average it leaps ~a lip-reach
 /// early. The certifier adds this as a position corner so a whole population of curls doesn't land
 /// short. MUST match `bhop::LIP_REACH` in the game crate (the runtime threshold it models).
-pub(super) const CURL_LIP_REACH: f32 = 28.0;
+pub const CURL_LIP_REACH: f32 = 28.0;
 /// Rollout tick step (the quantized ~77 Hz bot tick) and a hard tick cap per rollout.
 pub(super) const CURL_DT: f32 = 1.0 / 77.0;
 pub(super) const CURL_MAX_TICKS: usize = 120;
+
+// --- side jumps (short run-up *across* a ledge, leap off the flank) ------------------------------
+//
+// The curl pass above discovers candidates *corridor-first*: it walks back along a compass axis from
+// an open lip, so the run-up and the leap are always near-collinear. That is the wrong search order
+// for the commonest human shortcut. `demos/dm3_rlstrafejump.qwd` crosses dm3's z=152 pit from a
+// balcony **448u wide and two grid rows (64u) deep**: the run-up goes *along* the balcony and the
+// leap goes *off its flank*, ~63° apart. `measure_runway` can never see that runway — it only walks
+// anti-parallel to the leap (32u of the 448 available), and its "ground in both perpendicular
+// columns" rule fails on every column of a two-row ledge, which has no interior column at all.
+//
+// So the side pass inverts the search: pick the target first, derive candidate takeoff headings from
+// the **chord**, and measure the runway along whichever heading has floor under it (the same order
+// `air_rocket_jumps_from` already uses for air-steered rocket jumps). Everything downstream is the
+// curl machinery unchanged — `prestrafe_delivered` funds it, `certify_curl` proves it by rollout, and
+// it is emitted as an ordinary curl-carrying `SpeedJump` the runtime already knows how to fly.
+
+/// Minimum run-up for a side jump. Deliberately far below [`CURL_MIN_RUNWAY`]: that floor is about
+/// *corridor quality* for a collinear search, and a flank run-up has no corridor to be measured
+/// against. The demo's usable diagonal lines across the balcony run 87-141u, and the human buys
+/// 320→399 ups in ~95u of it, so 96 is the point below which there is genuinely no room to build.
+pub(super) const SIDE_MIN_RUNWAY: f32 = 96.0;
+/// The run-up a side jump commits (mirrors [`CURL_RUNUP_CAP`]).
+pub(super) const SIDE_RUNUP_CAP: f32 = 512.0;
+/// Takeoff headings tried either side of the chord, and the step between them. The demo's certifying
+/// heading sits 47-66° off the chord (the human leaves the lip mid-turn, having already swung 47° on
+/// the ground), so a ±12° sweep like [`CURL_PSI_SAMPLES`] cannot reach it. The step is under twice
+/// [`CURL_PSI_TOL`], so the ±6° guard each certify proves leaves no gap between samples.
+pub(super) const SIDE_PSI_STEP: f32 = 9.0;
+pub(super) const SIDE_PSI_MAX: f32 = 63.0;
+/// How far *below* the straight-chord ballistic need [`v_required`] the certify ladder may start.
+///
+/// The chord speed is not actually a floor for a curled flight: `air_correct` keeps accelerating in
+/// the air, so a rollout can land a target the straight-line formula calls out of reach. The demo is
+/// exactly this case — it takes off at **399** ups where the cell-to-cell chord demands 411.6, and
+/// gains to 425 in flight. Starting the ladder at the ballistic floor would refuse it. The rollout is
+/// still the arbiter; this only decides where the ladder starts looking.
+pub(super) const SIDE_V_FLOOR_FRAC: f32 = 0.88;
+/// At most this many side jumps per source cell (its own budget, so it never evicts a straight or
+/// corridor curl).
+pub(super) const SIDE_MAX_PER_CELL: usize = 2;
+/// Targets per (octant, elevation band) the pass will spend rollouts on before giving that bucket up.
+/// Only one of them can survive the dedup, so this is purely "if the widest doesn't certify, how many
+/// fallbacks get a try" — the knob that trades build time against coverage of awkward buckets.
+pub(super) const SIDE_BUCKET_TRIES: usize = 3;
+/// How far a side jump may *descend*, well under the straight pass's [`SJ_MAX_DROP`]. A side jump is
+/// bought with an expensive rollout because it **crosses** something; descending is free and already
+/// carried by Drop/JumpGap links, and the per-cell ranking deprioritises drops for exactly that
+/// reason. Bounding it here is also what keeps the pass affordable: the target scan radius is
+/// `v · airtime`, and airtime grows with the fall, so a 1024u envelope scans a ~750u disc around every
+/// ledge on the map.
+pub(super) const SIDE_MAX_DROP: f32 = 320.0;
+/// Lateral floor a side-jump run-up wants either side of its line before the runtime's *uncapped*
+/// prestrafe weave is safe. The weave swings ±30-45° at ~3 reversals per hop, which at 400 ups is
+/// roughly ±1 grid column of excursion — so one column each side is the threshold, not a margin.
+pub(super) const SIDE_WEAVE_CLEARANCE: f32 = 32.0;
+/// Weave half-angle a side jump asks the runtime to hold when its run-up is narrower than
+/// [`SIDE_WEAVE_CLEARANCE`]. Mirrors the corridor bhop's `zigzag_band_cap`, which exists for the same
+/// reason: an uncapped serpentine sweeps wider than a narrow ledge has floor.
+pub(super) const SIDE_WEAVE_NARROW_DEG: f32 = 15.0;
 
 /// The takeoff speed the ground circle-strafe delivers over a `runway` from a run start, rolled with
 /// the shared ground oracles at the ground-optimal wish angle. Saturates at the friction equilibrium

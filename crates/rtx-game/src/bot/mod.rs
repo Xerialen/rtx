@@ -2122,6 +2122,11 @@ fn penalize_leg(bot: &mut BotState, link: Option<u32>, kind: Option<LinkKind>, n
 /// `None`/`Plat`/`Teleport` guards. The plat-wait timeout calls this directly: it *must* strike a
 /// `Plat` link, the very kind `penalize_leg` exempts (the ordinary watchdogs misread waiting on a
 /// lift as failure, but an 8s hold with no descent is a genuine one worth diverting from).
+///
+/// Note the surcharge escalates (`strikes²·PENALTY_STEP`) for *every* kind, including the
+/// rollout-certified curl/side jumps. Capping it for those was tried — the reasoning being that a
+/// proven leg's refusal is transient and deserves retry rather than exile — and measured to change
+/// nothing on the routes it was meant to help, so the simpler uniform rule stands.
 fn penalize_link(bot: &mut BotState, link: u32, now: f32) {
     if let Some(slot) = bot
         .failed_links

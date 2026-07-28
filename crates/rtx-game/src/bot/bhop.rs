@@ -284,6 +284,12 @@ pub struct Input {
     /// [`air_correct`] at this rate (a single smooth pursuit curl onto the landing) rather than the hop
     /// slalom. `> 0` selects the curl (a speed jump is one leap, not a chain); `≤ 0` keeps the slalom.
     pub curl_gain: f32,
+    /// Half-angle (degrees) the takeoff regime's speed-building weave may swing, `f32::INFINITY` for
+    /// uncapped. Carried per link because it is a property of the *run-up's floor*, not of the bot: a
+    /// side jump's run-up can be a two-column ledge whose width the uncapped ±30-45° serpentine walks
+    /// straight off, and while a jump leg is committed none of the reactive edge guards are armed to
+    /// catch it. Narrowing costs speed, so only a pass that measured a thin run-up asks for it.
+    pub weave_cap: f32,
     /// Predictive hop-plan pursuit gain (`> 0` = guided). Set by the steering layer when a
     /// [`hopsim`](crate::bot::hopsim) plan is live: fly *this* chain of hops as `air_correct` pursuits
     /// toward `bearing` (the plan's aim), no slalom, and leap straight down the bearing at takeoff — so
@@ -323,6 +329,10 @@ pub struct Bhop {
     air_phase_locked: bool,
     /// Per-hop middle reversal phase, biased from 0.5 to correct the takeoff heading error.
     air_mid_phase: f32,
+    /// Latched strafe side for a committed curl's flight (±1; 0 = not in a curl). A curl is one
+    /// continuous sweep — see [`air_correct_held`] — so the side is chosen on the first airborne tick
+    /// and held to touchdown, which is both what the human does and what the certifier rolls.
+    curl_sign: f32,
     /// Telemetry: hops taken, weave sign flips, and peak speed this engagement.
     pub hops: u32,
     pub flips: u32,
@@ -440,8 +450,17 @@ impl Bhop {
                 0.0
             };
             let s = if guide > 0.0 {
-                air_correct(i.v_xy, i.bearing, a_max, dt, guide)
+                // Latch the sweep side on the first airborne tick of this leap and hold it. Without
+                // this the sign is re-derived per tick against a bearing that swings fast as the bot
+                // closes, so an overshoot reverses the strafe and the arc chatters — measured on dm3
+                // as the same launch landing either on target or 110u behind the bot.
+                if self.curl_sign == 0.0 {
+                    let err = wrap180(i.bearing - yaw_of(i.v_xy));
+                    self.curl_sign = if err == 0.0 { 1.0 } else { err.signum() };
+                }
+                air_correct_held(i.v_xy, i.bearing, a_max, dt, guide, self.curl_sign)
             } else {
+                self.curl_sign = 0.0;
                 self.air_strafe(i, speed, a_max, dt, profile)
             };
             return Some(Cmd {
@@ -451,10 +470,24 @@ impl Bhop {
                 jump: false,
             });
         }
+        // Grounded. A non-zero sweep side means we are touching down *from* a curl leap — the one
+        // committed leap this link is — so the jump is done. Clear it either way; the next leap
+        // latches its own.
+        let landed_from_curl = self.curl_sign != 0.0;
+        self.curl_sign = 0.0;
         // Landing (or first) ground frame — the only place a run ends by policy. A planned carry
         // keeps the chain alive across leg-kind churn even where the per-landing runway arithmetic
         // would give up (the planner already proved speed belongs here).
-        let keep_hopping = i.committed || i.carry || (i.sustain && i.runway >= speed * T_HOP + profile.hop_margin);
+        //
+        // `committed` forces the chain *up to* the leap, so the run-up is never dropped — but it must
+        // not survive the leap itself. A curl/side jump is a single arc onto a fixed landing, and the
+        // certifier proved a touchdown *there*; taking another hop off it throws the bot straight back
+        // off the platform it just earned. Measured on dm3: the arc landed dead on target at
+        // (-14,-831) and the very next frame set `vz = +270`, carrying it 112u past onto a different
+        // ledge. A straight speed jump keeps chaining — its landing is a runway, not a destination.
+        let keep_hopping = (i.committed && !landed_from_curl)
+            || i.carry
+            || (i.sustain && i.runway >= speed * T_HOP + profile.hop_margin);
         if !keep_hopping {
             self.disengage(if i.sustain { "runway" } else { "leg" });
             return None;
@@ -583,7 +616,7 @@ impl Bhop {
                 jump: false,
             };
         }
-        self.ground_cmd(i, a_g, env, f32::INFINITY)
+        self.ground_cmd(i, a_g, env, i.weave_cap)
     }
 
     /// A prestrafe cmd, with sigma/flip bookkeeping. `band_cap` clamps the weave deadband — `∞` for
@@ -883,6 +916,23 @@ mod tests {
         assert!((heading - 30.0).abs() < 12.0, "did not converge to 30°: {heading}");
     }
 
+    /// The game side of the certifier/runtime contract: the build proves a curl or side jump's landing
+    /// across exactly the lip window and speed band this controller holds, so if the two drift apart
+    /// the generator certifies one jump and the bot flies a different one. `rtx-nav`'s
+    /// `curl_runtime_constants_match_the_certifier` asserts the same pair from the other side.
+    #[test]
+    fn lip_reach_matches_the_curl_certifier() {
+        assert_eq!(
+            LIP_REACH,
+            crate::navmesh::CURL_LIP_REACH,
+            "the certifier proves the leap from a lip-reach before the takeoff; this is that distance"
+        );
+        assert_eq!(
+            CURL_V_HOLD_TOL, 0.03,
+            "the hold band the certifier proves both corners of"
+        );
+    }
+
     /// The navmesh's derated speed-jump model (`rtx_nav::navmesh`, planned offline) must be
     /// *conservative* against this actual controller: simulate a real air-strafe over an 800u runway
     /// and confirm the controller reaches at least the speed the planner credited. Lives here rather
@@ -1001,6 +1051,7 @@ mod sim {
             hold_jump: false,
             takeoff_speed: 0.0,
             curl_gain: 0.0,
+            weave_cap: f32::INFINITY,
             guide_gain: 0.0,
             clear: f32::INFINITY,
             now,
@@ -1035,6 +1086,7 @@ mod sim {
             hold_jump: false,
             takeoff_speed: 0.0,
             curl_gain: 0.0,
+            weave_cap: f32::INFINITY,
             guide_gain: 0.0,
             clear: f32::INFINITY,
             now,
@@ -1211,6 +1263,7 @@ mod sim {
                 hold_jump: false,
                 takeoff_speed: V_REQ,
                 curl_gain: 0.0,
+                weave_cap: f32::INFINITY,
                 guide_gain: 0.0,
                 clear: f32::INFINITY,
                 now,
@@ -1259,6 +1312,7 @@ mod sim {
                     hold_jump: false,
                     takeoff_speed: V_STAR,
                     curl_gain: 12.0,
+                    weave_cap: f32::INFINITY,
                     guide_gain: 0.0,
                     clear: f32::INFINITY,
                     now,
@@ -1304,6 +1358,7 @@ mod sim {
                 hold_jump: false,
                 takeoff_speed: 415.0,
                 curl_gain: 12.0,
+                weave_cap: f32::INFINITY,
                 guide_gain: 0.0,
                 clear: f32::INFINITY,
                 now,

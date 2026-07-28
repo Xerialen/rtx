@@ -121,7 +121,8 @@ pub enum Cmd {
     Route { bot: u32 },
     /// Dump the tail of a bot's `rtx_bot_debug` audit ring.
     Audit { bot: u32, lines: u32 },
-    /// List generated curl links.
+    /// List generated speed-jump links. Curls (`gain > 0`) *and* straight/chained speed jumps —
+    /// otherwise the straight family is listed by nothing and can't be fly-tested by id.
     Curls,
     /// Fetch the current map's raw BSP file, so a viewer can render the world without a local copy.
     Bsp,
@@ -137,12 +138,16 @@ pub enum Cmd {
     },
     /// Search the offline sim for a speed-curl jump.
     Curl { src: Vec3, tgt: Vec3 },
-    /// Hand-plant a SpeedJump link into the live graph.
+    /// Hand-plant a SpeedJump link into the live graph. `gain` overrides the air-curl gain the link is
+    /// baked with (default: the `rtx_jump_curl_gain` cvar, else 12) — the parameter a side-jump sweep
+    /// varies, so it has to travel with the plant rather than through a server-wide cvar.
     PlanLink {
         from: Vec3,
         takeoff: Vec3,
         tgt: Vec3,
         v_req: f32,
+        #[serde(default)]
+        gain: Option<f32>,
     },
     /// Hand-plant a standing cell at `pos` — a walkable surface the column carve's XY pitch cannot
     /// sample (see `NavGraph::plant_cell`). Inert on its own: nothing routes into it.
@@ -534,7 +539,12 @@ pub struct CurlLink {
     pub takeoff: Vec3,
     pub tgt: Vec3,
     pub v_req: f32,
+    /// Air-curl gain. `0` means a straight speed jump (no `air_correct` curl), not a missing value.
     pub gain: f32,
+    /// A chained jump takes off from the ledge itself and needs a prior jump to deliver `v_req` —
+    /// it has no runway of its own, so flying one from a standing start will fail by design.
+    #[serde(default)]
+    pub chained: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

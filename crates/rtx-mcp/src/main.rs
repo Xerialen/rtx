@@ -442,6 +442,226 @@ impl RtxMcp {
         Ok(out)
     }
 
+    /// Every speed-jump link the graph currently holds (curls *and* straight/chained). Deliberately
+    /// uncached, unlike `links()`: `plan_link` mints new ids mid-session, so a cache would go stale
+    /// inside a single sweep.
+    async fn speed_jump_links(&self) -> Result<Vec<Value>, String> {
+        let data = self.req(Cmd::Curls, SHORT).await?;
+        Ok(data.as_array().cloned().unwrap_or_default())
+    }
+
+    /// Place the bot at a speed-jump link's run-up start, then order it to fly the link and report the
+    /// landing measurement. The counterpart of `op_test_link` for the non-RJ family.
+    async fn op_fly_link(&self, link: u32, via: &str, bot: Option<u32>, timeout: f32) -> Result<Value, String> {
+        let bot = self.resolve_bot(bot).await?;
+        let links = self.speed_jump_links().await?;
+        let entry = links
+            .iter()
+            .find(|l| l.get("link").and_then(Value::as_u64) == Some(link as u64))
+            .ok_or_else(|| format!("link {link} is not a speed-jump link on this map"))?;
+        let from = vec3_of(entry.get("from").unwrap_or(&Value::Null))?;
+        let chained = entry.get("chained").and_then(Value::as_bool).unwrap_or(false);
+        let mut out = json!({ "link": link, "bot": bot, "from": from, "chained": chained });
+        // A chained link takes off from the ledge with no runway of its own — it is only feasible when a
+        // prior jump delivers the speed. Flying one from a standing start fails by construction, so say
+        // so rather than reporting a mystery miss.
+        if chained {
+            out["note"] = json!("chained link: needs a prior jump to carry v_req in; a standing start will fail");
+        }
+
+        if via == "goto" {
+            let conn = self.conn().await?;
+            let rx = conn.events.subscribe();
+            self.req(Cmd::Goto { bot, pos: from }, SHORT).await?;
+            let ev = conn
+                .await_event(
+                    rx,
+                    |v| is_ev(v, "arrived", bot) || is_ev(v, "goto_stall", bot),
+                    Duration::from_secs(30),
+                )
+                .await?;
+            let stalled = ev.get("ev").and_then(Value::as_str) == Some("goto_stall");
+            out["goto"] = ev;
+            if stalled {
+                out["fly"] = Value::Null;
+                out["source_inaccessible"] = json!(true);
+                return Ok(out);
+            }
+        } else {
+            self.req(Cmd::Teleport { bot, pos: from }, SHORT).await?;
+        }
+
+        let conn = self.conn().await?;
+        let rx = conn.events.subscribe();
+        self.req(Cmd::Fly { bot, link }, SHORT).await?;
+        let ev = conn
+            .await_event(rx, |v| is_ev(v, "fly_result", bot), Duration::from_secs_f32(timeout))
+            .await?;
+        out["fly"] = ev;
+        Ok(out)
+    }
+
+    /// One side-jump parameter set: plant the link once, then fly it `trials` times, teleporting back to
+    /// the start between attempts so every trial gets the same fresh runway.
+    #[allow(clippy::too_many_arguments)]
+    async fn op_side_jump_test(&self, a: SideJumpArgs) -> Result<Value, String> {
+        let bot = self.resolve_bot(a.bot).await?;
+        let start = [
+            a.start_x.unwrap_or(224.0),
+            a.start_y.unwrap_or(-1408.0),
+            a.start_z.unwrap_or(32.0),
+        ];
+        // The bot runs along `psi`; its left is `psi + 90`. Put the goal on the chosen side, so the leap
+        // is the sideways flick the demo does rather than a jump straight down the runway.
+        let goal_yaw = a.goal_yaw.unwrap_or(90.0); // 100m's goal is +Y
+        let side = a.side.as_deref().unwrap_or("left");
+        let sign = match side {
+            "left" => 1.0f32,
+            "right" => -1.0f32,
+            other => return Err(format!("side must be \"left\" or \"right\", got {other:?}")),
+        };
+        let psi = goal_yaw - sign * 90.0;
+        let off_angle = a.off_angle.unwrap_or(60.0);
+        let chord_yaw = psi + sign * off_angle;
+        let runup = a.runup.unwrap_or(128.0);
+        let dist = a.target_dist.unwrap_or(256.0);
+        let trials = a.trials.unwrap_or(5).clamp(1, 40);
+        let gain = a.gain.unwrap_or(12.0);
+        let timeout = a.timeout.unwrap_or(12.0);
+
+        let at = |from: [f32; 3], yaw: f32, d: f32| {
+            let (s, c) = yaw.to_radians().sin_cos();
+            [from[0] + c * d, from[1] + s * d, from[2]]
+        };
+        let takeoff = at(start, psi, runup);
+        let target = at(takeoff, chord_yaw, dist);
+        // Ballistic entry speed for a flat chord: JUMP_VZ 270 at gravity 800 gives 0.675s of airtime.
+        let airtime = 2.0 * 270.0 / 800.0;
+        let v_req = a.v_req.unwrap_or(dist / airtime);
+
+        let mut out = json!({
+            "params": {
+                "bot": bot, "start": start, "side": side, "goal_yaw": goal_yaw, "psi": psi,
+                "chord_yaw": chord_yaw, "off_angle": off_angle, "runup": runup,
+                "target_dist": dist, "v_req": v_req, "gain": gain, "trials": trials,
+            },
+            "requested": { "takeoff": takeoff, "target": target },
+        });
+
+        self.req(
+            Cmd::Prep {
+                bot,
+                health: 100.0,
+                rockets: 0.0,
+            },
+            SHORT,
+        )
+        .await?;
+
+        if a.probe.unwrap_or(true) {
+            out["probe"] = self
+                .req(
+                    Cmd::Probe {
+                        takeoff,
+                        tgt: target,
+                        psi0: psi,
+                        runway: runup,
+                    },
+                    SHORT,
+                )
+                .await?;
+        }
+
+        // Plant once per parameter set. Planting per trial would grow the graph without bound and
+        // change what the planner sees between otherwise identical attempts.
+        let planted = self
+            .req(
+                Cmd::PlanLink {
+                    from: start,
+                    takeoff,
+                    tgt: target,
+                    v_req,
+                    gain: Some(gain),
+                },
+                SHORT,
+            )
+            .await?;
+        let link = planted
+            .get("link")
+            .and_then(Value::as_u64)
+            .ok_or("plan_link did not return a link id")? as u32;
+        // `plan_link` snaps `from`/`tgt` to the nearest cells, which may not be where we asked. Measure
+        // against what was actually planted, not against the request.
+        let from_cell = vec3_of(planted.get("from").unwrap_or(&Value::Null)).unwrap_or(start);
+        let tgt_cell = vec3_of(planted.get("tgt").unwrap_or(&Value::Null)).unwrap_or(target);
+        out["planted"] = planted;
+
+        let mut trial_rows = Vec::new();
+        let (mut hits, mut miss_sum, mut spd_sum, mut measured) = (0u32, 0.0f64, 0.0f64, 0u32);
+        for i in 0..trials {
+            self.req(Cmd::Teleport { bot, pos: start }, SHORT).await?;
+            let conn = self.conn().await?;
+            let rx = conn.events.subscribe();
+            self.req(Cmd::Fly { bot, link }, SHORT).await?;
+            let ev = match conn
+                .await_event(rx, |v| is_ev(v, "fly_result", bot), Duration::from_secs_f32(timeout))
+                .await
+            {
+                Ok(ev) => ev,
+                Err(e) => {
+                    trial_rows.push(json!({ "trial": i, "error": e }));
+                    continue;
+                }
+            };
+            let on_target = ev.get("on_target").and_then(Value::as_bool).unwrap_or(false);
+            let timed_out = ev.get("timeout").and_then(Value::as_bool).unwrap_or(false);
+            let f = |k: &str| ev.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+            if on_target {
+                hits += 1;
+            }
+            if !timed_out {
+                miss_sum += f("miss_xy");
+                spd_sum += f("takeoff_speed");
+                measured += 1;
+            }
+            trial_rows.push(json!({
+                "trial": i,
+                "on_target": on_target,
+                "timeout": timed_out,
+                "miss_xy": f("miss_xy"),
+                "miss_z": f("miss_z"),
+                "takeoff_speed": f("takeoff_speed"),
+                "peak": f("peak"),
+                "land": ev.get("land").cloned().unwrap_or(Value::Null),
+                // How far the run-up strayed off the from→takeoff line: the weave excursion a narrow
+                // ledge would have to accommodate.
+                "runup_cross_track": runup_cross_track(&ev, from_cell, takeoff),
+            }));
+        }
+        // Park the bot back where it started so the next parameter set begins from a known pose.
+        self.req(Cmd::Teleport { bot, pos: start }, SHORT).await?;
+        self.req(Cmd::Hold { bot }, SHORT).await?;
+
+        let n = measured.max(1) as f64;
+        let mean_speed = spd_sum / n;
+        // What was actually planted may differ from what was asked: `plan_link` snaps the target to a
+        // real cell, so the chord the bot must clear is this, not `target_dist`.
+        let planted_chord = (tgt_cell[0] - takeoff[0]).hypot(tgt_cell[1] - takeoff[1]);
+        out["trials"] = json!(trial_rows);
+        out["summary"] = json!({
+            "n": trials,
+            "measured": measured,
+            "hits": hits,
+            "hit_rate": hits as f64 / trials as f64,
+            "mean_miss_xy": miss_sum / n,
+            "mean_takeoff_speed": mean_speed,
+            "v_req": v_req,
+            "takeoff_speed_over_v_req": if v_req > 0.0 { mean_speed / v_req as f64 } else { 0.0 },
+            "planted_chord": planted_chord,
+        });
+        Ok(out)
+    }
+
     async fn op_test_links(&self, links: Option<Vec<u32>>, via: &str) -> Result<Value, String> {
         let all = self.links().await?;
         let targets: Vec<u32> = match links {
@@ -513,6 +733,44 @@ fn vec3_of(v: &Value) -> Result<[f32; 3], String> {
 /// Reduce a control-channel goto trajectory to the invariants a directed-corridor run cares about.
 /// Rows are `[t,x,y,z,vx,vy,vz]`; low-speed frames are excluded from heading metrics so the initial
 /// acceleration tick cannot manufacture an arbitrary yaw.
+/// Largest perpendicular excursion off the `from`→`takeoff` line during the *grounded* part of a fly
+/// trial — i.e. how wide the prestrafe weave actually swings. Only samples behind the lip count, so
+/// the flight itself (which leaves the line by design) doesn't pollute the measurement. `null` when
+/// the event carried no trajectory.
+fn runup_cross_track(ev: &Value, from: [f32; 3], takeoff: [f32; 3]) -> Value {
+    let Some(traj) = ev.get("traj").and_then(Value::as_array) else {
+        return Value::Null;
+    };
+    let (dx, dy) = (takeoff[0] - from[0], takeoff[1] - from[1]);
+    let len = dx.hypot(dy);
+    if len < 1.0 {
+        return Value::Null;
+    }
+    let (fx, fy) = (dx / len, dy / len);
+    let (rx, ry) = (-fy, fx);
+    let mut worst = 0.0f32;
+    let mut seen = false;
+    for row in traj {
+        let Some(a) = row.as_array() else { continue };
+        if a.len() != 7 {
+            continue;
+        }
+        let n = |i: usize| a[i].as_f64().unwrap_or(0.0) as f32;
+        let (x, y) = (n(1), n(2));
+        let along = (x - from[0]) * fx + (y - from[1]) * fy;
+        if along < 0.0 || along > len {
+            continue; // before the start or past the lip — not run-up
+        }
+        seen = true;
+        worst = worst.max(((x - from[0]) * rx + (y - from[1]) * ry).abs());
+    }
+    if seen {
+        json!((worst * 10.0).round() / 10.0)
+    } else {
+        Value::Null
+    }
+}
+
 fn corridor_metrics(ev: &Value, start: [f32; 3], end: [f32; 3]) -> Result<Value, String> {
     let traj = ev
         .get("traj")
@@ -826,6 +1084,47 @@ struct TestLinksArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct FlyLinkArgs {
+    /// The speed-jump (or curl) link id to fly — from `list_speed_jump_links`, not `list_rj_links`.
+    link: u32,
+    /// How to place the bot at the link's run-up start: "teleport" (default) or "goto".
+    via: Option<String>,
+    bot: Option<u32>,
+    /// Seconds to await the landing result (default 12; the server gives up on its own after 8).
+    timeout: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SideJumpArgs {
+    bot: Option<u32>,
+    /// Run-up start (default the 100m runway start, 224/-1408/32). The bot is reset here between trials.
+    start_x: Option<f32>,
+    start_y: Option<f32>,
+    start_z: Option<f32>,
+    /// Compass heading (degrees) of the map's goal from the start — default 90, i.e. +Y on 100m.
+    goal_yaw: Option<f32>,
+    /// Which side the goal is on while running up: "left" (default) or "right". The run-up heading is
+    /// `goal_yaw -/+ 90`, so the bot genuinely runs side-on to the goal and flicks into the jump.
+    side: Option<String>,
+    /// Run-up length from the start to the takeoff lip, along the run-up heading (default 128).
+    runup: Option<f32>,
+    /// Degrees the leap chord sits off the run-up heading, toward the goal side (default 60).
+    off_angle: Option<f32>,
+    /// Chord length from takeoff to target (default 256).
+    target_dist: Option<f32>,
+    /// Takeoff speed the link demands (default: the flat-chord ballistic need, `target_dist / 0.675`).
+    v_req: Option<f32>,
+    /// Air-curl gain baked into the planted link (default 12).
+    gain: Option<f32>,
+    /// Attempts per parameter set (default 5, max 40).
+    trials: Option<u32>,
+    /// Also run the build-time certifier over the same geometry first (default true).
+    probe: Option<bool>,
+    /// Seconds to await each landing (default 12).
+    timeout: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct SetKnobsArgs {
     stance: Option<f32>,
     aim_tol: Option<f32>,
@@ -1125,11 +1424,39 @@ impl RtxMcp {
     }
 
     #[tool(
-        description = "List generated curl-jump links (speed-jump links with a certified curl \
-        gain), including run-up, takeoff, target, required speed, and gain."
+        description = "List every speed-jump link the navmesh holds — curls (gain > 0) and straight \
+        or chained speed jumps alike — with run-up start, takeoff lip, target, required takeoff speed, \
+        curl gain, and whether the link is chained. Includes links added by plan_link this session."
     )]
     async fn list_curl_links(&self) -> Result<CallToolResult, McpError> {
-        finish(self.req(Cmd::Curls, SHORT).await)
+        finish(
+            self.speed_jump_links()
+                .await
+                .map(|l| json!({ "count": l.len(), "links": l })),
+        )
+    }
+
+    #[tool(
+        description = "Fly one speed-jump / curl link and report the landing: place the bot at the \
+        link's run-up start, order the jump, and measure touchdown against the target cell (miss_xy, \
+        miss_z, on_target, takeoff_speed, peak). The speed-jump counterpart of test_link."
+    )]
+    async fn fly_link(&self, Parameters(a): Parameters<FlyLinkArgs>) -> Result<CallToolResult, McpError> {
+        let via = a.via.clone().unwrap_or_else(|| "teleport".into());
+        finish(self.op_fly_link(a.link, &via, a.bot, a.timeout.unwrap_or(12.0)).await)
+    }
+
+    #[tool(
+        description = "Measure one short-ramp side strafe jump empirically. The bot starts side-on to \
+        the map's goal, runs up `runup` units, and leaps `off_angle` degrees toward the goal for \
+        `target_dist`; it is teleported back to the start between trials so every attempt gets the same \
+        runway. Plants the link once, flies it `trials` times, and reports per-trial miss/takeoff speed \
+        plus the run-up's max cross-track (the prestrafe weave width) and the build-time certifier's \
+        prediction for the same geometry. Defaults suit the 100m runway. Sweep runup / off_angle / \
+        target_dist / gain / v_req to map what controls jump distance."
+    )]
+    async fn side_jump_test(&self, Parameters(a): Parameters<SideJumpArgs>) -> Result<CallToolResult, McpError> {
+        finish(self.op_side_jump_test(a).await)
     }
 
     #[tool(description = "Tail the managed server's console output.")]

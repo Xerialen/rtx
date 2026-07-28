@@ -41,7 +41,7 @@ pub use lod::{CoarseCosts, Corridor};
 use physics::*;
 pub use physics::{
     attainable_speed, band_of, bhop_k, prestrafe_delivered_from, BAND_EDGES, BAND_FLOOR, BAND_V_MAX, BHOP_EFF,
-    CURL_V_HOLD_TOL, DOUBLE_ARC_PEAK, JUMP_APEX, MAX_SPEED, NBANDS,
+    CURL_LIP_REACH, CURL_V_HOLD_TOL, DOUBLE_ARC_PEAK, JUMP_APEX, MAX_SPEED, NBANDS, SJ_MARGIN,
 };
 use reach::Reach;
 pub use rocketjump::RJ_CERT_AIM_DEG;
@@ -309,7 +309,7 @@ pub struct NavGraph {
 
 /// A solved speed jump: where the takeoff ledge is and the horizontal speed needed there, so the
 /// runtime can refuse to leap if the bot somehow reaches the edge too slow to clear the gap.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct SpeedJumpTraversal {
     pub takeoff: Vec3,
     pub v_req: f32,
@@ -325,6 +325,28 @@ pub struct SpeedJumpTraversal {
     /// runtime flies it with the hop slalom, unchanged. `> 0` = curl: once airborne the controller homes
     /// the velocity onto the landing with [`air_correct`](crate) at this rate — one smooth pursuit arc.
     pub curl_gain: f32,
+    /// Half-angle (degrees) the run-up's speed-building serpentine may swing, or `f32::INFINITY` for the
+    /// uncapped weave. The takeoff regime builds speed by circle-strafing, which sweeps ±30-45° and
+    /// costs roughly a grid column of lateral floor either side of the run-up line. That is fine down a
+    /// corridor and wrong across a two-column ledge, where the same weave walks the bot off the edge —
+    /// so a pass that measured a thin run-up says so here, and the runtime narrows the weave to match.
+    /// Not a speed knob: narrowing it *slows* the build, which is why it is per-link and not global.
+    pub weave_cap: f32,
+}
+
+impl Default for SpeedJumpTraversal {
+    /// A straight, uncapped-weave jump with nothing solved — the shape every field-by-field
+    /// constructor starts from, so adding a field doesn't silently default it to zero.
+    fn default() -> Self {
+        SpeedJumpTraversal {
+            takeoff: Vec3::ZERO,
+            v_req: 0.0,
+            airtime: 0.0,
+            chained: false,
+            curl_gain: 0.0,
+            weave_cap: f32::INFINITY,
+        }
+    }
 }
 
 /// Extra travel-time cost charged to a link whose gate is currently shut. Large enough that the
@@ -2867,6 +2889,134 @@ mod tests {
         );
     }
 
+    /// The **side-jump** pass against the map it was derived from (`RTX_TEST_BSP`, expected to be dm3):
+    /// the z=152 pit crossing in `demos/dm3_rlstrafejump.qwd`, which a human clears trivially and which
+    /// no earlier pass could ever emit.
+    ///
+    /// The run-up here is *perpendicular* to the leap — a balcony 448u wide and two grid rows deep — so
+    /// `measure_runway`, which only walks anti-parallel to the jump and demands a column either side,
+    /// scores it 32u out of 448 and every speed-jump form starves. This asserts the crossing exists,
+    /// that it is a certified curl (it cannot be flown straight), and that the certified takeoff speed
+    /// is in the neighbourhood of what the human actually carried (399 ups over a 256u chord; the cell
+    /// grid rounds the chord up, so the requirement lands a little above).
+    #[test]
+    fn dm3_balcony_side_jump() {
+        let Ok(path) = std::env::var("RTX_TEST_BSP") else {
+            eprintln!("RTX_TEST_BSP unset - skipping");
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read bsp");
+        let bsp = Bsp::parse(&bytes).expect("parse bsp");
+        let g = build_navmesh(
+            &bsp,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            false,
+            Some(SpeedJumpParams {
+                gravity: 800.0,
+                accel: 10.0,
+                maxspeed: 320.0,
+                friction: 4.0,
+                stopspeed: 100.0,
+                curl: true,
+            }),
+            None,
+        );
+        // The demo's takeoff and landing, from the recorded flight.
+        let takeoff = Vec3::new(31.6, -571.0, 152.0);
+        let landing = Vec3::new(4.1, -826.3, 152.0);
+        let found: Vec<_> = (0..g.links.len() as u32)
+            .filter(|&li| g.link_kind(li) == LinkKind::SpeedJump)
+            .filter_map(|li| g.speed_jump_of_link(li).map(|tr| (li, tr)))
+            .filter(|(li, tr)| {
+                let tgt = g.cell_origin(g.link_target(*li));
+                (tr.takeoff.xy() - takeoff.xy()).length() < 64.0
+                    && (tr.takeoff.z - takeoff.z).abs() < 32.0
+                    && (tgt.xy() - landing.xy()).length() < 64.0
+                    && (tgt.z - landing.z).abs() < 32.0
+            })
+            .collect();
+        assert!(
+            !found.is_empty(),
+            "no speed jump crosses the dm3 z=152 pit from {takeoff:?} to {landing:?} — the \
+             `dm3_rlstrafejump` demo does it from a standing start in 144u of run-up"
+        );
+        for (li, tr) in &found {
+            assert!(
+                tr.curl_gain > 0.0,
+                "link {li} must be a certified curl: the run-up is perpendicular to the leap, so \
+                 nothing flies it straight"
+            );
+            assert!(!tr.chained, "link {li} must be self-contained, not chained");
+            assert!(
+                (350.0..=470.0).contains(&tr.v_req),
+                "link {li} v_req {} is outside the demo's neighbourhood (human carried 399)",
+                tr.v_req
+            );
+            // The run-up start must sit far enough back to fund that speed on the ground prestrafe.
+            let runup = (tr.takeoff.xy() - g.cell_origin(g.link_source(*li)).xy()).length();
+            assert!(
+                runup >= 96.0,
+                "link {li} run-up {runup} is shorter than SIDE_MIN_RUNWAY"
+            );
+        }
+        eprintln!("dm3 balcony side jump: {} link(s), e.g. {:?}", found.len(), found[0].1);
+    }
+
+    /// `measure_runway_along` follows an arbitrary heading and *measures* lateral floor instead of
+    /// demanding it — the difference from `measure_runway` that lets a two-column ledge be a runway.
+    #[test]
+    fn runway_along_reads_a_two_column_ledge() {
+        // A 2-row-deep, 10-column-wide shelf: rows gy = 0 and gy = 1, gx = 0..9, all at z = 0.
+        let mut cells = Vec::new();
+        for gx in 0..10 {
+            for gy in 0..2 {
+                cells.push(Cell {
+                    origin: Vec3::new(gx as f32 * GRID, gy as f32 * GRID, 0.0),
+                    gx,
+                    gy,
+                });
+            }
+        }
+        let mut g = NavGraph::test_graph(cells, Vec::new());
+        // `test_graph` leaves the XY index empty; the runway walk snaps through it.
+        for (i, c) in g.cells.iter().enumerate() {
+            g.grid.entry((c.gx, c.gy)).or_default().push(i as u32);
+        }
+        // Walking back along +X (psi = 0 means travel toward +X, so the run-up lies at lower x).
+        let lip = Vec3::new(9.0 * GRID, 0.0, 0.0);
+        let open = |_: Vec3| false; // nothing solid in the synthetic world
+        let (len, clearance) = g.measure_runway_along(&open, lip, 0.0);
+        assert!(
+            len >= 8.0 * GRID,
+            "expected the whole shelf as runway, got {len} — `measure_runway` scores this 0 because \
+             a two-row ledge has no interior column"
+        );
+        // ...and it reports the thinness rather than rejecting it, which is what becomes `weave_cap`.
+        assert!(
+            clearance < SIDE_WEAVE_CLEARANCE,
+            "a two-row ledge must read as narrow, got clearance {clearance}"
+        );
+        // Across the shelf's short axis there is nothing behind the lip: running +Y off row gy=1 puts
+        // the run-up at gy=0 and then off the shelf entirely, so it never reaches SIDE_MIN_RUNWAY.
+        let (across, _) = g.measure_runway_along(&open, Vec3::new(4.0 * GRID, GRID, 0.0), 90.0);
+        assert!(
+            across < SIDE_MIN_RUNWAY,
+            "a two-row shelf has no run-up across its short axis, got {across}"
+        );
+    }
+
+    /// The cross-crate invariants the curl/side takeoff regime rests on: the certifier proves the
+    /// landing across exactly the speed band and lip window the runtime holds, so if these drift apart
+    /// the build certifies one jump and the bot flies another. `bhop`'s side asserts the same values.
+    #[test]
+    fn curl_runtime_constants_match_the_certifier() {
+        assert_eq!(CURL_LIP_REACH, 28.0, "must equal bhop::LIP_REACH in the game crate");
+        assert_eq!(CURL_V_HOLD_TOL, 0.03, "must equal the takeoff regime's hold band");
+    }
+
     /// The speed-jump ballistic + runway model, and its agreement with the real bhop controller.
     #[test]
     fn speed_jump_model() {
@@ -3518,6 +3668,7 @@ mod tests {
                 airtime,
                 chained,
                 curl_gain,
+                ..Default::default()
             });
             speed_jumps.tag(li, s);
         }

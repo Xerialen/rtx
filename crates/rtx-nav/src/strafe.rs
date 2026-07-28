@@ -149,11 +149,35 @@ pub fn strafe_rate(v_xy: Vec2, sigma: f32, omega_deg: f32, a_max: f32, dt: f32) 
 /// `err` crosses zero, but there the turn rate is ~0 and the wish is inert, so the caller applies the
 /// wish in **world space** and steers the eyes separately — the flip never moves the view.
 pub fn air_correct(v_xy: Vec2, bearing: f32, a_max: f32, dt: f32, gain: f32) -> Strafe {
+    let err = wrap180(bearing - yaw_of(v_xy));
+    air_correct_held(v_xy, bearing, a_max, dt, gain, err.signum())
+}
+
+/// [`air_correct`] with the strafe side **latched** to `sign` for the whole arc instead of re-derived
+/// each tick, and the turn stopping once the heading reaches the bearing.
+///
+/// This is how a human actually flies a strafe jump: in `demos/dm3_rlstrafejump.qwd` the side key is
+/// held at `-400` for every airborne frame and the yaw climbs monotonically 227° → 290°. The turn is
+/// never reversed mid-flight.
+///
+/// Re-deriving the sign per tick is fine when `bearing` is fixed, but a curl pursues a *moving*
+/// bearing — recomputed toward the landing every tick — which swings fast as the bot closes. Overshoot
+/// then flips the sign while `omega` is still large, and the next tick flips it back: the arc chatters
+/// and can leave on the opposite heading entirely (measured on dm3: the same launch point and heading
+/// landing either on the target platform or 110u away *behind* the bot). Latching removes that whole
+/// failure mode, and the certifier flies the identical policy, so what was proven is what happens.
+pub fn air_correct_held(v_xy: Vec2, bearing: f32, a_max: f32, dt: f32, gain: f32, sign: f32) -> Strafe {
     let speed = v_xy.length().max(1.0);
-    let vel_yaw = yaw_of(v_xy);
-    let err = wrap180(bearing - vel_yaw);
-    let omega = (err.abs() * gain).min(omega_gain_max(speed, a_max, dt));
-    strafe_rate(v_xy, err.signum(), omega, a_max, dt)
+    let err = wrap180(bearing - yaw_of(v_xy));
+    // Turn only while the error is still on the latched side; once aligned (or past), omega is 0 and
+    // `strafe_rate` returns a wish that projects exactly onto the air cap — an inert coast, which is
+    // what the human's held key does after the sweep finishes.
+    let omega = if err.signum() == sign || err == 0.0 {
+        (err.abs() * gain).min(omega_gain_max(speed, a_max, dt))
+    } else {
+        0.0
+    };
+    strafe_rate(v_xy, sign, omega, a_max, dt)
 }
 
 /// A faithful one-tick QuakeWorld `PM_AirAccelerate`: the wish speed's projection onto the velocity
