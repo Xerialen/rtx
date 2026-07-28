@@ -23,7 +23,7 @@ use crate::nav_build::PlatStatus;
 use crate::navmesh::{CellId, Corridor, LinkCosts, LinkKind, NavGraph, RJ_UNFIT_PENALTY};
 use crate::nearfield;
 use rtx_nav::lane;
-use rtx_nav::qphys::ORIGIN_TO_FEET;
+use rtx_nav::qphys::{ORIGIN_TO_FEET, STEP_HEIGHT};
 
 /// The all-`Copy` frame snapshot `steer` reads: the [`Sense`] and [`Objective`] this frame, the
 /// per-bot A* costs, and the live gate/plat state gathered before the borrow (see `run_bot`).
@@ -161,6 +161,38 @@ const WALK_ROUTE_ARC: f32 = WALK_ROUTE_LEGS as f32 * 32.0;
 /// How far ahead the shared lane is shaped. It has to cover the *longest* consumer, which is the
 /// speed-scaled bhop look-ahead at up to 448u, not the walk rollout's shorter horizon.
 const LANE_LEGS: usize = 20;
+
+/// How far the bot could move from `from` along `dir` and still be standing on something.
+///
+/// This is the measurement the lane is shaped against, and it has to mean **standable ground**
+/// rather than "no wall". A horizontal hull trace sails straight over a cliff edge and reports open
+/// space; a lane relaxed against that walks off the ledge it was following — the exact failure the
+/// reactive ledge brake exists to catch, which is why that brake cannot retire until this is right.
+///
+/// Two limits, whichever is nearer: the wall the hull trace finds, and the last step that still has
+/// floor beneath it. Stepping outward rather than bisecting keeps it honest across a gap — a
+/// bisection would happily jump the void and land on the far side, reporting the whole span as room.
+fn lane_room(bsp: &Bsp, from: Vec3, dir: Vec3, max: f32) -> f32 {
+    let wall = bsp.hull1_trace(from, from + dir * max).fraction * max;
+    let mut room = 0.0;
+    let mut d = LANE_PROBE_STEP;
+    while d <= wall {
+        let p = from + dir * d;
+        // Floor within a step's rise/fall of this point's own height. A tread one stair up or down
+        // still counts — that is the same surface to a runner — but open air does not.
+        let below = bsp.hull1_trace(p + Vec3::Z * STEP_HEIGHT, p - Vec3::Z * (STEP_HEIGHT + 8.0));
+        if below.fraction >= 1.0 || below.start_solid {
+            break;
+        }
+        room = d;
+        d += LANE_PROBE_STEP;
+    }
+    room
+}
+
+/// Spacing of the floor probes along a lane's perpendicular. Fine enough not to step over a beam the
+/// bot could not stand on, coarse enough that a lane costs a bounded number of traces.
+const LANE_PROBE_STEP: f32 = 16.0;
 
 /// The prefix of `pts` within `arc` of its start.
 ///
@@ -1313,7 +1345,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             let raw: Vec<Vec3> = ground_leg_targets(graph, &bot.route, bot.route_pos)
                 .take(LANE_LEGS)
                 .collect();
-            lane::build(&raw, |from, to| b.hull1_trace(from, to).fraction * (to - from).length())
+            lane::build(&raw, |from, dir, max| lane_room(b, from, dir, max))
         })
         .filter(|pts| pts.len() >= 2);
 
@@ -1849,7 +1881,25 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     }
     // Airborne frames inside the corridor leave the latch alone: walking down a staircase leaves the
     // floor for a few ticks a riser, and the rollout already certified those gaps.
-    let walk_live = bot.walk.is_some();
+    // A proven line owns the feet, and while one does the reactive brakes stand down.
+    //
+    // `bot.walk` is the pmove rollout's certificate. A lane is the other kind of proof: every one of
+    // its points was placed inside room measured to be *standable ground* either side (see
+    // `lane_room`), so the clearance the brakes below rediscover reactively — at speed, one stride
+    // from the lip, with nothing left to do but slam into reverse — was established before the bot
+    // set off. That is the whole argument for shaping a line instead of braking at what it runs into,
+    // and leaving the brakes armed under a lane would keep the fumbling the lane exists to remove:
+    // they fire on geometry near the *velocity*, which on any curve is exactly where a lane is about
+    // to turn away from.
+    //
+    // Only while actually on it. Shoved off — a body, a blast, a bad landing — the lane proves
+    // nothing about the ground under the bot, and the reflexes are the right owner again.
+    let on_lane = route_line
+        .as_ref()
+        .filter(|_| lane_targets.is_some())
+        .and_then(|pts| walksim::off_line(pts, origin))
+        .is_some_and(|off| off.lateral <= walksim::LATERAL_TOL && off.dz.abs() <= walksim::Z_TOL);
+    let walk_live = bot.walk.is_some() || on_lane;
 
     let edge_push = if nf_ground && !walk_live {
         let near_push = nf_active.then(|| bot.near.as_ref()?.steer_push(origin)).flatten();

@@ -358,8 +358,8 @@ fn main() {
             // to these.
             let human = line::LineScore::score(&seg.samples(), &reference);
             println!(
-                "    human: yaw p95 {:3.0}deg/s  wall {:>3}  rev {:>3}",
-                human.yaw_jitter_p95, human.wall_events, human.reverse_frames
+                "    human: turn {:3.0}deg/s  flips/s {:4.1}  wall {:>3}  rev {:>3}",
+                human.yaw_jitter_p95, human.yaw_reversals, human.wall_events, human.reverse_frames
             );
             let mut scores = Vec::new();
             for _ in 0..trials {
@@ -412,7 +412,7 @@ fn main() {
                     .collect();
                 println!(
                     "    {}  {:5.2}s ({:4.2}x)  cross p50/p95/max {:4.0}/{:4.0}/{:4.0}  \
-                     speed {:.2}x late {:.2}x  yaw p95 {:3.0}deg/s  rev {:>3}  wall {:>3}  [{strip}]",
+                     speed {:.2}x late {:.2}x  turn {:3.0} flips/s {:4.1}  rev {:>3}  wall {:>3}  [{strip}]",
                     if s.arrived { "ok  " } else { "MISS" },
                     s.time,
                     if s.reference_time > 0.0 {
@@ -426,6 +426,7 @@ fn main() {
                     s.mean_speed_ratio,
                     s.late_speed_ratio,
                     s.yaw_jitter_p95,
+                    s.yaw_reversals,
                     s.reverse_frames,
                     s.wall_events,
                 );
@@ -531,7 +532,8 @@ fn main() {
                  time ratio   p50 {:.2}x  p90 {:.2}x  max {:.2}x\n  \
                  speed ratio  p50 {:.2}x  p10 {:.2}x   (late-line p50 {:.2}x)\n  \
                  cross p95    p50 {:.0}u  p90 {:.0}u\n  \
-                 yaw p95      p50 {:.0}deg/s  p90 {:.0}deg/s\n  \
+                 turn rate    p50 {:.0}deg/s  p90 {:.0}deg/s\n  \
+                 turn flips   p50 {:.1}/s  p90 {:.1}/s\n  \
                  reverse      p50 {:.0}  p90 {:.0}\n  \
                  wall events  p50 {:.0}  p90 {:.0}",
                 timed,
@@ -546,6 +548,8 @@ fn main() {
                 pct(col(|s| s.cross_track_p95), 0.9),
                 pct(col(|s| s.yaw_jitter_p95), 0.5),
                 pct(col(|s| s.yaw_jitter_p95), 0.9),
+                pct(col(|s| s.yaw_reversals), 0.5),
+                pct(col(|s| s.yaw_reversals), 0.9),
                 pct(col(|s| s.reverse_frames as f32), 0.5),
                 pct(col(|s| s.reverse_frames as f32), 0.9),
                 pct(col(|s| s.wall_events as f32), 0.5),

@@ -66,26 +66,31 @@ fn perp_at(pts: &[Vec3], i: usize) -> Vec2 {
     Vec2::new(-t.y, t.x)
 }
 
-/// How much clear room there is either side of each point, up to `max`.
+/// How much usable room there is either side of each point, up to `max`.
 ///
-/// `reach(from, to)` must return how far along `from → to` is clear — the caller wires this to a
-/// player-hull trace. The nearer side wins, because a lane has to fit the body on both sides; there
-/// is no point knowing a wall is far away on the left if the right one is close.
+/// `room(from, dir, max)` must return how far along `dir` the bot could actually *go and still be
+/// standing* — not merely how far until a wall. That distinction is the whole difference between a
+/// lane and a hazard: a horizontal trace sails straight over a cliff edge and reports open space, so
+/// shaping against it would relax the line off the ledge it was trying to follow. Room has to mean
+/// floor, and the caller wires it to a probe that says so.
+///
+/// The nearer side wins, because a lane has to fit the body on both sides; there is no point knowing
+/// a wall is far away on the left if the right one is close.
 ///
 /// A **three-point minimum filter** runs over the result, and it is load-bearing rather than
 /// cosmetic. Probes are point samples of a continuous corridor: a doorway one probe wide reads as
 /// open at the points either side of it, and a lane shaped against that would be aimed at the
 /// door frame. Taking each point's own width as the smallest of itself and its neighbours makes the
 /// narrowest thing nearby govern the approach to it, which is what a player does on sight.
-pub fn half_widths(pts: &[Vec3], max: f32, reach: impl Fn(Vec3, Vec3) -> f32) -> Vec<f32> {
+pub fn half_widths(pts: &[Vec3], max: f32, room: impl Fn(Vec3, Vec3, f32) -> f32) -> Vec<f32> {
     let raw: Vec<f32> = (0..pts.len())
         .map(|i| {
             // Endpoints are probed too, even though `shape` pins them. Using a sentinel there
             // instead would feed a zero into the min-filter and so pin the *first interior point* of
             // every lane — which is the point nearest the bot, the one that matters most.
             let perp = perp_at(pts, i);
-            let d = Vec3::new(perp.x, perp.y, 0.0) * max;
-            reach(pts[i], pts[i] + d).min(reach(pts[i], pts[i] - d)).max(0.0)
+            let d = Vec3::new(perp.x, perp.y, 0.0);
+            room(pts[i], d, max).min(room(pts[i], -d, max)).max(0.0)
         })
         .collect();
     (0..raw.len())
@@ -161,9 +166,9 @@ pub const LANE_ITERS: usize = 8;
 /// Shape a route polyline into a lane: resample, measure, relax.
 ///
 /// The single entry point callers should use, so a lane is built the same way everywhere.
-pub fn build(route: &[Vec3], reach: impl Fn(Vec3, Vec3) -> f32) -> Vec<Vec3> {
+pub fn build(route: &[Vec3], room: impl Fn(Vec3, Vec3, f32) -> f32) -> Vec<Vec3> {
     let pts = resample(route, LANE_SPACING);
-    let half = half_widths(&pts, LANE_MAX_HALF_WIDTH, reach);
+    let half = half_widths(&pts, LANE_MAX_HALF_WIDTH, room);
     shape(&pts, &half, LANE_MARGIN, LANE_ITERS)
 }
 
@@ -171,21 +176,15 @@ pub fn build(route: &[Vec3], reach: impl Fn(Vec3, Vec3) -> f32) -> Vec<Vec3> {
 mod tests {
     use super::*;
 
-    /// A `reach` closure for a corridor of half-width `w` centred on y=0, running along x.
-    fn corridor(w: f32) -> impl Fn(Vec3, Vec3) -> f32 {
-        move |from: Vec3, to: Vec3| {
-            let d = to - from;
-            let len = d.length();
-            if len < 1e-6 {
-                return 0.0;
+    /// A `room` closure for a corridor of usable half-width `w` centred on y=0, running along x.
+    fn corridor(w: f32) -> impl Fn(Vec3, Vec3, f32) -> f32 {
+        move |from: Vec3, dir: Vec3, max: f32| {
+            let d = dir.normalize_or_zero();
+            if d.y.abs() < 1e-6 {
+                return max;
             }
-            // How far along `from → to` before |y| exceeds w.
-            let dy = d.y / len;
-            if dy.abs() < 1e-6 {
-                return len;
-            }
-            let room = if dy > 0.0 { w - from.y } else { w + from.y };
-            (room / dy.abs()).clamp(0.0, len)
+            let avail = if d.y > 0.0 { w - from.y } else { w + from.y };
+            (avail / d.y.abs()).clamp(0.0, max)
         }
     }
 
@@ -266,6 +265,30 @@ mod tests {
         }
     }
 
+    /// Room means *standable ground*, not "no wall". A ledge with open air beside it reads as wide
+    /// open to a horizontal trace, and a lane shaped against that walks off the edge — which is the
+    /// one failure the reactive ledge brake exists to catch, and the reason it cannot be retired
+    /// until the lane measures this correctly.
+    #[test]
+    fn open_air_beside_a_ledge_is_not_room() {
+        let pts: Vec<Vec3> = (0..9).map(|i| Vec3::new(24.0 * i as f32, 0.0, 0.0)).collect();
+        // Floor exists only for y <= 0; beyond that is a drop, though nothing blocks a trace.
+        let floor_only_left = |from: Vec3, dir: Vec3, max: f32| {
+            let d = dir.normalize_or_zero();
+            if d.y > 0.0 {
+                (-from.y).clamp(0.0, max)
+            } else {
+                max
+            }
+        };
+        let half = half_widths(&pts, 96.0, floor_only_left);
+        assert!(half.iter().all(|&h| h == 0.0), "the ledge side gives no room: {half:?}");
+        let out = shape(&pts, &half, LANE_MARGIN, LANE_ITERS);
+        for (i, p) in out.iter().enumerate() {
+            assert!(p.y <= 1e-3, "point {i} was relaxed off the ledge to y={}", p.y);
+        }
+    }
+
     /// The min-filter is what keeps a lane out of a door frame: one narrow probe governs its
     /// neighbours, so the line is already committed to the gap before it arrives.
     #[test]
@@ -275,7 +298,13 @@ mod tests {
         let half = half_widths(
             &pts,
             96.0,
-            |from, _to| if (from.x - 72.0).abs() < 1.0 { 12.0 } else { 96.0 },
+            |from: Vec3, _dir: Vec3, max: f32| {
+                if (from.x - 72.0).abs() < 1.0 {
+                    12.0
+                } else {
+                    max
+                }
+            },
         );
         assert_eq!(half[3], 12.0, "the pinch itself");
         assert_eq!(half[2], 12.0, "and the point before it");
