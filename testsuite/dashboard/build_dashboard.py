@@ -602,8 +602,14 @@ def group_evidence(
         build = loaded.document.get("build")
         build = build if isinstance(build, dict) else {}
         branch = text(build.get("branch"), "okänd branch")
-        digest = text(build.get("digest_md5"), "okänt bygge")
-        grouped.setdefault((branch, digest), []).append(loaded)
+        # The cross-tier build identity is the commit: tiers legitimately hash
+        # different artifacts (engine .so for T1/T2, client binary for T3/T4),
+        # so digest_md5 cannot group one build's evidence into one column.
+        commit = text(build.get("commit"), "")[:8]
+        group_build = commit or text(build.get("digest_md5"), "okänt bygge")
+        if build.get("dirty") is True:
+            group_build += "-dirty"
+        grouped.setdefault((branch, group_build), []).append(loaded)
 
     map_counts = Counter(
         text(item.document.get("map"), "")
@@ -616,10 +622,18 @@ def group_evidence(
     snapshots: list[dict[str, Any]] = []
     snapshot_number = 1
 
-    for (branch, digest), items in grouped.items():
+    for (branch, group_build), items in grouped.items():
         items.sort(key=lambda item: iso_sort_key(item.document.get("started_utc")))
         latest_started = max(
             (text(item.document.get("started_utc"), "") for item in items), default=""
+        )
+        digests = sorted(
+            {
+                text(item.document.get("build", {}).get("digest_md5"), "")
+                for item in items
+                if isinstance(item.document.get("build"), dict)
+            }
+            - {""}
         )
         levels = {level: default_level(level) for level in LEVELS}
         candidates: dict[str, list[LoadedEvidence]] = {level: [] for level in LEVELS}
@@ -631,7 +645,7 @@ def group_evidence(
             else:
                 warn(f"{loaded.path}: ignored unknown tier {tier!r}")
 
-        group_id = f"{branch}::{digest}"
+        group_id = f"{branch}::{group_build}"
         for level, choices in candidates.items():
             if not choices:
                 continue
@@ -648,13 +662,13 @@ def group_evidence(
                 levels[level] = t1_level(chosen)
             elif level == "t2":
                 levels[level], new_snapshots = t2_level(
-                    chosen, group_id, snapshot_number, branch, digest
+                    chosen, group_id, snapshot_number, branch, group_build
                 )
                 snapshots.extend(new_snapshots)
                 snapshot_number += len(new_snapshots)
             elif level == "t3":
                 levels[level], new_snapshots = t3_level(
-                    chosen, group_id, snapshot_number, branch, digest
+                    chosen, group_id, snapshot_number, branch, group_build
                 )
                 snapshots.extend(new_snapshots)
                 snapshot_number += len(new_snapshots)
@@ -674,7 +688,8 @@ def group_evidence(
             {
                 "id": group_id,
                 "branch": branch,
-                "build": digest,
+                "build": group_build,
+                "digests": digests,
                 "date": latest_started[:10] if latest_started else "okänt datum",
                 "startedUtc": latest_started,
                 "map": primary_map,

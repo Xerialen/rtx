@@ -227,9 +227,12 @@ A failed gate writes a `failed` envelope and no score.
 ## Static dashboard
 
 `dashboard/build_dashboard.py` builds one self-contained HTML file from
-`rtx-testflow/1` evidence. It groups tier attempts by branch and engine
-`build.digest_md5`, retains each `run_id`, and orders build groups by their
-latest `started_utc`. Unknown schema majors are skipped with a warning.
+`rtx-testflow/1` evidence. It groups tier attempts by branch and build
+commit — tiers legitimately hash different artifacts (engine library for
+T1/T2, client binary for T3/T4), so the commit is the only cross-tier build
+identity; the per-artifact `digest_md5` values are retained as group detail,
+and a dirty-tree run forms its own `<commit>-dirty` group. Each `run_id` is
+retained, and build groups are ordered by their latest `started_utc`. Unknown schema majors are skipped with a warning.
 Missing tiers and `failed`/`aborted` envelopes are shown as run state; their
 partial payloads are never used as data.
 
