@@ -17,6 +17,9 @@ use glam::Vec3;
 use rtx_nav::bsp::{Bsp, CONTENTS_WATER};
 use rtx_nav::navmesh::NavGraph;
 
+/// How many spread cells per pool to name for live probing.
+const SAMPLES: usize = 10;
+
 /// Report the map's water cells, grouped into connected pools.
 pub fn report(map: &str, bsp: &Bsp, graph: &NavGraph) {
     let wet: Vec<u32> = (0..graph.cells.len() as u32)
@@ -100,20 +103,21 @@ pub fn report(map: &str, bsp: &Bsp, graph: &NavGraph) {
                     .join(", ")
             )
         };
-        // Name a few roofed cells outright: those are the ones worth putting a bot on, since a roof
-        // is what makes local surface-seeking useless and the exit distance decisive.
+        // Name cells spread across the pool, marked roofed (R) or open (O), so a bot can be dropped
+        // on each and the pool measured by what actually happens rather than by its geometry.
         let roofed_pts: Vec<String> = pool
             .iter()
-            .filter(|&&c| !rtx_nav::hazard::surface_above(&|p| bsp.pointcontents(p), graph.cell_origin(c)))
-            .step_by((roofed / 3).max(1))
-            .take(3)
+            .step_by((pool.len() / SAMPLES).max(1))
+            .take(SAMPLES)
             .map(|&c| {
                 let o = graph.cell_origin(c);
-                format!("{c}@({:.0},{:.0},{:.0})", o.x, o.y, o.z)
+                let open = rtx_nav::hazard::surface_above(&|p| bsp.pointcontents(p), o);
+                format!("{}:{:.0},{:.0},{:.0}", if open { 'O' } else { 'R' }, o.x, o.y, o.z)
             })
             .collect();
         println!(
-            "   pool {i}: {} cells, {:.0}% eyes-under, {:.0}% roofed [{}]\n      bounds ({:.0},{:.0},{:.0}) .. ({:.0},{:.0},{:.0}), sample cell {}\n      {exit_note}",
+            "   pool {i}: {} cells, {:.0}% eyes-under, {:.0}% roofed
+      samples (O=open above, R=roofed): {}\n      bounds ({:.0},{:.0},{:.0}) .. ({:.0},{:.0},{:.0}), sample cell {}\n      {exit_note}",
             pool.len(),
             100.0 * drowning as f32 / n,
             100.0 * roofed as f32 / n,
