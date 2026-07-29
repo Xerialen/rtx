@@ -1344,10 +1344,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // under the guided policy the controller flies and take only hops whose *predicted* landing stays
     // on the route. Planned on a grounded frame from the live state, held across the flight, re-planned
     // each landing; `None` off ledge corridors or when boxed. Gated by `rtx_bot_hopplan`.
+    // `rtx_bot_hopcheck` widens this from ledge corridors to *every* ground leg. The gate existed
+    // because the rollout fan traces the hull many times — but it only runs on grounded frames, and a
+    // bhopping bot is airborne 79-94% of the time, so it fires once or twice a second rather than per
+    // frame, and it early-exits on the first candidate that lands well. The caution cost more than it
+    // saved: a route whose drop is not ledge-flagged gets no check at all, and the bot leaps blind.
     let hop_mode = host.cvar_bool(c"rtx_bot_hopplan")
         && !bhop_veto
         && matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
-        && ledge_soon(graph, &bot.route, bot.route_pos, bot_cell);
+        && (host.cvar_bool(c"rtx_bot_hopcheck") || ledge_soon(graph, &bot.route, bot.route_pos, bot_cell));
     // Plan only on a grounded frame moving fast enough to actually hop — the rollout fan traces the
     // live BSP hull many times, so planning every crawling walk frame would blow the frame budget.
     // Mid-air the plan stays *latched* for the whole flight: the rollout committed to this landing, so
@@ -1402,6 +1407,17 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             None
         };
     }
+    // Refuse the leap when the rollout could find nowhere good to land.
+    //
+    // Until now the hop plan only ever *guided* a jump: no plan meant no guidance, and the bot
+    // hopped anyway. So on a route whose drop is not ledge-flagged, the bot leaps at 500 ups with
+    // nothing having asked where it comes down — and on the suite's worst segments it lands in a pit
+    // fifty units below the route and spends the next fifteen seconds climbing out, covering four
+    // times the human's distance. Checking the landing is worth nothing if the answer is ignored.
+    //
+    // Only on the ground, and only under `rtx_bot_hopcheck` where every ground leg is checked: with
+    // the narrow ledge-corridor gate a missing plan usually just means "not that kind of ground".
+    let hop_unsafe = host.cvar_bool(c"rtx_bot_hopcheck") && hop_mode && on_ground && speed > 60.0 && bot.hop.is_none();
     // Airborne frames leave `bot.hop` untouched — the plan stays latched for the whole flight.
     let hop_plan = bot.hop;
     let hop_bearing = hop_plan.map(|pl| yaw_of(pl.aim.xy() - origin.xy()));
@@ -1552,7 +1568,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 // route — so it keeps the chain alive across the ledge where `ascent_ahead`/`runway`
                 // would otherwise drop to a walk.
                 sustain: bhop_sustain || hop_plan.is_some(),
-                veto: bhop_veto,
+                // A leap the rollout could find no landing for is not taken. `veto` is the only
+                // input that stops a hop, and refusing here costs a stride of speed where hopping
+                // blind costs the route.
+                veto: bhop_veto || hop_unsafe,
                 committed: sj_active,
                 carry: carry || hop_plan.is_some(),
                 hold_jump: sj_hold,

@@ -112,6 +112,13 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // bot and a pit when nothing has proven the line. Turn off to measure what they cost: human
         // reference runs have zero reverse frames, and the bot's worst segments have hundreds.
         ("rtx_bot_brakes", Bool(true)),
+        // Check where a hop lands on *every* ground leg, not just on ledge-flagged corridors -- and
+        // refuse the leap when the rollout finds nowhere good to come down. Without it a route whose
+        // drop is not ledge-flagged is jumped blind at 500 ups; on the suite's worst segments the bot
+        // lands in a pit below the route and covers four times the human's distance climbing out.
+        // The old gate was priced as if the rollout ran every frame -- it runs only on grounded ones,
+        // which for a bot airborne 79-94% of the time is once or twice a second. See `bot::hopsim`.
+        ("rtx_bot_hopcheck", Bool(false)),
         // A bot's health weights how willing it is to shortcut through lava/slime: hurt bots detour,
         // healthy (or armored, or biosuited) ones clip the corner. `0` prices every bot as a bare
         // spawn — hazards still cost, but the same to everyone. See `bot::bot_hazard_strength`.

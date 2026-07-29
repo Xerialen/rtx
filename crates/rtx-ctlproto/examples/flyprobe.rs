@@ -587,7 +587,8 @@ fn main() {
                  turn rate    p50 {:.0}deg/s  p90 {:.0}deg/s\n  \
                  turn flips   p50 {:.1}/s  p90 {:.1}/s\n  \
                  reverse      p50 {:.0}  p90 {:.0}\n  \
-                 wall events  p50 {:.0}  p90 {:.0}",
+                 wall events  p50 {:.0}  p90 {:.0}\n  \
+                 speed by progress (tenths of the line, x10):  {}",
                 timed,
                 100.0 * arrived as f32 / n as f32,
                 pct(col(ratio), 0.5),
@@ -606,6 +607,27 @@ fn main() {
                 pct(col(|s| s.reverse_frames as f32), 0.9),
                 pct(col(|s| s.wall_events as f32), 0.5),
                 pct(col(|s| s.wall_events as f32), 0.9),
+                // Where along a movement the speed goes. A flat profile means the gait is simply
+                // slower than a human's; a dip at one place means the bot loses it *there* — at an
+                // entry, a corner, a transition between owners — and that is a different repair.
+                (0..10)
+                    .map(|b| {
+                        let (mut sum, mut cnt) = (0.0f32, 0u32);
+                        for s in &all {
+                            for k in b * 2..b * 2 + 2 {
+                                if s.speed_ratio[k] > 0.0 {
+                                    sum += s.speed_ratio[k];
+                                    cnt += 1;
+                                }
+                            }
+                        }
+                        if cnt > 0 {
+                            format!("{:.0} ", 10.0 * sum / cnt as f32)
+                        } else {
+                            " . ".into()
+                        }
+                    })
+                    .collect::<String>(),
             );
         }
         return;
