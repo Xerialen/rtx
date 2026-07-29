@@ -1033,6 +1033,7 @@ fn kind_name(k: LinkKind) -> &'static str {
         LinkKind::Teleport => "teleport",
         LinkKind::Hook => "hook",
         LinkKind::RocketJump => "rocketjump",
+        LinkKind::Swim => "swim",
     }
 }
 

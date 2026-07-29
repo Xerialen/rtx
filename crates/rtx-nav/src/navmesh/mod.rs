@@ -28,6 +28,7 @@ mod reach;
 mod rocketjump;
 mod sidetable;
 mod splice;
+mod water;
 
 use crate::qphys::ORIGIN_TO_FEET;
 pub use geom::arc_point;
@@ -210,6 +211,11 @@ pub enum LinkKind {
     /// health, so it's planned only when it clearly beats the detour (a big cost surcharge) and a bot
     /// unfit to fly it (no RL / rocket / health) prices it away. Only emitted when `rtx_bot_rocketjump`.
     RocketJump,
+    /// Moving through water under `PM_WaterMove` — including *vertically*, which no other kind can
+    /// express, and out onto a bank, which the engine grants by `PM_CheckWaterJump`. Emitted only by
+    /// the waterline exit ring ([`NavGraph::add_water_surface`]). Slow, and outside gravity and step
+    /// height alike, so none of the grounded classifiers apply.
+    Swim,
 }
 
 /// A directed edge between two cells, with its traversal kind and travel-time cost.
@@ -1231,6 +1237,8 @@ impl NavGraph {
             LinkKind::JumpGap => (link.cost, entry),
             LinkKind::DoubleJump => (link.cost, entry.saturating_sub(1)),
             // Teleport / plat ride / hook / rocket jump all deliver the bot at a standstill.
+            // Swimming keeps no speed: the band drops to what a stroke delivers.
+            LinkKind::Swim => (link.cost, band_of(SWIM_SPEED)),
             LinkKind::Teleport | LinkKind::Plat | LinkKind::Hook | LinkKind::RocketJump => (link.cost, 0),
         })
     }
@@ -1921,6 +1929,7 @@ pub struct LinkCounts {
     pub teleport: u32,
     pub hook: u32,
     pub rocket_jump: u32,
+    pub swim: u32,
 }
 
 /// Radius out from a cell probed for an adjacent lava/slime surface — a stride (1.5 grid columns)
@@ -2045,6 +2054,9 @@ fn link_cost(kind: LinkKind, horiz: f32, dz: f32) -> f32 {
         // Rocket-jump costs (rise-to-blast + arc airtime + overhead + health surcharge) are computed
         // at splice time; this fallback should never actually be priced.
         LinkKind::RocketJump => base + 4.0,
+        // Swim costs are the full 3D distance at swimming pace, computed at splice time — a
+        // surfacing link is nothing but vertical, so horizontal distance would price it free.
+        LinkKind::Swim => horiz.hypot(dz).max(GRID) / SWIM_SPEED,
     }
 }
 
@@ -2140,6 +2152,9 @@ pub fn build_navmesh(
         // They must precede `build_reachability`/`build_lod` so the LOD tables price water/hazard at
         // birth (the tables read `link.cost + water_extra` and carry `hazard_hp` — see
         // `build_lod_tables`/`intra_reach`; that's why there is no post-swap `patch_lod_liquids`).
+        // The waterline exit ring goes in before the liquid flags, so its cells are flagged and
+        // priced by the same pass as every other cell.
+        graph.add_water_surface(bsp);
         graph.flag_hazards(&|p| bsp.is_solid(p), &|p| bsp.pointcontents(p));
         graph.flag_water(&|p| bsp.pointcontents(p));
         // Now that every link is in place and priced, precompute static reachability and the LOD hierarchy.

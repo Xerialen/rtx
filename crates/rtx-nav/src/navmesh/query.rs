@@ -505,6 +505,7 @@ impl NavGraph {
                 LinkKind::Teleport => c.teleport += 1,
                 LinkKind::Hook => c.hook += 1,
                 LinkKind::RocketJump => c.rocket_jump += 1,
+                LinkKind::Swim => c.swim += 1,
             }
         }
         c

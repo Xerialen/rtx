@@ -148,6 +148,15 @@ fn inside_box(p: Vec3, lo: Vec3, hi: Vec3) -> bool {
     p.x >= lo.x - m && p.x <= hi.x + m && p.y >= lo.y - m && p.y <= hi.y + m && p.z >= lo.z - 32.0 && p.z <= hi.z + 32.0
 }
 
+/// How far above the bot an exit target must sit before the climb-out drive engages. Below this the
+/// swimmer is level with its target and ordinary swimming reaches it.
+const WATER_EXIT_RISE: f32 = 16.0;
+
+/// View pitch held while climbing out, in Quake's convention where negative looks up. Facing the
+/// bank is what `PM_CheckWaterJump` reads; tilting up is what carries the bot over the lip after the
+/// engine launches it.
+const WATER_EXIT_PITCH: f32 = -45.0;
+
 /// How many legs of ground corridor a walk certification rolls over. Twelve 32u legs is ~380u, well
 /// past the ~130u a 40-tick rollout at walk speed can cover, so the horizon — not the polyline — is
 /// what ends the roll.
@@ -2100,6 +2109,26 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             },
             MOVE_SPEED,
         );
+
+        // Climbing out is a *committed* move, and it owns the eyes while it lasts.
+        //
+        // Leaving water in QuakeWorld is `PM_CheckWaterJump`, and it probes for the bank along
+        // `pm_forward` — the view. A bot swimming past a ledge with its view down its onward path
+        // probes into open water and is never granted the exit, however long it presses against the
+        // side. That is the whole of "it swims along the bridge and never gets out": the route is
+        // *along* the bank, so the look-ahead points along it too, and the one direction the bot
+        // never faces is the one that would let it climb.
+        //
+        // So on an exit leg the bot turns square to the bank, tilts up, and drives up and forward —
+        // and only then resumes its path. Yaw is what the engine's probe reads; the pitch and the
+        // upward wish are what carry it over the lip once launched.
+        if matches!(kind, Some(LinkKind::Swim)) && waypoint.z > origin.z + WATER_EXIT_RISE {
+            let out = (waypoint - origin).truncate().normalize_or_zero();
+            if out != Vec2::ZERO {
+                look = Vec3::new(WATER_EXIT_PITCH, yaw_of(out), 0.0);
+                move_world = Vec3::new(out.x, out.y, 0.0) * MOVE_SPEED + Vec3::Z * MOVE_SPEED;
+            }
+        }
     }
 
     // Bundle the frame's decisions into one command for the combat/grenade overlays to mutate.

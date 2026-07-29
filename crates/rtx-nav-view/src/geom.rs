@@ -464,7 +464,7 @@ fn newell_normal(verts: &[Vec3]) -> Vec3 {
 // --- Navmesh overlay ---------------------------------------------------------------------------
 
 /// The number of [`LinkKind`] variants — the width of the viewer's path-type toggle set.
-pub const NUM_LINK_KINDS: usize = 10;
+pub const NUM_LINK_KINDS: usize = 11;
 
 /// Every link kind in a stable display order (the row order of the path-type toggles). The compiler
 /// checks the length against [`NUM_LINK_KINDS`], and [`link_color`]'s exhaustive match guards the set.
@@ -479,6 +479,7 @@ pub const LINK_KINDS: [LinkKind; NUM_LINK_KINDS] = [
     LinkKind::Teleport,
     LinkKind::Hook,
     LinkKind::RocketJump,
+    LinkKind::Swim,
 ];
 
 /// Index of a kind within [`LINK_KINDS`] — the slot of its visibility flag.
@@ -502,6 +503,7 @@ pub fn kind_label(kind: LinkKind) -> &'static str {
         LinkKind::Teleport => "Teleport",
         LinkKind::Hook => "Hook",
         LinkKind::RocketJump => "Rocket jump",
+        LinkKind::Swim => "Swim (water)",
     }
 }
 
@@ -518,6 +520,7 @@ pub fn link_color(kind: LinkKind) -> [f32; 3] {
         LinkKind::Teleport => [0.25, 0.45, 1.00],   // blue (needs live entities)
         LinkKind::Hook => [0.60, 0.30, 1.00],       // purple
         LinkKind::RocketJump => [1.00, 1.00, 1.00], // white
+        LinkKind::Swim => [0.20, 0.55, 0.95],       // deep blue — the waterline exit ring
     }
 }
 

@@ -266,5 +266,6 @@ fn kind_short(k: LinkKind) -> &'static str {
         LinkKind::Teleport => "tele",
         LinkKind::Hook => "hook",
         LinkKind::RocketJump => "rj",
+        LinkKind::Swim => "swim",
     }
 }
