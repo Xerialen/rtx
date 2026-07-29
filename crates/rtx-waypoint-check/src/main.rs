@@ -26,6 +26,7 @@ mod check;
 mod ent;
 mod pak;
 mod report;
+mod watercheck;
 
 use check::{Checker, Family};
 use report::{GapTally, Tally};
@@ -38,6 +39,7 @@ usage: rtx-waypoint-check [options] [map ...]
   --basedir <dir>    Quake dir holding qw/ and id1/ (default: playground)
   --waypoints <dir>  directory of KTX .bot files       (default: waypoints)
   --radius <units>   endpoint match radius             (default: 96)
+  --water            report the map's water pools instead of waypoint coverage
   -h, --help         show this help
 
 With no maps named, every <waypoints>/*.bot whose BSP can be resolved is checked.
@@ -49,6 +51,9 @@ struct Config {
     waypoints: PathBuf,
     radius: f32,
     maps: Vec<String>,
+    /// Report the map's water pools instead of checking KTX waypoints — how much of each leaves the
+    /// eyes underwater, and how much of it is roofed. See `watercheck`.
+    water: bool,
 }
 
 fn main() -> ExitCode {
@@ -68,11 +73,13 @@ fn parse_args(argv: &[String]) -> Result<Config, String> {
     let mut waypoints = PathBuf::from("waypoints");
     let mut radius = 96.0f32;
     let mut maps = Vec::new();
+    let mut water = false;
 
     let mut it = argv.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => return Err(USAGE.to_string()),
+            "--water" => water = true,
             "--basedir" => basedir = it.next().ok_or("--basedir needs a value\n")?.into(),
             "--waypoints" => waypoints = it.next().ok_or("--waypoints needs a value\n")?.into(),
             "--radius" => {
@@ -91,6 +98,7 @@ fn parse_args(argv: &[String]) -> Result<Config, String> {
         waypoints,
         radius,
         maps,
+        water,
     })
 }
 
@@ -115,6 +123,22 @@ fn run(config: &Config) -> ExitCode {
     let mut fatal = false;
     let mut skipped: Vec<String> = Vec::new();
     let mut processed = 0;
+
+    // Water diagnosis needs no waypoint files — it reads the mesh the map itself produces.
+    if config.water {
+        for map in &maps {
+            let Some(bytes) = pak::resolve_bsp(&config.basedir, map) else {
+                eprintln!("{map}: no BSP");
+                continue;
+            };
+            let Some(bsp) = Bsp::parse(&bytes) else {
+                eprintln!("{map}: unparseable BSP");
+                continue;
+            };
+            watercheck::report(map, &bsp, &check::build(&bsp));
+        }
+        return ExitCode::SUCCESS;
+    }
 
     for map in &maps {
         let text = match std::fs::read_to_string(config.waypoints.join(format!("{map}.bot"))) {
