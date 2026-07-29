@@ -21,6 +21,20 @@ pub(crate) struct HumanMovementProfile {
     pub zigzag_band_cap: f32,
     /// Reverse three times at scheduled hop phases instead of heading-error hysteresis.
     pub phase_locked_flips: bool,
+    /// Turn at a rate proportional to the heading error rather than always at the physical maximum.
+    ///
+    /// `omega_base` at 720 deg/s *is* the physical cap, so the air strafe requests a maximum-rate
+    /// turn on every frame no matter how small the error. That is a bang-bang controller: it slams
+    /// the velocity at the bearing, overshoots [`Self::lobe_deadband`], reverses, and slams back —
+    /// a limit cycle, measured at 5.5 reversals a second. The MVD says a human travelling above
+    /// 500 ups turns at 339 deg/s and reverses **1.9** times a second. Easing off as the error
+    /// closes is what turns that oscillation into the wide continuous arc a player actually flies.
+    pub proportional_turn: bool,
+    /// Turn rate held when the bearing is already met, under [`Self::proportional_turn`]. Not zero:
+    /// a QuakeWorld air-strafe only gains speed while it is turning, so a bot flying dead straight
+    /// preserves speed but stops building it. This is the gentle weave a player keeps up on a
+    /// straightaway.
+    pub turn_floor: f32,
 }
 
 impl HumanMovementProfile {
@@ -50,6 +64,10 @@ impl HumanMovementProfile {
             error_gain: 6.0,
             zigzag_band_cap: 15.0,
             phase_locked_flips: true,
+            // Off by default until it has beaten the calibrated gait on the human suite; the cvar
+            // `rtx_bot_sweep` flips it for an A/B.
+            proportional_turn: false,
+            turn_floor: 120.0,
         }
     }
 
@@ -68,6 +86,8 @@ impl HumanMovementProfile {
             error_gain: 6.0,
             zigzag_band_cap: 15.0,
             phase_locked_flips: false,
+            proportional_turn: false,
+            turn_floor: 120.0,
         }
     }
 
@@ -85,6 +105,8 @@ impl HumanMovementProfile {
             error_gain: self.error_gain.clamp(0.0, 30.0),
             zigzag_band_cap: self.zigzag_band_cap.clamp(0.0, 45.0),
             phase_locked_flips: self.phase_locked_flips,
+            proportional_turn: self.proportional_turn,
+            turn_floor: self.turn_floor.clamp(0.0, 720.0),
         }
     }
 }

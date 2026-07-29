@@ -186,6 +186,45 @@ fn run_segments(argv: impl Iterator<Item = String>) -> ExitCode {
             v.sort_by(f32::total_cmp);
             v.get(v.len() / 2).copied().unwrap_or(0.0)
         };
+        // What good movement reads as on the steering metrics. Scoring each human run against its own
+        // line gives exactly that, and it is the only meaningful target: peak turn rate and wall
+        // contacts have no good absolute value, and a strafe jump is a hard continuous turn.
+        let self_scored: Vec<rtx_demo_tool::line::LineScore> = suite
+            .iter()
+            .map(|s| rtx_demo_tool::line::LineScore::score(&s.samples(), &s.reference("self")))
+            .collect();
+        let pctl = |mut v: Vec<f32>, q: f32| {
+            v.sort_by(f32::total_cmp);
+            v.get((((v.len().max(1) - 1) as f32) * q) as usize)
+                .copied()
+                .unwrap_or(0.0)
+        };
+        // Split by pace, because the two halves are different activities and averaging them says
+        // nothing. A player crossing the map holds a line; one fighting in a room is dodging, and
+        // *should* be reversing constantly. Only the travelling half is a target for a bot's
+        // route-following, and mixing them hides a factor of five.
+        for (label, lo, hi) in [
+            ("travelling (>=500 ups)", 500.0, f32::MAX),
+            ("manoeuvring (<300 ups)", 0.0, 300.0),
+        ] {
+            let sel: Vec<&rtx_demo_tool::line::LineScore> = suite
+                .iter()
+                .zip(&self_scored)
+                .filter(|(s, _)| s.mean_speed() >= lo && s.mean_speed() < hi)
+                .map(|(_, sc)| sc)
+                .collect();
+            if sel.is_empty() {
+                continue;
+            }
+            println!(
+                "  human {label}: {} segs | turn rate p50 {:.0} deg/s | turn flips p50 {:.1} p90 {:.1} /s | wall p50 {:.0}",
+                sel.len(),
+                pctl(sel.iter().map(|s| s.yaw_jitter_p95).collect(), 0.5),
+                pctl(sel.iter().map(|s| s.yaw_reversals).collect(), 0.5),
+                pctl(sel.iter().map(|s| s.yaw_reversals).collect(), 0.9),
+                pctl(sel.iter().map(|s| s.wall_events as f32).collect(), 0.5),
+            );
+        }
         println!(
             "  covering {:.0}u of distinct movement; median {:.2}s / {:.0}u / {:.0} ups per segment",
             total,

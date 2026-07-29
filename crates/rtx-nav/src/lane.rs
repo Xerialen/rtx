@@ -29,6 +29,59 @@
 
 use glam::{Vec2, Vec3};
 
+use crate::bsp::Bsp;
+use crate::pmove::GROUND_NORMAL_Z;
+use crate::qphys::{ORIGIN_TO_FEET, STEP_HEIGHT};
+
+/// The standard clearance probe: how far from `from` along `dir` the bot could go and still be
+/// standing on something, up to `max`.
+///
+/// This is what [`half_widths`] should be wired to in anything that has a BSP. It lives here rather
+/// than in the caller so the runtime and the offline diagnostics cannot drift apart — a lane report
+/// is only worth reading if it measures what the bot measures.
+///
+/// Two limits, whichever binds first:
+///
+/// * the wall a swept player hull finds, and
+/// * the last outward step that still has standable floor beneath it.
+///
+/// Stepping rather than bisecting is deliberate: a bisection happily jumps a gap and lands on the far
+/// side, reporting the whole span — void included — as room.
+pub fn ground_room(bsp: &Bsp, from: Vec3, dir: Vec3, max: f32) -> f32 {
+    let wall = bsp.hull1_trace(from, from + dir * max).fraction * max;
+    let mut room = 0.0;
+    let mut d = PROBE_STEP;
+    while d <= wall {
+        if !standable(bsp, from + dir * d) {
+            break;
+        }
+        room = d;
+        d += PROBE_STEP;
+    }
+    room
+}
+
+/// Whether a bot could stand with its origin at `p`.
+///
+/// The lift before tracing down is small on purpose. Raising a 56-unit-tall hull by a full step
+/// height pushes its head into the ceiling of any ordinary corridor, and the resulting `start_solid`
+/// reads as "no floor" — which is exactly how an earlier version of this probe came to report zero
+/// room at 48% of lane points and left the shaping inert.
+fn standable(bsp: &Bsp, p: Vec3) -> bool {
+    let t = bsp.hull1_trace(p + Vec3::Z * PROBE_LIFT, p - Vec3::Z * (STEP_HEIGHT + ORIGIN_TO_FEET));
+    // Found real ground, at this point's own level rather than a storey below, and flat enough that
+    // pmove would call it ground rather than a slope the player slides off.
+    !t.start_solid && t.fraction < 1.0 && t.plane_normal.z >= GROUND_NORMAL_Z
+}
+
+/// Spacing of the outward floor probes. Fine enough not to step over a beam too narrow to stand on,
+/// coarse enough that a lane costs a bounded number of traces.
+pub const PROBE_STEP: f32 = 16.0;
+
+/// How far a standability probe lifts before tracing down — enough to clear a lip, not enough to put
+/// the hull's head through a ceiling.
+pub const PROBE_LIFT: f32 = 8.0;
+
 /// Resample a polyline to roughly uniform arclength `spacing`, always keeping both endpoints.
 ///
 /// Shaping needs points close enough together that a lateral nudge is a small angle, and route legs

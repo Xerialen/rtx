@@ -23,7 +23,7 @@ use crate::nav_build::PlatStatus;
 use crate::navmesh::{CellId, Corridor, LinkCosts, LinkKind, NavGraph, RJ_UNFIT_PENALTY};
 use crate::nearfield;
 use rtx_nav::lane;
-use rtx_nav::qphys::{ORIGIN_TO_FEET, STEP_HEIGHT};
+use rtx_nav::qphys::ORIGIN_TO_FEET;
 
 /// The all-`Copy` frame snapshot `steer` reads: the [`Sense`] and [`Objective`] this frame, the
 /// per-bot A* costs, and the live gate/plat state gathered before the borrow (see `run_bot`).
@@ -161,38 +161,6 @@ const WALK_ROUTE_ARC: f32 = WALK_ROUTE_LEGS as f32 * 32.0;
 /// How far ahead the shared lane is shaped. It has to cover the *longest* consumer, which is the
 /// speed-scaled bhop look-ahead at up to 448u, not the walk rollout's shorter horizon.
 const LANE_LEGS: usize = 20;
-
-/// How far the bot could move from `from` along `dir` and still be standing on something.
-///
-/// This is the measurement the lane is shaped against, and it has to mean **standable ground**
-/// rather than "no wall". A horizontal hull trace sails straight over a cliff edge and reports open
-/// space; a lane relaxed against that walks off the ledge it was following — the exact failure the
-/// reactive ledge brake exists to catch, which is why that brake cannot retire until this is right.
-///
-/// Two limits, whichever is nearer: the wall the hull trace finds, and the last step that still has
-/// floor beneath it. Stepping outward rather than bisecting keeps it honest across a gap — a
-/// bisection would happily jump the void and land on the far side, reporting the whole span as room.
-fn lane_room(bsp: &Bsp, from: Vec3, dir: Vec3, max: f32) -> f32 {
-    let wall = bsp.hull1_trace(from, from + dir * max).fraction * max;
-    let mut room = 0.0;
-    let mut d = LANE_PROBE_STEP;
-    while d <= wall {
-        let p = from + dir * d;
-        // Floor within a step's rise/fall of this point's own height. A tread one stair up or down
-        // still counts — that is the same surface to a runner — but open air does not.
-        let below = bsp.hull1_trace(p + Vec3::Z * STEP_HEIGHT, p - Vec3::Z * (STEP_HEIGHT + 8.0));
-        if below.fraction >= 1.0 || below.start_solid {
-            break;
-        }
-        room = d;
-        d += LANE_PROBE_STEP;
-    }
-    room
-}
-
-/// Spacing of the floor probes along a lane's perpendicular. Fine enough not to step over a beam the
-/// bot could not stand on, coarse enough that a lane costs a bounded number of traces.
-const LANE_PROBE_STEP: f32 = 16.0;
 
 /// The prefix of `pts` within `arc` of its start.
 ///
@@ -1345,7 +1313,28 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             let raw: Vec<Vec3> = ground_leg_targets(graph, &bot.route, bot.route_pos)
                 .take(LANE_LEGS)
                 .collect();
-            lane::build(&raw, |from, dir, max| lane_room(b, from, dir, max))
+            let shaped = lane::build(&raw, |from, dir, max| lane::ground_room(b, from, dir, max));
+            if host.cvar_bool(c"rtx_bot_debug") {
+                // What the lane actually measured and moved. Aggregates cannot tell "the lane is
+                // wrong" from "the lane is inert", and those want opposite fixes.
+                let pts = lane::resample(&raw, lane::LANE_SPACING);
+                let half = lane::half_widths(&pts, lane::LANE_MAX_HALF_WIDTH, |f, d, m| lane::ground_room(b, f, d, m));
+                let moved = pts
+                    .iter()
+                    .zip(&shaped)
+                    .map(|(a, c)| (*c - *a).truncate().length())
+                    .fold(0.0f32, f32::max);
+                let (lo, hi) = half.iter().fold((f32::MAX, 0.0f32), |(l, h), &v| (l.min(v), h.max(v)));
+                host.conprint(&cstring(&format!(
+                    "rtx bot{client}: lane {} pts, half {:.0}..{:.0} (mean {:.0}), moved max {:.0}u\n",
+                    pts.len(),
+                    lo,
+                    hi,
+                    half.iter().sum::<f32>() / half.len().max(1) as f32,
+                    moved,
+                )));
+            }
+            shaped
         })
         .filter(|pts| pts.len() >= 2);
 
@@ -1435,7 +1424,11 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             maxspeed: if maxspeed > 0.0 { maxspeed } else { 320.0 },
             friction: if friction > 0.0 { friction } else { 4.0 },
             stopspeed: if stopspeed > 0.0 { stopspeed } else { 100.0 },
-            profile: crate::bot::human_profile::HumanMovementProfile::calibrated().safe(),
+            profile: crate::bot::human_profile::HumanMovementProfile {
+                proportional_turn: host.cvar_bool(c"rtx_bot_sweep"),
+                ..crate::bot::human_profile::HumanMovementProfile::calibrated()
+            }
+            .safe(),
         };
         // A committed speed jump aims at its gap; otherwise steer toward the racing-line look-ahead
         // (race mode, when a line exists) or a *speed-scaled* corridor look-ahead — ~0.6 s of travel

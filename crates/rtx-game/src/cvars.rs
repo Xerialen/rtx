@@ -100,6 +100,13 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // arcs outward before a corner the way a player does and holds still where there is no room.
         // Off by default until it has beaten `docs/baseline/`. See `rtx_nav::lane`.
         ("rtx_bot_lane", Bool(false)),
+        // Air-strafe by sweeping toward the bearing rather than slamming at it. The calibrated gait
+        // requests the physical maximum turn rate on every frame regardless of how far off it is,
+        // which is a bang-bang controller: it overshoots, reverses, overshoots back, at a measured
+        // 5.5 reversals a second. A human travelling above 500 ups turns at 339 deg/s and reverses
+        // 1.9 times a second (measured over 122 segments of the dm3 4-on-4). Off by default until it
+        // beats the calibrated gait on the suite. See `human_profile::proportional_turn`.
+        ("rtx_bot_sweep", Bool(false)),
         // A bot's health weights how willing it is to shortcut through lava/slime: hurt bots detour,
         // healthy (or armored, or biosuited) ones clip the corner. `0` prices every bot as a bare
         // spawn — hazards still cost, but the same to everyone. See `bot::bot_hazard_strength`.
