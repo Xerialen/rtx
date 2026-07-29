@@ -116,8 +116,8 @@ stops before T1 when T0 import is missing or FAIL.
   "verdict": "FAIL"
 }
 ```
-- `attempts[].status`: `passed|slow|fell|timeout|stall|loop|detoured|rocketjump|died`. `time_s`
-  exactly for the two arriving statuses (`passed`, `slow`), else null. Attempt count
+- `attempts[].status`: `passed|slow|fell|timeout|stall|loop|detoured|rocketjump|offroute|died`.
+  `time_s` exactly for the two arriving statuses (`passed`, `slow`), else null. Attempt count
   and order are preserved. `demo_t_s` is the moment the attempt began on the run's
   own demo clock. `timeout` covers three ways of not arriving: running the clock
   out, being cut short once reaching the target in time became impossible (then
@@ -129,6 +129,10 @@ stops before T1 when T0 import is missing or FAIL.
   drill handed the bot no rockets, so the jump was not sanctioned on that route,
   and the bot picked some up and took it anyway. The attempt answered a
   different question and counts as neither an arrival nor a failure to arrive.
+  `offroute` is the same shape, for a scenario carrying a `[route]` table: the
+  bot reached the target without passing all of its waypoints, in order, on the
+  way — it answered where, never how, and the attempt is void rather than a
+  pass or a failure to arrive.
 - A scenario may carry `requires` instead of a verdict:
 
   ```json

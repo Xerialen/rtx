@@ -404,6 +404,11 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
                 # different question than the one asked and counts as neither
                 # an arrival nor a failure to arrive.
                 "rocketjump",
+                # The bot reached the target without passing the route's
+                # `via` waypoints in order — it answered where, never how.
+                # Void, the same shape as `rocketjump`: neither an arrival
+                # nor a failure to arrive.
+                "offroute",
             }:
                 _fail(f"{attempt_path}.status", "unknown outcome")
             # `stall` is read off the telemetry event, so a build that emits

@@ -173,12 +173,53 @@ A `goto` scenario declares:
 - Optional `setup.plant_links`.
 - Optional `fail.fall_gate` and/or `fail.crossing`.
 - Optional `requires`, see below.
+- Optional `route`, see below.
 
 The generic engine performs stop, hold, teleport, prep, goto, polling, re-goto,
 and outcome classification. Outcomes are `passed`, `slow`, `fell`, `timeout`,
-`stall`, `loop`, `detoured`, `rocketjump`, or `died`. `passed` and `slow` are
-the two ways of arriving and both carry a time; the rest never arrived and carry
-none.
+`stall`, `loop`, `detoured`, `rocketjump`, `offroute`, or `died`. `passed` and
+`slow` are the two ways of arriving and both carry a time; the rest never
+arrived and carry none.
+
+### Route gates
+
+An arrival records where the bot ended up and nothing about how it got there.
+`spawn_lift_to_pent_to_pentmega` passed 5/5 at 0.55× the owner's own time by
+stepping off the pent ledge — 270 of 582 units of descent in freefall, 5 hp of
+fall damage — instead of taking the route. The endpoint was right and the run
+was worthless, and every goto drill has the same hole, not a chosen few.
+
+```toml
+[route]
+via = [
+  { at = [1170.1, 623.9, 80.0], box = 112, name = "window" },
+  { at = [1096.9, 569.1, 56.0], box = 112, name = "window ut" },
+]
+```
+
+`via` is a non-empty, ordered array of waypoints: `at` (three coordinates),
+`box` (the half-width of a cube centred on `at`), and `name`, all required.
+It is valid only on `goto`. The runner keeps an index into `via`, starting at
+0, and on every poll advances it when the bot's position is inside the box of
+`via[index]` — per-axis against `box`, the same way arrival itself is tested,
+never Euclidean distance. Waypoints are matched strictly in order: standing
+inside `via[3]` while the index is still at 1 counts for nothing. The index is
+reset per attempt, not per drill.
+
+`via` does not replace `fail.fall_gate` or `fail.crossing` — those end an
+attempt early and give it an honest name of its own, and both may still be
+present alongside a route. `via` only judges an attempt that survives to the
+existing `arrived` path: if the index has not reached the end of `via` by
+then, the bot reached the target without taking the route, and the attempt is
+`offroute` — not an arrival and not a failure to arrive, because it answered a
+different question. A drill with no `[route]` table behaves exactly as before.
+
+The waypoints themselves are anchored on points the owner actually occupied on
+his own run of the route, read out of his demos — never derived from the
+navmesh or from geometry, because a box built from the route it is meant to
+gate would gate nothing. `scenarios/dm3/generate_from_routes.py` owns them, in
+a `ROUTE_VIA` table beside `ROUTE_RUN` and `ROUTE_REQUIRES`; hand-editing a
+generated drill file is undone the next time it regenerates.
 
 ### Drills the build cannot be asked
 

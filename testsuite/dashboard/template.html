@@ -235,6 +235,12 @@
   .attempt.detoured { background: var(--r-airtime); }
   .attempt.rocketjump { background: repeating-linear-gradient(135deg,
     var(--warn) 0 5px, var(--bad) 5px 10px); }
+  /* offroute = samma "ogiltigt försök" -idiom som rocketjump (rand i stället
+     för fast färg), men gott+muted i stället för varning+dåligt: botten kom
+     fram (grönt), men det räknas inte (muted) eftersom vägpunkterna missades
+     — ingen anklagelse om fusk, bara en fråga som blev obesvarad. */
+  .attempt.offroute { background: repeating-linear-gradient(135deg,
+    var(--good) 0 5px, var(--muted) 5px 10px); }
   .attempt.died { background: var(--mesh-mid); }
   /* Ingen färg alls: en drill som inte kördes har inget utfall att gradera,
      och en tom ruta säger det tydligare än vilken utfallsfärg som helst. */
@@ -253,6 +259,8 @@
   .legend .loop { background: var(--r-sj); } .legend .detoured { background: var(--r-airtime); }
   .legend .rocketjump { background: repeating-linear-gradient(135deg,
     var(--warn) 0 5px, var(--bad) 5px 10px); }
+  .legend .offroute { background: repeating-linear-gradient(135deg,
+    var(--good) 0 5px, var(--muted) 5px 10px); }
   .legend .died { background: var(--mesh-mid); }
   .legend .withheld { background: none; border: 1px dashed var(--muted); }
   .dash {
@@ -514,6 +522,7 @@ const TERM_TITLES = {
   "loop": "fastnade i omtags-loop (goto gavs om 6 gånger utan framkomst)",
   "detoured": "tog omväg i stället för hoppet",
   "rocketjump": "raketskutt på en rutt som inte delade ut raketer \u2014 försöket ogiltigt",
+  "offroute": "nådde målet utan att passera ruttens vägpunkter \u2014 försöket ogiltigt, inte ett misslyckat ankomstförsök",
   "died": "dog under försöket",
   "AVSTÅDD": "drillen kördes aldrig: rutten den frågar om finns bara i en navmesh bygget inte fått, och ett FAIL hade sagt att botten inte klarade sträckan",
   "PASS": "alla trösklar klarade",
@@ -867,6 +876,7 @@ function renderT1() {
     term("timeout") + '</span><span><i class="stall"></i>' + term("stall") +
     '</span><span><i class="loop"></i>' + term("loop") + '</span><span><i class="detoured"></i>' +
     term("detoured") + '</span><span><i class="rocketjump"></i>' + term("rocketjump") +
+    '</span><span><i class="offroute"></i>' + term("offroute") +
     '</span><span><i class="died"></i>' + term("died") +
     '</span><span><i class="withheld"></i>' + term("avstådd", "AVSTÅDD") + "</span></div>" +
     '<div class="dash"><div><div class="eyebrow">' + term("dash_100m", "peak u/s (100m)") +

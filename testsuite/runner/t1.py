@@ -83,6 +83,13 @@ def _outcome(
     crossed = False
     fall_gate = scenario.get("fail", {}).get("fall_gate")
     crossing = scenario.get("fail", {}).get("crossing")
+    # An arrival is where the bot ended up, not how it got there — `via` closes
+    # that gap. The index only ever moves forward and is reset here, per
+    # attempt: a previous attempt's progress must never carry into the next
+    # one, and being inside a later waypoint while an earlier one is still
+    # unmet counts for nothing.
+    via = scenario.get("route", {}).get("via", [])
+    route_index = 0
     # An attempt ends the moment it can no longer succeed, rather than when its
     # clock runs out. Two independent ways of knowing that:
     #
@@ -164,6 +171,21 @@ def _outcome(
         # as a bot that stopped moving.
         moved += math.dist(position, previous_position)
         previous_position = position
+        # Matched in order and never skipped, per-axis against `box` the same
+        # way `inside_box` tests arrival — not Euclidean distance, so a corner
+        # of the box counts the same as its centre.
+        # A loop, not an `if`: the poll runs roughly fourteen times a second and
+        # a bot at full speed covers sixty units between samples, so one sample
+        # can legitimately sit inside two consecutive waypoints. Advancing only
+        # one per poll would leave the second unmet and report a bot that took
+        # the route exactly as `offroute`.
+        while route_index < len(via):
+            waypoint = via[route_index]
+            at = waypoint["at"]
+            box = waypoint["box"]
+            if not all(abs(position[axis] - at[axis]) < box for axis in range(3)):
+                break
+            route_index += 1
         if (
             fall_gate
             and highest_z >= fall_gate["armed_z"]
@@ -192,6 +214,11 @@ def _outcome(
             if inside_box(position):
                 if crossing and not crossed:
                     return {"status": "detoured", "time_s": None, "demo_t_s": demo_t}
+                if route_index < len(via):
+                    # It reached the target, so this is not a failure to
+                    # arrive; it did not take the route, so it is not an
+                    # arrival either. It answered a different question.
+                    return {"status": "offroute", "time_s": None, "demo_t_s": demo_t}
                 elapsed = round(time.monotonic() - began, 2)
                 # A timed drill is measured against a human run of the route:
                 # arriving late is its own outcome, not a pass and not a miss.

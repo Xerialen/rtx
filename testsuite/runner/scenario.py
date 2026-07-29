@@ -75,7 +75,7 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
             "run",
             "threshold",
         },
-        {"setup", "fail", "workaround", "requires"},
+        {"setup", "fail", "workaround", "requires", "route"},
     )
     if root["schema"] != "rtx-scenario/1":
         raise ScenarioError(
@@ -128,6 +128,32 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
             if not isinstance(value, str) or not value.strip():
                 raise ScenarioError(
                     f"{source}.requires.{field}: expected non-empty string"
+                )
+
+    # An arrival says where the bot ended up and nothing about how it got
+    # there: `spawn_lift_to_pent_to_pentmega` passed 5/5 by stepping off the
+    # pent ledge and freefalling most of the descent, and the endpoint was
+    # right while the run was worthless. `via` is the fix — ordered waypoints
+    # anchored on points the owner actually occupied, never derived from the
+    # navmesh or from geometry, because a box built from the route it is meant
+    # to gate would gate nothing. It does not replace `fail.fall_gate` or
+    # `fail.crossing`: those end an attempt early with an honest name of their
+    # own, `via` decides whether an arrival counts.
+    if "route" in root:
+        if root["kind"] != "goto":
+            raise ScenarioError(f"{source}.route: only valid for goto scenarios")
+        route = _fields(root["route"], f"{source}.route", {"via"})
+        via = route["via"]
+        if not isinstance(via, list) or not via:
+            raise ScenarioError(f"{source}.route.via: expected a non-empty array")
+        for index, waypoint in enumerate(via):
+            waypoint_path = f"{source}.route.via[{index}]"
+            fields = _fields(waypoint, waypoint_path, {"at", "box", "name"})
+            _vec3(fields["at"], f"{waypoint_path}.at")
+            _number(fields["box"], f"{waypoint_path}.box", positive=True)
+            if not isinstance(fields["name"], str) or not fields["name"]:
+                raise ScenarioError(
+                    f"{waypoint_path}.name: expected non-empty string"
                 )
 
     if root["kind"] == "goto":

@@ -1032,6 +1032,18 @@ def selftest() -> None:
         assert withheld["levels"]["t1"]["capabilities"]["unavailable"] == [
             "t1:rj_pent_to_lifts_to_window_to_quad"
         ]
+        # An attempt that reached the target without taking the route answered
+        # a different question than the drill asked: it is void, not a failed
+        # arrival. time_s stays null like every other non-arriving status, and
+        # it does not count toward "arrived" or the pass threshold.
+        offroute = next(run for run in runs if run["branch"] == "offroute-drill")
+        offroute_drill = offroute["levels"]["t1"]["data"]["drills"][0]
+        assert [result["status"] for result in offroute_drill["results"]] == [
+            "passed", "offroute"
+        ]
+        assert offroute_drill["results"][1]["time_s"] is None
+        assert offroute_drill["arrived"] == 1
+        assert offroute_drill["verdict"] == "FAIL"
         rich = next(run for run in runs if run["branch"] == "evidence-rich")
         t1 = rich["levels"]["t1"]
         categories = [drill["category"] for drill in t1["data"]["drills"]]

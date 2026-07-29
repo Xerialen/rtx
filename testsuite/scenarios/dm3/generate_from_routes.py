@@ -107,6 +107,189 @@ ROUTE_REQUIRES: dict[str, dict[str, str]] = {
     },
 }
 
+# Ordered waypoints an attempt must pass through before an arrival on that
+# route counts — the fix for a drill that only ever checked where the bot
+# ended up. Anchored on the owner's own 18 route demos (lanister:~/dm3-drillar,
+# read with his qwd_v2 extractor): every point below is a position he actually
+# occupied, in the order he occupied them, picked at the places his path
+# genuinely departs from a straight line between the drill's start and target
+# — never a point derived from the navmesh or from geometry.
+#
+# `box` is one half-width shared by every waypoint on a route rather than a
+# value per waypoint (the schema allows either): it is set to ~70% of the
+# tightest gap between any of that route's waypoints and a 200-point
+# straight-line interpolation from start to target, rounded down to the
+# nearest step of 8. That is deliberately short of the boundary where the
+# straight line would start clipping a box by accident — the margin is there
+# so the gate's behaviour does not hinge on the interpolation's resolution —
+# while every route still keeps enough room for a bot that is not replaying
+# the owner's exact path pixel for pixel.
+#
+# Five routes have no owner demo (cell_503_194, cell_724_503, hexagon_sod_tur,
+# ra_climb, sng_mega) and are withheld from this table on purpose: a waypoint
+# not anchored on a real run is a guess, and the contract forbids guessing.
+# Half-width of every waypoint cube, in units. One value for all routes: the
+# per-route numbers this started with were the smallest that still failed a
+# straight line from start to target, and that measure turned out to be nearly
+# free — the owner's waypoints sit so far off the straight line that anything up
+# to 256 passes it. What the number actually has to do is sit between two real
+# failures. Too small and it asserts the exact line he ran: at 32 the gate
+# called a bot that missed by 47 units off-route, which is not a shortcut, it is
+# movement. Too large and it stops meaning "passed through here": past 128 a
+# straight line starts clearing a route. Between 80 and 112 the three measures
+# that matter hold steady — the owner passes all eighteen routes, a straight
+# line fails all eighteen, and the same ten of the bot's nineteen arrivals are
+# caught — so this sits in the middle of that band. It is also comfortably above
+# the sixty units a bot at full speed covers between two polls, which is the
+# floor below which a gate can simply be stepped over.
+VIA_BOX = 96
+
+ROUTE_VIA: dict[str, dict[str, object]] = {
+    "hex_quad_to_sng": {
+        "box": VIA_BOX,
+        "via": [
+            [528.9, 115.6, 94.9],
+            [346.6, 519.5, 98.5],
+            [-90.9, 779.1, 120.0],
+        ],
+    },
+    "hex_ratop_to_ssg": {
+        "box": VIA_BOX,
+        "via": [
+            [418.6, -553.9, 56.0],
+            [494.2, -192.5, 89.4],
+            [1369.5, -944.0, 123.0],
+        ],
+    },
+    "hex_sng_to_quad": {
+        "box": VIA_BOX,
+        "via": [
+            [-356.8, 275.0, 140.9],
+            [384.5, 633.4, 96.1],
+            [527.2, 109.0, 91.0],
+        ],
+    },
+    "hex_ssg_to_ratop": {
+        "box": VIA_BOX,
+        "via": [
+            [1655.2, -909.0, 40.0],
+            [527.1, -163.6, 99.5],
+            [305.5, -536.5, 72.0],
+            [29.5, -841.6, 152.0],
+        ],
+    },
+    "spawn_lift_to_pent_to_pentmega": {
+        "box": VIA_BOX,
+        "via": [
+            [601.9, 1049.0, 40.0],
+            [1863.2, 672.8, -143.1],
+        ],
+    },
+    "spawn_ra_tunnel_to_lg": {
+        "box": VIA_BOX,
+        "via": [
+            [786.4, 172.2, -123.9],
+            [1109.8, -53.9, -138.2],
+        ],
+    },
+    "spawn_rarox_to_quad": {
+        "box": VIA_BOX,
+        "via": [
+            [-612.9, -457.5, 27.5],
+            [423.8, -225.4, 56.0],
+            [847.1, -166.2, 99.0],
+        ],
+    },
+    "spawn_rl_to_ratop_xer": {
+        "box": VIA_BOX,
+        "via": [
+            [1572.9, -82.4, -158.2],
+            [202.2, -99.2, -176.0],
+            [-196.9, -222.5, -166.2],
+            [-35.0, -725.5, 7.2],
+        ],
+    },
+    "spawn_sngspawn_to_ring_to_ratop": {
+        "box": VIA_BOX,
+        "via": [
+            [363.0, 57.4, 74.2],
+            [109.6, -879.5, 184.0],
+        ],
+    },
+    "highbridge_to_rl": {
+        "box": VIA_BOX,
+        "via": [
+            [1316.0, -2.5, -24.0],
+            [1538.2, 202.1, 19.0],
+        ],
+    },
+    "lg_to_pent_to_pentmega": {
+        "box": VIA_BOX,
+        "via": [
+            [1296.8, 719.2, -360.0],
+            [972.2, 1002.0, -261.0],
+        ],
+    },
+    "lifts_or_ring_to_sngmega": {
+        "box": VIA_BOX,
+        "via": [
+            [483.8, 597.8, 56.0],
+            [-180.4, 768.0, 132.5],
+            [-459.0, 499.4, 120.0],
+            [-856.5, 265.5, 207.2],
+        ],
+    },
+    "ralow_to_ratop": {
+        "box": VIA_BOX,
+        "via": [
+            [495.5, -813.9, 56.0],
+            [31.6, -879.6, 152.0],
+            [285.5, -879.9, 264.0],
+            [46.0, -603.8, 341.6],
+        ],
+    },
+    "ring_to_ratop": {
+        "box": VIA_BOX,
+        "via": [
+            [72.2, -573.2, 152.0],
+            [31.9, -877.6, 152.0],
+            [303.0, -870.6, 264.0],
+            [48.9, -563.2, 321.8],
+        ],
+    },
+    "ring_to_rl": {
+        "box": VIA_BOX,
+        "via": [
+            [702.5, 460.6, 74.2],
+            [1459.1, 55.5, -8.5],
+            [1610.4, 352.0, -31.1],
+        ],
+    },
+    "rj_pent_to_lifts_to_window_to_quad": {
+        "box": VIA_BOX,
+        "via": [
+            [610.4, 874.9, -55.0],
+            [1184.4, 667.6, 96.1],
+            [641.5, 364.8, 97.0],
+        ],
+    },
+    "sngspawns_to_sngmega": {
+        "box": VIA_BOX,
+        "via": [
+            [-942.0, 301.9, 104.0],
+            [-646.4, 880.0, 120.0],
+            [-473.5, 272.0, 149.6],
+        ],
+    },
+    "window_to_rl": {
+        "box": VIA_BOX,
+        "via": [
+            [1243.1, 393.8, 56.0],
+            [1458.5, 56.5, -17.4],
+        ],
+    },
+}
+
 
 def toml_value(value: object) -> str:
     if isinstance(value, str):
@@ -157,6 +340,36 @@ def main() -> int:
             f"{key} = {toml_value(value)}\n"
             for key, value in ROUTE_RUN.get(name, {}).items()
         )
+        via_data = ROUTE_VIA.get(name)
+        route_block = ""
+        if via_data:
+            # A waypoint's name comes from the same loc lookup the start/target
+            # place string uses, so it reads the way the owner would say it.
+            # Two waypoints landing on the same nearest loc (a multi-stage
+            # climb up the same structure, say) still each need a non-empty,
+            # distinct-enough name, so a repeat gets numbered.
+            seen: dict[str, int] = {}
+            entries = []
+            for at in via_data["via"]:
+                label = place_of(points, tuple(at))
+                seen[label] = seen.get(label, 0) + 1
+                if seen[label] > 1:
+                    label = f"{label} {seen[label]}"
+                coords = [round(value, 1) for value in at]
+                entries.append(
+                    f'  {{ at = {coords}, box = {via_data["box"]}, name = "{label}" }},'
+                )
+            route_block = (
+                "\n[route]\n"
+                "# Ordered waypoints the attempt must pass through, in this order,\n"
+                "# before an arrival counts. Anchored on the owner's own run of the\n"
+                "# route: points he actually occupied, in the order he occupied\n"
+                "# them, at the places his path genuinely departs from a straight\n"
+                "# line to the target — never points derived from the navmesh or\n"
+                "# from geometry.\n"
+                "via = [\n" + "\n".join(entries) + "\n]\n"
+            )
+        tail = extra + route_block
         text = f"""schema = "rtx-scenario/1"
 name = "{name}"
 map = "dm3"
@@ -175,7 +388,7 @@ timeout_s = {timeout}
 pause_s = 1.0
 arrive_box = 70
 regoto_max = 6
-{extra}
+{tail}
 [threshold]
 required = 4
 reference_time_s = {reference}
