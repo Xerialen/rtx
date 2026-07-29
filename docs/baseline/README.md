@@ -59,14 +59,57 @@ So wherever it arrives late on dm3 it is not because it cannot carry speed; navi
 speed it demonstrably has. Read every ratio in the table above as a navigation number, not a
 movement-physics one. No tuning of the gait closes it.
 
-**It fights its own steering everywhere.** 500 deg/s of yaw jitter at p50 is not a tail effect —
-that is the *median* movement sawing at its heading, and it is measured only over frames above
-100 ups, so it is not crawl noise. Likewise wall events: the median run loses >60 ups to geometry
-**35 times**.
+**~~It fights its own steering everywhere.~~** — *superseded; see below.* This section originally
+read 500 deg/s of yaw jitter at p50 as the bot sawing at its heading. That was wrong, and the way it
+was wrong is worth keeping: `yaw_jitter_p95` is a peak *turn rate*, and it cannot tell a wide smooth
+arc from an oscillation. A strafe jump is a hard continuous turn, so excellent movement scores high
+on it — humans on this suite reach 754 deg/s. What separates the two is how often the turn *reverses
+direction*, which is why `LineScore` now carries `yaw_reversals` and why the human numbers below are
+split by pace.
 
-These two are the numbers the lane work has to move. Time and arrival can stay flat and it would
-still be a win if yaw jitter and wall events came down, because those are what "bumping into
-geometry" and "hack on top of hack" actually look like in data.
+## What the human suite actually reads (the targets)
+
+Each human run scored against its own line, split by pace — the two halves are different activities
+and averaging them hides a factor of five:
+
+| | segments | turn rate p50 | **turn reversals p50** | wall events p50 |
+|---|---|---|---|---|
+| travelling (≥500 ups) | 122 | 339 deg/s | **1.9/s** | 2 |
+| manoeuvring (<300 ups) | 149 | 611 deg/s | 15.0/s | 2 |
+
+Against that, the bot's reversal rate at the median is **2.1/s** — already human. Steering
+smoothness is not the deficit.
+
+**Where the deficit actually is.** The median run takes the human's path (path ratio p50 **1.04**)
+at **0.84x** their speed, and the speed profile binned along the line is *flat* —
+`9 9 8 9 9 8 10 8 8 10`. Nothing is lost at corners or at handoffs between movement owners, so the
+guard pile is not what costs the median run. `1.04 / 0.84` accounts for its time ratio exactly.
+
+The damage is in the tail: **22% of runs travel more than 1.5x the human's distance** (p90 2.24x),
+and 30% of runs are already near-perfect (path <1.2x, time <1.3x).
+
+**The open lead.** Handed the human's entry speed, the bot stays 80-84% airborne on the correct path
+and *bleeds* the speed rather than holding it — one segment enters at 604 ups and averages 0.54x of
+the human, with the per-twentieth speed strip starting at 8-9 and sagging to 2-4 mid-movement. That
+is the question the gait-phase column on `TrajRow` exists to answer.
+
+## Run the sweep on an idle machine — this is not optional
+
+Compiling while a sweep runs invalidates it. Measured, same commit, lane off in both:
+
+| | quiet machine | `cargo build`/`test` running |
+|---|---|---|
+| speed vs human | 0.91x | **0.73x** |
+| wall events (mean) | 43 | **5** |
+| yaw p95 (p50) | 476 deg/s | 364 deg/s |
+| arrived | 89% | 89% |
+
+Arrival, cross-track and the p90 time ratio barely move; everything derived from frame-to-frame
+differencing collapses. The server drops frames under CPU starvation, so the bot's frametime grows
+and it genuinely moves differently — this is not a sampling artefact that better statistics would
+fix. A/B arms must run back to back with nothing else on the box, and a sweep that straddles a build
+is worthless. It is easy to fool yourself here: the degraded numbers look like an *improvement* in
+wall events and yaw jitter, because a bot that is moving slower hits fewer things.
 
 ## Caveats worth carrying
 
@@ -77,3 +120,26 @@ geometry" and "hack on top of hack" actually look like in data.
   0.48x → 0.73x of human speed on the suite's fastest movement.
 - **Human references are the fastest run over given ground**, so slower segments in the suite are
   slow because that ground was only ever crossed slowly — not because the human was strolling.
+- **`flyprobe goto` teleports with zero velocity; `flyprobe line` does not.** Anything measured
+  through `goto` on a ~640u segment is a standing start, and a standing start has its own ceiling:
+  peak speed reads ~496 on dm3 in *every* configuration, which reads like a gate pinning the bot
+  when it is just the accelerate-from-rest limit. Use `line` for anything about sustained movement.
+
+## Approaches measured and rejected
+
+Recorded so they are not re-attempted. Each was A/B'd with paired arms on one idle server.
+
+- **Lateral lane shaping** (elastic-band path deformation). Refuted on this geometry: 30-39% of
+  route points sit in corridors too narrow for a 32-unit hull to move sideways at all, 14-23% have
+  no standable floor beside them, and the relaxation displaces the line **1.2u** against 32u cells.
+  Live A/B flat on every metric. Quake corridors are one to two hull widths wide — the cell-centre
+  line is already near the middle.
+- **Proportional air-turn** (`rtx_bot_sweep`). Fixed a genuine defect — the gait requests 720 deg/s,
+  the physical cap, on every frame regardless of error — but reversals were already at human level,
+  so it moved nothing.
+- **Disabling both reactive brakes.** Reverse frames 20 → 18. They were never the source;
+  `reverse_frames` counts frames behind the furthest point reached, not braking.
+- **Verifying every hop's landing and vetoing bad ones.** Made it worse (speed 0.84 → 0.73):
+  `plan_hop`'s tolerances refuse too often and the bot walks where it should hop.
+- **Keeping the hop chain alive through bends.** No change; a direct probe showed identical airborne
+  fraction and hop count either way.

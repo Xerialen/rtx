@@ -10,7 +10,7 @@
 //! as JSON for Claude, and the game builds typed values instead of formatting JSON strings.
 //!
 //! Frames are `[u32 little-endian byte length][msgpack payload]` (see [`to_frame`] / [`read_frame`]).
-//! World positions are `[x, y, z]`; flight traces are `[t, x, y, z, vx, vy, vz]` rows. Descriptive
+//! World positions are `[x, y, z]`; motion traces are [`TrajRow`]s. Descriptive
 //! enum labels (weapon, link kind, hazard, oracle mode, …) travel as strings — they are display
 //! labels, so the schema stays typed at the structural level without mirroring a dozen game enums.
 //!
@@ -1036,7 +1036,7 @@ mod tests {
             miss_z: 1.0,
             takeoff_speed: 500.0,
             peak: 812.0,
-            traj: vec![[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]],
+            traj: vec![[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 2.0]],
         }));
         assert_eq!(roundtrip(&ev), ev);
     }
