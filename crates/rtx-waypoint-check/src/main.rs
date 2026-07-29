@@ -24,7 +24,6 @@ use rtx_nav::bsp::Bsp;
 mod botfile;
 mod check;
 mod ent;
-mod lanecheck;
 mod pak;
 mod report;
 
@@ -50,9 +49,6 @@ struct Config {
     waypoints: PathBuf,
     radius: f32,
     maps: Vec<String>,
-    /// Report what the lane shaper measures and moves on this map's real geometry, instead of
-    /// checking KTX waypoints. Offline diagnosis for "the lane changed nothing" — see `lanecheck`.
-    lane: bool,
 }
 
 fn main() -> ExitCode {
@@ -72,13 +68,11 @@ fn parse_args(argv: &[String]) -> Result<Config, String> {
     let mut waypoints = PathBuf::from("waypoints");
     let mut radius = 96.0f32;
     let mut maps = Vec::new();
-    let mut lane = false;
 
     let mut it = argv.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => return Err(USAGE.to_string()),
-            "--lane" => lane = true,
             "--basedir" => basedir = it.next().ok_or("--basedir needs a value\n")?.into(),
             "--waypoints" => waypoints = it.next().ok_or("--waypoints needs a value\n")?.into(),
             "--radius" => {
@@ -97,7 +91,6 @@ fn parse_args(argv: &[String]) -> Result<Config, String> {
         waypoints,
         radius,
         maps,
-        lane,
     })
 }
 
@@ -122,23 +115,6 @@ fn run(config: &Config) -> ExitCode {
     let mut fatal = false;
     let mut skipped: Vec<String> = Vec::new();
     let mut processed = 0;
-
-    // Lane diagnosis needs no waypoint files — it walks the mesh the map itself produces.
-    if config.lane {
-        for map in &maps {
-            let Some(bytes) = pak::resolve_bsp(&config.basedir, map) else {
-                eprintln!("{map}: no BSP");
-                continue;
-            };
-            let Some(bsp) = Bsp::parse(&bytes) else {
-                eprintln!("{map}: unparseable BSP");
-                continue;
-            };
-            let graph = check::build(&bsp);
-            lanecheck::report(map, &bsp, &graph, 120);
-        }
-        return ExitCode::SUCCESS;
-    }
 
     for map in &maps {
         let text = match std::fs::read_to_string(config.waypoints.join(format!("{map}.bot"))) {

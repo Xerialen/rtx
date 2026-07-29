@@ -22,7 +22,6 @@ use crate::math::{angle_vectors, angles_to, yaw_of};
 use crate::nav_build::PlatStatus;
 use crate::navmesh::{CellId, Corridor, LinkCosts, LinkKind, NavGraph, RJ_UNFIT_PENALTY};
 use crate::nearfield;
-use rtx_nav::lane;
 use rtx_nav::qphys::ORIGIN_TO_FEET;
 
 /// The all-`Copy` frame snapshot `steer` reads: the [`Sense`] and [`Objective`] this frame, the
@@ -153,31 +152,6 @@ fn inside_box(p: Vec3, lo: Vec3, hi: Vec3) -> bool {
 /// past the ~130u a 40-tick rollout at walk speed can cover, so the horizon — not the polyline — is
 /// what ends the roll.
 const WALK_ROUTE_LEGS: usize = 12;
-
-/// The same horizon as [`WALK_ROUTE_LEGS`], in arclength — what a resampled lane has to be cut by,
-/// since shaping replaces "one point per leg" with uniform spacing.
-const WALK_ROUTE_ARC: f32 = WALK_ROUTE_LEGS as f32 * 32.0;
-
-/// How far ahead the shared lane is shaped. It has to cover the *longest* consumer, which is the
-/// speed-scaled bhop look-ahead at up to 448u, not the walk rollout's shorter horizon.
-const LANE_LEGS: usize = 20;
-
-/// The prefix of `pts` within `arc` of its start.
-///
-/// A lane is resampled to uniform spacing, so a consumer that wants "twelve legs of corridor" can no
-/// longer just take twelve points. Measuring the cut in arclength keeps that horizon the same
-/// distance whatever the spacing happens to be.
-fn arc_prefix(pts: &[Vec3], arc: f32) -> impl Iterator<Item = Vec3> + '_ {
-    let mut travelled = 0.0;
-    let mut prev: Option<Vec3> = None;
-    pts.iter().copied().take_while(move |&p| {
-        if let Some(q) = prev {
-            travelled += (p - q).length();
-        }
-        prev = Some(p);
-        travelled <= arc
-    })
-}
 
 /// The route polyline a walk plan is certified against and then flown along: the current leg's source
 /// cell, then the leading ground leg targets. Truncated at the first non-ground leg (unlike the hop
@@ -1303,52 +1277,6 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         }
     }
 
-    // The shaped route, built once a frame and shared by everything that steers by route geometry.
-    //
-    // There are three such consumers and they each used to build their own polyline out of raw cell
-    // centres: the grounded walk certification, the speed-scaled bhop look-ahead, and the hop
-    // planner. Cells sit where the 32u grid fell, so those polylines zigzag down a straight corridor
-    // and cut the inside of every turn — the bot aims at the corner it is trying to get around, and
-    // the reactive brakes exist to rescue it from a line that was never good. `lane::build` relaxes
-    // the polyline toward straightness inside the room a pair of hull traces per point actually
-    // measures, so it arcs outward before a corner the way a player does and holds still where there
-    // is no room to move.
-    //
-    // Shaped as bare leg targets with no anchor, so each consumer can prepend its own — the walk line
-    // is anchored at the leg *source* (that is what lets it measure how far off-route the bot has
-    // drifted), while the look-ahead and the hop planner measure arc from the bot. One build, three
-    // re-anchorings, and no way for them to disagree about where the route is.
-    let lane_targets: Option<Vec<Vec3>> = bsp
-        .filter(|_| host.cvar_bool(c"rtx_bot_lane"))
-        .map(|b| {
-            let raw: Vec<Vec3> = ground_leg_targets(graph, &bot.route, bot.route_pos)
-                .take(LANE_LEGS)
-                .collect();
-            let shaped = lane::build(&raw, |from, dir, max| lane::ground_room(b, from, dir, max));
-            if host.cvar_bool(c"rtx_bot_debug") {
-                // What the lane actually measured and moved. Aggregates cannot tell "the lane is
-                // wrong" from "the lane is inert", and those want opposite fixes.
-                let pts = lane::resample(&raw, lane::LANE_SPACING);
-                let half = lane::half_widths(&pts, lane::LANE_MAX_HALF_WIDTH, |f, d, m| lane::ground_room(b, f, d, m));
-                let moved = pts
-                    .iter()
-                    .zip(&shaped)
-                    .map(|(a, c)| (*c - *a).truncate().length())
-                    .fold(0.0f32, f32::max);
-                let (lo, hi) = half.iter().fold((f32::MAX, 0.0f32), |(l, h), &v| (l.min(v), h.max(v)));
-                host.conprint(&cstring(&format!(
-                    "rtx bot{client}: lane {} pts, half {:.0}..{:.0} (mean {:.0}), moved max {:.0}u\n",
-                    pts.len(),
-                    lo,
-                    hi,
-                    half.iter().sum::<f32>() / half.len().max(1) as f32,
-                    moved,
-                )));
-            }
-            shaped
-        })
-        .filter(|pts| pts.len() >= 2);
-
     // Predictive hop planning (see `hopsim`). On a ledge corridor (a wall-hugging walkway over a drop
     // — a spiral staircase's inner edge) a bhop's chord sags over the void by more than the walkway is
     // wide, so no reactive edge test both keeps speed and stays on. Instead roll the pmove a hop ahead
@@ -1389,15 +1317,14 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 };
                 // Route polyline from the bot outward, so plan arc-distances measure from here.
                 let route_pts: Vec<Vec3> = std::iter::once(origin)
-                    .chain(lane_targets.clone().unwrap_or_else(|| {
+                    .chain(
                         bot.route
                             .get(bot.route_pos..)
                             .unwrap_or_default()
                             .iter()
                             .take(12)
-                            .map(|&l| graph.cell_origin(graph.link_target(l)))
-                            .collect()
-                    }))
+                            .map(|&l| graph.cell_origin(graph.link_target(l))),
+                    )
                     .collect();
                 let st = crate::pmove_sim::PmState {
                     origin,
@@ -1487,11 +1414,13 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // (race mode, when a line exists) or a *speed-scaled* corridor look-ahead — ~0.6 s of travel
         // ahead (clamped 96–448u) so a fast bot's bearing anticipates the corridor far enough to
         // start curving, rather than chasing the fixed ~2-legs `look_point` it has already overrun.
-        let look_dist = (speed * 0.6).clamp(96.0, 448.0);
-        let bhop_look = match &lane_targets {
-            Some(pts) => point_along(origin, pts.iter().copied(), look_dist),
-            None => corridor_point(graph, &bot.route, bot.route_pos, origin, look_dist),
-        };
+        let bhop_look = corridor_point(
+            graph,
+            &bot.route,
+            bot.route_pos,
+            origin,
+            (speed * 0.6).clamp(96.0, 448.0),
+        );
         let to_wp = waypoint.xy() - origin.xy();
         let ahead = match race_line_ahead {
             Some(lp) if !sj_active => lp.xy() - origin.xy(),
@@ -1830,25 +1759,9 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         && !rj_engaged
         && !magnet_bend
         && matches!(kind, Some(LinkKind::Walk | LinkKind::Step));
-    // The line everything below steers by, built once a frame so the certifier, the freshness check
-    // and the aim point cannot disagree about where the route is.
-    //
-    // Under `rtx_bot_lane` this is the *shaped* line rather than the raw cell centres. Cells sit
-    // where the 32u grid fell, so a corner's centres sit in the corner and a corridor's zigzag by
-    // half a cell; pursuing that aims the bot at the inside of every turn and hands the reactive
-    // brakes a problem the line created. `lane::build` relaxes it toward straightness inside the room
-    // a pair of hull traces per point actually measures, so the line arcs *outward* before a corner
-    // the way a player does, and stays put wherever there is no room to move.
-    // The line the walk certifier, its freshness check and the aim point all share, so they cannot
-    // disagree about where the route is. Under `rtx_bot_lane` it is the shaped lane built above,
-    // re-anchored at the leg source and cut to the rollout's horizon; otherwise the raw cell centres.
-    let route_line: Option<Vec<Vec3>> = match &lane_targets {
-        Some(pts) => cur_leg.map(|leg| {
-            let src = graph.cell_origin(graph.link_source(leg));
-            std::iter::once(src).chain(arc_prefix(pts, WALK_ROUTE_ARC)).collect()
-        }),
-        None => walk_line_pts(graph, bot, cur_leg),
-    };
+    // The line the walk certifier, its freshness check and the aim point all share, built once so
+    // they cannot disagree about where the route is.
+    let route_line: Option<Vec<Vec3>> = walk_line_pts(graph, bot, cur_leg);
     if !walk_corridor {
         bot.walk = None; // another driver owns the frame, or this isn't ground to certify
     } else if on_ground {
@@ -1930,25 +1843,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     }
     // Airborne frames inside the corridor leave the latch alone: walking down a staircase leaves the
     // floor for a few ticks a riser, and the rollout already certified those gaps.
-    // A proven line owns the feet, and while one does the reactive brakes stand down.
-    //
-    // `bot.walk` is the pmove rollout's certificate. A lane is the other kind of proof: every one of
-    // its points was placed inside room measured to be *standable ground* either side (see
-    // `lane_room`), so the clearance the brakes below rediscover reactively — at speed, one stride
-    // from the lip, with nothing left to do but slam into reverse — was established before the bot
-    // set off. That is the whole argument for shaping a line instead of braking at what it runs into,
-    // and leaving the brakes armed under a lane would keep the fumbling the lane exists to remove:
-    // they fire on geometry near the *velocity*, which on any curve is exactly where a lane is about
-    // to turn away from.
-    //
-    // Only while actually on it. Shoved off — a body, a blast, a bad landing — the lane proves
-    // nothing about the ground under the bot, and the reflexes are the right owner again.
-    let on_lane = route_line
-        .as_ref()
-        .filter(|_| lane_targets.is_some())
-        .and_then(|pts| walksim::off_line(pts, origin))
-        .is_some_and(|off| off.lateral <= walksim::LATERAL_TOL && off.dz.abs() <= walksim::Z_TOL);
-    let walk_live = bot.walk.is_some() || on_lane;
+    let walk_live = bot.walk.is_some();
 
     let edge_push = if nf_ground && !walk_live {
         let near_push = nf_active.then(|| bot.near.as_ref()?.steer_push(origin)).flatten();

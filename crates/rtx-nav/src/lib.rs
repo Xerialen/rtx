@@ -9,7 +9,6 @@
 
 pub mod bsp;
 pub mod hazard;
-pub mod lane;
 pub mod math;
 pub mod navmesh;
 pub mod nearfield;
