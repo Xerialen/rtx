@@ -66,18 +66,31 @@ pub fn vertical_wish(s: &Sense, speed: f32) -> f32 {
     // So depth comes from air, and the route contributes only its heading — until the day the mesh
     // has cells through the water volume, at which point its `z` means something and this can
     // consult it again.
-    if s.submerged && s.air_above {
-        return speed;
+    let dz = s.aim.z - s.origin.z;
+    if s.air_above {
+        // Sky above: rise if under, and **never descend**, whatever the route says.
+        //
+        // The second half is what actually gets a bot out of a pool, and it is not obvious. Leaving
+        // water in QuakeWorld is `PM_CheckWaterJump`, and that fires at `waterlevel == 2` only —
+        // floating with the head clear. Rising while submerged reaches that state for a single frame
+        // and then loses it: the head breaks the surface, `submerged` goes false, the route's `z`
+        // (down on the pool floor, where the only cells are) commands a descent, and the bot sinks
+        // back under before the engine ever tests for the exit. It swims in place at the boundary
+        // until it drowns — which is exactly what it looks like from the outside.
+        //
+        // So depth is a ratchet while there is air overhead. The bot holds the surface, and the
+        // engine's own water-jump does the rest the moment it faces a bank.
+        return if s.submerged {
+            speed
+        } else {
+            (dz / CLIMB_FULL).clamp(0.0, 1.0) * speed
+        };
     }
 
     // No air overhead — roofed, under a bridge or in a tunnel. Now the route is the only information
-    // there is, so follow it: scaled so a climb of more than `CLIMB_FULL` asks for everything the
-    // swimmer has, and a small step asks proportionally less. Emerging from under the roof flips
-    // `air_above` and the rule above takes over.
-    //
-    // At the surface (not submerged) the same applies for the opposite reason: nothing is being
-    // asked of depth, so an exit ramp that climbs is followed and level water is held.
-    let dz = s.aim.z - s.origin.z;
+    // there is, so follow it, down as well as up: scaled so a climb of more than `CLIMB_FULL` asks
+    // for everything the swimmer has, and a small step asks proportionally less. Emerging from under
+    // the roof flips `air_above` and the ratchet above takes over.
     (dz / CLIMB_FULL).clamp(-1.0, 1.0) * speed
 }
 
@@ -127,11 +140,17 @@ mod tests {
         assert!(d < 0.0, "and a dive is still a dive: {d}");
     }
 
-    /// Wading — waist-deep but breathing — takes no vertical wish it was not asked for.
+    /// Once the head is out it stays out. Leaving water is `PM_CheckWaterJump`, which fires only at
+    /// `waterlevel == 2`; a bot that sinks the instant it surfaces never holds that state long
+    /// enough to be granted the exit, and swims at the boundary until it drowns.
     #[test]
-    fn a_swimmer_with_its_head_out_just_follows_the_route() {
-        assert_eq!(vertical_wish(&sense(false, true, 30.0, 0.0), 320.0), 0.0);
+    fn the_surface_is_a_ratchet_while_there_is_sky() {
+        // Floating, with the route far below on the pool floor: hold, do not chase it down.
+        assert_eq!(vertical_wish(&sense(false, true, 30.0, -200.0), 320.0), 0.0);
+        // A route that climbs out is still followed.
         assert!(vertical_wish(&sense(false, true, 30.0, 64.0), 320.0) > 0.0);
+        // Under a roof the ratchet is off — there the route is the only information there is.
+        assert!(vertical_wish(&sense(false, false, 30.0, -200.0), 320.0) < 0.0);
     }
 
     /// A gentle rise asks for a gentle climb, not everything the swimmer has.

@@ -103,6 +103,30 @@ pub fn report(map: &str, bsp: &Bsp, graph: &NavGraph) {
                     .join(", ")
             )
         };
+        // Where the surface actually is, and what sits beside it. A slice of navmesh at the
+        // waterline is only worth planting if it lands near the height of the dry ground around the
+        // pool — that is what lets ordinary Step links carry a swimmer out. From the floor, the
+        // climb is the pool's whole depth and no link can span it.
+        let mut surfaces: Vec<f32> = pool
+            .iter()
+            .step_by((pool.len() / 40).max(1))
+            .filter_map(|&c| waterline(bsp, graph.cell_origin(c)))
+            .collect();
+        surfaces.sort_by(f32::total_cmp);
+        let dry_near: Vec<f32> = (0..graph.cells.len() as u32)
+            .filter(|&c| !graph.cell_in_water(c))
+            .map(|c| graph.cell_origin(c))
+            .filter(|o| o.x >= lo.x - 96.0 && o.x <= hi.x + 96.0 && o.y >= lo.y - 96.0 && o.y <= hi.y + 96.0)
+            .map(|o| o.z)
+            .collect();
+        if let Some(&mid) = surfaces.get(surfaces.len() / 2) {
+            let reachable = dry_near.iter().filter(|&&z| (z - mid).abs() <= 40.0).count();
+            println!(
+                "      waterline z ~{mid:.0} (floor {:.0}, {:.0} deep); dry cells within a step of it: {reachable}",
+                lo.z,
+                mid - lo.z,
+            );
+        }
         // Name cells spread across the pool, marked roofed (R) or open (O), so a bot can be dropped
         // on each and the pool measured by what actually happens rather than by its geometry.
         let roofed_pts: Vec<String> = pool
@@ -138,4 +162,21 @@ fn probe_volume(bsp: &Bsp, graph: &NavGraph) -> usize {
             bsp.pointcontents(o + Vec3::Z * 32.0) == CONTENTS_WATER
         })
         .count()
+}
+
+/// The z where the water column above `p` ends, or `None` if it is roofed before it does.
+///
+/// This is the plane a surface slice would sit on. Stepped rather than bisected because a bridge
+/// deck sitting *in* the water splits the column, and the first ceiling above the bot is the one
+/// that matters to it.
+fn waterline(bsp: &Bsp, p: Vec3) -> Option<f32> {
+    let mut z = 0.0;
+    while z <= 1024.0 {
+        match bsp.pointcontents(p + Vec3::Z * z) {
+            CONTENTS_WATER => z += 8.0,
+            rtx_nav::bsp::CONTENTS_SOLID => return None,
+            _ => return Some(p.z + z),
+        }
+    }
+    None
 }
