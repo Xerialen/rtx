@@ -381,8 +381,11 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
             )
             if attempt.get("demo_t_s") is not None:
                 _num_or_null(attempt["demo_t_s"], f"{attempt_path}.demo_t_s")
-            # The lower bound only exists for attempts abandoned as impossible;
-            # an attempt that arrived has a real time instead.
+            # The lower bound exists for exactly one status: `abandoned`, the
+            # attempt the impossibility check cut short while it was still
+            # travelling. An attempt that arrived has a real time instead, and
+            # every other way of not arriving has no bound to report — it
+            # never had one, so a number there would be invented.
             if "min_possible_s" in attempt:
                 _num_or_null(attempt["min_possible_s"], f"{attempt_path}.min_possible_s")
                 if attempt["status"] in {"passed", "slow"}:
@@ -390,11 +393,29 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
                         f"{attempt_path}.min_possible_s",
                         "an attempt that arrived carries its time, not a bound",
                     )
+                elif attempt["status"] != "abandoned":
+                    _fail(
+                        f"{attempt_path}.min_possible_s",
+                        "a bound only exists for an attempt abandoned as impossible",
+                    )
+            elif attempt.get("status") == "abandoned":
+                _fail(
+                    f"{attempt_path}.min_possible_s",
+                    "an abandoned attempt without its bound has thrown away"
+                    " the only thing it knew",
+                )
             if attempt["status"] not in {
                 "passed",
                 "slow",
                 "fell",
                 "timeout",
+                # The impossibility bound cut this attempt short while it was
+                # still travelling — a weaker claim than a timeout, and the
+                # bound it could not have beaten (`min_possible_s`) is the
+                # whole reason it is not folded into `timeout`. Unlike
+                # `rocketjump` and `offroute` below, this is not void: it is
+                # a real failure to arrive, same as `timeout`, just cut early.
+                "abandoned",
                 "stall",
                 "loop",
                 "detoured",

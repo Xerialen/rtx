@@ -116,23 +116,30 @@ stops before T1 when T0 import is missing or FAIL.
   "verdict": "FAIL"
 }
 ```
-- `attempts[].status`: `passed|slow|fell|timeout|stall|loop|detoured|rocketjump|offroute|died`.
+- `attempts[].status`: `passed|slow|fell|timeout|abandoned|stall|loop|detoured|rocketjump|offroute|died`.
   `time_s` exactly for the two arriving statuses (`passed`, `slow`), else null. Attempt count
   and order are preserved. `demo_t_s` is the moment the attempt began on the run's
-  own demo clock. `timeout` covers three ways of not arriving: running the clock
-  out, being cut short once reaching the target in time became impossible (then
-  the attempt also carries `min_possible_s`, the bound it could not have beaten),
-  and being cut short past the time limit with the bot no longer moving. A cut
-  attempt is indistinguishable from one that never would have arrived, which is
-  the price of not waiting — `run.give_up_grace_s` sets how many seconds past
-  the limit the bot is still allowed to aim for. `rocketjump` is neither: the
-  drill handed the bot no rockets, so the jump was not sanctioned on that route,
-  and the bot picked some up and took it anyway. The attempt answered a
-  different question and counts as neither an arrival nor a failure to arrive.
-  `offroute` is the same shape, for a scenario carrying a `[route]` table: the
-  bot reached the target without passing all of its waypoints, in order, on the
-  way — it answered where, never how, and the attempt is void rather than a
-  pass or a failure to arrive.
+  own demo clock. `timeout` now covers two ways of not arriving: running the
+  clock out, and being cut short past the time limit with the bot no longer
+  moving. A cut attempt is indistinguishable from one that never would have
+  arrived, which is the price of not waiting — `run.give_up_grace_s` sets how
+  many seconds past the limit the bot is still allowed to aim for.
+  `abandoned` is the third way an attempt can end early, and it is not folded
+  into `timeout`: it is cut the moment reaching the target in time becomes
+  impossible, while the bot is still travelling. That is a weaker claim than a
+  timeout — the bot might well have arrived a second or two late — so it reads
+  as "we stopped this" rather than "it failed", and it carries `min_possible_s`,
+  the bound it could not have beaten, so the fact that was cut short is visible
+  instead of collapsing into an ordinary non-arrival. `min_possible_s` is
+  present exactly for `abandoned` attempts. `rocketjump` is neither an arrival
+  nor a failure to arrive, and neither is `abandoned` a member of that group:
+  the drill handed the bot no rockets, so the jump was not sanctioned on that
+  route, and the bot picked some up and took it anyway. The attempt answered a
+  different question and counts as void. `offroute` is the same shape, for a
+  scenario carrying a `[route]` table: the bot reached the target without
+  passing all of its waypoints, in order, on the way — it answered where,
+  never how, and the attempt is void rather than a pass or a failure to
+  arrive.
 - A scenario may carry `requires` instead of a verdict:
 
   ```json

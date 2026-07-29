@@ -31,7 +31,7 @@
       "demo_t_s": 30.5
      },
      {
-      "status": "timeout",
+      "status": "abandoned",
       "time_s": null,
       "demo_t_s": 52.0,
       "min_possible_s": 6.8

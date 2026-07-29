@@ -1044,6 +1044,22 @@ def selftest() -> None:
         assert offroute_drill["results"][1]["time_s"] is None
         assert offroute_drill["arrived"] == 1
         assert offroute_drill["verdict"] == "FAIL"
+        # abandoned is a real non-arrival (unlike offroute), just one the
+        # impossibility bound cut short instead of the clock: time_s stays
+        # null like every other non-arriving status, but min_possible_s must
+        # survive the trip through so the dashboard can put the bound on the
+        # cell face instead of leaving it to read like an ordinary timeout.
+        abandoned = next(run for run in runs if run["branch"] == "abandoned-drill")
+        abandoned_drill = abandoned["levels"]["t1"]["data"]["drills"][0]
+        assert [result["status"] for result in abandoned_drill["results"]] == [
+            "passed", "abandoned", "abandoned"
+        ]
+        assert [result["time_s"] for result in abandoned_drill["results"][1:]] == [None, None]
+        assert [result["min_possible_s"] for result in abandoned_drill["results"][1:]] == [
+            8.4, 12.3
+        ]
+        assert abandoned_drill["arrived"] == 1
+        assert abandoned_drill["verdict"] == "FAIL"
         rich = next(run for run in runs if run["branch"] == "evidence-rich")
         t1 = rich["levels"]["t1"]
         categories = [drill["category"] for drill in t1["data"]["drills"]]

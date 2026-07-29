@@ -230,6 +230,13 @@
   }
   .attempt.fell { background: var(--r-airoff); }
   .attempt.timeout { background: var(--bad); }
+  /* abandoned is timeout's weaker cousin, not a different kind of thing: the
+     impossibility bound cut the attempt while it was still travelling, so it
+     is a real non-arrival, not a void one — a plain fill, not rocketjump's or
+     offroute's stripe. Blending bad with muted (rather than the solid alarm
+     timeout gets) is the "we stopped this" reading; it stays a fill so it
+     can't be mistaken for withheld's dashed emptiness either. */
+  .attempt.abandoned { background: color-mix(in srgb, var(--bad) 50%, var(--muted)); }
   .attempt.stall { background: var(--r-pre); }
   .attempt.loop { background: var(--r-sj); color: var(--ground); }
   .attempt.detoured { background: var(--r-airtime); }
@@ -255,7 +262,9 @@
     background: repeating-linear-gradient(135deg, var(--good) 0 2px,
       color-mix(in srgb, var(--good) 15%, var(--warn)) 2px 4px);
   }
-  .legend .timeout { background: var(--bad); } .legend .stall { background: var(--r-pre); }
+  .legend .timeout { background: var(--bad); }
+  .legend .abandoned { background: color-mix(in srgb, var(--bad) 50%, var(--muted)); }
+  .legend .stall { background: var(--r-pre); }
   .legend .loop { background: var(--r-sj); } .legend .detoured { background: var(--r-airtime); }
   .legend .rocketjump { background: repeating-linear-gradient(135deg,
     var(--warn) 0 5px, var(--bad) 5px 10px); }
@@ -518,6 +527,7 @@ const TERM_TITLES = {
   "slow": "nådde målet, men långsammare än gränstiden",
   "fell": "föll från höjd på vägen",
   "timeout": "hann inte fram",
+  "abandoned": "fortfarande på väg när försöket avbröts, eftersom ankomst inom gränstiden hade blivit omöjlig — tidigast möjliga ankomst visas; inte samma sak som att aldrig komma fram",
   "stall": "stall-vakten löste ut",
   "loop": "fastnade i omtags-loop (goto gavs om 6 gånger utan framkomst)",
   "detoured": "tog omväg i stället för hoppet",
@@ -755,6 +765,12 @@ function drillPasses(drill) {
 function resultLabel(result) {
   const arrived = result.status === "passed" || result.status === "slow";
   if (arrived && typeof result.time_s === "number") return result.time_s.toFixed(2) + "s";
+  // abandoned carries the one fact that separates it from timeout: the bound
+  // it could not have beaten. Showing the bare word "abandoned" would erase
+  // that difference right where it matters most; the tooltip says the rest.
+  if (result.status === "abandoned" && typeof result.min_possible_s === "number") {
+    return "≥" + result.min_possible_s.toFixed(1) + "s";
+  }
   return result.status || "okänt";
 }
 
@@ -873,7 +889,8 @@ function renderT1() {
     '<div class="legend" aria-label="Utfallsklasser"><span><i class="passed"></i>' + term("passed") +
     '</span><span><i class="slow"></i>' + term("slow") +
     '</span><span><i class="fell"></i>' + term("fell") + '</span><span><i class="timeout"></i>' +
-    term("timeout") + '</span><span><i class="stall"></i>' + term("stall") +
+    term("timeout") + '</span><span><i class="abandoned"></i>' + term("abandoned") +
+    '</span><span><i class="stall"></i>' + term("stall") +
     '</span><span><i class="loop"></i>' + term("loop") + '</span><span><i class="detoured"></i>' +
     term("detoured") + '</span><span><i class="rocketjump"></i>' + term("rocketjump") +
     '</span><span><i class="offroute"></i>' + term("offroute") +

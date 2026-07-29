@@ -135,9 +135,12 @@ A `goto` scenario declares:
   which is where it is worth least. Straight-line understates the real path and the ceiling is above
   anything the map has produced, so it only ever fires when arriving in time is
   genuinely out of reach; the attempt records `min_possible_s`, the bound it
-  could not have beaten. **Wedged**: the bound above goes quiet when a bot is
-  stuck a few units from the target, so past the time limit an attempt that
-  covers less than 64 units in the window ends too.
+  could not have beaten, and ends as `abandoned` rather than `timeout` — it was
+  still travelling when this cut it off, which is a weaker claim than a bot
+  that stopped moving or ran the clock out. **Wedged**: the bound above goes
+  quiet when a bot is stuck a few units from the target, so past the time
+  limit an attempt that covers less than 64 units in the window ends too, as
+  `timeout`.
 
   Measure ground *covered*, never ground *gained*. An earlier version measured
   distance to the target and punished routes that swing wide before they close:
@@ -145,11 +148,16 @@ A `goto` scenario declares:
   is from a human, to a bare `timeout`. Both tests also sit after the outcome
   classifications, so falling, dying and detouring keep their own names.
 
-  The trade is real: an attempt cut before it arrives is recorded as a timeout,
-  so a bot that would have got there late becomes indistinguishable from one
-  that never gets there at all. Widen `give_up_grace_s` to buy that back — on
-  DM3 the measured arrivals sit between 0.8 and 16 seconds past their limit, so
-  five seconds keeps the near misses and drops the hopeless ones.
+  The give-up decision itself does not change: an attempt is still cut the
+  moment it can no longer succeed, not when its clock runs out, and that
+  attempt might well have got there a second or two late. What changed is
+  what the cut is called. A wedged attempt is still recorded as a plain
+  timeout, indistinguishable in the report from one that genuinely never
+  would have arrived — widen `give_up_grace_s` to buy that back, and on DM3
+  the measured arrivals sit between 0.8 and 16 seconds past their limit, so
+  five seconds keeps the near misses and drops the hopeless ones. An
+  impossible-bound attempt no longer shares that fate: it is `abandoned`, and
+  the bound it carries is the fact that would otherwise have been lost.
 - Optional `run.arrive_z` (default 48). `arrive_box` bounds the square in X and
   Y; this bounds the height inside it. Without it the box is a shaft, and half
   the drills on dm3 have walkable ground on another floor inside their own
@@ -177,9 +185,11 @@ A `goto` scenario declares:
 
 The generic engine performs stop, hold, teleport, prep, goto, polling, re-goto,
 and outcome classification. Outcomes are `passed`, `slow`, `fell`, `timeout`,
-`stall`, `loop`, `detoured`, `rocketjump`, `offroute`, or `died`. `passed` and
-`slow` are the two ways of arriving and both carry a time; the rest never
-arrived and carry none.
+`abandoned`, `stall`, `loop`, `detoured`, `rocketjump`, `offroute`, or `died`.
+`passed` and `slow` are the two ways of arriving and both carry a time; the
+rest never arrived and carry none. `abandoned` carries `min_possible_s`
+instead, the bound it could not have beaten — it is a failure to arrive, the
+same as `timeout`, not a void outcome like `rocketjump` and `offroute` below.
 
 ### Route gates
 

@@ -97,7 +97,10 @@ def _outcome(
     # here, it cannot reach the target before the deadline. Straight-line
     # distance understates the real path and the ceiling is above any speed
     # measured on this map, so the bound only ever fires when arriving is
-    # genuinely out of reach.
+    # genuinely out of reach. Reported as `abandoned`, not `timeout`: the bot
+    # was still travelling when this cut it off, and might well have arrived
+    # a second or two late — that is a different statement than the other
+    # two, so it gets its own name and carries the bound it could not beat.
     #
     # Wedged — the bound above goes quiet when a bot is stuck a few units from
     # the target, because the remaining distance is trivial. Ground covered
@@ -243,8 +246,13 @@ def _outcome(
         if ceiling > 0 and not inside_column(position):
             earliest = (now - began) + math.dist(position[:2], target[:2]) / ceiling
             if earliest > deadline:
+                # This attempt was still travelling — it did not stop moving
+                # and its clock had not run out — the moment the bound above
+                # said arriving in time had become impossible. That is a
+                # weaker claim than a timeout, so it gets its own name rather
+                # than being folded into the two ways of never arriving.
                 return {
-                    "status": "timeout",
+                    "status": "abandoned",
                     "time_s": None,
                     "demo_t_s": demo_t,
                     "min_possible_s": round(earliest, 2),
