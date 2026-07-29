@@ -127,6 +127,67 @@ pub fn report(map: &str, bsp: &Bsp, graph: &NavGraph) {
                 mid - lo.z,
             );
         }
+        // Does a route out of the pool leave the water at the first opportunity, or swim on next to
+        // dry land because the planner thinks water is nearly as fast? Ground travel is bunnyhopped
+        // at 600-800 ups against a swim's 224, so a route that lingers is paying three times over.
+        // Reported as the share of the journey spent wet.
+        let goal = (0..graph.cells.len() as u32)
+            .filter(|&c| !graph.cell_in_water(c))
+            .min_by_key(|&c| {
+                let d = (graph.cell_origin(c) - graph.cell_origin(pool[pool.len() / 2])).length();
+                ((d - 900.0).abs() * 10.0) as i64 // roughly 900u away, so the route has a choice
+            });
+        // Dry cells once, for the bank test below.
+        let dry_cells: Vec<(Vec3, u32)> = (0..graph.cells.len() as u32)
+            .filter(|&c| !graph.cell_in_water(c))
+            .map(|c| (graph.cell_origin(c), c))
+            .collect();
+        if let Some(goal) = goal {
+            let costs = rtx_nav::navmesh::LinkCosts::default();
+            // Banded, because that is what the game plans with (`rtx_bot_bandplan`, on by default)
+            // and it prices water very differently: entering it collapses the speed band to a swim,
+            // so the planner already knows it is giving up its momentum. Measuring the unbanded path
+            // would be measuring a search the bot never runs.
+            if let Some(path) = graph
+                .find_path_banded(pool[pool.len() / 2], goal, rtx_nav::navmesh::MAX_SPEED, &costs)
+                .map(|r| r.links)
+                .or_else(|| graph.find_path(pool[pool.len() / 2], goal, &costs))
+            {
+                let (mut wet, mut total) = (0.0f32, 0.0f32);
+                for &li in &path {
+                    let l = &graph.links[li as usize];
+                    let d = (graph.cell_origin(l.to) - graph.cell_origin(l.from)).length();
+                    total += d;
+                    if graph.cell_in_water(l.to) {
+                        wet += d;
+                    }
+                }
+                // The part that is actually a complaint: swimming *alongside* land. A long lake
+                // crossing being mostly wet is honest; swimming past a bank you could have climbed
+                // onto and then run along is the planner mispricing water against ground.
+                let mut beside = 0.0f32;
+                for &li in &path {
+                    let l = &graph.links[li as usize];
+                    if !graph.cell_in_water(l.to) {
+                        continue;
+                    }
+                    let o = graph.cell_origin(l.to);
+                    let has_bank = dry_cells
+                        .iter()
+                        .any(|&(p, _)| (p - o).truncate().length() <= 64.0 && (p.z - o.z).abs() <= 64.0);
+                    if has_bank {
+                        beside += (o - graph.cell_origin(l.from)).length();
+                    }
+                }
+                println!(
+                    "      route out ({} legs, {:.0}u): {:.0}% swum, of which {:.0}% was alongside reachable bank",
+                    path.len(),
+                    total,
+                    100.0 * wet / total.max(1.0),
+                    100.0 * beside / wet.max(1.0),
+                );
+            }
+        }
         // Name cells spread across the pool, marked roofed (R) or open (O), so a bot can be dropped
         // on each and the pool measured by what actually happens rather than by its geometry.
         let roofed_pts: Vec<String> = pool
