@@ -1054,21 +1054,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // But never sustain the chain up an ascending stair run — `runway`'s climb stop keeps *entry* off
     // stairs, yet a chain carried onto a stairway (a wall-hugging spiral, say) would otherwise keep
     // hopping and weave off the treads. Drop to the walk, whose near-field glide tracks the steps.
-    //
-    // `rtx_bot_chain` drops the curvature half of that. It is the single largest cost measured on the
-    // suite: dm3's corridors wind almost everywhere, so the chain keeps dying, and every grounded
-    // frame QuakeWorld charges `speed * friction * dt` -- about 40 ups a frame at 500. The bot spends
-    // 5.7 ground frames per hop on dm3 against ~2 on the straight 100m runway, which is the whole of
-    // its flat 15% speed deficit and most of its "wall events" (a two-frame friction bite crosses the
-    // 60 ups threshold). A human bhops around corners; the air steering exists to turn the chain, and
-    // refusing to hop is a far more expensive answer to a bend than turning through it.
-    //
-    // The ascent gate stays either way: a stair run really is different, and a chain weaving across
-    // treads leaves them.
     let bhop_sustain = matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
         && (goal_dist > 150.0 || planned_band >= 1)
         && !ascent_ahead
-        && (host.cvar_bool(c"rtx_bot_chain") || !winding_ahead);
+        && !winding_ahead;
     // Ground zigzag: a corridor too short for a hop ([`bhop::RUNWAY_ENGAGE`]) but straight and long
     // enough ([`bhop::ZIGZAG_ENGAGE`]) to gain speed from the circle-strafe alone. The controller
     // hands off to the hop cycle if `bhop_entry` opens up mid-run, and `bhop_veto` (which includes
@@ -1283,15 +1272,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // under the guided policy the controller flies and take only hops whose *predicted* landing stays
     // on the route. Planned on a grounded frame from the live state, held across the flight, re-planned
     // each landing; `None` off ledge corridors or when boxed. Gated by `rtx_bot_hopplan`.
-    // `rtx_bot_hopcheck` widens this from ledge corridors to *every* ground leg. The gate existed
-    // because the rollout fan traces the hull many times — but it only runs on grounded frames, and a
-    // bhopping bot is airborne 79-94% of the time, so it fires once or twice a second rather than per
-    // frame, and it early-exits on the first candidate that lands well. The caution cost more than it
-    // saved: a route whose drop is not ledge-flagged gets no check at all, and the bot leaps blind.
     let hop_mode = host.cvar_bool(c"rtx_bot_hopplan")
         && !bhop_veto
         && matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
-        && (host.cvar_bool(c"rtx_bot_hopcheck") || ledge_soon(graph, &bot.route, bot.route_pos, bot_cell));
+        && ledge_soon(graph, &bot.route, bot.route_pos, bot_cell);
     // Plan only on a grounded frame moving fast enough to actually hop — the rollout fan traces the
     // live BSP hull many times, so planning every crawling walk frame would blow the frame budget.
     // Mid-air the plan stays *latched* for the whole flight: the rollout committed to this landing, so
@@ -1345,17 +1329,6 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             None
         };
     }
-    // Refuse the leap when the rollout could find nowhere good to land.
-    //
-    // Until now the hop plan only ever *guided* a jump: no plan meant no guidance, and the bot
-    // hopped anyway. So on a route whose drop is not ledge-flagged, the bot leaps at 500 ups with
-    // nothing having asked where it comes down — and on the suite's worst segments it lands in a pit
-    // fifty units below the route and spends the next fifteen seconds climbing out, covering four
-    // times the human's distance. Checking the landing is worth nothing if the answer is ignored.
-    //
-    // Only on the ground, and only under `rtx_bot_hopcheck` where every ground leg is checked: with
-    // the narrow ledge-corridor gate a missing plan usually just means "not that kind of ground".
-    let hop_unsafe = host.cvar_bool(c"rtx_bot_hopcheck") && hop_mode && on_ground && speed > 60.0 && bot.hop.is_none();
     // Airborne frames leave `bot.hop` untouched — the plan stays latched for the whole flight.
     let hop_plan = bot.hop;
     let hop_bearing = hop_plan.map(|pl| yaw_of(pl.aim.xy() - origin.xy()));
@@ -1378,37 +1351,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             maxspeed: if maxspeed > 0.0 { maxspeed } else { 320.0 },
             friction: if friction > 0.0 { friction } else { 4.0 },
             stopspeed: if stopspeed > 0.0 { stopspeed } else { 100.0 },
-            profile: crate::bot::human_profile::HumanMovementProfile {
-                proportional_turn: host.cvar_bool(c"rtx_bot_sweep"),
-                // The speed the ground run-up must reach before the bot is allowed to leap.
-                // Measured to matter more than anything else on the suite: the stock 475 sits *at*
-                // QuakeWorld's ground friction equilibrium, so the bot grinds along at 466 trying to
-                // earn a jump that is itself the only way past 600. 0 keeps the profile's value.
-                // How much clear space ahead the bot demands before it will leave the ground, as a
-                // fraction of a hop's flight. At the stock 0.7 a bot at 466 ups wants 220 units of
-                // straight clearance -- which dm3, a map of corners and 300-unit rooms, almost never
-                // offers, so it stays grounded at the friction equilibrium instead of hopping. The
-                // air steering exists precisely so a hop can turn; a human bunnyhops *at* a wall and
-                // curves away from it. 0 keeps the profile's value.
-                wall_hold_frac: {
-                    let v = host.cvar(c"rtx_bot_wall_hold");
-                    if v > 0.0 {
-                        v
-                    } else {
-                        crate::bot::human_profile::HumanMovementProfile::calibrated().wall_hold_frac
-                    }
-                },
-                prestrafe_target: {
-                    let v = host.cvar(c"rtx_bot_launch_speed");
-                    if v > 0.0 {
-                        v
-                    } else {
-                        crate::bot::human_profile::HumanMovementProfile::calibrated().prestrafe_target
-                    }
-                },
-                ..crate::bot::human_profile::HumanMovementProfile::calibrated()
-            }
-            .safe(),
+            profile: crate::bot::human_profile::HumanMovementProfile::calibrated().safe(),
         };
         // A committed speed jump aims at its gap; otherwise steer toward the racing-line look-ahead
         // (race mode, when a line exists) or a *speed-scaled* corridor look-ahead — ~0.6 s of travel
@@ -1534,10 +1477,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 // route — so it keeps the chain alive across the ledge where `ascent_ahead`/`runway`
                 // would otherwise drop to a walk.
                 sustain: bhop_sustain || hop_plan.is_some(),
-                // A leap the rollout could find no landing for is not taken. `veto` is the only
-                // input that stops a hop, and refusing here costs a stride of speed where hopping
-                // blind costs the route.
-                veto: bhop_veto || hop_unsafe,
+                veto: bhop_veto,
                 committed: sj_active,
                 carry: carry || hop_plan.is_some(),
                 hold_jump: sj_hold,
@@ -2043,12 +1983,6 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         }
     }
 
-    // Both reactive brakes, under one switch, so the question "are these helping?" can be asked of
-    // the suite instead of argued about. Each slams the wish into full reverse; the human reference
-    // runs show *zero* reverse frames while the bot's worst segments show hundreds, and a bot that
-    // brakes at an edge it was about to turn away from is the fumbling this whole effort is about.
-    let brakes_armed = host.cvar_bool(c"rtx_bot_brakes");
-
     // Hazard-edge brake: if the near-field sees a fatal drop or lava edge close ahead along the
     // *velocity* — nearer than the bot can bleed its speed before the lip — hard-brake to a stop rather
     // than sliding or hopping into it. Unlike the geometric ledge brake below this is hazard-aware
@@ -2062,7 +1996,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // Also off while a walk plan is live: the rollout proved this line keeps its feet on the floor for
     // longer than the certificate is trusted, and the deviation check above re-arms this the very frame
     // that proof stops covering the ground under the bot.
-    if brakes_armed && nf_active && on_ground && !jump_at_hand && !walk_live && speed > LEDGE_MIN_SPEED {
+    if nf_active && on_ground && !jump_at_hand && !walk_live && speed > LEDGE_MIN_SPEED {
         if let Some(nf) = bot.near.as_ref() {
             let vdir = v_xy.normalize_or_zero();
             let stop =
@@ -2085,8 +2019,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     if let Some(bsp) = bsp {
         // A certified pursuit cuts stair corners on purpose, so the misalignment this brake keys on is
         // exactly what a proven line looks like — it must not fire under one.
-        let braking = brakes_armed
-            && on_ground
+        let braking = on_ground
             && !on_air
             && bot.bhop.phase == bhop::Phase::Off
             && !bhop_active

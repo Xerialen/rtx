@@ -92,42 +92,6 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // down — they become the fallback for "no trackable line exists" rather than the first
         // responder, which is what made a bot brake mid-stride on a stair diagonal. See `bot::walksim`.
         ("rtx_bot_walkplan", Bool(true)),
-        // Air-strafe by sweeping toward the bearing rather than slamming at it. The calibrated gait
-        // requests the physical maximum turn rate on every frame regardless of how far off it is,
-        // which is a bang-bang controller: it overshoots, reverses, overshoots back, at a measured
-        // 5.5 reversals a second. A human travelling above 500 ups turns at 339 deg/s and reverses
-        // 1.9 times a second (measured over 122 segments of the dm3 4-on-4). Off by default until it
-        // beats the calibrated gait on the suite. See `human_profile::proportional_turn`.
-        ("rtx_bot_sweep", Bool(false)),
-        // The two reactive brakes (hazard-edge and ledge), which both answer danger by slamming the
-        // wish into full reverse. On by default -- they are the only thing standing between a fast
-        // bot and a pit when nothing has proven the line. Turn off to measure what they cost: human
-        // reference runs have zero reverse frames, and the bot's worst segments have hundreds.
-        ("rtx_bot_brakes", Bool(true)),
-        // Check where a hop lands on *every* ground leg, not just on ledge-flagged corridors -- and
-        // refuse the leap when the rollout finds nowhere good to come down. Without it a route whose
-        // drop is not ledge-flagged is jumped blind at 500 ups; on the suite's worst segments the bot
-        // lands in a pit below the route and covers four times the human's distance climbing out.
-        // The old gate was priced as if the rollout ran every frame -- it runs only on grounded ones,
-        // which for a bot airborne 79-94% of the time is once or twice a second. See `bot::hopsim`.
-        ("rtx_bot_hopcheck", Bool(false)),
-        // Keep the hop chain alive through a winding corridor instead of dropping to a walk at every
-        // bend. Measured cost of dropping it: 5.7 grounded frames per hop on dm3 against ~2 on the
-        // straight 100m runway, and QuakeWorld charges roughly 40 ups of friction per grounded frame
-        // at 500 ups. A human bunnyhops around corners -- the air steering is there to turn the
-        // chain, and walking is a very expensive way to handle a bend. See `bhop_sustain`.
-        ("rtx_bot_chain", Bool(false)),
-        // Ground speed the run-up must reach before the bot may launch into the hop chain. 0 = the
-        // calibrated profile's 475, which sits *at* QuakeWorld's ground friction equilibrium: the bot
-        // spends 40% of its frames grinding at 466 to earn a jump that is the only way past 600.
-        // Launching earlier trades a slower takeoff for a far longer airborne fraction.
-        ("rtx_bot_launch_speed", Float(0.0)),
-        // Clear space ahead the bot demands before leaving the ground, as a fraction of one hop's
-        // flight. 0 = the calibrated 0.7, which at 466 ups asks for 220 units of straight clearance.
-        // Measured as the reason a bot on dm3 is airborne only 45% of the time against 94% on the
-        // straight 100m runway -- and airborne fraction is what decides whether it travels at the
-        // ground friction equilibrium (~470) or at bunnyhop speed (700+).
-        ("rtx_bot_wall_hold", Float(0.0)),
         // A bot's health weights how willing it is to shortcut through lava/slime: hurt bots detour,
         // healthy (or armored, or biosuited) ones clip the corner. `0` prices every bot as a bare
         // spawn — hazards still cost, but the same to everyone. See `bot::bot_hazard_strength`.

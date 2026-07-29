@@ -573,27 +573,6 @@ impl Bhop {
             }
             return max_turn_strafe(i.v_xy, self.sigma, a_max);
         }
-        // Sweep instead of oscillate: turn at a rate set by how far off the bearing we are, and
-        // reverse only when the error has genuinely crossed to the other side of the band.
-        //
-        // The alternative below asks for `omega_base` — 720 deg/s, which *is* the physical cap — on
-        // every frame regardless of error. That makes it bang-bang: it slams the velocity at the
-        // bearing, overshoots the deadband, reverses, slams back, at a measured 5.5 reversals a
-        // second. Easing off as the error closes removes the overshoot that drives the cycle, and
-        // what is left is one continuous arc per correction — which is what the demos show a human
-        // flying, at 339 deg/s and 1.9 reversals a second while travelling.
-        //
-        // The floor matters as much as the proportional term: a QuakeWorld air-strafe only gains
-        // speed while it is *turning*, so a controller that converges to zero turn rate converges to
-        // zero acceleration. The floor is the gentle weave a player keeps up on a straightaway.
-        if profile.proportional_turn {
-            if err * self.sigma < -profile.lobe_deadband {
-                self.sigma = -self.sigma;
-                self.flips += 1;
-            }
-            let omega = (profile.turn_floor + err.abs() * profile.error_gain).min(omega_gain_max(speed, a_max, dt));
-            return strafe_rate(i.v_xy, self.sigma, omega, a_max, dt);
-        }
         if self.air_phase_locked {
             // Four symmetric, unequal lobes put three human/optimizer-style direction changes at
             // phases that return both heading and first-order lateral displacement to zero. Carrying
