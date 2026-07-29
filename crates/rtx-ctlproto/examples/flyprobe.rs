@@ -171,6 +171,27 @@ fn main() {
         return;
     }
 
+    // at <x> <y> <z> — the nearest navmesh cell to a world point, for "is there any mesh here".
+    if mode == "at" {
+        let pos: Vec3 = [
+            argv[1].parse().unwrap(),
+            argv[2].parse().unwrap(),
+            argv[3].parse().unwrap(),
+        ];
+        match c.req(Cmd::Cell { pos }, &mut |_| {}) {
+            Ok(Resp::Cell(cl)) => println!(
+                "nearest cell {} at {:?} (dz {:.0}, dxy {:.0}) ledge={}",
+                cl.cell,
+                cl.origin,
+                cl.origin[2] - pos[2],
+                ((cl.origin[0] - pos[0]).powi(2) + (cl.origin[1] - pos[1]).powi(2)).sqrt(),
+                cl.ledge
+            ),
+            other => println!("Cell -> {other:?}"),
+        }
+        return;
+    }
+
     if mode == "cell" {
         let id: u32 = argv[1].parse().expect("cell id");
         match c.req(Cmd::CellById { cell: id }, &mut |_| {}) {
