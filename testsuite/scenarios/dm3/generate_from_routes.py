@@ -125,9 +125,12 @@ ROUTE_REQUIRES: dict[str, dict[str, str]] = {
 # while every route still keeps enough room for a bot that is not replaying
 # the owner's exact path pixel for pixel.
 #
-# Five routes have no owner demo (cell_503_194, cell_724_503, hexagon_sod_tur,
-# ra_climb, sng_mega) and are withheld from this table on purpose: a waypoint
-# not anchored on a real run is a guess, and the contract forbids guessing.
+# This table covers the routes the manifest describes. sng_mega is gated too,
+# but in its own hand-written file rather than here: it is a *leg* of a longer
+# route the owner recorded, so its waypoints come from the segment of that run
+# between the drill's own start and target. The two cell
+# probes carry no waypoints at all, and that is deliberate — a cell probe is
+# the pair of cells, so there is no path to assert a different version of.
 # Half-width of every waypoint cube, in units. One value for all routes: the
 # per-route numbers this started with were the smallest that still failed a
 # straight line from start to target, and that measure turned out to be nearly

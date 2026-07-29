@@ -15,5 +15,13 @@ pause_s = 0.5
 arrive_box = 60
 regoto_max = 6
 
+# No [route] here, and that is not an omission. A cell probe asserts one
+# navmesh cell transition — it IS the pair of cells, which is why it is an
+# upstream merge criterion rather than a route someone runs. The waypoints on
+# every other drill exist to stop an arrival that took a different path from
+# counting; here there is no path to take a different version of, and a gate
+# built from the cells would be built out of the very thing it is meant to
+# check.
+
 [threshold]
 required = 10

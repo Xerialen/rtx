@@ -133,9 +133,9 @@ stops before T1 when T0 import is missing or FAIL.
 {
   "scenarios": [
     {
-      "name": "ra_climb",
+      "name": "ralow_to_ratop",
       "category": "grunddrill",
-      "place": "RA-ingången → RA-plattan (uppför trapporna)",
+      "place": "RA låg → RA",
       "attempts": [
         {"status": "passed", "time_s": 5.37, "demo_t_s": 12.5},
         {"status": "slow", "time_s": 9.02, "demo_t_s": 27.4},
