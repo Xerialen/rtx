@@ -26,7 +26,7 @@
 //! opinion about it. Below the reserve, with air overhead to reach, surfacing outranks everything;
 //! one breath refills the tank and the crossing resumes.
 
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 
 /// What the bot can perceive about being in water this frame.
 #[derive(Clone, Copy, Debug)]
@@ -102,6 +102,83 @@ pub fn vertical_wish(s: &Sense, speed: f32) -> f32 {
 fn seek(target_z: f32, from_z: f32, speed: f32) -> f32 {
     ((target_z - from_z) / CLIMB_FULL).clamp(-1.0, 1.0) * speed
 }
+
+/// The wish, deflected around solid the engine would otherwise pin the bot against.
+///
+/// Everything above composes a wish out of the *route*, which knows where the bot should end up and
+/// nothing about what stands in the way. `PM_WaterMove` clips velocity against the planes it hits,
+/// so a wish pressed square into a corner nets nothing: the bot asks at full effort, the engine
+/// subtracts all of it, and the position does not change. Measured on dm3's east rim — `up` held at
+/// 800 into the underside of the lip with `z` pinned to the decimal, and `forwardmove` 740 square
+/// into the wall at x=1888 at zero speed for seconds, until the stuck watchdog force-jumped it free.
+///
+/// On the ground this is already handled: the bhop controller traces a forward wall probe and
+/// carves. In water there was nothing, so this is that missing sense — one deflection rather than a
+/// rule per obstacle. Press into a roof and the vertical is dropped, because rising is not
+/// available here; press into a wall and the horizontal slides along it toward open water. What
+/// falls out is what a person does at a submerged lip: clear it first, *then* rise.
+///
+/// **What is lost is the part heading *into* the surface, and only that.** The tempting reading of
+/// "blocked" is "there is solid within reach", and it is wrong twice over. It is a binary test on the
+/// distance to a wall — a quantity the bot's own motion changes, so it clears, the bot swims at the
+/// wall, it blocks, the bot turns off, it clears again, and the view snaps back and forth. And it
+/// condemns walls that cost nothing: dm3's flooded pentagram tunnel is one to two hull widths across,
+/// so *every* frame in it has solid within reach, and steering away from that turned a 6.4s crossing
+/// into 14.7s and a failure. A wall you swim parallel to takes nothing from you.
+///
+/// So the question is asked of the plane, not the distance. `wish · n` is exactly the effort the
+/// engine is about to subtract; removing it leaves the bot sliding along the surface with everything
+/// else intact, which in a corridor is the whole wish and against a flat wall is the tangential part.
+/// It is zero when running parallel, so a tunnel is untouched, and it is continuous in both position
+/// and heading, so nothing flips.
+///
+/// `trace(a, b)` gives the fraction of `a → b` the player hull covers before hitting solid (1.0 for a
+/// clear line) and the surface normal at impact, oriented back against the segment. Pure over that
+/// oracle, so the tests below can pose exact geometry.
+pub fn deflect(trace: &impl Fn(Vec3, Vec3) -> (f32, Vec3), origin: Vec3, wish: Vec3, waypoint: Vec3) -> Vec3 {
+    let speed = wish.length();
+    if speed < 1.0 {
+        return wish;
+    }
+    let dir = wish / speed;
+    let (frac, n) = trace(origin, origin + dir * LOOKAHEAD);
+    let into = wish.dot(n);
+    if frac >= 1.0 || n == Vec3::ZERO || into >= 0.0 {
+        return wish; // clear, or already heading away from the surface we found
+    }
+    // Faded by how close the surface is, so distant geometry costs nothing and contact costs all of
+    // it. This is the only place proximity enters, and it scales a magnitude rather than choosing a
+    // branch — which is what keeps the approach smooth instead of snapping at a threshold.
+    let closeness = (1.0 - frac).clamp(0.0, 1.0);
+    let mut out = wish - n * into * closeness;
+
+    // Head-on there is no tangential part to keep, and a bot with nothing left to ask for is the
+    // stall this exists to remove — the lip on dm3's east rim, where the climb was pressed into the
+    // underside at full effort and the bot hung there. Spend what the surface took on sliding along
+    // it toward the waypoint. `lost` is continuous and the direction depends on the plane and the
+    // route rather than on anything the bot's own drift perturbs, so this neither snaps nor chatters.
+    let lost = (speed - out.length()).max(0.0);
+    if lost > 0.0 {
+        let toward = waypoint - origin;
+        let along = toward - n * toward.dot(n);
+        out += along.normalize_or_zero() * lost * closeness;
+    }
+
+    // Never hand back more than was asked for.
+    if out.length() > speed {
+        out.normalize_or_zero() * speed
+    } else {
+        out
+    }
+}
+
+/// How far ahead the deflection looks for a surface to slide along.
+///
+/// Only anticipation now that the deflection keys on the plane rather than on proximity: a wall the
+/// bot is swimming parallel to contributes nothing however near it is, so this can be generous
+/// without a narrow corridor reading as an obstruction. Two grid steps is about a third of a second
+/// at swimming pace — enough that the heading eases round rather than arriving at the wall square.
+const LOOKAHEAD: f32 = 64.0;
 
 /// How far below the surface a floating bot holds its origin, so its eyes (22 above origin) stay
 /// clear of the water — `waterlevel == 2`, which is both breathing and the only state
@@ -242,6 +319,174 @@ mod tests {
         assert!(at(float_at).abs() < 1.0, "at the float depth it should ask for nothing");
         assert!(at(float_at + 4.0) < 0.0, "a little high: trim down");
         assert!(at(float_at - 4.0) > 0.0, "a little low: trim up");
+    }
+
+    /// A trace oracle over an axis-aligned plane, exact rather than sampled: the deflection keys on
+    /// the plane's normal, so a quantized fraction would blur the very thing under test. `normal` is
+    /// supplied because a solidity predicate cannot report one.
+    fn plane(at: f32, axis: usize, normal: Vec3) -> impl Fn(Vec3, Vec3) -> (f32, Vec3) + Copy {
+        move |a: Vec3, b: Vec3| {
+            let (a_c, b_c) = (a[axis], b[axis]);
+            if b_c == a_c || (at - a_c).signum() != (b_c - a_c).signum() {
+                return (1.0, Vec3::ZERO); // parallel to it, or heading away
+            }
+            let f = ((at - a_c) / (b_c - a_c)).clamp(0.0, 1.0);
+            if f >= 1.0 {
+                (1.0, Vec3::ZERO)
+            } else {
+                (f, normal)
+            }
+        }
+    }
+
+    /// A wall across +x, its normal pointing back at a bot approaching from below it.
+    fn wall_x(at: f32) -> impl Fn(Vec3, Vec3) -> (f32, Vec3) + Copy {
+        plane(at, 0, Vec3::new(-1.0, 0.0, 0.0))
+    }
+
+    /// Open water: the wish is the bot's own business and comes back untouched.
+    #[test]
+    fn open_water_leaves_the_wish_alone() {
+        let t = |_: Vec3, _: Vec3| (1.0, Vec3::ZERO);
+        let wish = Vec3::new(200.0, -140.0, 90.0);
+        assert_eq!(deflect(&t, Vec3::ZERO, wish, Vec3::new(400.0, 0.0, 300.0)), wish);
+    }
+
+    /// The regression that sent the first design back: dm3's flooded pentagram tunnel is one to two
+    /// hull widths across, so solid sits within reach on *every* frame of it. Keying the deflection on
+    /// proximity therefore fired continuously and turned a 6.4s crossing into 14.7s and a failure. A
+    /// wall you swim parallel to must cost nothing at all.
+    #[test]
+    fn a_wall_alongside_costs_nothing() {
+        let t = wall_x(20.0); // a hull's width to the side
+        let along = Vec3::new(0.0, 320.0, 0.0); // straight down the corridor
+        assert_eq!(
+            deflect(&t, Vec3::ZERO, along, Vec3::new(0.0, 900.0, 0.0)),
+            along,
+            "a wall to the side takes nothing from a stroke not aimed at it"
+        );
+        // Nor does a stroke leaning slightly away from it.
+        let leaning = Vec3::new(-30.0, 318.0, 0.0);
+        assert_eq!(deflect(&t, Vec3::ZERO, leaning, Vec3::new(0.0, 900.0, 0.0)), leaning);
+    }
+
+    /// Into a wall: the part aimed at it is exactly what the engine would eat, so that is what goes,
+    /// and the bot slides along the surface rather than pressing into it.
+    #[test]
+    fn a_wall_ahead_becomes_a_slide_along_it() {
+        let t = wall_x(4.0); // hard against
+        let wish = Vec3::new(226.0, 226.0, 0.0); // forty-five degrees into it
+        let got = deflect(&t, Vec3::ZERO, wish, Vec3::new(200.0, 900.0, 0.0));
+        assert!(got.x < 30.0, "the component into the wall must go, got {got}");
+        assert!(got.y > 200.0, "the component along it must survive, got {got}");
+    }
+
+    /// The dm3 east-rim stall: pressing straight up into an overhang. Nothing tangential survives, so
+    /// what the roof took is spent sliding along it toward the waypoint — which is what gets the bot
+    /// out from under the lip instead of hanging beneath it at full effort.
+    #[test]
+    fn a_roof_turns_a_wasted_climb_into_going_somewhere() {
+        let t = plane(2.0, 2, Vec3::new(0.0, 0.0, -1.0)); // ceiling just above
+        let got = deflect(&t, Vec3::ZERO, Vec3::new(0.0, 0.0, 320.0), Vec3::new(300.0, 0.0, 400.0));
+        assert!(got.z < 32.0, "rising into a roof is effort spent on nothing, got {got}");
+        assert!(
+            got.truncate().length() > 100.0,
+            "must go looking for open water, got {got}"
+        );
+        assert!(got.x > 0.0, "and toward the waypoint side, got {got}");
+    }
+
+    /// The invariant that would have caught the first version of this before it reached the server:
+    /// obstruction must be a *weight*, not a verdict.
+    ///
+    /// Written as "if blocked, slide", the deflection is a binary test on distance-to-wall — a
+    /// quantity the bot's own motion changes — so it clears, the bot swims at the wall, it blocks, the
+    /// bot turns away, it clears again, and the view snaps between the two headings. Sweeping the bot
+    /// toward a wall a unit at a time, the commanded heading must never jump and never double back.
+    #[test]
+    fn approaching_a_wall_turns_the_wish_gradually_not_in_a_snap() {
+        let t = wall_x(100.0);
+        let wish = Vec3::new(320.0, 0.0, 0.0);
+        let waypoint = Vec3::new(400.0, 200.0, 0.0);
+        let at = |x: f32| deflect(&t, Vec3::new(x, 0.0, 0.0), wish, waypoint);
+        // How far the heading has swung from the original wish, signed. A single component would do
+        // instead, but only until the turn passes ninety degrees and that component saturates.
+        let swing = |v: Vec3| {
+            let (a, b) = (wish.truncate().normalize_or_zero(), v.truncate().normalize_or_zero());
+            f32::atan2(a.x * b.y - a.y * b.x, a.dot(b)).to_degrees()
+        };
+        let (mut prev, mut prev_swing) = (at(0.0), 0.0f32);
+        for i in 1..=95 {
+            let got = at(i as f32);
+            assert!(
+                (got - prev).length() <= 0.09 * wish.length(),
+                "x={i}: heading jumped {prev} -> {got} over one unit — that is a switch, not a turn"
+            );
+            let s = swing(got);
+            assert!(
+                s >= prev_swing - 0.5,
+                "x={i}: heading turned back, {prev_swing}deg -> {s}deg"
+            );
+            prev = got;
+            prev_swing = s;
+        }
+        // And by the time it is against the wall it is running along it, not into it.
+        let against = at(96.0);
+        assert!(
+            against.y.abs() > against.x.abs(),
+            "at the wall the stroke should be along it, got {against}"
+        );
+    }
+
+    /// Which flank it slides onto is the route's business, since either is equally valid against a
+    /// flat wall.
+    #[test]
+    fn a_wall_slides_toward_the_waypoint_side() {
+        let t = wall_x(4.0);
+        let wish = Vec3::new(320.0, 0.0, 0.0);
+        let north = deflect(&t, Vec3::ZERO, wish, Vec3::new(0.0, 500.0, 0.0));
+        let south = deflect(&t, Vec3::ZERO, wish, Vec3::new(0.0, -500.0, 0.0));
+        assert!(north.y > 100.0, "waypoint north: slide north, got {north}");
+        assert!(south.y < -100.0, "waypoint south: slide south, got {south}");
+    }
+
+    /// A dead-square approach must not chatter: nudge the bot by fractions of a unit, and the answer
+    /// holds.
+    ///
+    /// The design this replaced summed weighted open directions, and in a balanced corner those
+    /// *cancel* — normalising the near-zero sum turned sub-unit drift into a full-amplitude sign flip,
+    /// measured on dm3's rim as `up` alternating +-103 and `forwardmove` +-557 with the view and route
+    /// perfectly still. Deriving the slide from the plane has no such degeneracy.
+    #[test]
+    fn a_balanced_corner_does_not_chatter() {
+        let t = wall_x(4.0);
+        let wish = Vec3::new(320.0, 0.0, 0.0); // dead square into it
+        let waypoint = Vec3::new(500.0, 60.0, 0.0);
+        let first = deflect(&t, Vec3::ZERO, wish, waypoint);
+        for (i, j) in [0.03f32, -0.02, 0.05, -0.04, 0.01].into_iter().enumerate() {
+            let got = deflect(&t, Vec3::new(j, j * 0.5, 0.0), wish, waypoint);
+            assert!(
+                got.dot(first) > 0.0,
+                "nudge {i} ({j}u) flipped the wish: {first} -> {got}"
+            );
+        }
+        assert!(first.y > 0.0, "should commit to the waypoint's flank, got {first}");
+    }
+
+    /// Never more than was asked for, whatever the geometry does.
+    #[test]
+    fn deflection_never_speeds_the_swimmer_up() {
+        for t in [wall_x(4.0), wall_x(40.0)] {
+            for wish in [
+                Vec3::new(300.0, 0.0, 300.0),
+                Vec3::new(320.0, 0.0, 0.0),
+                Vec3::new(226.0, 226.0, 0.0),
+                Vec3::new(40.0, 200.0, -180.0),
+            ] {
+                let got = deflect(&t, Vec3::ZERO, wish, Vec3::new(0.0, 400.0, 0.0));
+                assert!(got.length() <= wish.length() + 1e-3, "{wish} -> {got}");
+            }
+        }
     }
 
     /// A gentle rise asks for a gentle climb, not everything the swimmer has.

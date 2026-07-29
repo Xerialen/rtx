@@ -2242,6 +2242,21 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             MOVE_SPEED,
         );
 
+        // Everything above composes the wish from the route, which knows nothing about what is in
+        // the way. `PM_WaterMove` clips against the planes it hits, so a wish pressed square into a
+        // corner nets zero and the bot hangs there at full effort. Deflect it around the solid.
+        //
+        // Before the exit latch on purpose: the haul-out's press *into* the bank is the whole
+        // mechanism (`PM_CheckWaterJump` probes along it), and deflecting that would read the bank
+        // as a wall and slide the bot off every climb it tried to make.
+        if let Some(bsp) = bsp {
+            let probe = |a, b| {
+                let tr = bsp.hull1_trace(a, b);
+                (tr.fraction, tr.plane_normal)
+            };
+            move_world = swim::deflect(&probe, origin, move_world, waypoint);
+        }
+
         // Climbing out is a *committed* move, and it owns the eyes while it lasts.
         //
         // Leaving water in QuakeWorld is `PM_CheckWaterJump`, and it probes for the bank along
