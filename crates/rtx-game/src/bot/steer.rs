@@ -204,6 +204,11 @@ fn inside_box(p: Vec3, lo: Vec3, hi: Vec3) -> bool {
 /// swimmer is level with its target and ordinary swimming reaches it.
 const WATER_EXIT_RISE: f32 = 16.0;
 
+/// How far ahead to trace for the bank's face when squaring up to climb out. Comfortably past the
+/// engine's own 24-unit probe, so the normal comes back even when the lip is still a stroke away and
+/// the bot has time to finish turning before it arrives.
+const WATER_EXIT_FACE_PROBE: f32 = 56.0;
+
 /// View pitch held while climbing out, in Quake's convention where negative looks up. Facing the
 /// bank is what `PM_CheckWaterJump` reads; tilting up is what carries the bot over the lip after the
 /// engine launches it.
@@ -220,6 +225,10 @@ const WATER_EXIT_PITCH: f32 = -45.0;
 /// Ten percent: comfortably above the jitter between two near-equal plans, well below the difference
 /// a genuinely better route makes.
 const ROUTE_SWITCH_GAIN: f32 = 0.90;
+
+/// How far down the route the eyes look ahead of the feet, in legs. Enough that the view sweeps a
+/// corridor instead of snapping to each 32u cell the bot steps through.
+const EYE_LOOKAHEAD_LEGS: usize = 2;
 
 /// How near the committed LOD interim counts as reached, releasing it so the corridor may advance.
 /// A grid step and a half: close enough that the bot is plainly there, loose enough that it need not
@@ -817,6 +826,12 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         let target = graph.cell_origin(graph.link_target(leg));
         let arrived = match graph.link_kind(leg) {
             LinkKind::Plat => origin.z >= target.z - PLAT_RISE_TOL,
+            // Depth counts on a swim leg, for the same reason it does on a plat: the climb from the
+            // pool floor up to the surface ring is the *same column*, so an XY-only test calls it
+            // arrived before the bot has risen an inch. The route then walks on along the rim while the
+            // bot is still on the bottom — at the wrong depth for every leg that follows, which is
+            // exactly how a pillar the rim route goes cleanly around becomes something to swim into.
+            LinkKind::Swim => (target - origin).length() <= arrive_r,
             // A hook leg never auto-advances on XY: a near-vertical pull-up passes the XY test while
             // still at the *bottom* of the swing. The hook driver advances it only once the parabola
             // has landed (see below).
@@ -976,8 +991,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             (p.fp_min.y + p.fp_max.y) * 0.5,
             plat_status[pi].surface_z + 24.0,
         )
-    } else if bot.route_pos + 2 < bot.route.len() {
-        graph.cell_origin(graph.link_target(bot.route[bot.route_pos + 2]))
+    } else if bot.route_pos + EYE_LOOKAHEAD_LEGS < bot.route.len() {
+        // Two whole legs of margin, and *not* clamped to the last leg when the route is shorter.
+        //
+        // Clamping was tried and reverted. It looked like the fix for the view panning between the
+        // corridor and a distant item, but the final leg's target is behind a bot that has just
+        // reached it — and since the hop bearing follows the eyes, the bot turned round and ran back
+        // the way it came. Measured as a U-turn on the climb up to the yellow armour, and the panning
+        // it was aimed at turned out to be the route flip-flop that `swim::Sense::aim_trusted` fixed.
+        graph.cell_origin(graph.link_target(bot.route[bot.route_pos + EYE_LOOKAHEAD_LEGS]))
     } else if combat_blind {
         // Past the route's end `waypoint` *is* `target_origin` (the enemy), so there fall through
         // to our actual travel heading rather than re-pointing the eyes at the hidden enemy.
@@ -2230,14 +2252,56 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // the vertical term is meaningless and `wish::Regime::Ground` would drop it anyway.
     if in_water {
         let surface = bsp.and_then(|b| crate::hazard::surface_z(&|p| b.pointcontents(p), origin));
+        // Depth aims at the top of the climb, not the next rung of it.
+        //
+        // The water is layered every 64 units, and `seek` is proportional — so aimed at the immediate
+        // leg the upward wish fades to nothing as the bot reaches each layer, it hovers there until the
+        // leg advances, then sets off again. That is an ascent that pulses once per layer, and it is
+        // what "the bots shake a lot swimming up from the depths" looks like from the outside. A
+        // swimmer heading for the surface is doing *one* climb, so give it one target: follow the route
+        // up while it keeps being a swim and keeps rising, and seek the height it ends at. The
+        // horizontal still comes from the current leg, so the path is unchanged — only the depth stops
+        // being a staircase.
+        //
+        // Only where there is a surface to climb to, though. A flooded tunnel — dm3's pentagram
+        // crossing — has no air overhead and no single ascent to make: its legs' heights *are* the
+        // shape of the passage, and looking past them cuts the corner into the ceiling. Measured, the
+        // crossing lost a second and a half each way. So the far aim is for open water, and confined
+        // water is swum leg by leg exactly as the route describes it.
+        let climb_z = {
+            let mut z = waypoint.z;
+            let mut i = if surface.is_some() {
+                bot.route_pos + 1
+            } else {
+                bot.route.len()
+            };
+            while let Some(&l) = bot.route.get(i) {
+                if graph.link_kind(l) != LinkKind::Swim {
+                    break;
+                }
+                let tz = graph.cell_origin(graph.link_target(l)).z;
+                if tz <= z {
+                    break;
+                }
+                z = tz;
+                i += 1;
+            }
+            z
+        };
         move_world.z = swim::vertical_wish(
             &swim::Sense {
                 submerged,
                 surface,
                 air_left,
                 origin,
-                aim: waypoint,
-                routed: bot.route_pos < bot.route.len(),
+                aim: Vec3::new(waypoint.x, waypoint.y, climb_z),
+                // A route leg's height always describes this water. So does a target directly
+                // overhead — which is what the anti-drown override hands the bot, and what a bot
+                // resolved *onto* its own goal cell has instead of legs, since `find_path(c, c)` is
+                // empty. Distrusting that put a swimmer 26 units under the exit it was sent to and
+                // made it swim down.
+                aim_trusted: bot.route_pos < bot.route.len()
+                    || (waypoint - origin).truncate().length() <= swim::AIM_TRUST_XY,
             },
             MOVE_SPEED,
         );
@@ -2291,7 +2355,22 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 .map(|leg| Commit { leg, since: now });
         }
         if bot.water_exit.is_some() {
-            let out = (waypoint - origin).truncate().normalize_or_zero();
+            let mut out = (waypoint - origin).truncate().normalize_or_zero();
+            // Square to the bank, not merely toward it.
+            //
+            // `PM_CheckWaterJump`'s probe is a single *point* 24 units along the flattened view which
+            // has to land inside solid. Off perpendicular by an angle it reaches only `24·cos` into the
+            // lip, so an oblique approach is refused outright — which is why a bot whose route runs
+            // along the shore can press against it indefinitely and never be let out. The direction
+            // that penetrates furthest is the lip's own normal, and the trace hands it over, so face
+            // that rather than trusting the bearing to the next cell to be perpendicular to anything.
+            if let Some(bsp) = bsp {
+                let ahead = origin + (out * WATER_EXIT_FACE_PROBE).extend(0.0);
+                let n = -bsp.hull1_trace(origin, ahead).plane_normal.truncate();
+                if n.length() > 0.5 {
+                    out = n.normalize_or_zero();
+                }
+            }
             if out != Vec2::ZERO {
                 look = Vec3::new(WATER_EXIT_PITCH, yaw_of(out), 0.0);
                 move_world = Vec3::new(out.x, out.y, 0.0) * MOVE_SPEED + Vec3::Z * MOVE_SPEED;

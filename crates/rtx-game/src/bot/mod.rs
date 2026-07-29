@@ -232,6 +232,12 @@ const SURFACE_CACHE_TTL: f32 = 0.5;
 /// edge), so a bounded flood over the local neighbourhood answers both. Generous enough that the
 /// full-flood fallback essentially never fires, so the answer stays the exact whole-graph nearest.
 const ESCAPE_FLOOD_MAX: f32 = 4.0;
+/// How much further away the cell a bot is already using may be before a nearer one takes over.
+///
+/// A third again. Enough to hold a tie through the middle of a climb between two water layers, far too
+/// little to keep a cell the bot has genuinely left behind.
+const CELL_KEEP_FACTOR: f32 = 1.35;
+
 /// Minimum seconds between A* re-paths (the human keeps moving).
 const REPATH_INTERVAL: f32 = 0.4;
 /// How far ahead (travel seconds) the LOD steer corridor plants its interim target: far enough that
@@ -1721,7 +1727,25 @@ fn run_bot(game: &mut GameState, e: EntId) {
     // Resolve the bot's own cell in the medium it is actually in. A swimmer is frequently nearer to
     // the bank above it than to the pool floor below, and snapping it onto dry land it is not
     // standing on yields a route it cannot walk — or, more often, no route at all.
-    let bot_cell = graph.nearest_in_medium(origin, s.in_water);
+    //
+    // And it *stays* on the cell it was on while that is still a fair answer. Water is layered every
+    // 64 units, so a bot climbing a column spends most of the climb midway between two cells that are
+    // within a few units of equally near — and a resolved cell that flips is a route rebuilt from a
+    // different place, a waypoint 64 units away from the last one, and a bot that shakes as it rises.
+    // Which cell of two near-equals is a tie, and a tie mid-climb belongs to whichever one the bot was
+    // already using.
+    let fresh = graph.nearest_in_medium(origin, s.in_water);
+    let bot_cell = match (game.entities[e].bot.cell, fresh) {
+        (Some(prev), Some(new)) if prev != new && graph.cell_in_water(prev) == s.in_water => {
+            let d = |c| (graph.cell_origin(c) - origin).length();
+            if d(prev) <= d(new) * CELL_KEEP_FACTOR {
+                Some(prev)
+            } else {
+                Some(new)
+            }
+        }
+        (_, new) => new,
+    };
     game.entities[e].bot.cell = bot_cell; // for the flight recorder: every route is planned from here
     let graph = game.nav.graph.as_ref().unwrap();
     let Some(bot_cell) = bot_cell else {
@@ -2400,6 +2424,14 @@ fn roam_target(game: &mut GameState, e: EntId, origin: Vec3, now: f32) -> Vec3 {
 fn nearest_air(graph: &NavGraph, bot_cell: CellId, costs: &LinkCosts) -> Option<CellId> {
     nearest_settled(graph, bot_cell, costs, |c| graph.cell_breathable(c))
 }
+
+// A "head for the nearest dry ground while your goal is dry" override lived here and was deleted.
+// The instinct is right — ground is more than twice swimming pace, so a swimmer bound for land should
+// not dither — but *nearest* is the wrong exit. It ignores where the goal is, so a bot crossing dm3's
+// pentagram-to-lightning-gun tunnel was sent back out onto the bank it had just left, and the
+// crossing went from three-for-three at 6.4s to failing outright. The exit that actually serves the
+// goal is the one A* already picks by pricing water at swimming pace; what needed fixing was the
+// dithering, and that was `aim_trusted` (see `bot::swim::Sense`) plus the route hysteresis in `steer`.
 
 /// The nearest cell (by travel cost) for which `ok` holds, found over the local neighbourhood via a
 /// bounded flood — the escape targets are always close. `settled` is in nondecreasing-cost order, so

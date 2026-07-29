@@ -26,7 +26,7 @@
 //! opinion about it. Below the reserve, with air overhead to reach, surfacing outranks everything;
 //! one breath refills the tank and the crossing resumes.
 
-use glam::{Vec2, Vec3};
+use glam::Vec3;
 
 /// What the bot can perceive about being in water this frame.
 #[derive(Clone, Copy, Debug)]
@@ -49,14 +49,24 @@ pub struct Sense {
     /// Where the bot is, and the next route point it is swimming toward.
     pub origin: Vec3,
     pub aim: Vec3,
-    /// Whether `aim` is a real route waypoint rather than the distant goal.
+    /// Whether `aim`'s *height* describes the water the bot is actually in.
     ///
-    /// Past the end of a route — or when the search found none at all — the steerer aims straight at
-    /// the objective, which is fine for a heading and meaningless for depth. Believing it there is
-    /// how a bot ends up swimming *upward into a bridge deck* because the thing it wants is high and
-    /// far away: measured on dm3, submerged under a roofed span with 4.8 seconds of air, no route,
-    /// and a full upward wish pressed into the underside until it drowned.
-    pub routed: bool,
+    /// A route leg always does. A distant objective does not: the steerer aims straight at it once
+    /// the route runs out, which is fine for a heading and meaningless for depth — believing it is how
+    /// a bot ends up swimming *upward into a bridge deck* because the thing it wants is high and far
+    /// away (measured on dm3: submerged under a roofed span, 4.8s of air, a full upward wish pressed
+    /// into the underside until it drowned).
+    ///
+    /// But "is there a route" is the wrong test for that, and getting it wrong cost four and a half
+    /// seconds at a time. When the anti-drown override retargets the goal onto a breathing cell, and
+    /// the bot resolves *to that very cell* while still floating 26 units beneath it, `find_path(c, c)`
+    /// is empty by definition — so a bot 26 units under the exit it was told to reach had no route,
+    /// distrusted the one aim that mattered, and swam *down*. Measured at dm3's bridge as
+    /// `cell == target == goal`, `route 0/0`, and `up` pinned at −800 for 4.5s.
+    ///
+    /// So the question is proximity, not provenance: a target overhead in this column is describing
+    /// this water, whether or not a search produced legs to it.
+    pub aim_trusted: bool,
 }
 
 /// Vertical velocity the bot wants, in units per second, positive up.
@@ -81,7 +91,7 @@ pub fn vertical_wish(s: &Sense, speed: f32) -> f32 {
     // re-acquires a route. Holding depth instead strands the bot in the empty middle of the water —
     // measured on dm3 at (1696, 0, -240), off-mesh under a roofed span, swimming at full tilt into
     // geometry at 13 ups with no route and its air running out.
-    if !s.routed {
+    if !s.aim_trusted {
         return match s.surface {
             Some(line) => seek(line - FLOAT_BELOW, s.origin.z, speed),
             None => -speed,
@@ -188,6 +198,14 @@ pub const FLOAT_BELOW: f32 = 20.0;
 /// Height difference at which a climb or dive asks for the swimmer's full vertical effort.
 pub const CLIMB_FULL: f32 = 64.0;
 
+/// How near, horizontally, a target has to be for its height to describe the water the bot is in.
+///
+/// Three grid steps. Nearer than this and a target above the bot is in the same column of water it is
+/// floating in, so rising toward it is the right move whether or not a search produced legs — which
+/// is the whole of the anti-drown case, where the goal *is* the breathing cell overhead. Further away
+/// and the height is a fact about somewhere else, and following it swims a bot into a ceiling.
+pub const AIM_TRUST_XY: f32 = 96.0;
+
 /// Air remaining below which surfacing outranks the route.
 ///
 /// Low on purpose. QuakeWorld gives twelve seconds, and a bot that bails for the surface at the
@@ -209,7 +227,7 @@ mod tests {
             air_left,
             origin: Vec3::ZERO,
             aim: Vec3::new(100.0, 0.0, dz),
-            routed: true,
+            aim_trusted: true,
         }
     }
 
@@ -254,7 +272,7 @@ mod tests {
     #[test]
     fn an_unrouted_bot_does_not_chase_the_goals_height() {
         let mut roofed = sense(true, false, 5.0, 400.0);
-        roofed.routed = false;
+        roofed.aim_trusted = false;
         assert_eq!(
             vertical_wish(&roofed, 320.0),
             -320.0,
@@ -288,7 +306,7 @@ mod tests {
                     air_left: 11.0,
                     origin: Vec3::new(0.0, 0.0, z),
                     aim: Vec3::new(100.0, 0.0, 400.0), // a high, far goal: must not be chased
-                    routed: false,
+                    aim_trusted: false,
                 },
                 speed,
             )
@@ -487,6 +505,32 @@ mod tests {
                 assert!(got.length() <= wish.length() + 1e-3, "{wish} -> {got}");
             }
         }
+    }
+
+    /// A bot sent to the breathing cell directly above it must rise to it, not sink.
+    ///
+    /// This is the failure that survived every steering fix. When air runs low the goal is retargeted
+    /// onto a breathing cell; `nearest_in_medium` then resolves the bot *to that very cell* while it
+    /// still floats beneath it (the ring sits 26u up, the pool floor 152u down, so the ring really is
+    /// nearest); and `find_path(c, c)` is empty by definition. Judged on "is there a route", the one
+    /// aim that mattered was thrown away and the roofed-column rule swam the bot *down* — measured at
+    /// dm3's bridge as `cell == target == goal`, `route 0/0`, `up` pinned at −800 for 4.5 seconds at a
+    /// time, which is exactly the "swims back and forth under the bridge instead of leaving" a
+    /// spectator sees.
+    #[test]
+    fn an_exit_overhead_is_climbed_even_with_no_route_to_it() {
+        let s = Sense {
+            submerged: true,
+            surface: None, // roofed here: the old rule's cue to sink
+            air_left: 6.0,
+            origin: Vec3::new(1856.0, -128.0, -240.0),
+            aim: Vec3::new(1856.0, -128.0, -214.0), // the exit, 26u straight up
+            aim_trusted: true,                      // same column, so its height is about this water
+        };
+        assert!(
+            vertical_wish(&s, 320.0) > 0.0,
+            "an exit directly overhead must be climbed, not sunk away from"
+        );
     }
 
     /// A gentle rise asks for a gentle climb, not everything the swimmer has.
