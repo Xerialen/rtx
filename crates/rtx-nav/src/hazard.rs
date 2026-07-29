@@ -40,6 +40,17 @@ const HAZARD_AHEAD_DISTS: [f32; 2] = [40.0, 72.0];
 const HAZARD_DROP: f32 = 176.0;
 /// How far down to look for a floor before calling it a pit.
 const HAZARD_PROBE_DEPTH: f32 = 320.0;
+/// How far *up* [`surface_above`] looks for air over a swimmer.
+///
+/// Its own constant, and generous, because it answers a different question from the pit probe it
+/// used to borrow from: "is there breathable air over this column", not "how far down is the floor".
+/// Sized past any plausible pool — dm3's is 184 deep — because reading too short is the dangerous
+/// direction. A bot deep in water that cannot see the surface concludes it is roofed, stops trying
+/// to rise, and drowns in exactly the water where surfacing mattered most.
+///
+/// Note this is *air*, not sky: the scan stops at the first empty space, so an indoor pool with a
+/// ceiling a long way above it reads as air-above, which is right.
+const SURFACE_PROBE_UP: f32 = 1024.0;
 
 /// What kind of hazard a direction leads to. Ordered by how much a bot should prefer to shove there.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -314,13 +325,13 @@ pub fn edge_bias(is_solid: &impl Fn(Vec3) -> bool, feet: Vec3, dir: Vec3) -> Vec
 /// a breathing spot rather than press uselessly into the ceiling. Pure over the render-hull oracle.
 pub fn surface_above(contents: &impl Fn(Vec3) -> i32, p: Vec3) -> bool {
     let mut d = 0.0;
-    while d <= HAZARD_PROBE_DEPTH {
+    while d <= SURFACE_PROBE_UP {
         let c = contents(p + Vec3::new(0.0, 0.0, d));
         if c == CONTENTS_EMPTY {
-            return true; // broke the surface into open air
+            return true; // broke the surface into air — a roof far overhead is still air
         }
         if c == CONTENTS_SOLID {
-            return false; // roofed — no surface directly overhead
+            return false; // the water meets solid directly: a bridge deck or a flooded ceiling
         }
         d += 24.0;
     }
@@ -543,6 +554,29 @@ mod tests {
         // Roofed tunnel: water below z = 0, solid ceiling above — no surface overhead.
         let roofed = |p: Vec3| if p.z < 0.0 { CONTENTS_WATER } else { CONTENTS_SOLID };
         assert!(!surface_above(&roofed, Vec3::new(0.0, 0.0, -40.0)));
+    }
+
+    /// A pool deeper than the old probe reach must still find its surface. Reading too short is the
+    /// dangerous direction: a bot deep in water that cannot see air above concludes it is roofed,
+    /// stops trying to rise, and drowns exactly where surfacing mattered most.
+    #[test]
+    fn a_deep_pool_still_finds_its_surface() {
+        let deep = |p: Vec3| if p.z < 0.0 { CONTENTS_WATER } else { CONTENTS_EMPTY };
+        assert!(
+            surface_above(&deep, Vec3::new(0.0, 0.0, -900.0)),
+            "900u down is still water"
+        );
+        // And a roof *above the air* is still air: an indoor pool is not a flooded tunnel.
+        let indoor = |p: Vec3| {
+            if p.z < 0.0 {
+                CONTENTS_WATER
+            } else if p.z < 600.0 {
+                CONTENTS_EMPTY
+            } else {
+                crate::bsp::CONTENTS_SOLID
+            }
+        };
+        assert!(surface_above(&indoor, Vec3::new(0.0, 0.0, -100.0)));
     }
 
     // `ledge_ahead` is called with `feet` at the visual floor (origin − 24) and the real hull-1

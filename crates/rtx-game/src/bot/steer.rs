@@ -2096,6 +2096,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 air_left,
                 origin,
                 aim: waypoint,
+                goal: target_origin,
             },
             MOVE_SPEED,
         );

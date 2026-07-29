@@ -23,7 +23,8 @@
 //!
 //! The rule that survives contact with the map is therefore simply: **if you are under and there is
 //! air above you, go up.** The route supplies the heading; air supplies the depth. Only when there
-//! is no air overhead — under a bridge, inside a tunnel — is the route the best information
+//! is no air over the water at all — a bridge deck sitting in it, a flooded tunnel — is the route
+//! the best information
 //! available, and then it is followed until the roof ends.
 //!
 //! This is a workaround for a missing capability, and worth naming as one: the real repair is cells
@@ -37,13 +38,25 @@ use glam::Vec3;
 pub struct Sense {
     /// Fully under (`waterlevel == 3`) — the only state that drains air.
     pub submerged: bool,
-    /// Open water directly overhead, so rising actually reaches air.
+    /// Air above the water over this column, so rising actually reaches something breathable.
+    ///
+    /// *Air*, not open sky: an indoor pool with a ceiling a long way above it counts, because a
+    /// swimmer surfacing there can breathe. What this excludes is water that meets solid directly —
+    /// a bridge deck sitting in it, a flooded tunnel — where there is no surface to rise to at all.
     pub air_above: bool,
     /// Seconds of air left before drowning damage starts.
     pub air_left: f32,
     /// Where the bot is, and the next route point it is swimming toward.
     pub origin: Vec3,
     pub aim: Vec3,
+    /// Where the bot is ultimately *going* — the thing it wants, not the next cell on the way.
+    ///
+    /// Depth needs this and the waypoint cannot supply it. Route cells are a grid apart, so the next
+    /// one is always a stride ahead and (in a pool) far below, which reads identically whether the
+    /// bot is crossing the water or descending to something on its floor. The goal tells them apart:
+    /// dm3 keeps five ammo pickups on its pool bottom, and a bot that will not dive for them hovers
+    /// over the item until something else happens to it.
+    pub goal: Vec3,
 }
 
 /// Vertical velocity the bot wants, in units per second, positive up.
@@ -68,7 +81,21 @@ pub fn vertical_wish(s: &Sense, speed: f32) -> f32 {
     // consult it again.
     let dz = s.aim.z - s.origin.z;
     if s.air_above {
-        // Sky above: rise if under, and **never descend**, whatever the route says.
+        // Air first when it is running out: nothing below is worth drowning for.
+        if s.submerged && s.air_left < AIR_RESERVE {
+            return speed;
+        }
+        // Diving is for reaching something that is actually down there. `dm3` puts five pickups on
+        // its pool floor, so "never descend under sky" — which is what this rule used to say — left
+        // bots hovering above the ammo they were routed to, and produced a demo in which 54% of all
+        // water frames sit in the float band and 2% anywhere between it and the bottom.
+        //
+        // The next waypoint cannot make this call: cells are a grid apart, so it is always a stride
+        // ahead and a pool-depth below whether the bot is crossing or descending. The *goal* can.
+        if s.goal.z < s.origin.z - DIVE_DEPTH && (s.goal - s.origin).truncate().length() < DIVE_NEAR {
+            return (dz / CLIMB_FULL).clamp(-1.0, 1.0) * speed;
+        }
+        // Otherwise the surface is both faster and safer: rise if under, and never sink.
         //
         // The second half is what actually gets a bot out of a pool, and it is not obvious. Leaving
         // water in QuakeWorld is `PM_CheckWaterJump`, and that fires at `waterlevel == 2` only —
@@ -78,7 +105,7 @@ pub fn vertical_wish(s: &Sense, speed: f32) -> f32 {
         // back under before the engine ever tests for the exit. It swims in place at the boundary
         // until it drowns — which is exactly what it looks like from the outside.
         //
-        // So depth is a ratchet while there is air overhead. The bot holds the surface, and the
+        // So depth is a ratchet while there is air over the water. The bot holds the surface, and the
         // engine's own water-jump does the rest the moment it faces a bank.
         return if s.submerged {
             speed
@@ -97,10 +124,24 @@ pub fn vertical_wish(s: &Sense, speed: f32) -> f32 {
 /// Height difference at which a climb or dive asks for the swimmer's full vertical effort.
 pub const CLIMB_FULL: f32 = 64.0;
 
+/// Air remaining below which nothing underwater is worth going for. Generous, so the drowning
+/// reflex in `run_bot` stays unreachable rather than being duplicated here.
+pub const AIR_RESERVE: f32 = 6.0;
+
+/// How far below the bot the goal must sit before descending toward it counts as a dive rather than
+/// as the route's floor-following.
+pub const DIVE_DEPTH: f32 = 48.0;
+
+/// How close, horizontally, the bot must be to a submerged goal before diving for it. Beyond this
+/// the surface is the faster way to close the distance — a swimmer covers ground above water and
+/// drops at the end, rather than crawling the bottom the whole way.
+pub const DIVE_NEAR: f32 = 320.0;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A transit sense: the goal is dry land far off, so nothing is asking the bot to go down.
     fn sense(submerged: bool, air_above: bool, air_left: f32, dz: f32) -> Sense {
         Sense {
             submerged,
@@ -108,6 +149,7 @@ mod tests {
             air_left,
             origin: Vec3::ZERO,
             aim: Vec3::new(100.0, 0.0, dz),
+            goal: Vec3::new(2000.0, 0.0, 0.0),
         }
     }
 
@@ -130,8 +172,8 @@ mod tests {
         }
     }
 
-    /// With no air above, rising is pointless — under a ceiling the bot follows the route instead of
-    /// pressing itself against the roof.
+    /// With no air over the water — a deck sitting in it — rising is pointless, so the route is
+    /// followed instead of the bot pressing itself against the underside.
     #[test]
     fn a_ceiling_suppresses_surfacing() {
         let w = vertical_wish(&sense(true, false, 1.0, 0.0), 320.0);
@@ -144,13 +186,32 @@ mod tests {
     /// `waterlevel == 2`; a bot that sinks the instant it surfaces never holds that state long
     /// enough to be granted the exit, and swims at the boundary until it drowns.
     #[test]
-    fn the_surface_is_a_ratchet_while_there_is_sky() {
+    fn the_surface_is_a_ratchet_while_there_is_air() {
         // Floating, with the route far below on the pool floor: hold, do not chase it down.
         assert_eq!(vertical_wish(&sense(false, true, 30.0, -200.0), 320.0), 0.0);
         // A route that climbs out is still followed.
         assert!(vertical_wish(&sense(false, true, 30.0, 64.0), 320.0) > 0.0);
-        // Under a roof the ratchet is off — there the route is the only information there is.
+        // With the water meeting solid the ratchet is off — the route is all there is.
         assert!(vertical_wish(&sense(false, false, 30.0, -200.0), 320.0) < 0.0);
+    }
+
+    /// Diving has to remain possible, or a bot routed to something on the pool floor hovers over it.
+    /// dm3 keeps five pickups down there, and forbidding descent under open sky produced a demo with
+    /// 54% of water frames in the float band and 2% between it and the bottom.
+    #[test]
+    fn it_dives_for_a_goal_that_is_actually_down_there() {
+        let mut s = sense(false, true, 20.0, -160.0);
+        s.goal = Vec3::new(80.0, 0.0, -180.0); // the ammo on the pool floor, near and below
+        assert!(vertical_wish(&s, 320.0) < 0.0, "must be able to dive for it");
+
+        // The same descent while merely crossing — goal dry and far — still holds the surface.
+        assert_eq!(vertical_wish(&sense(false, true, 20.0, -160.0), 320.0), 0.0);
+
+        // And a dive is abandoned when the air is nearly gone.
+        let mut low = s;
+        low.submerged = true;
+        low.air_left = AIR_RESERVE - 1.0;
+        assert_eq!(vertical_wish(&low, 320.0), 320.0, "breathing outranks the pickup");
     }
 
     /// A gentle rise asks for a gentle climb, not everything the swimmer has.
