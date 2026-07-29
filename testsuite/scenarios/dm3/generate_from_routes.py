@@ -81,6 +81,41 @@ def place_of(points, position) -> str:
     return " ".join(SHOUTED.get(word.lower(), word) for word in name.split())
 
 
+# The manifest says what the owner did on the route. It says nothing about the
+# conditions the drill has to reproduce to be asking the same question, and
+# those cannot live in the generated files: regenerating rewrites them whole,
+# which had already quietly wiped a loadout once.
+#
+# Extra `[run]` keys per drill. Rockets are the permission to rocket-jump — a
+# drill handed none is a drill where the jump is not sanctioned, which is every
+# route on dm3 except the pent jump.
+ROUTE_RUN: dict[str, dict[str, object]] = {
+    "rj_pent_to_lifts_to_window_to_quad": {"prep_rockets": 100},
+}
+
+# A capability the route needs that the build has to have been given, and the
+# cvar that witnesses it. Without it the route is not in the graph at all, so
+# the drill is withheld rather than graded — grading it would report the map's
+# absence as the bot's failure.
+ROUTE_REQUIRES: dict[str, dict[str, str]] = {
+    "rj_pent_to_lifts_to_window_to_quad": {
+        "capability": "navpatch:dm3-pentlift-rj",
+        "engine_cvar": "rtx_rj_cost_scale",
+        "note": "rutten går genom en raketskuttlänk som navpatchen planterar i"
+                " pent-hissen; utan patchen finns länken inte i grafen och"
+                " drillen mäter kartan i stället för botten",
+    },
+}
+
+
+def toml_value(value: object) -> str:
+    if isinstance(value, str):
+        return '"' + value.replace('"', '\\"') + '"'
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 def scenario_name(route: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", route.lower()).strip("_")
 
@@ -112,6 +147,16 @@ def main() -> int:
             + "). The bot has to arrive within "
             f"{limit:.2f} s to pass."
         )
+        requires = ROUTE_REQUIRES.get(name)
+        requires_block = ""
+        if requires:
+            requires_block = "\n[requires]\n" + "".join(
+                f"{key} = {toml_value(value)}\n" for key, value in requires.items()
+            )
+        extra = "".join(
+            f"{key} = {toml_value(value)}\n"
+            for key, value in ROUTE_RUN.get(name, {}).items()
+        )
         text = f"""schema = "rtx-scenario/1"
 name = "{name}"
 map = "dm3"
@@ -119,7 +164,7 @@ kind = "goto"
 category = "grunddrill"
 place = "{place_of(points, start)} → {place_of(points, target)}"
 description = "{description}"
-
+{requires_block}
 [run]
 # Anchors and reference time come from {demo['demo']} via the owner's route
 # manifest (see scenarios/dm3/routes-v1.json).
@@ -130,7 +175,7 @@ timeout_s = {timeout}
 pause_s = 1.0
 arrive_box = 70
 regoto_max = 6
-
+{extra}
 [threshold]
 required = 4
 reference_time_s = {reference}

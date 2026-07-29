@@ -6,6 +6,11 @@ category = "grunddrill"
 place = "pent → quad"
 description = "rj-pent-to-lifts-to-window-to-quad: anchored on the owner's own run of the route (5.42 s, peak 809 u/s, ending at quad@Quad). The bot has to arrive within 6.07 s to pass."
 
+[requires]
+capability = "navpatch:dm3-pentlift-rj"
+engine_cvar = "rtx_rj_cost_scale"
+note = "rutten går genom en raketskuttlänk som navpatchen planterar i pent-hissen; utan patchen finns länken inte i grafen och drillen mäter kartan i stället för botten"
+
 [run]
 # Anchors and reference time come from rj-pent-to-lifts-to-window-to-quad.qwd via the owner's route
 # manifest (see scenarios/dm3/routes-v1.json).
@@ -16,8 +21,6 @@ timeout_s = 23
 pause_s = 1.0
 arrive_box = 70
 regoto_max = 6
-# The one route on dm3 where the rocket jump is sanctioned. Every other drill
-# is handed an empty launcher, so taking one voids the attempt.
 prep_rockets = 100
 
 [threshold]

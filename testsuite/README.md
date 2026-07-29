@@ -150,14 +150,74 @@ A `goto` scenario declares:
   that never gets there at all. Widen `give_up_grace_s` to buy that back — on
   DM3 the measured arrivals sit between 0.8 and 16 seconds past their limit, so
   five seconds keeps the near misses and drops the hopeless ones.
+- Optional `run.arrive_z` (default 48). `arrive_box` bounds the square in X and
+  Y; this bounds the height inside it. Without it the box is a shaft, and half
+  the drills on dm3 have walkable ground on another floor inside their own
+  square — the RA targets have floor 344 units below them. Zero restores the
+  height-blind behaviour on purpose, for a drill asking about a place rather
+  than a floor.
+- Optional `run.prep_health` (default 100) and `run.prep_rockets` (default 0):
+  the loadout each attempt starts from, stated rather than inherited. What the
+  bot carries decides which routes the planner will even consider — a rocket
+  jump is priced away for a bot that cannot fly one — so leaving it to whatever
+  the bot picked up earlier in the run moves the answer a long way: the same
+  drill runs 8.7 s carrying rockets and 14–25 s without.
+
+  `prep_rockets` doubles as the permission. A drill handed none is a drill where
+  the rocket jump is not sanctioned, which is every route on dm3 except the pent
+  jump. Starting empty is not staying empty — the map hands out rocket boxes —
+  so an attempt whose `rj_phase` leaves `Idle` on such a drill ends as
+  `rocketjump`: not an arrival and not a failure to arrive, but void, because it
+  answered a different question.
 - `threshold.required`.
 - Optional `setup.plant_links`.
 - Optional `fail.fall_gate` and/or `fail.crossing`.
+- Optional `requires`, see below.
 
-The generic engine performs stop, hold, teleport, goto, polling, re-goto, and
-outcome classification. Outcomes are `passed`, `slow`, `fell`, `timeout`,
-`stall`, `loop`, `detoured`, or `died`. `passed` and `slow` are the two ways of
-arriving and both carry a time; the rest never arrived and carry none.
+The generic engine performs stop, hold, teleport, prep, goto, polling, re-goto,
+and outcome classification. Outcomes are `passed`, `slow`, `fell`, `timeout`,
+`stall`, `loop`, `detoured`, `rocketjump`, or `died`. `passed` and `slow` are
+the two ways of arriving and both carry a time; the rest never arrived and carry
+none.
+
+### Drills the build cannot be asked
+
+Some routes only exist in a navmesh the build has to have been given. A drill
+anchored on one of those is not measuring the bot when the build lacks it — it
+is measuring the absence, and a FAIL would say the bot could not walk a route
+that was never in its map. So the drill names what it needs:
+
+```toml
+[requires]
+capability = "navpatch:dm3-pentlift-rj"
+engine_cvar = "rtx_rj_cost_scale"
+note = "rutten går genom en raketskuttlänk som navpatchen planterar i pent-hissen"
+```
+
+`engine_cvar` is the witness: a cvar that ships with the capability, read off
+the engine binary by `runlib.engine_declares` for the same reason the telemetry
+probe is — the server's cvar table answers for names no build ever registered.
+Absence is the direction that probe establishes reliably, and it is the only
+direction that changes anything: `present` and `unknown` both run the drill, and
+which of the two it was is recorded rather than acted on. Withholding a drill
+because the binary could not be read would turn a rig problem into a silence
+about the bot.
+
+A withheld drill carries `verdict: null`, no attempts, and no times, and its
+name goes into the envelope's `capabilities.unavailable` as `t1:<name>`. The two
+have to agree: a drill withheld in silence would leave the column reading
+`5/8 drillar` with nothing to say the eighth was never asked, and a declaration
+naming a drill that ran would explain away a number the run produced. It counts
+toward neither the level's verdict nor its denominator; the dashboard shows it
+as `AVSTÅDD` beside `n/m drillar · 1 avstådd`.
+
+The capability is named explicitly rather than derived from a route that turns
+out to have no links, because a missing capability and a bot that cannot use one
+it has are different findings and only the first is the harness's fault.
+
+`rj_pent_to_lifts_to_window_to_quad` is the drill this exists for: it times out
+5/5 on a build without the patch, unchanged when the launcher is handed 100
+rockets, because there is no such route to plan.
 
 ### Timed drills
 
@@ -178,7 +238,10 @@ without counting cells.
 `scenarios/dm3/routes-v1.json` is the owner's route manifest — start and target
 coordinates plus his own time, taken from his demos — and
 `scenarios/dm3/generate_from_routes.py` turns it into scenario files. Regenerate
-rather than hand-editing the generated drills.
+rather than hand-editing the generated drills: regeneration rewrites them whole,
+and it had already wiped a hand-added loadout once. Anything the manifest does
+not describe — a drill's loadout, a capability it requires — belongs in the
+generator's `ROUTE_RUN` and `ROUTE_REQUIRES` tables, where it survives.
 
 A `dash` scenario declares start/target coordinates, dash count, timeout, and
 a speed floor. Its optional `workaround.cycle_bot_count` handles the known

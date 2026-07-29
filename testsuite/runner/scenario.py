@@ -75,7 +75,7 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
             "run",
             "threshold",
         },
-        {"setup", "fail", "workaround"},
+        {"setup", "fail", "workaround", "requires"},
     )
     if root["schema"] != "rtx-scenario/1":
         raise ScenarioError(
@@ -105,6 +105,30 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
             raise ScenarioError(f"{source}.setup.plant_links: expected strings")
         if root["kind"] != "goto":
             raise ScenarioError(f"{source}.setup: only valid for goto scenarios")
+
+    # Some routes only exist in a navmesh the build has to have been given. A
+    # drill anchored on one of those is not measuring the bot when the build
+    # lacks it — it is measuring the absence, and reporting that as a failure
+    # to walk the route says something untrue about the bot. So the drill names
+    # what it needs and how to tell whether the build has it, and a run without
+    # it is withheld instead of graded. Naming the capability explicitly rather
+    # than deriving it from a route that turns out to have no links keeps the
+    # two apart: a missing capability and a bot that cannot use one it has are
+    # different findings, and only the first is the harness's fault.
+    if "requires" in root:
+        if root["kind"] != "goto":
+            raise ScenarioError(f"{source}.requires: only valid for goto scenarios")
+        requires = _fields(
+            root["requires"],
+            f"{source}.requires",
+            {"capability", "engine_cvar", "note"},
+        )
+        for field in ("capability", "engine_cvar", "note"):
+            value = requires[field]
+            if not isinstance(value, str) or not value.strip():
+                raise ScenarioError(
+                    f"{source}.requires.{field}: expected non-empty string"
+                )
 
     if root["kind"] == "goto":
         run = _fields(

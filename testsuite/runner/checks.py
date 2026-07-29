@@ -289,6 +289,7 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
     if "regime_note" in data and data["regime_note"] != "quick":
         _fail(f"{path}.regime_note", "expected 'quick'")
     all_pass = True
+    withheld: list[str] = []
     scenarios = _list(data["scenarios"], f"{path}.scenarios")
     if not scenarios:
         _fail(f"{path}.scenarios", "expected at least one scenario")
@@ -307,14 +308,67 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
                 "verdict",
                 "evidence",
             },
-            {"arrived", "best_time_s"},
+            {"arrived", "best_time_s", "requires"},
         )
         _str(item["name"], f"{item_path}.name")
         _str(item["place"], f"{item_path}.place")
         if item["category"] not in {"grunddrill", "cellprov"}:
             _fail(f"{item_path}.category", "expected 'grunddrill' or 'cellprov'")
         _evidence(item["evidence"], f"{item_path}.evidence")
+        requires = item.get("requires")
+        if requires is not None:
+            requires = _fields(
+                requires,
+                f"{item_path}.requires",
+                {"capability", "engine_cvar", "note", "state"},
+            )
+            for field in ("capability", "engine_cvar", "note"):
+                if not _str(requires[field], f"{item_path}.requires.{field}").strip():
+                    _fail(
+                        f"{item_path}.requires.{field}",
+                        "expected non-empty string",
+                    )
+            if requires["state"] not in {"present", "absent", "unknown"}:
+                _fail(
+                    f"{item_path}.requires.state",
+                    "expected 'present', 'absent' or 'unknown'",
+                )
         attempts = _list(item["attempts"], f"{item_path}.attempts")
+        # A drill can go ungraded, but only by saying which capability the
+        # build was missing — otherwise a run that simply crashed halfway could
+        # present itself as a principled abstention.
+        if item["verdict"] is None:
+            if requires is None or requires["state"] != "absent":
+                _fail(
+                    f"{item_path}.verdict",
+                    "a drill without a verdict has to name the capability the"
+                    " build was missing",
+                )
+            if attempts:
+                _fail(f"{item_path}.attempts", "a withheld drill was never run")
+            withheld_threshold = _fields(
+                item["threshold"],
+                f"{item_path}.threshold",
+                {"required", "of"},
+                {"reference_time_s", "max_time_s"},
+            )
+            if _int(withheld_threshold["of"], f"{item_path}.threshold.of") != 0:
+                _fail(f"{item_path}.threshold.of", "no attempt was made")
+            # Nothing measured is null, never zero — except the counts of
+            # attempts, which are honestly zero because there were none.
+            if _int(item["passed"], f"{item_path}.passed") != 0:
+                _fail(f"{item_path}.passed", "a withheld drill passed nothing")
+            if item.get("arrived") not in (None, 0):
+                _fail(f"{item_path}.arrived", "a withheld drill arrived nowhere")
+            if item.get("best_time_s") is not None:
+                _fail(f"{item_path}.best_time_s", "a withheld drill has no time")
+            if item["evidence"] is not None:
+                _fail(
+                    f"{item_path}.evidence",
+                    "a withheld drill has nothing to watch",
+                )
+            withheld.append(_str(item["name"], f"{item_path}.name"))
+            continue
         passed_count = 0
         arrived_count = 0
         for attempt_index, attempt_value in enumerate(attempts):
@@ -427,6 +481,26 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
         if item["verdict"] != expected:
             _fail(f"{item_path}.verdict", f"expected {expected}")
         all_pass &= expected == "PASS"
+    # The drill and the envelope have to tell the same story. A drill withheld
+    # in silence would leave the column reading `5/8 drillar` with nothing to
+    # say the eighth was never asked; a declaration naming a drill that ran
+    # would excuse a number the run actually produced.
+    declared = set((capabilities or {}).get("unavailable") or [])
+    for name in withheld:
+        if f"t1:{name}" not in declared:
+            _fail(
+                f"{path}.scenarios",
+                f"{name} was withheld for a missing capability, but"
+                f" capabilities.unavailable does not name 't1:{name}'",
+            )
+    for value in scenarios:
+        name = value.get("name") if isinstance(value, dict) else None
+        if isinstance(name, str) and name not in withheld and f"t1:{name}" in declared:
+            _fail(
+                f"{path}.scenarios",
+                f"capabilities.unavailable names 't1:{name}' as missing, yet"
+                " the drill was run and graded",
+            )
     dash = _fields(
         data["dash"],
         f"{path}.dash",

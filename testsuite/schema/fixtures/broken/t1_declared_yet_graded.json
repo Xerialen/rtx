@@ -1,0 +1,68 @@
+{
+  "schema": "rtx-testflow/1",
+  "run_id": "t1-20260729T120000Z-aabbccdd",
+  "tier": "T1",
+  "status": "complete",
+  "started_utc": "2026-07-29T12:00:00Z",
+  "ended_utc": "2026-07-29T12:20:00Z",
+  "map": "dm3",
+  "build": {
+    "branch": "t1-arrival-gates",
+    "commit": "aabbccddaabbccddaabbccddaabbccddaabbccdd",
+    "digest_md5": "7fc55d7e",
+    "dirty": false
+  },
+  "config_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runner_version": "0.1.0",
+  "provenance": "synthetic",
+  "payload": {
+    "scenarios": [
+      {
+        "name": "ra_climb",
+        "attempts": [
+          {
+            "status": "passed",
+            "time_s": 5.37,
+            "demo_t_s": 12.5
+          },
+          {
+            "status": "passed",
+            "time_s": 5.51,
+            "demo_t_s": 41.0
+          }
+        ],
+        "threshold": {
+          "required": 1,
+          "of": 2,
+          "reference_time_s": 5.0,
+          "max_time_s": 5.6
+        },
+        "passed": 2,
+        "verdict": "PASS",
+        "category": "grunddrill",
+        "place": "RA-ingången → RA-plattan",
+        "evidence": null,
+        "arrived": 2,
+        "best_time_s": 5.37
+      }
+    ],
+    "dash": {
+      "peaks": [
+        812
+      ],
+      "peak": 812,
+      "floor": 790,
+      "informative": true,
+      "place": "100m, rak bana"
+    },
+    "verdict": "PASS",
+    "demo": "t1-20260729T120000Z-aabbccdd.mvd"
+  },
+  "capabilities": {
+    "telemetry": true,
+    "unavailable": [
+      "t1:ra_climb"
+    ],
+    "note": "en drill vars rutt bara finns i en navmesh det här bygget inte fått avstås i stället för att fällas: rj_pent_to_lifts_to_window_to_quad kräver navpatch:dm3-pentlift-rj"
+  }
+}

@@ -116,7 +116,7 @@ stops before T1 when T0 import is missing or FAIL.
   "verdict": "FAIL"
 }
 ```
-- `attempts[].status`: `passed|slow|fell|timeout|stall|loop|detoured|died`. `time_s`
+- `attempts[].status`: `passed|slow|fell|timeout|stall|loop|detoured|rocketjump|died`. `time_s`
   exactly for the two arriving statuses (`passed`, `slow`), else null. Attempt count
   and order are preserved. `demo_t_s` is the moment the attempt began on the run's
   own demo clock. `timeout` covers three ways of not arriving: running the clock
@@ -125,7 +125,39 @@ stops before T1 when T0 import is missing or FAIL.
   and being cut short past the time limit with the bot no longer moving. A cut
   attempt is indistinguishable from one that never would have arrived, which is
   the price of not waiting — `run.give_up_grace_s` sets how many seconds past
-  the limit the bot is still allowed to aim for.
+  the limit the bot is still allowed to aim for. `rocketjump` is neither: the
+  drill handed the bot no rockets, so the jump was not sanctioned on that route,
+  and the bot picked some up and took it anyway. The attempt answered a
+  different question and counts as neither an arrival nor a failure to arrive.
+- A scenario may carry `requires` instead of a verdict:
+
+  ```json
+  "verdict": null,
+  "attempts": [],
+  "threshold": {"required": 4, "of": 0},
+  "passed": 0, "arrived": 0, "best_time_s": null, "evidence": null,
+  "requires": {
+    "capability": "navpatch:dm3-pentlift-rj",
+    "engine_cvar": "rtx_rj_cost_scale",
+    "state": "absent",
+    "note": "the route runs through a rocket-jump link the navpatch plants"
+  }
+  ```
+
+  The route only exists in a navmesh this build was not given, so the drill was
+  never run. `state` is `present|absent|unknown`, read off the engine binary the
+  same way `capabilities` is; only `absent` withholds a drill, and `unknown`
+  runs it, because a binary we could not read is a rig problem and must not
+  become a silence about the bot. A withheld drill is graded by nobody: it
+  counts toward neither `verdict` nor the dashboard's denominator, and a FAIL
+  would have said the bot could not walk a route that was never in its map.
+  A drill that ran keeps its `requires` block too, so a reader knows the graded
+  columns were graded against the same map.
+
+  A withheld drill MUST be named in `capabilities.unavailable` as `t1:<name>`
+  and a graded one MUST NOT be — the drill and the envelope have to tell the
+  same story, or the column reads `5/8 drillar` with nothing to say the eighth
+  was never asked.
 - `threshold.reference_time_s` and `threshold.max_time_s` are optional and come as a
   pair: the time the owner ran the route in, and the slowest arrival still counted as
   a pass (a limit faster than its own reference is rejected). With them set, an
@@ -139,9 +171,11 @@ stops before T1 when T0 import is missing or FAIL.
 - `evidence` links the attempt worth watching — the first failure, else the first
   pass — opening the demo player three seconds before it, POV on the drilling bot.
   Null when the rig has no readable demo directory.
-- Run `verdict` = PASS iff ALL scenario thresholds hold AND the dash clears its
-  floor when it is graded (`informative: false`). An informative dash carries
-  `verdict: null` and never flips the run.
+- Run `verdict` = PASS iff ALL graded scenario thresholds hold AND the dash
+  clears its floor when it is graded (`informative: false`). An informative dash
+  carries `verdict: null` and never flips the run, and neither does a withheld
+  drill — the level's verdict is about the bot, and a missing navmesh capability
+  is a question about the build.
 - A quick run (3 attempts) scales thresholds like suite.py and MUST set
   `"regime_note": "quick"`; quick runs are never compared against full runs.
 

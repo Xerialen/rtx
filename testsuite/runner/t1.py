@@ -242,10 +242,97 @@ def _outcome(
     return {"status": "timeout", "time_s": None, "demo_t_s": demo_t}
 
 
+def _declare_withheld(
+    capabilities: dict[str, Any] | None, results: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Say in the envelope that a drill in this column was never run.
+
+    Same channel the missing telemetry uses, because it is the same statement:
+    a number the column does not contain, and the reason. A reader comparing
+    columns sees `5/8 drillar` either way; only the declaration distinguishes
+    a build that failed a drill from one that was never asked it.
+    """
+    withheld = [item for item in results if item["verdict"] is None]
+    if not withheld:
+        return capabilities
+    block = dict(capabilities) if capabilities else {
+        "telemetry": True,
+        "unavailable": [],
+        "note": "",
+    }
+    block["unavailable"] = list(block.get("unavailable", [])) + [
+        f"t1:{item['name']}" for item in withheld
+    ]
+    # Swedish, unlike the rest of this module: the note is not a log line, it
+    # is rendered verbatim in the dashboard's panel header, and that page is
+    # read in Swedish.
+    reasons = "; ".join(
+        f"{item['name']} kräver {item['requires']['capability']}"
+        for item in withheld
+    )
+    addition = (
+        "en drill vars rutt bara finns i en navmesh det här bygget inte fått"
+        f" avstås i stället för att fällas: {reasons}"
+    )
+    note = str(block.get("note") or "").strip()
+    block["note"] = f"{note}; {addition}" if note else addition
+    return block
+
+
 def _scaled_required(required: int, full_attempts: int, attempts: int) -> int:
     if attempts == full_attempts:
         return required
     return max(1, round(attempts * required / full_attempts))
+
+
+def _requirement(
+    config: dict[str, Any],
+    scenario: dict[str, Any],
+    server_status: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Whether the build carries the capability this drill's route needs.
+
+    The witness is a cvar that ships with the capability, read off the engine
+    binary rather than asked of the server — `engine_declares` explains why the
+    server cannot answer this and why absence is the direction it establishes
+    reliably. Absence is also the only direction that changes anything here:
+    `present` and `unknown` both run the drill, and the difference between them
+    is recorded rather than acted on. Withholding a drill because we could not
+    read the binary would turn a rig problem into a silence about the bot.
+    """
+    requires = scenario.get("requires")
+    if requires is None:
+        return None
+    declared = engine_declares(config, requires["engine_cvar"], server_status)
+    return {
+        "capability": requires["capability"],
+        "engine_cvar": requires["engine_cvar"],
+        "note": requires["note"],
+        "state": "unknown" if declared is None else ("present" if declared else "absent"),
+    }
+
+
+def _withheld(scenario: dict[str, Any], requirement: dict[str, Any]) -> dict[str, Any]:
+    """A drill the build cannot be asked, recorded as unanswered.
+
+    Nothing was run, so nothing here is a zero: no attempts, no best time, and
+    no verdict. A FAIL would have been the only other shape available and it
+    would have said the bot could not walk the route, when what happened is
+    that the route was not in the map the bot was given.
+    """
+    return {
+        "name": scenario["name"],
+        "category": scenario["category"],
+        "place": scenario["place"],
+        "attempts": [],
+        "threshold": {"required": scenario["threshold"]["required"], "of": 0},
+        "passed": 0,
+        "arrived": 0,
+        "best_time_s": None,
+        "verdict": None,
+        "evidence": None,
+        "requires": requirement,
+    }
 
 
 def _run_goto(
@@ -254,7 +341,16 @@ def _run_goto(
     scenario: dict[str, Any],
     quick: bool,
     recording: evidence_mod.Recording | None = None,
+    requirement: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if requirement is not None and requirement["state"] == "absent":
+        print(
+            f"  {scenario['name']}: withheld — this build does not carry "
+            f"{requirement['capability']} ({requirement['engine_cvar']} is not "
+            "registered), so the route it needs is not in the graph",
+            flush=True,
+        )
+        return _withheld(scenario, requirement)
     for link in scenario.get("setup", {}).get("plant_links", []):
         control.request(f"planlink {link}")
     full_attempts = scenario["run"]["attempts"]
@@ -284,7 +380,7 @@ def _run_goto(
     for field in ("reference_time_s", "max_time_s"):
         if field in scenario["threshold"]:
             threshold[field] = scenario["threshold"][field]
-    return {
+    result = {
         "name": scenario["name"],
         "category": scenario["category"],
         "place": scenario["place"],
@@ -296,6 +392,13 @@ def _run_goto(
         "verdict": "PASS" if passed >= required else "FAIL",
         "evidence": None,
     }
+    # A drill that declared a requirement carries the answer even when the
+    # answer was yes: a reader comparing two columns needs to know the graded
+    # ones were graded against the same map, and `unknown` says the binary
+    # could not be read rather than that the capability was there.
+    if requirement is not None:
+        result["requires"] = requirement
+    return result
 
 
 def _representative(attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -541,9 +644,19 @@ def run(
                 )
                 recording.start()
                 results = [
-                    _run_goto(control, bot_id, scenario, quick, recording)
+                    _run_goto(
+                        control,
+                        bot_id,
+                        scenario,
+                        quick,
+                        recording,
+                        _requirement(config, scenario, initial_status),
+                    )
                     for scenario in goto_scenarios
                 ]
+                recorder.capabilities = _declare_withheld(
+                    recorder.capabilities, results
+                )
                 control.request(f"stop {bot_id}")
                 control.request(f"hold {bot_id}")
                 recording.stop()
@@ -561,7 +674,15 @@ def run(
                     control, config, dash_scenarios[0], recorder.run_id
                 )
                 control = _change_map(control, config, main_map, 6.0)
-                drills_pass = all(result["verdict"] == "PASS" for result in results)
+                # A withheld drill neither passes nor fails the level: it was
+                # never asked, and the envelope says so. Letting it fail here
+                # would put the build's verdict on a question about the build's
+                # navmesh rather than about its bot.
+                drills_pass = all(
+                    result["verdict"] == "PASS"
+                    for result in results
+                    if result["verdict"] is not None
+                )
                 dash_pass = dash["verdict"] != "FAIL"
                 payload = {
                     "scenarios": results,

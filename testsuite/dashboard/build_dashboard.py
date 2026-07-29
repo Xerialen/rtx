@@ -325,6 +325,29 @@ def normalize_capabilities(value: Any) -> dict[str, Any] | None:
     }
 
 
+def normalize_requires(value: Any) -> dict[str, Any] | None:
+    """Why a drill carries no verdict: a capability the build never had.
+
+    Dropped rather than half-trusted, for the same reason as the capabilities
+    block: an unexplained absence must not be able to look like an explained
+    one. A drill whose requirement was met keeps the block too — it is what
+    tells a reader the graded columns were graded against the same map.
+    """
+    if not isinstance(value, dict):
+        return None
+    capability = value.get("capability")
+    if not isinstance(capability, str) or not capability.strip():
+        return None
+    if value.get("state") not in {"present", "absent", "unknown"}:
+        return None
+    note = value.get("note")
+    return {
+        "capability": capability.strip(),
+        "state": value["state"],
+        "note": note.strip() if isinstance(note, str) else "",
+    }
+
+
 def base_level(level: str, envelope: dict[str, Any]) -> dict[str, Any]:
     item = default_level(level)
     status = text(envelope.get("status"), "incomplete").lower()
@@ -448,15 +471,27 @@ def t1_level(envelope: dict[str, Any]) -> dict[str, Any]:
                 "maxTime": number(threshold.get("max_time_s")),
                 "arrived": number(scenario.get("arrived")),
                 "bestTime": number(scenario.get("best_time_s")),
+                # Present only on drills that named a capability. `absent` is
+                # the one that withholds the verdict; the others are recorded
+                # so the page can say what the drill was graded against.
+                "requires": normalize_requires(scenario.get("requires")),
             }
         )
     regime_note = payload.get("regime_note")
     regime_note = regime_note if isinstance(regime_note, str) and regime_note else None
     verdict = payload.get("verdict") if payload.get("verdict") in {"PASS", "FAIL"} else "OFULLSTÄNDIG"
     dash = payload.get("dash") if isinstance(payload.get("dash"), dict) else {}
+    # The denominator is the drills that were actually asked. Counting a
+    # withheld drill among them would report the build as failing one, which is
+    # the reading the whole mechanism exists to prevent.
+    graded = sum(1 for drill in drills if drill["verdict"] in {"PASS", "FAIL"})
+    unasked = len(drills) - graded
+    key = f"{passed_scenarios}/{graded} drillar"
+    if unasked:
+        key += f" · {unasked} avstådd" + ("a" if unasked > 1 else "")
     item.update(
         verdict=verdict,
-        key=f"{passed_scenarios}/{len(drills)} drillar",
+        key=key,
         regimeNote=regime_note,
         comparisonKey=f"t1:{regime_note or 'full'}",
         data={
@@ -983,6 +1018,20 @@ def selftest() -> None:
         assert "http://" not in html
         assert "https://" not in html
         assert len(runs) >= 5
+        # A drill the build could not be asked: no verdict, no attempts, and a
+        # denominator that counts only the drills that were run. Counting it
+        # among them would report the build as failing a drill nobody gave it.
+        withheld = next(run for run in runs if run["branch"] == "withheld-drill")
+        drills = withheld["levels"]["t1"]["data"]["drills"]
+        assert [drill["verdict"] for drill in drills] == ["PASS", None]
+        assert drills[1]["requires"]["state"] == "absent"
+        assert drills[1]["requires"]["capability"] == "navpatch:dm3-pentlift-rj"
+        assert drills[0]["requires"] is None
+        assert withheld["levels"]["t1"]["key"] == "1/1 drillar · 1 avstådd"
+        assert withheld["levels"]["t1"]["verdict"] == "PASS"
+        assert withheld["levels"]["t1"]["capabilities"]["unavailable"] == [
+            "t1:rj_pent_to_lifts_to_window_to_quad"
+        ]
         rich = next(run for run in runs if run["branch"] == "evidence-rich")
         t1 = rich["levels"]["t1"]
         categories = [drill["category"] for drill in t1["data"]["drills"]]
