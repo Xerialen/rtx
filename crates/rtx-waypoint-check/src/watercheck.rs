@@ -187,6 +187,36 @@ pub fn report(map: &str, bsp: &Bsp, graph: &NavGraph) {
                     100.0 * beside / wet.max(1.0),
                 );
             }
+            // One cell routing out says the pool is *not sealed*; it does not say a bot dropped
+            // anywhere in it can leave. Those are different claims, and the difference is exactly the
+            // failure worth catching: a swimmer that drifts a few cells off the exit's column and
+            // finds A* returning nothing has no route, no horizontal wish, and nothing to do but bob
+            // until its air runs out. So ask every cell, and name the ones that cannot.
+            let stranded: Vec<u32> = pool
+                .iter()
+                .copied()
+                .filter(|&c| graph.find_path(c, goal, &costs).is_none())
+                .collect();
+            if stranded.is_empty() {
+                println!("      every cell can route out");
+            } else {
+                let where_ = stranded
+                    .iter()
+                    .step_by((stranded.len() / 6).max(1))
+                    .take(6)
+                    .map(|&c| {
+                        let o = graph.cell_origin(c);
+                        format!("{:.0},{:.0},{:.0}", o.x, o.y, o.z)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                println!(
+                    "      STRANDED: {}/{} cells ({:.0}%) cannot route out at all — e.g. {where_}",
+                    stranded.len(),
+                    pool.len(),
+                    100.0 * stranded.len() as f32 / n,
+                );
+            }
         }
         // Name cells spread across the pool, marked roofed (R) or open (O), so a bot can be dropped
         // on each and the pool measured by what actually happens rather than by its geometry.
