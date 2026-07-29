@@ -586,6 +586,7 @@ fn capture_frame(
     speed: f32,
     forward: i32,
     side: i32,
+    up: i32,
     buttons: i32,
     has_enemy: bool,
     watch: u32,
@@ -617,6 +618,15 @@ fn capture_frame(
     flags |= af::AWARE * aware as u16;
     flags |= af::ATTACK * ((buttons & BUTTON_ATTACK) != 0) as u16;
     flags |= af::JUMP * ((buttons & BUTTON_JUMP) != 0) as u16;
+    // The two bits that make a swimming bot legible: wading and drowning look identical without
+    // `SUBMERGED`, and "why did it not surface" is unanswerable without knowing whether it could.
+    flags |= af::SUBMERGED * (ent.v.waterlevel >= 3.0) as u16;
+    flags |= af::AIR_ABOVE
+        * game
+            .nav
+            .bsp
+            .as_ref()
+            .is_some_and(|b| crate::hazard::surface_above(&|p| b.pointcontents(p), origin)) as u16;
     let bpos = b.route_pos;
     rtx_auditlog::AuditFrame {
         t: now,
@@ -636,6 +646,8 @@ fn capture_frame(
         band: b.route_bands.get(bpos).copied().unwrap_or(0) as i16,
         forward: forward as i16,
         side: side as i16,
+        up: up as i16,
+        air: (ent.combat.air_finished - now).max(0.0),
         posture: ax_posture(b.posture),
         commit: ax_commit(b.goal.commit),
         goal_ent: b.goal.item,
@@ -1504,6 +1516,7 @@ fn emit(
             speed,
             forward,
             side,
+            up,
             buttons,
             enemy.is_some(),
             0, // spectate-watch target: not plumbed to `emit`; reserved in the schema

@@ -143,8 +143,15 @@ pub struct AuditFrame {
     pub route_pos: u16,
     pub band: i16,
     /// The frame's movement command (what the brain actually pressed).
+    ///
+    /// `up` is the vertical axis, and it exists because without it the log cannot describe swimming
+    /// at all: a bot holding station underwater and a bot clawing for the surface produce identical
+    /// `forward`/`side`, and the whole point of this record is knowing which one is happening.
     pub forward: i16,
     pub side: i16,
+    pub up: i16,
+    /// Seconds of air left. Zero out of water.
+    pub air: f32,
     /// Strategic state.
     pub posture: Posture,
     pub commit: Commit,
@@ -176,6 +183,12 @@ pub mod flags {
     pub const AWARE: u16 = 1 << 5;
     pub const ATTACK: u16 = 1 << 6;
     pub const JUMP: u16 = 1 << 7;
+    /// Fully under (`waterlevel == 3`) — the state that drains air, distinct from [`IN_WATER`],
+    /// which is true from ankle deep. A drowning bot and a wading one look identical without this.
+    pub const SUBMERGED: u16 = 1 << 8;
+    /// Air sits above this column, so surfacing is available. Half of every "why did it not come
+    /// up" question; the other half is [`AuditFrame::up`].
+    pub const AIR_ABOVE: u16 = 1 << 9;
 }
 
 /// A per-bot ring buffer of [`AuditFrame`]s. A single fixed `Vec<AuditFrame>` is allocated once to the

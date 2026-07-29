@@ -49,6 +49,14 @@ pub struct Sense {
     /// Where the bot is, and the next route point it is swimming toward.
     pub origin: Vec3,
     pub aim: Vec3,
+    /// The current leg is a `Swim` link — depth the router *chose*, not floor it happened to sit on.
+    ///
+    /// This is the one case where the route may be believed about depth. Ordinary `Walk`/`Step` legs
+    /// through a pool are cells on its bottom and their `z` is incidental, which is why depth
+    /// otherwise comes from air. A `Swim` link is the opposite: it exists precisely to say "go down
+    /// here" or "come up here", so refusing it deadlocks the bot — it hangs over the waypoint with no
+    /// horizontal distance left to close and a descent it will not make, and the leg never completes.
+    pub deliberate: bool,
     /// Where the bot is ultimately *going* — the thing it wants, not the next cell on the way.
     ///
     /// Depth needs this and the waypoint cannot supply it. Route cells are a grid apart, so the next
@@ -80,6 +88,14 @@ pub fn vertical_wish(s: &Sense, speed: f32) -> f32 {
     // has cells through the water volume, at which point its `z` means something and this can
     // consult it again.
     let dz = s.aim.z - s.origin.z;
+    // A swim link means the depth change is the point of the leg. Follow it — but never past the
+    // reserve, because no leg is worth drowning on.
+    if s.deliberate {
+        if s.submerged && s.air_above && s.air_left < AIR_RESERVE {
+            return speed;
+        }
+        return (dz / CLIMB_FULL).clamp(-1.0, 1.0) * speed;
+    }
     if s.air_above {
         // Air first when it is running out: nothing below is worth drowning for.
         if s.submerged && s.air_left < AIR_RESERVE {
@@ -150,6 +166,7 @@ mod tests {
             origin: Vec3::ZERO,
             aim: Vec3::new(100.0, 0.0, dz),
             goal: Vec3::new(2000.0, 0.0, 0.0),
+            deliberate: false,
         }
     }
 
@@ -212,6 +229,24 @@ mod tests {
         low.submerged = true;
         low.air_left = AIR_RESERVE - 1.0;
         assert_eq!(vertical_wish(&low, 320.0), 320.0, "breathing outranks the pickup");
+    }
+
+    /// A `Swim` leg is depth the router chose, so it is followed down as well as up. Refusing it
+    /// deadlocks the bot: it hangs over the waypoint with no horizontal distance left to close and a
+    /// descent it will not make, and the leg never completes — which is what stranded bots motionless
+    /// over dm3's pool with `route 21@0` frozen at leg zero.
+    #[test]
+    fn a_swim_leg_is_believed_about_depth() {
+        let mut s = sense(false, true, 20.0, -60.0);
+        s.deliberate = true;
+        assert!(vertical_wish(&s, 320.0) < 0.0, "a swim link down must be followed");
+        // But not past the reserve.
+        let mut low = s;
+        low.submerged = true;
+        low.air_left = AIR_RESERVE - 1.0;
+        assert_eq!(vertical_wish(&low, 320.0), 320.0);
+        // The same descent on an ordinary walk leg is still refused — that z is just the pool floor.
+        assert_eq!(vertical_wish(&sense(false, true, 20.0, -60.0), 320.0), 0.0);
     }
 
     /// A gentle rise asks for a gentle climb, not everything the swimmer has.

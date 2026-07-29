@@ -2106,6 +2106,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 origin,
                 aim: waypoint,
                 goal: target_origin,
+                deliberate: matches!(kind, Some(LinkKind::Swim)),
             },
             MOVE_SPEED,
         );

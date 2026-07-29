@@ -113,6 +113,84 @@ fn main() {
         return;
     }
 
+    // where — the bot's live state, so a run can be watched without the MCP bridge (whose binary
+    // goes stale the moment the control schema changes).
+    if mode == "where" {
+        match c.req(Cmd::Status, &mut |_| {}) {
+            Ok(Resp::Status(st)) => {
+                for b in &st.bots {
+                    println!(
+                        "bot{} ent{} alive={} hp={:.0} at ({:.0},{:.0},{:.0}) speed {:.0} onground={} order={} route {}@{}",
+                        b.client, b.ent, b.alive, b.health, b.origin[0], b.origin[1], b.origin[2],
+                        b.speed, b.on_ground, b.order, b.route.len, b.route.pos
+                    );
+                }
+            }
+            other => println!("Status -> {other:?}"),
+        }
+        return;
+    }
+
+    // cell <id> — links in and out, by id. The MCP has this too, but its binary goes stale whenever
+    // the control schema changes and this one is always current.
+    // route <bot> — the plan as it stands, with the current leg marked.
+    if mode == "route" {
+        let bot: u32 = argv[1].parse().expect("bot ent id");
+        match c.req(Cmd::Route { bot }, &mut |_| {}) {
+            Ok(Resp::Route(r)) => {
+                println!("bot {bot}: {} legs, at {}", r.legs.len(), r.route_pos);
+                for (i, l) in r.legs.iter().enumerate().take(8) {
+                    println!(
+                        "  {} {:>2} {:<10} cell {:>5} -> {:>5} tgt {:?}",
+                        if i == r.route_pos as usize { "->" } else { "  " },
+                        i,
+                        l.kind,
+                        l.src_cell,
+                        l.tgt_cell,
+                        l.tgt
+                    );
+                }
+            }
+            other => println!("Route -> {other:?}"),
+        }
+        return;
+    }
+
+    // audit <bot> [lines] — the bot's own account of what it is doing, which is what it is for.
+    if mode == "audit" {
+        let bot: u32 = argv[1].parse().expect("bot ent id");
+        let lines: u32 = argv.get(2).and_then(|s| s.parse().ok()).unwrap_or(20);
+        match c.req(Cmd::Audit { bot, lines }, &mut |_| {}) {
+            Ok(Resp::Audit(a)) => {
+                for f in &a.frames {
+                    println!("{f:?}");
+                }
+            }
+            other => println!("Audit -> {other:?}"),
+        }
+        return;
+    }
+
+    if mode == "cell" {
+        let id: u32 = argv[1].parse().expect("cell id");
+        match c.req(Cmd::CellById { cell: id }, &mut |_| {}) {
+            Ok(Resp::Cell(cl)) => {
+                println!("cell {id} at {:?} ledge={} hazard={}", cl.origin, cl.ledge, cl.hazard);
+                for l in &cl.out {
+                    println!(
+                        "   out {:>8} -> cell {:>5} {:?}  cost {:.2} water_extra {:.2}",
+                        l.kind, l.to_cell, l.to, l.cost, l.water_extra
+                    );
+                }
+                for l in &cl.incoming {
+                    println!("   in  {:>8} <- cell {:>5} {:?}", l.kind, l.from_cell, l.from);
+                }
+            }
+            other => println!("CellById -> {other:?}"),
+        }
+        return;
+    }
+
     if mode == "list" || mode == "near" {
         let links = speed_jumps(&mut c);
         let near: Option<[f32; 3]> = if mode == "near" {
