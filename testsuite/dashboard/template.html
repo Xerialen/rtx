@@ -231,6 +231,8 @@
   .attempt.stall { background: var(--r-pre); }
   .attempt.loop { background: var(--r-sj); color: var(--ground); }
   .attempt.detoured { background: var(--r-airtime); }
+  .attempt.rocketjump { background: repeating-linear-gradient(135deg,
+    var(--warn) 0 5px, var(--bad) 5px 10px); }
   .attempt.died { background: var(--mesh-mid); }
   .legend { display: flex; flex-wrap: wrap; gap: 8px 13px; margin-top: 12px; color: var(--ink-2); font: 10px var(--mono); }
   .legend span { display: inline-flex; align-items: center; gap: 5px; }
@@ -242,6 +244,8 @@
   }
   .legend .timeout { background: var(--bad); } .legend .stall { background: var(--r-pre); }
   .legend .loop { background: var(--r-sj); } .legend .detoured { background: var(--r-airtime); }
+  .legend .rocketjump { background: repeating-linear-gradient(135deg,
+    var(--warn) 0 5px, var(--bad) 5px 10px); }
   .legend .died { background: var(--mesh-mid); }
   .dash {
     margin-top: 14px; display: flex; align-items: baseline; justify-content: space-between;
@@ -500,6 +504,7 @@ const TERM_TITLES = {
   "stall": "stall-vakten löste ut",
   "loop": "fastnade i omtags-loop (goto gavs om 6 gånger utan framkomst)",
   "detoured": "tog omväg i stället för hoppet",
+  "rocketjump": "raketskutt på en rutt som inte delade ut raketer \u2014 försöket ogiltigt",
   "died": "dog under försöket",
   "PASS": "alla trösklar klarade",
   "FAIL": "minst en tröskel missad",
@@ -840,7 +845,8 @@ function renderT1() {
     '</span><span><i class="fell"></i>' + term("fell") + '</span><span><i class="timeout"></i>' +
     term("timeout") + '</span><span><i class="stall"></i>' + term("stall") +
     '</span><span><i class="loop"></i>' + term("loop") + '</span><span><i class="detoured"></i>' +
-    term("detoured") + '</span><span><i class="died"></i>' + term("died") + "</span></div>" +
+    term("detoured") + '</span><span><i class="rocketjump"></i>' + term("rocketjump") +
+    '</span><span><i class="died"></i>' + term("died") + "</span></div>" +
     '<div class="dash"><div><div class="eyebrow">' + term("dash_100m", "peak u/s (100m)") +
     " · golv " + fmt(dash.floor) + " u/s</div>" +
     (dash.place ? '<span class="drill-place">' + esc(dash.place) + "</span>" : "") +

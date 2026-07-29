@@ -119,7 +119,14 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
                 "arrive_box",
                 "regoto_max",
             },
-            {"no_progress_s", "speed_ceiling", "give_up_grace_s", "arrive_z"},
+            {
+                "no_progress_s",
+                "speed_ceiling",
+                "give_up_grace_s",
+                "arrive_z",
+                "prep_health",
+                "prep_rockets",
+            },
         )
         _vec3(run["start"], f"{source}.run.start")
         _vec3(run["target"], f"{source}.run.target")
@@ -137,6 +144,16 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
             _number(run["arrive_z"], f"{source}.run.arrive_z")
             if run["arrive_z"] < 0:
                 raise ScenarioError(f"{source}.run.arrive_z: cannot be negative")
+        # The loadout the attempt starts from. It is stated rather than
+        # inherited because what the bot carries decides which routes the
+        # planner will even consider — and `prep_rockets` doubles as the
+        # permission: a drill that hands out no rockets is a drill where the
+        # rocket jump is not allowed, and taking one anyway voids the attempt.
+        for key in ("prep_health", "prep_rockets"):
+            if key in run:
+                _number(run[key], f"{source}.run.{key}")
+                if run[key] < 0:
+                    raise ScenarioError(f"{source}.run.{key}: cannot be negative")
         # An attempt ends when it can no longer succeed rather than when its
         # clock runs out. `speed_ceiling` must be above any speed the map has
         # produced, or the impossibility bound would cut attempts that were

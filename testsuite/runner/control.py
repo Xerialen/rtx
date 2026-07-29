@@ -61,6 +61,18 @@ def _parse_verb(command: str) -> Any:
             return "Items"
         if verb == "get":
             return {"Get": {"name": tokens[1]}}
+        if verb == "prep":
+            # Set what the bot is carrying before an attempt. The engine has
+            # had this since the jump work (`Cmd::Prep`); it was unreachable
+            # only because this parser did not know the verb, and the error it
+            # raised — "unsupported control verb" — reads like the engine's.
+            return {
+                "Prep": {
+                    "bot": int(tokens[1]),
+                    "health": float(tokens[2]),
+                    "rockets": float(tokens[3]),
+                }
+            }
     except (IndexError, ValueError) as exc:
         raise ControlError(f"invalid arguments for control verb {verb!r}") from exc
     raise ControlError(f"unsupported control verb {verb!r}")

@@ -345,6 +345,11 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
                 "loop",
                 "detoured",
                 "died",
+                # The bot rocket-jumped on a drill that handed it no rockets,
+                # so it picked them up on the way. The attempt answered a
+                # different question than the one asked and counts as neither
+                # an arrival nor a failure to arrive.
+                "rocketjump",
             }:
                 _fail(f"{attempt_path}.status", "unknown outcome")
             # `stall` is read off the telemetry event, so a build that emits

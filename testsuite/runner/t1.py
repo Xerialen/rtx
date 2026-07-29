@@ -61,6 +61,18 @@ def _outcome(
     control.request(f"stop {bot_id}")
     control.request(f"hold {bot_id}")
     control.request(f"teleport {bot_id} {_coordinates(start)}")
+    # What the bot carries decides which routes exist for it: the planner
+    # prices a rocket jump away for a bot that cannot fly one. Left to the map,
+    # that is whatever the bot happened to pick up earlier in the run, and it
+    # moves the answer a long way — the same drill runs 8.7 s carrying rockets
+    # and 14–25 s without, on the same rig and the same build. So every attempt
+    # starts from a stated loadout rather than an inherited one.
+    #
+    # Rockets are also the permission: a drill that hands the bot none is a
+    # drill where the rocket jump is not allowed, which is the rule for every
+    # route here except the pent jump.
+    rockets = run.get("prep_rockets", 0.0)
+    control.request(f"prep {bot_id} {run.get('prep_health', 100.0)} {rockets}")
     time.sleep(1.0)
     control.events.clear()
     control.request(f"goto {bot_id} {_coordinates(target)}")
@@ -135,6 +147,15 @@ def _outcome(
         )
         if bot is None or not bot.get("alive"):
             return {"status": "died", "time_s": None, "demo_t_s": demo_t}
+        # Starting empty is not the same as staying empty: the map hands out
+        # rockets and the bot picks them up, so a drill that denied it the
+        # ammunition can still watch it jump. `rj_phase` leaves `Idle` the
+        # moment the bot commits to one, which is a state this loop already
+        # fetches on every poll and nothing has ever read. An attempt that
+        # takes a route it was not given the means for is not a slow attempt
+        # or a failed one — it answered a different question, so it is void.
+        if rockets <= 0 and (bot.get("rj_phase") or "Idle") != "Idle":
+            return {"status": "rocketjump", "time_s": None, "demo_t_s": demo_t}
         position = bot["origin"]
         highest_z = max(highest_z, position[2])
         now = time.monotonic()

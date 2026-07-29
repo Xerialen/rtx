@@ -16,6 +16,9 @@ timeout_s = 25
 pause_s = 1.0
 arrive_box = 70
 regoto_max = 6
+# The one route on dm3 where the rocket jump is sanctioned. Every other drill
+# is handed an empty launcher, so taking one voids the attempt.
+prep_rockets = 100
 
 [threshold]
 required = 8
