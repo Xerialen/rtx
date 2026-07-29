@@ -56,6 +56,26 @@ pub enum Posture {
     Press,
 }
 
+/// Why the route is frozen — i.e. why this frame did not re-plan.
+///
+/// An empty route is only half a diagnosis. A bot with `route_len == 0` that re-plans every frame is
+/// being told by A* that there is nowhere to go; one with `route_len == 0` that *cannot* re-plan is
+/// held by a commitment, and those are opposite bugs with identical trace lines. Without this the log
+/// says "no route" for both and the reader has to guess.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Frozen {
+    /// Not frozen: this frame was free to re-plan.
+    #[default]
+    No,
+    Hook,
+    SpeedJump,
+    RocketJump,
+    /// A committed plain jump leg (`JumpGap`/`DoubleJump`) is being flown.
+    Air,
+    /// An external puppet order pins the route to one link.
+    Pinned,
+}
+
 /// Item-goal commitment (mirror of the game's `bot::state::GoalCommit`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Commit {
@@ -142,6 +162,27 @@ pub struct AuditFrame {
     pub route_len: u16,
     pub route_pos: u16,
     pub band: i16,
+    /// Why the route could not be re-planned this frame — see [`Frozen`].
+    pub frozen: Frozen,
+    /// The navmesh cell the bot resolved *itself* to when planning (-1 = none found).
+    ///
+    /// Every route starts here, so a wrong answer here is a wrong route with no other symptom. The
+    /// case that motivated recording it: a swimmer mid-pool is often nearer the bank above it than
+    /// the floor below, so it planned from a cell it was not on and A* returned nothing.
+    pub cell: i32,
+    /// The cell the last search was asked to reach (-1 = none) — the goal after reachability
+    /// redirection and LOD corridor truncation, which is frequently not the goal the bot "has".
+    pub target: i32,
+    /// The routing goal that repath was handed, before any redirection (-1 = none). Distinct from
+    /// [`Self::goal_cell`], which is the *item* goal and says nothing under an external order.
+    pub route_goal: i32,
+    /// The view angles actually sent this frame, `[pitch, yaw]` in degrees.
+    ///
+    /// Movement and aim are decoupled by `bot::wish`, so the command axes say nothing about where the
+    /// bot is looking — and in water the view *is* the mechanism: `PM_CheckWaterJump` probes along it,
+    /// and a view that swings is a bot that cannot get out. Without this the log cannot describe the
+    /// most visible failure a spectator sees.
+    pub view: [f32; 2],
     /// The frame's movement command (what the brain actually pressed).
     ///
     /// `up` is the vertical axis, and it exists because without it the log cannot describe swimming
@@ -189,6 +230,9 @@ pub mod flags {
     /// Air sits above this column, so surfacing is available. Half of every "why did it not come
     /// up" question; the other half is [`AuditFrame::up`].
     pub const AIR_ABOVE: u16 = 1 << 9;
+    /// A repath ran on this frame. With `route_len == 0` this says the search itself came back
+    /// empty; without it, the route was never rebuilt (frozen, or cleared after the fact).
+    pub const REPLANNED: u16 = 1 << 10;
 }
 
 /// A per-bot ring buffer of [`AuditFrame`]s. A single fixed `Vec<AuditFrame>` is allocated once to the

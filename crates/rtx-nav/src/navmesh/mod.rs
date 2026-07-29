@@ -3252,6 +3252,38 @@ mod tests {
         );
     }
 
+    /// A swimmer must resolve to water, not to the nearest thing. Floating mid-pool a bot is often
+    /// closer to the bank above it than to the floor below — on dm3, 86 units under one and 138 over
+    /// the other — and snapping it onto dry land it is not standing on leaves it with a route it
+    /// cannot walk, or none at all, wedged against geometry as its air runs out.
+    #[test]
+    fn nearest_resolves_in_the_bots_own_medium() {
+        // A dry bank directly above a submerged pool floor, with the swimmer between them and
+        // nearer the bank.
+        let cell = |x: f32, z: f32| Cell {
+            origin: Vec3::new(x, 0.0, z),
+            gx: floor_grid(x),
+            gy: floor_grid(0.0),
+        };
+        let mut g = NavGraph::test_graph(vec![cell(0.0, -168.0), cell(0.0, -392.0)], Vec::new());
+        for (i, c) in g.cells.iter().enumerate() {
+            g.grid.entry((c.gx, c.gy)).or_default().push(i as u32);
+        }
+        g.water = vec![false, true];
+
+        let swimmer = Vec3::new(0.0, 0.0, -254.0);
+        assert_eq!(g.nearest(swimmer), Some(0), "plain nearest picks the bank, 86 above");
+        assert_eq!(
+            g.nearest_in_medium(swimmer, true),
+            Some(1),
+            "a swimmer belongs to the water, 138 below"
+        );
+        // And a bot on the bank is not dragged into the pool.
+        assert_eq!(g.nearest_in_medium(Vec3::new(0.0, 0.0, -168.0), false), Some(0));
+        // With nothing of the right medium in range, an answer still comes back.
+        assert_eq!(g.nearest_in_medium(Vec3::new(0.0, 0.0, -254.0), false), Some(0));
+    }
+
     /// `flag_water` flags the submerged cell, charges links *into* it the swim premium while leaving
     /// the exit link alone, and reports the depth via `cell_in_water`/`cell_breathable`.
     #[test]

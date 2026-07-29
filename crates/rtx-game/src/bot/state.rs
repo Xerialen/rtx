@@ -156,6 +156,13 @@ pub struct BotState {
     /// selection, it freezes the route and locks out combat until a physical landing — so an enemy
     /// appearing at the lip or mid-arc cannot flip the goal and yank the bot off the jump.
     pub air: Option<AirCommit>,
+    /// A committed haul-out: the `Swim` leg being climbed, and when it began.
+    ///
+    /// While set, the exit stance owns the view (see [`crate::bot::steer`]). It is a latch and not a
+    /// per-frame test because the condition that starts it — the exit being above the bot — is one
+    /// the bot is actively *rising through*, so re-deciding each frame snaps the view between the
+    /// exit stance and the path look a few units apart, several times a second.
+    pub water_exit: Option<Commit>,
     /// Rocket-jump traversal machine (see [`RjState`]): stance → jump → fire → ride the blast arc
     /// onto a high ledge.
     pub rj: RjState,
@@ -163,6 +170,29 @@ pub struct BotState {
     /// overriding the bot's own objective, plus the goto stall tracker. `order == None` for a normal,
     /// autonomous bot — the whole harness path is inert unless the control channel issues an order.
     pub puppet: Puppet,
+    /// The navmesh cell the bot resolved itself to on the last planning frame. Diagnostic only —
+    /// every route is searched from it, so the flight recorder needs it to tell "no path exists" from
+    /// "planned from the wrong place". `None` before the first resolve, or when none was found.
+    pub cell: Option<u32>,
+    /// The LOD corridor interim the bot is committed to, and the goal it was chosen for.
+    ///
+    /// The corridor re-derives its interim from the bot's *current* cell on every repath, and two
+    /// adjacent cells either side of a cluster boundary can yield interims in opposite directions —
+    /// so a bot sitting on that boundary is handed first one and then the other and swims between
+    /// them indefinitely. Holding the choice until it is reached turns that into a waypoint.
+    pub interim: Option<(u32, u32)>,
+    /// The cell the last A\* actually searched *to*, after the goal was redirected for reachability
+    /// and (with LOD) truncated to a corridor interim. Diagnostic only.
+    ///
+    /// An empty route has three quite different causes — the repath never ran, it ran and the search
+    /// came back with nothing, or it ran and something cleared the result afterwards — and the log
+    /// cannot tell them apart from `route_len` alone. Recording the target the search was given, and
+    /// stamping [`Self::replanned`] when one ran, separates all three.
+    pub route_target: Option<u32>,
+    /// The goal cell the last repath was handed, before any redirection. Diagnostic only.
+    pub route_goal: Option<u32>,
+    /// Whether a repath ran on this frame (cleared at the top of every steer pass).
+    pub replanned: bool,
 }
 
 impl BotState {

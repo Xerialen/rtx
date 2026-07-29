@@ -33,12 +33,17 @@ use glam::Vec3;
 pub struct Sense {
     /// Fully under (`waterlevel == 3`) — the only state that drains air.
     pub submerged: bool,
-    /// Air above the water over this column, so rising actually reaches something breathable.
+    /// The height of the water's surface over this column, if rising actually reaches something
+    /// breathable — see [`rtx_nav::hazard::surface_z`].
     ///
     /// *Air*, not open sky: an indoor pool with a ceiling a long way above it counts, because a
-    /// swimmer surfacing there can breathe. What this excludes is water meeting solid directly —
-    /// a bridge deck sitting in it, a flooded tunnel — where there is no surface to rise to at all.
-    pub air_above: bool,
+    /// swimmer surfacing there can breathe. `None` is water meeting solid directly — a bridge deck
+    /// sitting in it, a flooded tunnel — where there is no surface to rise to at all.
+    ///
+    /// A height rather than a flag, because every rule here is a seek toward a depth, and a rule that
+    /// knew only "air is up there" could do nothing but pick a direction — which flips each time the
+    /// bot crosses the surface it is aiming for.
+    pub surface: Option<f32>,
     /// Seconds of air left before drowning damage starts.
     pub air_left: f32,
     /// Where the bot is, and the next route point it is swimming toward.
@@ -62,26 +67,46 @@ pub struct Sense {
 pub fn vertical_wish(s: &Sense, speed: f32) -> f32 {
     // Air interrupts everything, and this is the whole of the special-casing. Deliberately late:
     // with a full tank and a short tunnel it never fires, so an ordinary crossing is simply swum.
-    if s.submerged && s.air_above && s.air_left < AIR_RESERVE {
-        return speed;
+    if s.submerged && s.air_left < AIR_RESERVE {
+        if let Some(line) = s.surface {
+            return seek(line - FLOAT_BELOW, s.origin.z, speed);
+        }
     }
     // With no route there is no depth to follow, and the goal's own height says nothing about the
-    // water in between — so this is a recovery, not a traversal.
+    // water in between — so this is a recovery, not a traversal. It is also the ordinary state of a
+    // bot that has simply been told to hold position in water, which is why it must be *calm*.
     //
-    // Air first if it is reachable. Otherwise **sink**: every water cell the carve produces sits on
-    // the pool floor, so the floor is where the map is, and descending is what re-acquires a route.
-    // Holding depth instead strands the bot in the empty middle of the water — measured on dm3 at
-    // (1696, 0, -240), off-mesh under a roofed span, swimming at full tilt into geometry at 13 ups
-    // with no route and its air running out.
+    // Float if there is a surface to float at; otherwise **sink**: every water cell the carve
+    // produces sits on the pool floor, so the floor is where the map is, and descending is what
+    // re-acquires a route. Holding depth instead strands the bot in the empty middle of the water —
+    // measured on dm3 at (1696, 0, -240), off-mesh under a roofed span, swimming at full tilt into
+    // geometry at 13 ups with no route and its air running out.
     if !s.routed {
-        return if s.submerged && s.air_above { speed } else { -speed };
+        return match s.surface {
+            Some(line) => seek(line - FLOAT_BELOW, s.origin.z, speed),
+            None => -speed,
+        };
     }
-    // Otherwise follow the route, down as readily as up. Scaled so a change of more than
-    // [`CLIMB_FULL`] asks for everything the swimmer has and a smaller one asks proportionally less,
-    // which keeps a bot tracking a gently shelving floor off both the ceiling and the bottom.
-    let dz = s.aim.z - s.origin.z;
-    (dz / CLIMB_FULL).clamp(-1.0, 1.0) * speed
+    // Otherwise follow the route, down as readily as up.
+    seek(s.aim.z, s.origin.z, speed)
 }
+
+/// Vertical effort that closes on `target_z` — the one control law this module has.
+///
+/// Proportional and clamped: a gap of more than [`CLIMB_FULL`] asks for everything the swimmer has,
+/// a smaller one asks proportionally less, and at the target it asks for nothing. Every rule above is
+/// this function with a different reference height, which is what makes them compose instead of
+/// fighting: an earlier version chose a *sign* per rule, and two rules disagreeing about the sign at
+/// the surface produced 46-270 full-throttle reversals in a single crossing — a bot thrashing
+/// up-down-up-down at the waterline instead of floating in it.
+fn seek(target_z: f32, from_z: f32, speed: f32) -> f32 {
+    ((target_z - from_z) / CLIMB_FULL).clamp(-1.0, 1.0) * speed
+}
+
+/// How far below the surface a floating bot holds its origin, so its eyes (22 above origin) stay
+/// clear of the water — `waterlevel == 2`, which is both breathing and the only state
+/// `PM_CheckWaterJump` will haul it out of. Matches the exit ring's own float height.
+pub const FLOAT_BELOW: f32 = 20.0;
 
 /// Height difference at which a climb or dive asks for the swimmer's full vertical effort.
 pub const CLIMB_FULL: f32 = 64.0;
@@ -98,10 +123,12 @@ pub const AIR_RESERVE: f32 = 3.0;
 mod tests {
     use super::*;
 
+    /// The bot sits at z 0; `air_above` places a surface far enough overhead that the float target
+    /// is well above it (so "reachable air" reads as a strong upward ask, as it used to).
     fn sense(submerged: bool, air_above: bool, air_left: f32, dz: f32) -> Sense {
         Sense {
             submerged,
-            air_above,
+            surface: air_above.then_some(400.0),
             air_left,
             origin: Vec3::ZERO,
             aim: Vec3::new(100.0, 0.0, dz),
@@ -156,10 +183,65 @@ mod tests {
             -320.0,
             "roofed and lost: sink to the floor, where the mesh is"
         );
-        // With air above, surfacing is still the right instinct.
+        // With a surface far above, it heads for it — but for the surface, not for the goal.
         let mut open = roofed;
-        open.air_above = true;
+        open.surface = Some(400.0);
         assert_eq!(vertical_wish(&open, 320.0), 320.0);
+    }
+
+    /// The failure a spectator actually sees, and the reason this module is one control law.
+    ///
+    /// A routeless bot bobbing at the waterline crosses `submerged` constantly. The rule this
+    /// replaced picked a *sign* from that bit, so each crossing swung the ask the full width of the
+    /// range — `+speed` to `-speed` between adjacent frames, which on dm3 was 46-270 reversals in one
+    /// crossing and looked, accurately, like a breakdown.
+    ///
+    /// The property that rules that out is not "few sign changes" — a seek tracking a bobbing float
+    /// legitimately changes sign at every crossing — but **continuity**: adjacent positions must
+    /// command near-adjacent efforts, and the effort near the target must be a trim rather than
+    /// everything the swimmer has. Both are asserted by sweeping z through the whole band.
+    #[test]
+    fn a_routeless_bot_settles_at_the_surface_instead_of_thrashing() {
+        let (line, speed) = (-208.0f32, 320.0f32);
+        let at = |z: f32| {
+            vertical_wish(
+                &Sense {
+                    submerged: z < line - 22.0,
+                    surface: Some(line),
+                    air_left: 11.0,
+                    origin: Vec3::new(0.0, 0.0, z),
+                    aim: Vec3::new(100.0, 0.0, 400.0), // a high, far goal: must not be chased
+                    routed: false,
+                },
+                speed,
+            )
+        };
+        let float_at = line - FLOAT_BELOW;
+        let mut prev = at(float_at - 40.0);
+        let mut last_sign = prev.signum();
+        let mut sign_changes = 0;
+        for i in 1..=160 {
+            let z = float_at - 40.0 + 0.5 * i as f32; // sweep up through the surface
+            let w = at(z);
+            assert!(
+                (w - prev).abs() <= 0.05 * speed,
+                "z {z}: ask jumped {prev} -> {w} over half a unit — that is a switch, not a seek"
+            );
+            // Against the last *non-zero* sign: the sweep lands exactly on the target, and passing
+            // cleanly through zero is the seek working, not a missing crossing.
+            if w != 0.0 {
+                if w.signum() != last_sign {
+                    sign_changes += 1;
+                }
+                last_sign = w.signum();
+            }
+            prev = w;
+        }
+        // Monotone sweep through the target: the effort reverses exactly once, at the float depth.
+        assert_eq!(sign_changes, 1, "a monotone sweep must cross zero once");
+        assert!(at(float_at).abs() < 1.0, "at the float depth it should ask for nothing");
+        assert!(at(float_at + 4.0) < 0.0, "a little high: trim down");
+        assert!(at(float_at - 4.0) > 0.0, "a little low: trim up");
     }
 
     /// A gentle rise asks for a gentle climb, not everything the swimmer has.

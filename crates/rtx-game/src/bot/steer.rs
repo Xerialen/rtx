@@ -64,6 +64,58 @@ fn corridor_to(graph: &NavGraph, from: CellId, goal: CellId, costs: &LinkCosts, 
         .flatten()
 }
 
+/// What finishing a plan costs *from where the bot actually is*, in the seconds A\* minimises.
+///
+/// The naive answer — sum the priced cost of the legs still ahead — is anchored at the current leg's
+/// *source cell*, which a moving bot has already partly traversed. A freshly-planned route is
+/// anchored at the bot. Comparing the two therefore compares one number that includes up to a whole
+/// leg the bot has already covered against one that does not, and the error (~0.1-0.15s) is the same
+/// size as both the difference between two competing plans and the switching margin. That is a
+/// comparison that decides nothing, and it is why the incumbent kept losing to its own rival every
+/// re-path: measured on dm3, 8- and 9-leg routes trading places while the bot swam a 35u box.
+///
+/// So the first leg's stored cost is replaced by the straight-line approach to where it *ends*,
+/// priced at [`MAX_SPEED`] — the same basis as the search's own heuristic. Both candidates get that
+/// treatment, so whatever the approximation costs in absolute accuracy it costs both sides equally,
+/// and what remains is a like-for-like ordering.
+fn remaining_cost(graph: &NavGraph, origin: Vec3, legs: &[u32], costs: &LinkCosts) -> f32 {
+    let Some(&first) = legs.first() else {
+        return 0.0;
+    };
+    let approach = (graph.cell_origin(graph.link_target(first)) - origin).length() / crate::navmesh::MAX_SPEED;
+    approach + legs[1..].iter().map(|&l| graph.priced_link_cost(l, costs)).sum::<f32>()
+}
+
+/// Whether the route being executed is still one this bot can simply carry on with: it has legs
+/// left, it was planned for the same goal, the bot is still *on* the leg it is flying, and that leg
+/// is not one the bot has already condemned.
+///
+/// "On the leg" is measured against the leg's endpoints, not against the bot's resolved cell. A
+/// swimmer is suspended between cells rather than standing on one, and its resolved cell flips
+/// between neighbours as it moves — so an exact cell match rejects a perfectly good plan on most
+/// frames, which is precisely the situation the hysteresis exists to survive.
+///
+/// The penalty check is what keeps the hysteresis from fighting the watchdogs. When a bot wedges,
+/// the stuck detector surcharges the offending leg *so that the forced re-path diverts* — which
+/// makes the diverted route legitimately more expensive than the wedged one. Tie-breaking toward the
+/// incumbent there hands the bot straight back the plan it is stuck on, and the two mechanisms
+/// deadlock: measured on dm3, a swimmer pressed into the east wall at x=1888 holding `forwardmove`
+/// 740 at zero speed for seconds while the watchdog re-condemned the same leg every 0.7s. A plan we
+/// have just struck is not a plan worth defending.
+fn route_still_ours(graph: &NavGraph, bot: &BotState, origin: Vec3, goal: CellId, costs: &LinkCosts) -> bool {
+    bot.goal_cell == Some(goal)
+        && bot.route.get(bot.route_pos).is_some_and(|&l| {
+            let near = |c| (graph.cell_origin(c) - origin).length() <= ROUTE_KEEP_RADIUS;
+            (near(graph.link_source(l)) || near(graph.link_target(l)))
+                && !costs.penalties.iter().any(|&(li, _)| li == l)
+        })
+}
+
+/// How far from its current leg's endpoints a bot may be and still count as executing that leg.
+/// Loose on purpose — a couple of grid steps — because the point is to keep a plan through the
+/// ordinary drift of travel, not to police adherence to it.
+const ROUTE_KEEP_RADIUS: f32 = 128.0;
+
 /// Whether `route` crosses a link this bot is *priced out of* rather than merely charged for. The
 /// capability penalties ([`RJ_UNFIT_PENALTY`], `CLOSED_GATE_PENALTY`) are deliberately finite so a
 /// planner with no other option still returns something rather than stranding the bot — but that only
@@ -156,6 +208,28 @@ const WATER_EXIT_RISE: f32 = 16.0;
 /// bank is what `PM_CheckWaterJump` reads; tilting up is what carries the bot over the lip after the
 /// engine launches it.
 const WATER_EXIT_PITCH: f32 = -45.0;
+
+/// How much cheaper a freshly-planned route must be before it displaces the one being executed.
+///
+/// A repath runs every [`REPATH_INTERVAL`]; without a margin, two plans of near-equal cost trade
+/// places every time the bot's resolved cell does. On a boundary between two cells whose best routes
+/// leave in *opposite* directions — each route's first step carrying the bot back to the other cell —
+/// that is a stable oscillation the bot cannot escape, and it is a tie being re-tossed 2.5 times a
+/// second rather than any change in the world. Ties go to the plan already in progress.
+///
+/// Ten percent: comfortably above the jitter between two near-equal plans, well below the difference
+/// a genuinely better route makes.
+const ROUTE_SWITCH_GAIN: f32 = 0.90;
+
+/// How near the committed LOD interim counts as reached, releasing it so the corridor may advance.
+/// A grid step and a half: close enough that the bot is plainly there, loose enough that it need not
+/// land on the exact cell the coarse route happened to name.
+const INTERIM_REACHED: f32 = 48.0;
+
+/// How long a committed haul-out may run before the ordinary route steering gets its eyes back.
+/// `PM_CheckWaterJump` fires within a stroke or two of facing the bank, so a climb still going after
+/// this is one that is not going to happen — a lip too high, or a ledge that moved out of reach.
+const WATER_EXIT_MAX: f32 = 1.5;
 
 /// How many legs of ground corridor a walk certification rolls over. Twelve 32u legs is ~380u, well
 /// past the ~130u a 40-tick rollout at walk speed can cover, so the horizon — not the polyline — is
@@ -391,6 +465,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         ..
     } = o;
     let gate_closed = costs.gate_closed;
+    bot.replanned = false; // per-frame; the repath block below stamps it if one runs
 
     // Plain-jump commitment is normally pre-armed before objective resolution. Remember the first
     // physical airborne frame here; route kind/position is intentionally irrelevant to release.
@@ -545,10 +620,41 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // stays the true `goal`, so change detection and the gate/give-up logic are untouched. Off →
         // today's exact whole-graph search to the target.
         let corridor = corridor_to(graph, bot_cell, target, &costs, lod);
+        // Commit to the interim once chosen, rather than accepting a fresh one each repath.
+        //
+        // `corridor` derives the interim from the bot's *current* cell, and on a cluster boundary the
+        // two cells the bot is straddling hand back interims in opposite directions. The bot then
+        // swims at the first, crosses back over the boundary, is handed the second, swims at that,
+        // and so on: measured on dm3's pool as 4539/4537 alternating every ~0.7s for nine seconds,
+        // the bot tracing a 136u box and arriving nowhere. A waypoint you re-pick faster than you can
+        // reach it is not a waypoint.
+        //
+        // Held while it is still the same goal, still inside the fresh window (so the restricted
+        // search can reach it), and not yet arrived at.
         let (search_target, window) = match &corridor {
-            Some(c) => (c.interim, Some(c.allowed.as_slice())),
-            None => (target, None),
+            Some(c) => {
+                // Deliberately *not* conditioned on the fresh window containing it: the window is
+                // rebuilt from the bot's current cell, so it is exactly the thing that changes as the
+                // bot straddles the boundary, and requiring membership drops the commitment on the
+                // frames it exists to survive. `windowed_route` already falls back to an unrestricted
+                // search when the window cannot reach the target.
+                let keep = bot.interim.filter(|&(g, i)| {
+                    g == target && i != bot_cell && (graph.cell_origin(i) - origin).length() > INTERIM_REACHED
+                });
+                let interim = keep.map_or(c.interim, |(_, i)| i);
+                bot.interim = Some((target, interim));
+                (interim, Some(c.allowed.as_slice()))
+            }
+            None => {
+                bot.interim = None;
+                (target, None)
+            }
         };
+        // Flight recorder: a repath ran, this is the goal it was given, and this is what it actually
+        // searched to after reachability redirection and any corridor truncation.
+        bot.replanned = true;
+        bot.route_goal = Some(goal);
+        bot.route_target = Some(search_target);
         let banded = use_bands
             .then(|| match window {
                 Some(w) => graph.find_path_banded_within(bot_cell, search_target, speed, &costs, w),
@@ -577,6 +683,32 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // Keep `route_bands` parallel to `route`: zero-fill when unbanded (or on any length mismatch).
         if bands.len() != route.len() {
             bands = vec![0u8; route.len()];
+        }
+        // Hysteresis: a new plan has to be materially cheaper to displace the one in progress.
+        //
+        // Re-planning every `REPATH_INTERVAL` answers "what is best *from here*", and the answer can
+        // change simply because the bot moved a cell. Where two routes are near-equal and leave in
+        // opposite directions, each one's first leg carries the bot into the cell that prefers the
+        // other, so the bot alternates plans a few times a second and travels nowhere. Measured on
+        // dm3's pool: 8- and 9-leg routes swapping with cells 4381/4383, the bot swimming a 35u
+        // back-and-forth for four seconds at a stretch.
+        //
+        // Nothing here overrides a *reason* to re-plan — a changed goal, a route we have walked off,
+        // an emptied or priced-out plan all fail `route_still_ours` or leave `route` cheaper. This
+        // only settles ties, and it settles them in favour of committing.
+        if !route.is_empty() && route_still_ours(graph, bot, origin, goal, &costs) {
+            let fresh = remaining_cost(graph, origin, &route, &costs);
+            let current = remaining_cost(graph, origin, &bot.route[bot.route_pos..], &costs);
+            if fresh > current * ROUTE_SWITCH_GAIN {
+                route = bot.route[bot.route_pos..].to_vec();
+                bands = bot
+                    .route_bands
+                    .get(bot.route_pos..)
+                    .map_or_else(Vec::new, <[u8]>::to_vec);
+                if bands.len() != route.len() {
+                    bands = vec![0u8; route.len()];
+                }
+            }
         }
         // Empty-route telemetry (C6): a resolved repath that came back with no legs while the bot isn't
         // already at its goal — the "parked in place" signature. `corr` shows whether a corridor was in
@@ -2097,11 +2229,11 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // Applied last so it survives the hook/rj/reverse branches above, and only in water — out of it
     // the vertical term is meaningless and `wish::Regime::Ground` would drop it anyway.
     if in_water {
-        let air_above = bsp.is_some_and(|b| crate::hazard::surface_above(&|p| b.pointcontents(p), origin));
+        let surface = bsp.and_then(|b| crate::hazard::surface_z(&|p| b.pointcontents(p), origin));
         move_world.z = swim::vertical_wish(
             &swim::Sense {
                 submerged,
-                air_above,
+                surface,
                 air_left,
                 origin,
                 aim: waypoint,
@@ -2122,13 +2254,36 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // So on an exit leg the bot turns square to the bank, tilts up, and drives up and forward —
         // and only then resumes its path. Yaw is what the engine's probe reads; the pitch and the
         // upward wish are what carry it over the lip once launched.
-        if matches!(kind, Some(LinkKind::Swim)) && waypoint.z > origin.z + WATER_EXIT_RISE {
+        //
+        // *Committed* is load-bearing, and this used to re-decide it every frame instead. The arming
+        // test asks whether the exit is above the bot — which is exactly the quantity the bot is
+        // closing as it climbs, so a few units of bob flip it on and off and the view snaps between
+        // the exit stance and the path look several times a second. Once begun, the haul-out is held
+        // until the bot is out of the water, the route moves to another leg, or it has plainly
+        // failed and the ordinary route steering should have its eyes back.
+        //
+        // A haul-out also needs somewhere to haul out *to*. `PM_CheckWaterJump` cannot lift a bot
+        // through a roof, so under a bridge deck the stance is a bot holding a 45-degree view and a
+        // full upward wish against the underside of the span until the timeout releases it — which is
+        // the brief stick under dm3's bridge. No surface overhead, no climb: swim the route instead.
+        let exit_leg = cur_leg.filter(|_| matches!(kind, Some(LinkKind::Swim)) && surface.is_some());
+        let held = bot
+            .water_exit
+            .is_some_and(|c| Some(c.leg) == exit_leg && now - c.since < WATER_EXIT_MAX);
+        if !held {
+            bot.water_exit = exit_leg
+                .filter(|_| waypoint.z > origin.z + WATER_EXIT_RISE)
+                .map(|leg| Commit { leg, since: now });
+        }
+        if bot.water_exit.is_some() {
             let out = (waypoint - origin).truncate().normalize_or_zero();
             if out != Vec2::ZERO {
                 look = Vec3::new(WATER_EXIT_PITCH, yaw_of(out), 0.0);
                 move_world = Vec3::new(out.x, out.y, 0.0) * MOVE_SPEED + Vec3::Z * MOVE_SPEED;
             }
         }
+    } else {
+        bot.water_exit = None; // out of the water: the haul-out is over, however it ended
     }
 
     // Bundle the frame's decisions into one command for the combat/grenade overlays to mutate.

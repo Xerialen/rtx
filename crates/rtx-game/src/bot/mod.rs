@@ -573,6 +573,28 @@ fn ax_commit(p: state::GoalCommit) -> rtx_auditlog::Commit {
         state::GoalCommit::Powerup => rtx_auditlog::Commit::Powerup,
     }
 }
+/// Which commitment is holding the route this frame — the mirror of `steer`'s `route_frozen`, in the
+/// same precedence order, so the recorder names the same reason the steerer acted on.
+fn ax_frozen(b: &state::BotState) -> rtx_auditlog::Frozen {
+    use rtx_auditlog::Frozen as F;
+    if b.hook.phase != state::HookPhase::Idle {
+        F::Hook
+    } else if b.sj.is_some() {
+        F::SpeedJump
+    } else if b.rj.phase != state::RjPhase::Idle {
+        F::RocketJump
+    } else if b.air.is_some() {
+        F::Air
+    } else if matches!(
+        b.puppet.order,
+        Some(state::ControlOrder::RocketJump { .. } | state::ControlOrder::FlyLink { .. })
+    ) {
+        // The two orders that pin the route to a single link; Goto/Hold route normally.
+        F::Pinned
+    } else {
+        F::No
+    }
+}
 
 /// Capture one bot frame's sensor snapshot for the per-bot audit ring (`rtx_bot_debug`). Reads only —
 /// a handful of field copies, no allocation, no formatting — so it is cheap to run every frame. The
@@ -588,6 +610,7 @@ fn capture_frame(
     side: i32,
     up: i32,
     buttons: i32,
+    view: Vec3,
     has_enemy: bool,
     watch: u32,
 ) -> rtx_auditlog::AuditFrame {
@@ -621,6 +644,7 @@ fn capture_frame(
     // The two bits that make a swimming bot legible: wading and drowning look identical without
     // `SUBMERGED`, and "why did it not surface" is unanswerable without knowing whether it could.
     flags |= af::SUBMERGED * (ent.v.waterlevel >= 3.0) as u16;
+    flags |= af::REPLANNED * b.replanned as u16;
     flags |= af::AIR_ABOVE
         * game
             .nav
@@ -644,6 +668,11 @@ fn capture_frame(
         route_len: b.route.len() as u16,
         route_pos: bpos as u16,
         band: b.route_bands.get(bpos).copied().unwrap_or(0) as i16,
+        frozen: ax_frozen(b),
+        cell: b.cell.map_or(-1, |c| c as i32),
+        target: b.route_target.map_or(-1, |c| c as i32),
+        route_goal: b.route_goal.map_or(-1, |c| c as i32),
+        view: [view.x, view.y],
         forward: forward as i16,
         side: side as i16,
         up: up as i16,
@@ -1518,6 +1547,7 @@ fn emit(
             side,
             up,
             buttons,
+            view,
             enemy.is_some(),
             0, // spectate-watch target: not plumbed to `emit`; reserved in the schema
         );
@@ -1688,7 +1718,13 @@ fn run_bot(game: &mut GameState, e: EntId) {
     // Graph queries (borrows game.nav) and bot-state updates (borrows game.entities) are on
     // disjoint fields, so they coexist; `host` is a Copy, no game borrow held across the send.
     let graph = game.nav.graph.as_ref().unwrap();
-    let Some(bot_cell) = graph.nearest(origin) else {
+    // Resolve the bot's own cell in the medium it is actually in. A swimmer is frequently nearer to
+    // the bank above it than to the pool floor below, and snapping it onto dry land it is not
+    // standing on yields a route it cannot walk — or, more often, no route at all.
+    let bot_cell = graph.nearest_in_medium(origin, s.in_water);
+    game.entities[e].bot.cell = bot_cell; // for the flight recorder: every route is planned from here
+    let graph = game.nav.graph.as_ref().unwrap();
+    let Some(bot_cell) = bot_cell else {
         idle(v_angle);
         return;
     };

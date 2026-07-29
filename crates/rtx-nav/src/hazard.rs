@@ -324,19 +324,48 @@ pub fn edge_bias(is_solid: &impl Fn(Vec3) -> bool, feet: Vec3, dir: Vec3) -> Vec
 /// hitting solid first means a roofed underwater tunnel (false) — there the bot must swim *out* to
 /// a breathing spot rather than press uselessly into the ceiling. Pure over the render-hull oracle.
 pub fn surface_above(contents: &impl Fn(Vec3) -> i32, p: Vec3) -> bool {
+    surface_z(contents, p).is_some()
+}
+
+/// *Where* that surface is: the z at which the column above `p` gives way to air, or `None` if solid
+/// roofs it first.
+///
+/// [`surface_above`] answers yes/no, and yes/no is not enough to swim on. A rule that only knows
+/// "there is air up there" can only choose a direction, and a direction chosen by which side of the
+/// surface the bot is currently on flips every time it crosses — full up, full down, full up — which
+/// is a bot having a seizure at the waterline rather than floating in it. Knowing the height turns
+/// that into an ordinary proportional seek that settles.
+///
+/// Marched in strides to find the crossing, then bisected to [`SURFACE_TOL`] so the answer is a real
+/// height rather than the stride grid.
+pub fn surface_z(contents: &impl Fn(Vec3) -> i32, p: Vec3) -> Option<f32> {
+    let at = |d: f32| contents(p + Vec3::new(0.0, 0.0, d));
     let mut d = 0.0;
     while d <= SURFACE_PROBE_UP {
-        let c = contents(p + Vec3::new(0.0, 0.0, d));
-        if c == CONTENTS_EMPTY {
-            return true; // broke the surface into air — a roof far overhead is still air
+        match at(d) {
+            CONTENTS_EMPTY => {
+                // Air at `d`, liquid at `d - stride`: the surface is between them.
+                let (mut lo, mut hi) = ((d - 24.0).max(0.0), d);
+                while hi - lo > SURFACE_TOL {
+                    let mid = 0.5 * (lo + hi);
+                    if at(mid) == CONTENTS_EMPTY {
+                        hi = mid;
+                    } else {
+                        lo = mid;
+                    }
+                }
+                return Some(p.z + hi);
+            }
+            CONTENTS_SOLID => return None, // water meets solid directly: a bridge deck or flooded ceiling
+            _ => d += 24.0,
         }
-        if c == CONTENTS_SOLID {
-            return false; // the water meets solid directly: a bridge deck or a flooded ceiling
-        }
-        d += 24.0;
     }
-    false
+    None
 }
+
+/// How precisely [`surface_z`] locates the waterline. Well under the ~20u band a floating player's
+/// origin sits in, so the swimmer's depth target is not dominated by probe error.
+const SURFACE_TOL: f32 = 1.0;
 
 #[cfg(test)]
 mod tests {

@@ -68,6 +68,37 @@ impl NavGraph {
         best.map(|(id, _)| id)
     }
 
+    /// The nearest cell that is in the same medium as `pos` — water or dry land.
+    ///
+    /// Plain [`nearest`](Self::nearest) answers by distance alone, and for a swimmer that is the
+    /// wrong question. A bot floating in the middle of a pool is often nearer to the dry ledge above
+    /// it than to the pool floor beneath: on dm3, one at z-254 sits 86 units under a bank and 138
+    /// over the bottom, so `nearest` hands back the bank. Routing then starts from a cell the bot is
+    /// not on and cannot walk from, the search fails, and the bot is left with no route at all —
+    /// which is how it ends up wedged against geometry with its air running out.
+    ///
+    /// Falls back to the plain answer when nothing in range shares the medium, so a bot in a puddle
+    /// the carve never flagged still gets a cell rather than nothing.
+    pub fn nearest_in_medium(&self, pos: Vec3, wet: bool) -> Option<CellId> {
+        let (gx, gy) = (floor_grid(pos.x), floor_grid(pos.y));
+        let mut best: Option<(CellId, f32)> = None;
+        for radius in 0..=4 {
+            for id in self.neighbors_within(gx, gy, radius) {
+                if self.cell_in_water(id) != wet {
+                    continue;
+                }
+                let d = (self.cells[id as usize].origin - pos).length_squared();
+                if best.is_none_or(|(_, bd)| d < bd) {
+                    best = Some((id, d));
+                }
+            }
+            if best.is_some() && radius >= 1 {
+                break;
+            }
+        }
+        best.map(|(id, _)| id).or_else(|| self.nearest(pos))
+    }
+
     /// A\* over the graph from `start` to `goal`, returning the route as a sequence of link
     /// indices (each link's `to` is the next cell, its `kind` how to get there). `None` if no
     /// route exists (different connected components). Heuristic = straight-line travel time, an
@@ -448,6 +479,17 @@ impl NavGraph {
     /// The extra seconds this link costs for swimming rather than running it.
     pub fn link_water_extra(&self, link_idx: u32) -> f32 {
         self.water_extra.get(link_idx as usize).copied().unwrap_or(0.0)
+    }
+
+    /// A link's cost *as the searches price it* for this bot: static travel time plus everything
+    /// `costs` adds (failed-link surcharges, shut gates, liquid, rocket-jump fitness) and the
+    /// chained-jump block. Exactly the quantity [`find_path`](Self::find_path) minimises.
+    ///
+    /// Exposed so a caller can weigh a freshly-planned route against the one it is already executing
+    /// on identical terms. Comparing static `link_cost` alone would ignore the surcharges that made
+    /// the planner choose differently in the first place.
+    pub fn priced_link_cost(&self, link_idx: u32, costs: &LinkCosts) -> f32 {
+        self.links[link_idx as usize].cost + self.link_extra(link_idx, costs) + self.chained_block(link_idx)
     }
 
     /// The standing player-origin position of a cell (the point a bot steers toward).
