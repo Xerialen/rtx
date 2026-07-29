@@ -119,7 +119,7 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
                 "arrive_box",
                 "regoto_max",
             },
-            {"no_progress_s", "speed_ceiling", "give_up_grace_s"},
+            {"no_progress_s", "speed_ceiling", "give_up_grace_s", "arrive_z"},
         )
         _vec3(run["start"], f"{source}.run.start")
         _vec3(run["target"], f"{source}.run.target")
@@ -128,6 +128,15 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
         _number(run["pause_s"], f"{source}.run.pause_s")
         _number(run["arrive_box"], f"{source}.run.arrive_box", positive=True)
         _integer(run["regoto_max"], f"{source}.run.regoto_max")
+        # `arrive_box` bounds the square; `arrive_z` bounds the height inside
+        # it. Without one the box is a shaft: dm3 puts walkable ground 344
+        # units under the RA targets and inside their own square, so a drill
+        # could be credited from the wrong floor. Zero restores that on
+        # purpose, for a drill that asks about a place rather than a floor.
+        if "arrive_z" in run:
+            _number(run["arrive_z"], f"{source}.run.arrive_z")
+            if run["arrive_z"] < 0:
+                raise ScenarioError(f"{source}.run.arrive_z: cannot be negative")
         # An attempt ends when it can no longer succeed rather than when its
         # clock runs out. `speed_ceiling` must be above any speed the map has
         # produced, or the impossibility bound would cut attempts that were

@@ -104,11 +104,29 @@ def _outcome(
     # window.
     previous_position: list[float] = list(start)
 
-    def inside_box(where: list[float]) -> bool:
+    # Height matters for arriving and not for giving up, so the two are
+    # separate tests. `inside_column` is the old box: a square in X and Y of
+    # unbounded height. Half the drills on dm3 have walkable ground on another
+    # floor inside their own square — the RA targets have floor 344 units below
+    # them — and a run of these drills put the bot in that square, on that
+    # floor, twelve times. None of them was credited, but nothing here stopped
+    # it: the only thing in the way was the engine's `arrived` not landing in
+    # the same instant.
+    arrive_z = run.get("arrive_z", 48.0)
+
+    def inside_column(where: list[float]) -> bool:
         return (
             abs(where[0] - target[0]) < run["arrive_box"]
             and abs(where[1] - target[1]) < run["arrive_box"]
         )
+
+    def inside_box(where: list[float]) -> bool:
+        if not inside_column(where):
+            return False
+        # Zero means the drill is asking about a place rather than a floor, and
+        # takes the old height-blind behaviour deliberately.
+        return arrive_z <= 0 or abs(where[2] - target[2]) < arrive_z
+
     while time.monotonic() - began < run["timeout_s"]:
         bots = control.request("status")["data"].get("bots", [])
         bot = next(
@@ -170,8 +188,11 @@ def _outcome(
         # the rest in a straight line at a speed nothing here has ever reached.
         # Distance is measured the way arrival is judged — on X and Y — so a bot
         # already standing in the arrive box cannot be written off over a height
-        # difference while its `arrived` event is still in flight.
-        if ceiling > 0 and not inside_box(position):
+        # difference while its `arrived` event is still in flight. That is why
+        # both give-up tests ask `inside_column` and not `inside_box`: the
+        # height requirement decides what counts as arriving, never what counts
+        # as still trying.
+        if ceiling > 0 and not inside_column(position):
             earliest = (now - began) + math.dist(position[:2], target[:2]) / ceiling
             if earliest > deadline:
                 return {
@@ -185,8 +206,14 @@ def _outcome(
             # this floor only catches one that is wedged or spinning in place.
             # The window has to lie entirely after the arming point, or a bot
             # that stood still early would be cut on ground it was still
-            # allowed to make up.
-            if window_began - began >= late_after and moved < 64.0:
+            # allowed to make up. A bot standing on the target is not wedged —
+            # it is waiting for an `arrived` the engine has not sent — so the
+            # same exemption the bound above has applies here too.
+            if (
+                window_began - began >= late_after
+                and moved < 64.0
+                and not inside_column(position)
+            ):
                 return {"status": "timeout", "time_s": None, "demo_t_s": demo_t}
             moved = 0.0
             window_began = now
