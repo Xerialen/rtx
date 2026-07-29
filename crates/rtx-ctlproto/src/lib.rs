@@ -23,8 +23,14 @@ use serde::{Deserialize, Serialize};
 
 /// A 3D world position, `[x, y, z]`.
 pub type Vec3 = [f32; 3];
-/// One flight-trace sample: `[t, x, y, z, vx, vy, vz]`.
-pub type TrajRow = [f32; 7];
+
+/// One sampled frame of a bot's motion: `[t, x, y, z, vx, vy, vz, phase]`.
+///
+/// `phase` is the bunnyhop controller's state (0 off, 1 prestrafe, 2 hop, 3 zigzag). It is on the
+/// wire because the interesting movement questions are all "which regime was it in when that
+/// happened", and reconstructing that from positions is guesswork -- a bot grounded half the time
+/// looks identical whether it chose to walk or failed to hop.
+pub type TrajRow = [f32; 8];
 
 // ---------------------------------------------------------------------------------------------------
 // Framing codec

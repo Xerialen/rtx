@@ -266,7 +266,7 @@ fn main() {
                     dts.iter().filter(|&&d| d <= 0.0).count(),
                 );
             }
-            let mut losses: Vec<(usize, f32, [f32; 7])> = traj
+            let mut losses: Vec<(usize, f32, [f32; 8])> = traj
                 .windows(2)
                 .enumerate()
                 .filter_map(|(k, w)| {
@@ -303,6 +303,21 @@ fn main() {
                 }
                 k += w;
             }
+            // Which regime the controller was in, per frame. "Grounded half the time" looks the
+            // same whether the bot chose to walk or wanted to hop and could not, and those want
+            // opposite fixes -- this is the only thing that tells them apart.
+            let mut ph = [0usize; 4];
+            for r in &traj {
+                ph[(r[7] as usize).min(3)] += 1;
+            }
+            let pct = |n: usize| 100.0 * n as f32 / traj.len().max(1) as f32;
+            println!(
+                "    phase: off {:.0}% prestrafe {:.0}% hop {:.0}% zigzag {:.0}%",
+                pct(ph[0]),
+                pct(ph[1]),
+                pct(ph[2]),
+                pct(ph[3])
+            );
             println!(
                 "    ({hops} hops, {} of frames airborne)",
                 if traj.is_empty() {
@@ -443,9 +458,30 @@ fn main() {
                         s0 - s1 > line::WALL_LOSS
                     })
                     .count();
+                // Ground contact per hop, which is where QuakeWorld charges for imperfect timing:
+                // friction takes `speed * friction * dt` every grounded frame, about 40 ups a frame
+                // at 500 ups. A perfect bunnyhop touches down for one frame and leaves; each extra
+                // frame is a fifth of the speed gone, to be rebuilt in the air.
+                let airborne = traj.iter().filter(|r| r[6] != 0.0).count();
+                let mut ph = [0usize; 4];
+                for r in &traj {
+                    ph[(r[7] as usize).min(3)] += 1;
+                }
+                let pc = |n: usize| 100.0 * n as f32 / traj.len().max(1) as f32;
+                let hops = traj.windows(2).filter(|w| w[1][6] - w[0][6] > 200.0).count().max(1);
                 println!(
-                    "      (wall by displacement {} vs by velocity {}; bot path {:.0}u vs human {:.0}u)",
-                    s.wall_events, vel_losses, s.path_length, s.reference_path
+                    "      (wall by displacement {} vs by velocity {}; bot path {:.0}u vs human {:.0}u; \
+                     {:.0}% airborne, {:.1} ground frames/hop; phase off/pre/hop/zig {:.0}/{:.0}/{:.0}/{:.0}%)",
+                    s.wall_events,
+                    vel_losses,
+                    s.path_length,
+                    s.reference_path,
+                    100.0 * airborne as f32 / traj.len().max(1) as f32,
+                    (traj.len() - airborne) as f32 / hops as f32,
+                    pc(ph[0]),
+                    pc(ph[1]),
+                    pc(ph[2]),
+                    pc(ph[3]),
                 );
                 // Speed as a fraction of the human's, one digit per 5% of the line: 9 means it
                 // matched, 0 means it stopped, '.' means it never got that far. The shape is the

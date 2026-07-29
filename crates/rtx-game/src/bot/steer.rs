@@ -1080,10 +1080,21 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // But never sustain the chain up an ascending stair run — `runway`'s climb stop keeps *entry* off
     // stairs, yet a chain carried onto a stairway (a wall-hugging spiral, say) would otherwise keep
     // hopping and weave off the treads. Drop to the walk, whose near-field glide tracks the steps.
+    //
+    // `rtx_bot_chain` drops the curvature half of that. It is the single largest cost measured on the
+    // suite: dm3's corridors wind almost everywhere, so the chain keeps dying, and every grounded
+    // frame QuakeWorld charges `speed * friction * dt` -- about 40 ups a frame at 500. The bot spends
+    // 5.7 ground frames per hop on dm3 against ~2 on the straight 100m runway, which is the whole of
+    // its flat 15% speed deficit and most of its "wall events" (a two-frame friction bite crosses the
+    // 60 ups threshold). A human bhops around corners; the air steering exists to turn the chain, and
+    // refusing to hop is a far more expensive answer to a bend than turning through it.
+    //
+    // The ascent gate stays either way: a stair run really is different, and a chain weaving across
+    // treads leaves them.
     let bhop_sustain = matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
         && (goal_dist > 150.0 || planned_band >= 1)
         && !ascent_ahead
-        && !winding_ahead;
+        && (host.cvar_bool(c"rtx_bot_chain") || !winding_ahead);
     // Ground zigzag: a corridor too short for a hop ([`bhop::RUNWAY_ENGAGE`]) but straight and long
     // enough ([`bhop::ZIGZAG_ENGAGE`]) to gain speed from the circle-strafe alone. The controller
     // hands off to the hop cycle if `bhop_entry` opens up mid-run, and `bhop_veto` (which includes
@@ -1442,6 +1453,32 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             stopspeed: if stopspeed > 0.0 { stopspeed } else { 100.0 },
             profile: crate::bot::human_profile::HumanMovementProfile {
                 proportional_turn: host.cvar_bool(c"rtx_bot_sweep"),
+                // The speed the ground run-up must reach before the bot is allowed to leap.
+                // Measured to matter more than anything else on the suite: the stock 475 sits *at*
+                // QuakeWorld's ground friction equilibrium, so the bot grinds along at 466 trying to
+                // earn a jump that is itself the only way past 600. 0 keeps the profile's value.
+                // How much clear space ahead the bot demands before it will leave the ground, as a
+                // fraction of a hop's flight. At the stock 0.7 a bot at 466 ups wants 220 units of
+                // straight clearance -- which dm3, a map of corners and 300-unit rooms, almost never
+                // offers, so it stays grounded at the friction equilibrium instead of hopping. The
+                // air steering exists precisely so a hop can turn; a human bunnyhops *at* a wall and
+                // curves away from it. 0 keeps the profile's value.
+                wall_hold_frac: {
+                    let v = host.cvar(c"rtx_bot_wall_hold");
+                    if v > 0.0 {
+                        v
+                    } else {
+                        crate::bot::human_profile::HumanMovementProfile::calibrated().wall_hold_frac
+                    }
+                },
+                prestrafe_target: {
+                    let v = host.cvar(c"rtx_bot_launch_speed");
+                    if v > 0.0 {
+                        v
+                    } else {
+                        crate::bot::human_profile::HumanMovementProfile::calibrated().prestrafe_target
+                    }
+                },
                 ..crate::bot::human_profile::HumanMovementProfile::calibrated()
             }
             .safe(),

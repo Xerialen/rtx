@@ -229,12 +229,13 @@ pub(crate) fn frame_end(game: &mut GameState) {
             None | Some(ControlOrder::Hold) => {}
             Some(ControlOrder::Goto { target }) => {
                 let (origin, vel) = (game.entities[e].v.origin, game.entities[e].v.velocity);
+                let phase = game.entities[e].bot.bhop.phase as u8;
                 let traj = &mut game.entities[e].bot.puppet.traj;
                 // Long flat-corridor benchmarks need roughly 7–10 seconds to expose the 800+ ups
                 // regime. Keep their complete velocity trace; the old 400-row cap truncated the
                 // final acceleration and made the reported peak systematically too low.
                 if traj.len() < 1200 {
-                    traj.push((now, origin, vel));
+                    traj.push((now, origin, vel, phase));
                 }
                 poll_goto(game, e, i, target, now);
             }
@@ -242,17 +243,19 @@ pub(crate) fn frame_end(game: &mut GameState) {
                 // Trace the flight: sample this frame's post-move origin/velocity before checking for a
                 // result, so the trajectory in `rj_result` runs from the stance through the landing.
                 let (origin, vel) = (game.entities[e].v.origin, game.entities[e].v.velocity);
+                let phase = game.entities[e].bot.bhop.phase as u8;
                 let traj = &mut game.entities[e].bot.puppet.traj;
                 if traj.len() < 400 {
-                    traj.push((now, origin, vel));
+                    traj.push((now, origin, vel, phase));
                 }
                 poll_rj(game, e, i, link, now);
             }
             Some(ControlOrder::FlyLink { link }) => {
                 let (origin, vel) = (game.entities[e].v.origin, game.entities[e].v.velocity);
+                let phase = game.entities[e].bot.bhop.phase as u8;
                 let traj = &mut game.entities[e].bot.puppet.traj;
                 if traj.len() < 400 {
-                    traj.push((now, origin, vel));
+                    traj.push((now, origin, vel, phase));
                 }
                 poll_fly(game, e, i, link, now);
             }
@@ -1588,8 +1591,8 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, now: f32) {
     }
 }
 
-fn goto_crossed_finish(traj: &[(f32, Vec3, Vec3)], origin: Vec3, target: Vec3) -> bool {
-    let Some((_, start, _)) = traj.first() else {
+fn goto_crossed_finish(traj: &[(f32, Vec3, Vec3, u8)], origin: Vec3, target: Vec3) -> bool {
+    let Some((_, start, _, _)) = traj.first() else {
         return false;
     };
     let along = (target.xy() - start.xy()).normalize_or_zero();
@@ -1611,9 +1614,9 @@ fn finish_goto_hold(game: &mut GameState, e: EntId, at: Vec3, now: f32) {
 }
 
 /// A flight/goto trace as `[t, x, y, z, vx, vy, vz]` rows.
-fn traj_rows(traj: &[(f32, Vec3, Vec3)]) -> Vec<proto::TrajRow> {
+fn traj_rows(traj: &[(f32, Vec3, Vec3, u8)]) -> Vec<proto::TrajRow> {
     traj.iter()
-        .map(|&(t, o, v)| [t, o.x, o.y, o.z, v.x, v.y, v.z])
+        .map(|&(t, o, v, ph)| [t, o.x, o.y, o.z, v.x, v.y, v.z, ph as f32])
         .collect()
 }
 
@@ -1733,7 +1736,7 @@ fn rj_result(
     v0: Vec3,
     blast: Vec3,
     pos_blast: Vec3,
-    traj: &[(f32, Vec3, Vec3)],
+    traj: &[(f32, Vec3, Vec3, u8)],
 ) -> proto::RjResult {
     // Terminal name + (for a touchdown/overrun) the landing measurement vs the target cell.
     let (name, land_pt) = match outcome {
@@ -1803,7 +1806,7 @@ mod tests {
 
     #[test]
     fn fast_goto_crossing_stops_inside_bounded_finish_corridor() {
-        let traj = vec![(0.0, Vec3::new(224.0, 1440.0, 24.0), Vec3::ZERO)];
+        let traj = vec![(0.0f32, Vec3::new(224.0, 1440.0, 24.0), Vec3::ZERO, 0u8)];
         let target = Vec3::new(224.0, 2992.0, 24.0);
         assert!(goto_crossed_finish(&traj, Vec3::new(280.0, 3008.0, 48.0), target));
         assert!(!goto_crossed_finish(&traj, Vec3::new(330.0, 3008.0, 48.0), target));

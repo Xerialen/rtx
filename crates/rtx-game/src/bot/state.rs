@@ -636,7 +636,7 @@ pub struct Puppet {
     /// Per-frame flight trace of a rocket-jump attempt: `(time, origin, velocity)` sampled each frame
     /// (post-move) while a RocketJump order is active, so the harness can compare the *actual* arc to
     /// the offline solve's prediction. Capped and cleared when the attempt's result is emitted.
-    pub traj: Vec<(f32, Vec3, Vec3)>,
+    pub traj: Vec<(f32, Vec3, Vec3, u8)>,
     /// FlyLink bring-up: whether the bot has left the ground since the order began (so a landing frame
     /// after takeoff — not the initial ground frames — terminates the attempt). Reset with the order.
     pub fly_airborne: bool,
