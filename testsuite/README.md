@@ -7,6 +7,13 @@ upstream Rust test result, T2 measures pacifist free play, and T3 plays one
 branch-versus-reference 4on4 match on a prepared KTX server. T4 is reserved
 for the frogbot ladder.
 
+T1 and T2 both hold a control connection, and both poll it for a ready
+navmesh (`nav_preflight`) before measuring anything: a bot's planner does
+nothing at all until its graph is built, so a run started right after a
+spawn or a map change would otherwise score a bot that cannot walk yet as a
+bot that cannot walk. The envelope's `nav` block records what the poll found —
+see [`schema/SCHEMA.md`](schema/SCHEMA.md) for the field-by-field reasoning.
+
 Every invocation writes one atomic JSON evidence file. The common envelope and
 tier payloads are defined in [`schema/SCHEMA.md`](schema/SCHEMA.md). Dashboard
 and analysis tools consume that contract rather than runner internals.

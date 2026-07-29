@@ -12,6 +12,14 @@
   "digest_md5": "9ab12c3d",
   "dirty": false
  },
+ "nav": {
+  "map": "dm3",
+  "state": "ready",
+  "cells": 4634,
+  "links": 36956,
+  "rj_links": 2021,
+  "waited_s": 0.0
+ },
  "config_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
  "runner_version": "0.1.0",
  "provenance": "synthetic",
@@ -46,7 +54,7 @@
     "passed": 1,
     "verdict": "PASS",
     "category": "grunddrill",
-    "place": "Spawnhissen → pent → pentmega",
+    "place": "Spawnhissen \u2192 pent \u2192 pentmega",
     "evidence": {
      "demo": "t1-20260729T090000Z-22222222.mvd",
      "attempt": 2,

@@ -1,6 +1,6 @@
 {
  "schema": "rtx-testflow/1",
- "run_id": "t1-20260729T090000Z-22222222",
+ "run_id": "t1-20260729T091200Z-55555555",
  "tier": "T1",
  "status": "complete",
  "started_utc": "2026-07-29T09:00:00Z",
@@ -8,12 +8,12 @@
  "map": "dm3",
  "build": {
   "branch": "testsuite",
-  "commit": "2222222222222222222222222222222222222222",
+  "commit": "5555555555555555555555555555555555555555",
   "digest_md5": "9ab12c3d",
   "dirty": false
  },
  "nav": {
-  "map": "dm3",
+  "map": "dm2",
   "state": "ready",
   "cells": 4634,
   "links": 36956,
@@ -35,7 +35,7 @@
      },
      {
       "status": "offroute",
-      "time_s": null,
+      "time_s": 11.4,
       "demo_t_s": 30.5
      },
      {

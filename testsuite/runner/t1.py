@@ -16,6 +16,8 @@ from .runlib import (
     config_path,
     connect,
     engine_declares,
+    nav_preflight,
+    nav_stamp,
 )
 
 from .scenario import load_scenarios
@@ -503,6 +505,14 @@ def _run_dash(
     run_id: str,
 ) -> tuple[dict[str, Any], Control]:
     control = _change_map(control, config, scenario["map"], 5.0)
+    # Gated, not stamped: the dash runs on its own map, and a second graph
+    # identity inside an envelope whose `map` names the main map would invite
+    # the reader to attribute one to the other. This is only the floor that
+    # stops the dash being measured against a graph that has not finished
+    # building — the 5 s settle above is a guess about that build, this is
+    # the check.
+    control.request("set rtx_bot_count 1")
+    nav_preflight(control, scenario["map"])
     # The dash lives on its own map, so it gets its own demo: a recording
     # cannot survive the map change that brings us here.
     recording = evidence_mod.open_recording(
@@ -673,6 +683,16 @@ def run(
                         "attempt will be recorded as a timeout",
                         flush=True,
                     )
+                # The navmesh is built lazily, on the first bot wanted — status
+                # at connect can only ever say "none", so the graph can only be
+                # verified once something has asked for a bot. Ordering it this
+                # way also keeps a rig whose graph never finishes failing for
+                # the right reason: without this, it fails at `_wait_for_bots`
+                # with "server did not expose 1 live bot(s)", a true sentence
+                # about the wrong thing.
+                control.request("set rtx_bot_count 1")  # this is what starts the build
+                nav_status, waited_s = nav_preflight(control, main_map)
+                recorder.nav = nav_stamp(nav_status, waited_s)
                 bot_id = _wait_for_bots(control, 1)[0]
                 recording = evidence_mod.open_recording(
                     control, recorder.run_id, config, main_map, config_path

@@ -68,6 +68,51 @@ codec is vendored in `runner/mpwire.py`.
   different answers and only one of them is a finding. An empty `unavailable` or a
   blank `note` is rejected: the block exists to explain an absence, so an
   unexplained one is worse than none.
+- `nav` is required on every complete T1 or T2 envelope and rejected on every other
+  tier. Those two are the tiers that measure a bot against exactly one graph. T0 never
+  connects at all; T3 and T4 do connect, but to two client builds at once, and each
+  side builds its own navmesh after joining — a single block beside a single `build`
+  could not say which side's graph it described, so rather than stamp an ambiguous
+  one they stamp none.
+
+  ```json
+  "nav": {
+    "map": "dm3",
+    "state": "ready",
+    "cells": 4634,
+    "links": 36956,
+    "rj_links": 2021,
+    "waited_s": 0.0
+  }
+  ```
+
+  `map` must equal the envelope's own `map`: a ready graph for another map is the
+  wrong graph, and a drill measured against it would fail for a reason that has
+  nothing to do with the bot. `state` is always `"ready"` in a written envelope — the
+  runner refuses to measure otherwise, so any other value here is a stamp nothing
+  produced. A non-complete envelope (`failed`/`aborted`) may still carry one if the
+  run died after the preflight passed, or carry none if it died during the preflight,
+  before there was anything to stamp. `cells` and `links` are positive integers: a
+  ready graph reporting zero cells is not a graph, which is the concrete case the "a
+  value that could not be measured is null, never 0" rule exists for here — a graph
+  that never finished building must not be able to sit at zero and read as measured.
+  `rj_links` is `>= 0`; a build with no rocket-jump links is a legitimate build and
+  must not be rejected for having none. `waited_s` is `>= 0`, how long the preflight
+  polled before the graph was ready — provenance for the stamp itself, not a
+  measurement of anything the bot did, and it tells a reader whether the rig was hot
+  or cold when the numbers were taken.
+
+  The block exists because the control layer's `navmesh` status is transient on both
+  ends of "not ready": immediately after a spawn or a map change it reads `"building"`
+  with `cells`/`links`/`rj_links` all at zero, and `"none"` means no build is in
+  flight *yet* — both look exactly like a broken build if read once. Reading `status`
+  a single time and judging the answer would treat "not yet" the same as "never
+  will", so `nav_preflight` polls about once a second until `navmesh == "ready"` and
+  the map matches, and only the deadline — 120 s, twice the engine's own MCP helper's
+  wait for the same condition, because a loaded lab rig is slower than a developer's
+  laptop — is a verdict. `nav` is that verdict, stamped once the poll succeeds; it is
+  what lets two runs with different graphs be told apart after the fact instead of
+  being silently compared as if they had measured the same map knowledge.
 
 ## T0 payload (import adapter — cargo runs stay upstream)
 
@@ -359,5 +404,8 @@ question with the POV locked to the bot the number is about.
 `schema/fixtures/` holds one valid example per tier + deliberately broken ones
 (bad major version, missing field, violated T2 invariant, T4 ladder that continues
 after a loss, an unmeasured stall count with no declared reason, a declared absence
-that nonetheless carries a count, and one that carries map zones). `runner/selftest.py` validates all fixtures with the hand-rolled
+that nonetheless carries a count, one that carries map zones, a `nav` block stuck at
+`"building"`, a `"ready"` one with zero cells, one whose `nav.map` names a different
+map than the envelope, one on a two-sided tier, where a single stamp could not say which side it described, and a
+complete T1 with no `nav` at all). `runner/selftest.py` validates all fixtures with the hand-rolled
 checkers — this is the schema conformance suite and runs offline in CI.

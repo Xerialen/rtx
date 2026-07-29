@@ -17,6 +17,8 @@ from .runlib import (
     config_path,
     connect,
     engine_declares,
+    nav_preflight,
+    nav_stamp,
 )
 
 NOLINK = 4_294_967_295
@@ -364,7 +366,14 @@ def run(
                     else:
                         control.request("set rtx_telemetry 1")
                     control.request("set rtx_bot_pacifist 1")
+                    # T2 counts navmesh cells, so a run started on a building
+                    # graph would report zero of precisely the thing it exists
+                    # to count. Wanting bots is what starts the build (the
+                    # graph is built lazily), so the count has to be set before
+                    # there is anything to verify.
                     control.request("set rtx_bot_count 4")
+                    nav_status, waited_s = nav_preflight(control, map_name)
+                    recorder.nav = nav_stamp(nav_status, waited_s)
                     _wait_for_bots(control, 4)
                     probe = control.request("items", timeout=8.0)["data"]
                     if not isinstance(probe, list):

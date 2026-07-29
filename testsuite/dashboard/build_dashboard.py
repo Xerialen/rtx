@@ -243,6 +243,10 @@ def default_level(level: str) -> dict[str, Any]:
             },
             "note": None,
             "demo": None,
+            # The graph the run measured against. Absent by default: every
+            # envelope before this stamp existed, and every T1 that never
+            # reached connect, has nothing to say here.
+            "nav": None,
         }
     elif level == "t2":
         common["stats"] = {
@@ -262,6 +266,8 @@ def default_level(level: str) -> dict[str, Any]:
             moments=[],
             cellEvidence=[],
             metricSources={},
+            # Same absence-by-default as T1's data.nav — see there for why.
+            nav=None,
         )
     elif level == "t3":
         empty_side = {
@@ -345,6 +351,45 @@ def normalize_requires(value: Any) -> dict[str, Any] | None:
         "capability": capability.strip(),
         "state": value["state"],
         "note": note.strip() if isinstance(note, str) else "",
+    }
+
+
+def normalize_nav(value: Any) -> dict[str, Any] | None:
+    """The navmesh a T1/T2 run was measured against — provenance, not a result.
+
+    checks.py enforces the schema on envelopes before they are trusted (state
+    must be "ready", cells must be positive, and so on); the dashboard does
+    none of that here, it only checks the shape is one it can render. Every
+    envelope written before this stamp existed has no `nav` at all, and that
+    must render exactly as it always has — so absence and a wrong-shaped
+    block both degrade to None rather than a half-drawn panel or a crash.
+    """
+    if not isinstance(value, dict):
+        return None
+    map_name = value.get("map")
+    state = value.get("state")
+    cells = number(value.get("cells"))
+    links = number(value.get("links"))
+    rj_links = number(value.get("rj_links"))
+    waited_s = number(value.get("waited_s"))
+    if (
+        not isinstance(map_name, str)
+        or not map_name
+        or not isinstance(state, str)
+        or not state
+        or cells is None
+        or links is None
+        or rj_links is None
+        or waited_s is None
+    ):
+        return None
+    return {
+        "map": map_name,
+        "state": state,
+        "cells": cells,
+        "links": links,
+        "rjLinks": rj_links,
+        "waitedS": waited_s,
     }
 
 
@@ -507,6 +552,9 @@ def t1_level(envelope: dict[str, Any]) -> dict[str, Any]:
             },
             "note": payload.get("note") if isinstance(payload.get("note"), str) else None,
             "demo": payload.get("demo") if isinstance(payload.get("demo"), str) else None,
+            # Envelope-level, beside build — the graph the preflight waited
+            # for, and found ready, before any drill ran.
+            "nav": normalize_nav(envelope.get("nav")),
         },
     )
     return item
@@ -639,6 +687,9 @@ def t2_level(
         moments=moments,
         cellEvidence=cell_evidence,
         metricSources=metric_sources,
+        # Envelope-level, beside build — T2 counts navmesh cells, so this is
+        # the graph the count itself was taken from.
+        nav=normalize_nav(envelope.get("nav")),
     )
     return item, [
         snapshot(
@@ -1105,6 +1156,28 @@ def selftest() -> None:
         assert golden["levels"]["t2"]["metricSources"] == {}
         assert golden["levels"]["t3"]["scoreboard"] is None
         assert all(rung["scoreboard"] is None for rung in golden["levels"]["t4"]["rungs"])
+        # The navmesh a run was measured against: same figures on both tiers
+        # that stamp one, since both fixtures record the same preflight.
+        golden_nav = {
+            "map": "dm3",
+            "state": "ready",
+            "cells": 4634,
+            "links": 36956,
+            "rjLinks": 2021,
+            "waitedS": 0.0,
+        }
+        assert golden["levels"]["t1"]["data"]["nav"] == golden_nav
+        assert golden["levels"]["t2"]["nav"] == golden_nav
+        # The figures the JS renderer reads for the panel-header line, present
+        # in the page's embedded run data (sort_keys, so the field order here
+        # is fixed).
+        assert (
+            '"cells":4634,"links":36956,"map":"dm3","rjLinks":2021,'
+            '"state":"ready","waitedS":0.0' in html
+        )
+        # Envelopes from before this stamp existed have no nav at all, and that
+        # must keep rendering exactly as it always has: nothing, not a crash.
+        assert withheld["levels"]["t1"]["data"]["nav"] is None
         # Host-relative demo links reach the page and open in a new tab.
         assert "/demo-player/?demoUrl=" in html
         assert 'target="_blank" rel="noopener"' in html
@@ -1128,6 +1201,10 @@ def selftest() -> None:
         assert blind_t2["stats"]["stall_firings"] is None
         assert blind_t2["key"] == "stall ej mätbar"
         assert blind_t2["snapshotIds"] == []
+        # T2 never connected to a control layer on this fixture either, so it
+        # has nothing to stamp — same absence, different reason than golden's
+        # pre-stamp envelopes.
+        assert blind_t2["nav"] is None
         assert golden["levels"]["t2"]["capabilities"] is None
         # The two phrases the page owes such a column, in the code that renders
         # it; the browser check drives the page itself.

@@ -164,6 +164,9 @@
   }
   .panel-head h2 { margin: 4px 0 2px; font: 600 20px/1.2 var(--mono); }
   .panel-head p { margin: 5px 0 0; color: var(--ink-2); font-size: 12px; line-height: 1.45; }
+  /* Quieter than the subtitle above it: the graph the numbers were measured
+     against, not one of the numbers. */
+  .nav-line { margin: 4px 0 0; font-size: 11px; }
   .panel-body { padding: 18px; }
   .panel-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
   .section-title {
@@ -517,6 +520,7 @@ const TERM_TITLES = {
   "matchkort": "Slutställningen som analysatorn läste ur matchdemon: lagens frags överst, sedan en rad per spelare. Namnet länkar till spelarens POV i demospelaren.",
   "spree": "Längsta obrutna fragsvit spelaren hade under matchen.",
   "teleport → goto": "Drillen startar med att botten teleporteras till startpunkten och får ett goto-mål — samma förutsättningar varje försök.",
+  "navmesh": "Grafen botten planerar sina rutter i. Körningen vägrade starta förrän den var färdigbyggd, så de här talen är dess storlek i det ögonblicket — inte ett mätvärde, utan beviset på vilken kartkunskap resten av panelen mättes mot.",
   "ägartid": "Tiden ägaren själv körde sträckan på i sitt eget demo. Ankarna för start och mål är hämtade ur samma körning.",
   "gränstid": "Långsammaste ankomst som fortfarande räknas som klarad: ägarens tid plus marginal. Långsammare ankomst blir slow, inte passed.",
   "framme": "Antal försök där botten nådde målet över huvud taget — oavsett om det gick inom gränstiden.",
@@ -626,12 +630,24 @@ function panelBadges(level, focus, ref) {
   return parts.join("");
 }
 
+// T1 keeps nav under data with its other payload-derived fields; T2 has no
+// such wrapper and carries it at the top level. Either way it is provenance
+// for the numbers below, not one of them, so it renders quiet and small
+// under the subtitle rather than as a badge beside the verdict.
+function navLine(level, item) {
+  const nav = level === "t1" ? (item.data && item.data.nav) : item.nav;
+  if (!nav) return "";
+  return '<p class="nav-line muted mono">' + term("navmesh", "navmesh") + " · " +
+    fmt(nav.cells) + " celler · " + fmt(nav.links) + " länkar · " +
+    fmt(nav.rjLinks) + " rj-länkar</p>";
+}
+
 function panelShell(level, title, subtitle, body) {
   const focus = RUNS[focusIndex].levels[level];
   const ref = refOff ? null : RUNS[refIndex].levels[level];
   return '<div class="panel-head"><div><div class="eyebrow">' + level.toUpperCase() +
     ' · samma nivå mot samma nivå</div><h2>' + title + "</h2><p>" + subtitle +
-    '</p></div><div class="panel-badges">' + panelBadges(level, focus, ref) +
+    '</p>' + navLine(level, focus) + '</div><div class="panel-badges">' + panelBadges(level, focus, ref) +
     '</div></div><div class="panel-body">' + body +
     '<details class="doc"><summary>Vad &amp; varför</summary><p>' + DOCS[level] + "</p></details></div>";
 }

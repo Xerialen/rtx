@@ -226,6 +226,64 @@ def _build(value: Any, path: str) -> None:
     _bool(build["dirty"], f"{path}.dirty")
 
 
+def _nav(value: Any, path: str, envelope_map: str) -> None:
+    """The preflight's stamp: which graph was ready when the run measured it.
+
+    T1 and T2 both wait on this before touching a bot, so the block is the
+    receipt for that wait, not a measurement in its own right. Every check
+    here is one the reader would otherwise have to reconstruct from a raw
+    `status` poll by hand.
+    """
+    block = _fields(
+        value, path, {"map", "state", "cells", "links", "rj_links", "waited_s"}
+    )
+    if block["map"] != envelope_map:
+        _fail(
+            f"{path}.map",
+            "a ready graph for another map is the wrong graph, and drills"
+            " against it would fail for a reason that has nothing to do"
+            " with the bot",
+        )
+    if block["state"] != "ready":
+        _fail(
+            f"{path}.state",
+            "the runner refuses to measure on a graph that is not ready, so"
+            " any other value in a written envelope is a stamp nothing produced",
+        )
+    if (
+        isinstance(block["cells"], bool)
+        or not isinstance(block["cells"], int)
+        or block["cells"] <= 0
+    ):
+        _fail(f"{path}.cells", "a ready graph with zero cells is not a graph")
+    if (
+        isinstance(block["links"], bool)
+        or not isinstance(block["links"], int)
+        or block["links"] <= 0
+    ):
+        _fail(f"{path}.links", "a ready graph with zero links is not a graph")
+    if (
+        isinstance(block["rj_links"], bool)
+        or not isinstance(block["rj_links"], int)
+        or block["rj_links"] < 0
+    ):
+        _fail(
+            f"{path}.rj_links",
+            "a build with no rocket-jump links is a legitimate build, and a"
+            " negative count could not describe one",
+        )
+    if (
+        isinstance(block["waited_s"], bool)
+        or not isinstance(block["waited_s"], (int, float))
+        or block["waited_s"] < 0
+    ):
+        _fail(
+            f"{path}.waited_s",
+            "waited_s is the record that the preflight happened, and a"
+            " preflight cannot have waited a negative amount of time",
+        )
+
+
 def _t0(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
     data = _fields(
         payload, path, {"modules", "total", "quality_floors", "verdict"}
@@ -852,7 +910,7 @@ def validate_result(document: Any, source: str = "<result>") -> dict[str, Any]:
             "provenance",
             "payload",
         },
-        {"error", "capabilities"},
+        {"error", "capabilities", "nav"},
     )
     if root["schema"] != "rtx-testflow/1":
         _fail(
@@ -887,6 +945,29 @@ def validate_result(document: Any, source: str = "<result>") -> dict[str, Any]:
             _fail(source, "non-complete result requires error")
         _str(root["error"], f"{source}.error")
     _build(root["build"], f"{source}.build")
+    # The stamp is singular, and only T1 and T2 measure against exactly one
+    # graph. T0 never connects at all; T3 and T4 do, but to two client builds
+    # at once, each of which builds its own navmesh after joining — one block
+    # beside a single `build` could not say which side it described. T1 and T2
+    # both gate on the preflight before they measure anything, so a complete
+    # run of either has to carry the receipt; a non-complete one may have died
+    # before the preflight finished and so may legitimately have nothing to
+    # show.
+    if "nav" in root:
+        if tier not in {"T1", "T2"}:
+            _fail(
+                f"{source}.nav",
+                "only T1 and T2 measure against exactly one graph; T0 has"
+                " none and a two-sided tier has two, so a single stamp here"
+                " could not say which one it described",
+            )
+        _nav(root["nav"], f"{source}.nav", root["map"])
+    elif tier in {"T1", "T2"} and root["status"] == "complete":
+        _fail(
+            f"{source}.nav",
+            "a complete T1/T2 run measured against a graph, and the"
+            " envelope has to name which one",
+        )
     digest = _str(root["config_digest"], f"{source}.config_digest")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         _fail(f"{source}.config_digest", "expected sha256:<64 lowercase hex>")

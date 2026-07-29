@@ -529,6 +529,53 @@ class CvarRestore(AbstractContextManager["CvarRestore"]):
             raise RuntimeError("failed to restore cvars: " + "; ".join(errors))
 
 
+def nav_preflight(
+    control: Control, map_name: str, timeout_s: float = 120.0
+) -> tuple[dict[str, Any], float]:
+    """Wait for the graph the run is about to measure, not just any graph.
+
+    `navmesh` reads `"building"` with `cells`, `links` and `rj_links` all zero
+    for a while after every spawn and every map change, and that reply is
+    indistinguishable from a broken build unless the poll keeps going. `"none"`
+    is the same kind of not-yet: no build has started, not that one never
+    will. So nothing short of `"ready"` on the map we actually asked for is a
+    verdict — everything else is "not yet", and only the deadline turns the
+    wait itself into a verdict. 120 s doubles the 60 s the engine's own MCP
+    helper gives this identical wait, because a lab rig sharing the box with
+    other work is slower than the laptop that number was tuned on.
+    """
+    began = time.monotonic()
+    status: dict[str, Any] = {}
+    while True:
+        status = control.request("status")["data"]
+        if status.get("navmesh") == "ready" and status.get("map") == map_name:
+            return status, round(time.monotonic() - began, 2)
+        if time.monotonic() - began >= timeout_s:
+            raise TimeoutError(
+                f"navmesh for map {map_name!r} was not ready within "
+                f"{timeout_s}s: last saw navmesh={status.get('navmesh')!r} "
+                f"map={status.get('map')!r}"
+            )
+        time.sleep(1.0)
+
+
+def nav_stamp(status: dict[str, Any], waited_s: float) -> dict[str, Any]:
+    """The envelope's record of which graph its numbers were measured against.
+
+    Built only from a status `nav_preflight` has already accepted, so `state`
+    is not read off the reply here — it is always `"ready"`, because a caller
+    that never reached "ready" never got a status to pass in.
+    """
+    return {
+        "map": status.get("map"),
+        "state": "ready",
+        "cells": status.get("cells"),
+        "links": status.get("links"),
+        "rj_links": status.get("rj_links"),
+        "waited_s": waited_s,
+    }
+
+
 class RunRecorder(AbstractContextManager["RunRecorder"]):
     """Build and atomically persist one result envelope on every exit."""
 
@@ -555,6 +602,10 @@ class RunRecorder(AbstractContextManager["RunRecorder"]):
         # beside the payload rather than inside it. Absent means everything the
         # tier needed was available, which is the common case.
         self.capabilities: dict[str, Any] | None = None
+        # Which graph the tier's numbers were measured against. Same
+        # optionality as `capabilities`: absent means the tier never connected
+        # to a server and so had no graph to describe.
+        self.nav: dict[str, Any] | None = None
         self.status = "complete"
         self.error: str | None = None
         self.path = (
@@ -592,6 +643,8 @@ class RunRecorder(AbstractContextManager["RunRecorder"]):
             "provenance": self.provenance,
             "payload": self.payload,
         }
+        if self.nav is not None:
+            document["nav"] = self.nav
         if self.capabilities is not None:
             document["capabilities"] = self.capabilities
         if self.error is not None:
