@@ -2092,6 +2092,12 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         }
     }
 
+    // Both reactive brakes, under one switch, so the question "are these helping?" can be asked of
+    // the suite instead of argued about. Each slams the wish into full reverse; the human reference
+    // runs show *zero* reverse frames while the bot's worst segments show hundreds, and a bot that
+    // brakes at an edge it was about to turn away from is the fumbling this whole effort is about.
+    let brakes_armed = host.cvar_bool(c"rtx_bot_brakes");
+
     // Hazard-edge brake: if the near-field sees a fatal drop or lava edge close ahead along the
     // *velocity* — nearer than the bot can bleed its speed before the lip — hard-brake to a stop rather
     // than sliding or hopping into it. Unlike the geometric ledge brake below this is hazard-aware
@@ -2105,7 +2111,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // Also off while a walk plan is live: the rollout proved this line keeps its feet on the floor for
     // longer than the certificate is trusted, and the deviation check above re-arms this the very frame
     // that proof stops covering the ground under the bot.
-    if nf_active && on_ground && !jump_at_hand && !walk_live && speed > LEDGE_MIN_SPEED {
+    if brakes_armed && nf_active && on_ground && !jump_at_hand && !walk_live && speed > LEDGE_MIN_SPEED {
         if let Some(nf) = bot.near.as_ref() {
             let vdir = v_xy.normalize_or_zero();
             let stop =
@@ -2128,7 +2134,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     if let Some(bsp) = bsp {
         // A certified pursuit cuts stair corners on purpose, so the misalignment this brake keys on is
         // exactly what a proven line looks like — it must not fire under one.
-        let braking = on_ground
+        let braking = brakes_armed
+            && on_ground
             && !on_air
             && bot.bhop.phase == bhop::Phase::Off
             && !bhop_active

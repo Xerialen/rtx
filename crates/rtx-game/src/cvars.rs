@@ -107,6 +107,11 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // 1.9 times a second (measured over 122 segments of the dm3 4-on-4). Off by default until it
         // beats the calibrated gait on the suite. See `human_profile::proportional_turn`.
         ("rtx_bot_sweep", Bool(false)),
+        // The two reactive brakes (hazard-edge and ledge), which both answer danger by slamming the
+        // wish into full reverse. On by default -- they are the only thing standing between a fast
+        // bot and a pit when nothing has proven the line. Turn off to measure what they cost: human
+        // reference runs have zero reverse frames, and the bot's worst segments have hundreds.
+        ("rtx_bot_brakes", Bool(true)),
         // A bot's health weights how willing it is to shortcut through lava/slime: hurt bots detour,
         // healthy (or armored, or biosuited) ones clip the corner. `0` prices every bot as a bare
         // spawn — hazards still cost, but the same to everyone. See `bot::bot_hazard_strength`.

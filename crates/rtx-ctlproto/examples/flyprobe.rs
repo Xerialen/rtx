@@ -247,6 +247,42 @@ fn main() {
                     airborne += 1;
                 }
             }
+            // Where the speed goes. A crawl window says the bot was slow *somewhere*; this says what
+            // took the speed away, which is the difference between "it braked" and "it hit
+            // something". Reported as the biggest single-frame losses, since a wall takes most of
+            // the speed at once while friction and deliberate braking are gradual.
+            // Frame spacing, because every derived metric divides by it. Position-differenced speed
+            // is only as good as the timestamps, and a run of near-zero or wildly uneven `dt` turns
+            // a steady sprint into a sawtooth that reads as repeated collisions.
+            let mut dts: Vec<f32> = traj.windows(2).map(|w| w[1][0] - w[0][0]).collect();
+            dts.sort_by(f32::total_cmp);
+            if !dts.is_empty() {
+                println!(
+                    "    dt min {:.4}s p50 {:.4}s p95 {:.4}s max {:.4}s  ({} zero-or-negative)",
+                    dts[0],
+                    dts[dts.len() / 2],
+                    dts[dts.len() * 95 / 100],
+                    dts[dts.len() - 1],
+                    dts.iter().filter(|&&d| d <= 0.0).count(),
+                );
+            }
+            let mut losses: Vec<(usize, f32, [f32; 7])> = traj
+                .windows(2)
+                .enumerate()
+                .filter_map(|(k, w)| {
+                    let s0 = (w[0][4] * w[0][4] + w[0][5] * w[0][5]).sqrt();
+                    let s1 = (w[1][4] * w[1][4] + w[1][5] * w[1][5]).sqrt();
+                    (s0 - s1 > 60.0).then_some((k, s0 - s1, w[1]))
+                })
+                .collect();
+            losses.sort_by(|a, b| b.1.total_cmp(&a.1));
+            println!("    {} frames lost >60ups; worst:", losses.len());
+            for (k, d, r) in losses.iter().take(5) {
+                println!(
+                    "      f{:<4} -{:4.0}ups at ({:7.1},{:7.1},{:6.1})  vz {:6.1}",
+                    k, d, r[1], r[2], r[3], r[6]
+                );
+            }
             // Where it crawls: 40-frame windows whose net displacement is under 64u.
             let w = 40;
             let mut k = 0;
@@ -395,6 +431,22 @@ fn main() {
                 };
                 let samples: Vec<(f32, Vec3f)> = traj.iter().map(|r| (r[0], Vec3f::new(r[1], r[2], r[3]))).collect();
                 let s = line::LineScore::score(&samples, &reference);
+                // The same count from the engine's own velocity, for comparison. `LineScore` reads
+                // *realised displacement*, so it counts a frame where the bot was moving fast but
+                // did not get anywhere — sliding along a wall — which velocity differencing cannot
+                // see. If these two disagree wildly the difference is collision, not noise.
+                let vel_losses = traj
+                    .windows(2)
+                    .filter(|w| {
+                        let s0 = (w[0][4] * w[0][4] + w[0][5] * w[0][5]).sqrt();
+                        let s1 = (w[1][4] * w[1][4] + w[1][5] * w[1][5]).sqrt();
+                        s0 - s1 > line::WALL_LOSS
+                    })
+                    .count();
+                println!(
+                    "      (wall by displacement {} vs by velocity {}; bot path {:.0}u vs human {:.0}u)",
+                    s.wall_events, vel_losses, s.path_length, s.reference_path
+                );
                 // Speed as a fraction of the human's, one digit per 5% of the line: 9 means it
                 // matched, 0 means it stopped, '.' means it never got that far. The shape is the
                 // useful part — a ramp from 0 is a standing start, a notch in the middle is a
