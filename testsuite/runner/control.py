@@ -39,7 +39,20 @@ def _parse_verb(command: str) -> Any:
         if verb == "set":
             return {"Set": {"name": tokens[1], "value": " ".join(tokens[2:])}}
         if verb == "teleport":
-            return {"Teleport": {"bot": int(tokens[1]), "pos": _vec3(tokens, 2)}}
+            #  is always on the wire, zero unless the caller gives one.
+            # Upstream grew the field without a serde default (the engine
+            # times out old frames instead of rejecting them), and zero is
+            # its documented plain placement — while engines from before the
+            # field ignore unknown fields, verified live against 817849a.
+            # Optional trailing coords exist for reproducing a moving start.
+            velocity = _vec3(tokens, 5) if len(tokens) >= 8 else [0.0, 0.0, 0.0]
+            return {
+                "Teleport": {
+                    "bot": int(tokens[1]),
+                    "pos": _vec3(tokens, 2),
+                    "vel": velocity,
+                }
+            }
         if verb == "goto":
             return {"Goto": {"bot": int(tokens[1]), "pos": _vec3(tokens, 2)}}
         if verb == "stop":
