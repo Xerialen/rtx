@@ -40,6 +40,7 @@ commands:
   route     find every human run between two points, and how long it took
   dump      write position/velocity/usercmd fields as CSV
   analyze   print a per-player movement report
+  teamplay  print a per-team report: score, deaths, room control, idle time
 
 dump options:
   --raw           emit raw dem_cmd and playerinfo events (plus a movevars row)
@@ -70,6 +71,16 @@ analyze options:
   --all-players   report every player
   --waypoints N   also print N evenly-spaced trajectory waypoints (default: none)
 
+teamplay options (server-recorded .mvd; reports per team, for A/B reading):
+  --zones dm3     use the dm3 control rooms the stack measurement priced
+  --zone NAME,X,Y,Z[,RADIUS[,HALFHEIGHT]]
+                  add one zone (repeatable); radius defaults to 320, half-height
+                  to 96, which is room-sized rather than pickup-sized
+  --players       also print the per-player table
+  --split N       also report frags per N equal time slices. Read these BEFORE
+                  the total: a split-team effect has been seen to reverse
+                  mid-match, and one window is not the result.
+
   -h, --help      show this help
 ";
 
@@ -81,6 +92,7 @@ fn main() -> ExitCode {
         Some("route") => run_route(argv),
         Some("dump") => run_dump(argv),
         Some("analyze") => run_analyze(argv),
+        Some("teamplay") => run_teamplay(argv),
         None | Some("-h") | Some("--help") => {
             print!("{USAGE}");
             ExitCode::SUCCESS
@@ -372,6 +384,192 @@ fn run_route(argv: impl Iterator<Item = String>) -> ExitCode {
 /// List who is in a demo. The first thing you want from a file you haven't seen: a multi-view
 /// recording of a 4-on-4 holds eight players plus spectators across thirty-two slots, and every
 /// other subcommand needs a slot or a name to talk about.
+/// `teamplay` — the per-team report an A/B is read from.
+fn run_teamplay(argv: impl Iterator<Item = String>) -> ExitCode {
+    use rtx_demo_tool::teamplay::{self, Zone};
+
+    let mut files = Vec::new();
+    let mut zones: Vec<Zone> = Vec::new();
+    let mut show_players = false;
+    let mut splits = 1usize;
+    let mut argv = argv.peekable();
+    while let Some(arg) = argv.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            "--players" => show_players = true,
+            "--split" => match argv.next().as_deref().and_then(|s| s.parse::<usize>().ok()) {
+                Some(n) if n >= 1 => splits = n,
+                _ => return usage_err("--split needs a positive count"),
+            },
+            "--zones" => match argv.next().as_deref() {
+                Some("dm3") => zones.extend(teamplay::dm3_zones()),
+                Some(other) => return usage_err(&format!("unknown zone set {other:?}")),
+                None => return usage_err("--zones needs a name"),
+            },
+            "--zone" => {
+                let Some(spec) = argv.next() else {
+                    return usage_err("--zone needs NAME,X,Y,Z[,RADIUS[,HALFHEIGHT]]");
+                };
+                let parts: Vec<&str> = spec.split(',').collect();
+                if parts.len() < 4 {
+                    return usage_err("--zone needs at least NAME,X,Y,Z");
+                }
+                let num = |s: &str| s.trim().parse::<f32>().ok();
+                let (Some(x), Some(y), Some(z)) = (num(parts[1]), num(parts[2]), num(parts[3])) else {
+                    return usage_err(&format!("bad coordinates in --zone {spec:?}"));
+                };
+                zones.push(Zone {
+                    name: parts[0].to_string(),
+                    center: glam::Vec3::new(x, y, z),
+                    radius: parts.get(4).and_then(|s| num(s)).unwrap_or(320.0),
+                    half_height: parts.get(5).and_then(|s| num(s)).unwrap_or(96.0),
+                });
+            }
+            _ if arg.starts_with('-') && arg != "-" => return usage_err(&format!("unknown option {arg}")),
+            _ => files.push(PathBuf::from(arg)),
+        }
+    }
+    let paths = resolve_paths(files);
+    if paths.is_empty() {
+        eprintln!("qwd: no .qwd or .mvd files found");
+        return ExitCode::FAILURE;
+    }
+
+    let mut had_error = false;
+    for path in &paths {
+        let demo = match parse_demo(path) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("qwd: {}: {e}", path.display());
+                had_error = true;
+                continue;
+            }
+        };
+        let zones = if zones.is_empty() && demo.levelname.contains("dm3") {
+            teamplay::dm3_zones()
+        } else {
+            zones.clone()
+        };
+        let r = teamplay::report(&demo, zones);
+        println!(
+            "{} [{}] {} — {:.0}s",
+            basename(&demo.path),
+            demo.format.as_str(),
+            if demo.levelname.is_empty() {
+                "?"
+            } else {
+                &demo.levelname
+            },
+            r.duration
+        );
+        if demo.format != rtx_demo_tool::Format::Mvd {
+            println!("  note: not a server recording — only the players the recorder saw are present");
+        }
+        for w in &r.warnings {
+            println!("\n  !! CONTAMINATED: {w}");
+        }
+        if !r.warnings.is_empty() {
+            println!("  !! Do not read the score below as a result.");
+        }
+
+        // Slices first, because a single window is not the result: on one split-team match the first
+        // 22 minutes read 1.49:1 to the treated side and the next 9 read 0.58:1. If these disagree,
+        // the total below is an average over a changing effect, not a measurement of a fixed one.
+        if splits > 1 && r.duration > 0.0 {
+            println!("\n  by time slice (frags scored within each):");
+            let width = r.duration / splits as f32;
+            for i in 0..splits {
+                let (from, to) = (i as f32 * width, (i + 1) as f32 * width);
+                let part = teamplay::report(&teamplay::slice(&demo, from, to), r.zones.clone());
+                let line: Vec<String> = part
+                    .teams
+                    .iter()
+                    .map(|t| format!("{} {}", if t.team.is_empty() { "?" } else { &t.team }, t.frags))
+                    .collect();
+                println!("    {:>5.0}–{:<5.0}s   {}", from, to, line.join("   "));
+            }
+        }
+
+        println!("\n  team          frags  deaths   k/d   idle%  mean_ups  spread  longest_stay");
+        for t in &r.teams {
+            let idle_pct = if t.alive_secs > 0.0 {
+                100.0 * t.idle_secs / t.alive_secs
+            } else {
+                0.0
+            };
+            let kd = if t.deaths > 0 {
+                t.frags as f32 / t.deaths as f32
+            } else {
+                t.frags as f32
+            };
+            let stay = match t.longest_stay_zone {
+                Some(zi) => format!("{:.0}s in {}", t.longest_stay, r.zones[zi].name),
+                None => "-".to_string(),
+            };
+            println!(
+                "  {:<12} {:>5}  {:>6}  {:>4.2}  {:>5.1}  {:>8.0}  {:>6.0}  {}",
+                if t.team.is_empty() { "(none)" } else { &t.team },
+                t.frags,
+                t.deaths,
+                kd,
+                idle_pct,
+                t.mean_speed,
+                t.mean_spread,
+                stay
+            );
+        }
+
+        if !r.zones.is_empty() {
+            println!("\n  room control (seconds held / of which standing still / deaths inside)");
+            print!("  {:<12}", "team");
+            for z in &r.zones {
+                print!("  {:>18}", z.name);
+            }
+            println!();
+            for t in &r.teams {
+                print!("  {:<12}", if t.team.is_empty() { "(none)" } else { &t.team });
+                for zi in 0..r.zones.len() {
+                    print!(
+                        "  {:>6.0} {:>5.0} {:>4}",
+                        t.zone_secs[zi], t.zone_idle_secs[zi], t.zone_deaths[zi]
+                    );
+                }
+                println!();
+            }
+        }
+
+        if show_players {
+            println!("\n  player            team    frags  deaths  idle%  mean_ups  longest_stay");
+            let mut ps: Vec<_> = r.players.iter().collect();
+            ps.sort_by(|a, b| b.frags.cmp(&a.frags));
+            for p in ps {
+                let idle_pct = if p.alive_secs > 0.0 {
+                    100.0 * p.idle_secs / p.alive_secs
+                } else {
+                    0.0
+                };
+                let stay = match p.longest_stay_zone {
+                    Some(zi) => format!("{:.0}s in {}", p.longest_stay, r.zones[zi].name),
+                    None => "-".to_string(),
+                };
+                println!(
+                    "  {:<16}  {:<6} {:>5}  {:>6}  {:>5.1}  {:>8.0}  {}",
+                    p.name, p.team, p.frags, p.deaths, idle_pct, p.mean_speed, stay
+                );
+            }
+        }
+        println!();
+    }
+    if had_error {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 fn run_players(argv: impl Iterator<Item = String>) -> ExitCode {
     let mut files = Vec::new();
     for arg in argv {

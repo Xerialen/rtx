@@ -388,6 +388,8 @@ mod tests {
             movevars: None,
             demo_cmds: Vec::new(),
             frames,
+            frag_updates: Vec::new(),
+            prints: Vec::new(),
             warnings: Vec::new(),
         }
     }

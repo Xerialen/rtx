@@ -54,12 +54,46 @@ cargo run --release -p rtx-demo-tool --bin qwd -- analyze --player <name|slot> <
 cargo run --release -p rtx-demo-tool --bin qwd -- segments <demo>           # the coverage suite
 cargo run --release -p rtx-demo-tool --bin qwd -- route X Y Z X Y Z <demo>  # one A->B, if asked
 cargo run --release -p rtx-demo-tool --bin qwd -- dump [--raw] <demo> > out.csv
+cargo run --release -p rtx-demo-tool --bin qwd -- teamplay --zones dm3 <demo.mvd>
 ```
 
 `analyze` reports the speed distribution over live frames, the jumps it found (takeoff/landing,
 distance, apex, and whether speed rose in the air — the strafe-jump signature), and optional
 waypoints. An `.mvd` of a team game gives every player at once, which is where human reference
 lines come from.
+
+### Judging a *strategy* change — record the match and read `teamplay`
+
+`analyze` answers "does it move well". `teamplay` answers "did the team play better", which is the
+question any change to goals, area control, pack discipline or the oracle is actually making. Record
+a bot match from the MCP with `console_cmd("record <name>")` → `console_cmd("stop")`, which writes
+`playground/qw/demos/<name>.mvd`, then:
+
+```
+qwd teamplay --zones dm3 [--players] <demo.mvd>
+```
+
+It prints, **per team**: frags (from `svc_updatefrags`, the server's own scoreboard, not parsed
+obituary text), deaths and K/D, idle share, mean speed, squad spread, and a room-control table of
+seconds-held / seconds-standing-still / deaths-inside for each priced room. `--zone
+NAME,X,Y,Z[,R[,H]]` adds rooms on any other map; `--zones dm3` is the set the stack measurement
+priced (RA ±1.75, quad ±1.6, YA ±1.0 team frags/min).
+
+Two things make it the right instrument, both learned the hard way:
+
+- **Read it against a split-team match.** `rtx_bot_power_team N` confines every measured-power
+  behaviour *and* the oracle's team planning to team N, so one recording holds a treated and an
+  untreated side with the map, the opponents and the clock identical. Sequential arms are much
+  weaker; the split is what turned a wrong-signed result into a readable one.
+- **Seconds-held alone means nothing — the idle column is the finding.** Holding the red-armour room
+  and *living* on the red-armour spawn produce similar occupancy and opposite results. A team that
+  rotates through reads a couple of seconds standing; a camper reads tens, and `longest_stay` names
+  the player.
+
+Mind what an MVD can support: positions, the dead flag, team names and the scoreboard are exact, but
+there are **no item pickups on the wire**, so this never claims to count who took what — occupancy
+and dwell are the honest proxies and are named that way. Deaths come from dead-flag transitions
+rather than obituary strings, which cannot miscount a telefrag or a name containing "was killed by".
 
 `segments` is how a reference suite is built, and it does **not** take a list of routes. No route is
 hardcoded: which paths exist is a property of the map and of what the game asked for at that moment,

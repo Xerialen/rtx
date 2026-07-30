@@ -751,6 +751,8 @@ mod tests {
                     weaponframe: None,
                 })
                 .collect(),
+            frag_updates: Vec::new(),
+            prints: Vec::new(),
             warnings: Vec::new(),
         }
     }

@@ -32,6 +32,7 @@ use rtx_proto::svc::{self, MoveVars, SvcEvent, Usercmd};
 pub mod analysis;
 pub mod line;
 pub mod mvd;
+pub mod teamplay;
 
 pub use analysis::{Motion, Summary, Track};
 
@@ -134,6 +135,29 @@ pub struct Frame {
     pub weaponframe: Option<u8>,
 }
 
+/// A player's score changing, from `svc_updatefrags`.
+///
+/// This is the scoreboard the server itself maintained, which makes it the one unarguable measure of
+/// who won — obituary text can be parsed and miscounted, and a bot's own frag counter is the thing
+/// under test. Recorded as a series rather than a total so the score can be read *over time*: a team
+/// that wins the first two minutes and loses the next eight is a different finding from one that
+/// trails evenly throughout.
+#[derive(Clone, Copy, Debug)]
+pub struct FragUpdate {
+    pub time: f32,
+    pub player: u8,
+    pub frags: i16,
+}
+
+/// One `svc_print` line, which for a deathmatch server is mostly obituaries.
+#[derive(Clone, Debug)]
+pub struct PrintLine {
+    pub time: f32,
+    /// Print level; obituaries arrive at `PRINT_MEDIUM` (1).
+    pub level: u8,
+    pub text: String,
+}
+
 /// What a demo knows about one player slot.
 #[derive(Clone, Debug, Default)]
 pub struct PlayerSlot {
@@ -200,6 +224,10 @@ pub struct Demo {
     pub demo_cmds: Vec<DemoCmd>,
     /// Every `svc_playerinfo` seen, in file order.
     pub frames: Vec<Frame>,
+    /// Every `svc_updatefrags`, in file order — the server's own scoreboard as it moved.
+    pub frag_updates: Vec<FragUpdate>,
+    /// Every `svc_print`, in file order. Obituaries live here.
+    pub prints: Vec<PrintLine>,
     /// Non-fatal per-packet decode failures (offset + reason). A malformed tail packet lands here
     /// rather than aborting the whole file.
     pub warnings: Vec<String>,
@@ -267,6 +295,8 @@ struct Feed {
     levelname: String,
     players: Vec<PlayerSlot>,
     frames: Vec<Frame>,
+    frag_updates: Vec<FragUpdate>,
+    prints: Vec<PrintLine>,
     warnings: Vec<String>,
     /// Per-slot absolute state, for resolving MVD deltas. Origin and angles only — those are the
     /// fields the format deltas.
@@ -293,6 +323,8 @@ impl Feed {
             levelname: String::new(),
             players: vec![PlayerSlot::default(); 32],
             frames: Vec::new(),
+            frag_updates: Vec::new(),
+            prints: Vec::new(),
             warnings: Vec::new(),
             last: vec![(Vec3::ZERO, Vec3::ZERO); 32],
             pending_cmds: vec![None; 32],
@@ -369,6 +401,12 @@ impl Feed {
                     self.movevars = Some(sd.movevars);
                     self.levelname = sd.levelname.clone();
                 }
+                SvcEvent::UpdateFrags { player, frags } => {
+                    self.frag_updates.push(FragUpdate { time, player, frags });
+                }
+                SvcEvent::Print { level, text } => {
+                    self.prints.push(PrintLine { time, level, text });
+                }
                 SvcEvent::UpdateUserinfo { player, userinfo, .. } => self.set_userinfo(player, userinfo),
                 SvcEvent::SetInfo { player, key, value } => {
                     if let Some(p) = self.players.get_mut(player as usize) {
@@ -406,6 +444,8 @@ impl Feed {
             movevars: self.movevars,
             demo_cmds,
             frames: self.frames,
+            frag_updates: self.frag_updates,
+            prints: self.prints,
             warnings: self.warnings,
         }
     }
