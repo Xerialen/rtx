@@ -50,6 +50,9 @@
     "reasons": {
      "displacement": 2
     },
+    "kinds": {
+     "offroute": 2
+    },
     "links": {},
     "evidence": {
      "demo": "t2-20260727T200000Z-11111111.mvd",

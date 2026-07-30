@@ -250,7 +250,7 @@ stops before T1 when T0 import is missing or FAIL.
   },
   "sources": {"quad_takes": "qw-analyze/items", "quad_lay_avg": "qw-analyze/items"},
   "cells": [ {"id": "m4569", "pos": [1984,-288,-72], "n": 350, "reasons": {"displacement": 350},
-              "links": {}, "evidence": { }} ],
+              "kinds": {"offroute": 350}, "links": {}, "evidence": { }} ],
   "demo": "t2-....mvd",
   "evidence": {"demo": "t2-....mvd", "at_s": 0.0, "link": "/demo-player/?..."},
   "moments": [ {"demo": "t2-....mvd", "metric": "quad_takes", "at_s": 33.2,
@@ -276,7 +276,14 @@ stops before T1 when T0 import is missing or FAIL.
   not here.
 - `still_s_per_bot` divides by `stats.bots` (recorded, not assumed 4).
 - Invariant, checked by the writer: `stall_firings == sum(cells[].n) == sum over
-  cells of sum(reasons.values())`. Violation ⇒ `status: "failed"`.
+  cells of sum(reasons.values()) == sum over cells of sum(kinds.values())`.
+  Violation ⇒ `status: "failed"`.
+- `cells[].kinds` is the LinkKind of the route leg in force per firing
+  (`JumpGap`, `Walk`, `SpeedJump`, `Step`, …), with `offroute` for a bot that
+  held no leg. `reasons` says which watchdog fired; `kinds` says what the bot
+  was traversing. A pricing change on one link kind is invisible without it —
+  the margin-tax measurement had to be a hand-written probe for exactly this
+  reason.
 - `stall_firings` is `null` with `cells: []` when the envelope declares
   `capabilities.telemetry: false`, and the invariant is then read the other way
   round: nothing was counted, so nothing may appear on the map. A null without that

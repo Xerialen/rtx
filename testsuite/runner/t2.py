@@ -82,6 +82,7 @@ def _summarize_cells(stalls: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "n": 0,
             "pos": None,
             "reasons": Counter(),
+            "kinds": Counter(),
             "links": Counter(),
             "first_at_s": None,
             "first_ent": None,
@@ -96,6 +97,14 @@ def _summarize_cells(stalls: list[dict[str, Any]]) -> list[dict[str, Any]]:
             entity = event.get("ent")
             cell["first_ent"] = int(entity) if isinstance(entity, int) else None
         cell["reasons"][str(event["reason"])] += 1
+        # The LinkKind of the route leg in force when the watchdog fired.
+        # `reason` says which watchdog; only this says what the bot was
+        # traversing — a jump-pricing change is invisible without it, which is
+        # why the margin-tax measurement had to be a hand probe outside the
+        # suite. "offroute" is the empty kind the engine sends when the bot
+        # held no leg: a name, because an empty-string key reads as a
+        # serializer accident rather than a state.
+        cell["kinds"][str(event.get("kind") or "offroute")] += 1
         origin = event.get("origin")
         if cell["pos"] is None and isinstance(origin, list) and len(origin) == 3:
             cell["pos"] = [round(float(value), 1) for value in origin]
@@ -112,6 +121,7 @@ def _summarize_cells(stalls: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "pos": cell["pos"] or [0.0, 0.0, 0.0],
                 "n": cell["n"],
                 "reasons": dict(cell["reasons"]),
+                "kinds": dict(cell["kinds"]),
                 "links": dict(cell["links"].most_common(4)),
                 "first_at_s": cell["first_at_s"],
                 "first_ent": cell["first_ent"],

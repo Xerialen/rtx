@@ -50,6 +50,9 @@
     "reasons": {
      "progress": 2
     },
+    "kinds": {
+     "offroute": 2
+    },
     "links": {}
    }
   ],

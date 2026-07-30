@@ -707,11 +707,14 @@ def _t2(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
         "still_s_per_bot",
     ):
         _num_or_null(stats[field], f"{path}.stats.{field}")
-    count_sum = reason_sum = 0
+    count_sum = reason_sum = kind_sum = 0
     for index, value in enumerate(_list(data["cells"], f"{path}.cells")):
         item_path = f"{path}.cells[{index}]"
         item = _fields(
-            value, item_path, {"id", "pos", "n", "reasons", "links"}, {"evidence"}
+            value,
+            item_path,
+            {"id", "pos", "n", "reasons", "kinds", "links"},
+            {"evidence"},
         )
         _evidence(item.get("evidence"), f"{item_path}.evidence")
         _str(item["id"], f"{item_path}.id")
@@ -727,6 +730,11 @@ def _t2(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
         reason_sum += sum(
             _int(count, f"{item_path}.reasons.{reason}")
             for reason, count in reasons.items()
+        )
+        kinds = _dict(item["kinds"], f"{item_path}.kinds")
+        kind_sum += sum(
+            _int(count, f"{item_path}.kinds.{kind}")
+            for kind, count in kinds.items()
         )
         links = _dict(item["links"], f"{item_path}.links")
         for link, count in links.items():
@@ -744,6 +752,12 @@ def _t2(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
         _fail(
             path,
             "invariant failed: stall_firings != sum(cells.n) != sum(reasons)",
+        )
+    elif firings != kind_sum:
+        _fail(
+            path,
+            "invariant failed: stall_firings != sum(kinds) — every firing"
+            " happened on exactly one kind of route leg, offroute included",
         )
     if data["verdict"] != "MEASURED":
         _fail(f"{path}.verdict", "expected 'MEASURED'")
