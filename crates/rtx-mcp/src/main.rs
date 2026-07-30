@@ -756,8 +756,11 @@ fn vec3_of(v: &Value) -> Result<[f32; 3], String> {
 }
 
 /// Reduce a control-channel goto trajectory to the invariants a directed-corridor run cares about.
-/// Rows are `[t,x,y,z,vx,vy,vz]`; low-speed frames are excluded from heading metrics so the initial
-/// acceleration tick cannot manufacture an arbitrary yaw.
+/// Rows are `[t,x,y,z,vx,vy,vz,phase]`; low-speed frames are excluded from heading metrics so the
+/// initial acceleration tick cannot manufacture an arbitrary yaw. Only the first seven columns are
+/// read, and the length is checked as a *minimum*: an exact match makes every reader here break the
+/// day the game appends a column, which is what silently disabled `corridor_test` (`traj_rows` grew
+/// a phase column; the check still demanded 7 and every run died on its first row).
 /// Largest perpendicular excursion off the `from`→`takeoff` line during the *grounded* part of a fly
 /// trial — i.e. how wide the prestrafe weave actually swings. Only samples behind the lip count, so
 /// the flight itself (which leaves the line by design) doesn't pollute the measurement. `null` when
@@ -777,7 +780,7 @@ fn runup_cross_track(ev: &Value, from: [f32; 3], takeoff: [f32; 3]) -> Value {
     let mut seen = false;
     for row in traj {
         let Some(a) = row.as_array() else { continue };
-        if a.len() != 7 {
+        if a.len() < 7 {
             continue;
         }
         let n = |i: usize| a[i].as_f64().unwrap_or(0.0) as f32;
@@ -822,8 +825,8 @@ fn corridor_metrics(ev: &Value, start: [f32; 3], end: [f32; 3]) -> Result<Value,
     let mut prev_heading = None::<(f32, f32)>;
     for row in traj {
         let a = row.as_array().ok_or("trajectory row was not an array")?;
-        if a.len() != 7 {
-            return Err("trajectory row did not have 7 values".to_string());
+        if a.len() < 7 {
+            return Err(format!("trajectory row had {} values, want at least 7", a.len()));
         }
         let n = |i: usize| a[i].as_f64().unwrap_or(0.0) as f32;
         let (t, x, y, z, vx, vy) = (n(0), n(1), n(2), n(3), n(4), n(5));

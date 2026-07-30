@@ -274,6 +274,14 @@ pub mod flags {
     /// [`JUMP`] (what it actually pressed) and [`ON_GROUND`], this separates "the gate refused" from
     /// "the gate allowed it but the frame arrived after the lip".
     pub const TAKEOFF_OK: u16 = 1 << 11;
+    /// A *speed* jump's leap is being held back this frame because the takeoff is outside the envelope
+    /// the build certified (see steer's `sj_hold`).
+    ///
+    /// Distinct from [`TAKEOFF_OK`], which covers plain jump legs, and worth its own bit because a
+    /// held speed jump does not look like waiting: the bot keeps circle-strafing, and a circle-strafe
+    /// curves, so a hold that fails to release reads on screen as wandering off the corridor rather
+    /// than as a stall. Without this the log cannot tell that apart from an ordinary long run-up.
+    pub const SJ_HOLD: u16 = 1 << 12;
 }
 
 /// A per-bot ring buffer of [`AuditFrame`]s. A single fixed `Vec<AuditFrame>` is allocated once to the

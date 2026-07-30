@@ -1465,11 +1465,16 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 let on_axis = wrap180(psi - yaw_of(v_xy)).abs() <= CURL_PSI_TOL;
                 p > 0.0 && !(in_band && on_axis)
             }
-            // A straight speed jump: run-up and leap are collinear, so heading takes care of itself and
-            // the takeoff point is a radial ball rather than a line.
+            // A straight speed jump: run-up and leap are collinear, so the heading takes care of itself
+            // and the takeoff is a radial ball rather than a line. Hold only while still *approaching*
+            // it — the run-up is what the hold is spending, so once the bot is at or past the takeoff
+            // there is nothing left to buy and it must commit. (Holding past the edge is a hang, not a
+            // wait: the bot circle-strafes on the spot, and a circle-strafe curves, so it wanders off
+            // the corridor instead of leaping. This branch was unreachable until the controller began
+            // honouring `hold_jump` for committed jumps, which is how it shipped with that hole.)
             (Some((takeoff, v_req)), None) => {
                 let to_edge = takeoff.xy() - origin.xy();
-                (to_edge.length() < 48.0 || to_edge.dot(v_xy) < 0.0) && speed < v_req * 0.9
+                to_edge.dot(v_xy) > 0.0 && to_edge.length() < 48.0 && speed < v_req * 0.9
             }
             _ => false,
         };
@@ -2170,6 +2175,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         wp: dist,
         lip,
         ok: (runup_ok || lip_now) && plain_jump_leg,
+        sj_held: sj_hold,
     };
     if on_ground && (force_jump || bhop_cmd.is_some_and(|c| c.jump) || (plain_jump_leg && (runup_ok || lip_now))) {
         buttons |= BUTTON_JUMP;

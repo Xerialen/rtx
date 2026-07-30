@@ -225,6 +225,8 @@ pub struct TakeoffDiag {
     pub lip: Option<f32>,
     /// The run-up gate's verdict this frame.
     pub ok: bool,
+    /// A speed jump's leap is held for its certified envelope this frame.
+    pub sj_held: bool,
 }
 
 impl BotState {

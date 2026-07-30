@@ -672,6 +672,7 @@ fn capture_frame(
     flags |= af::SUBMERGED * (ent.v.waterlevel >= 3.0) as u16;
     flags |= af::REPLANNED * b.replanned as u16;
     flags |= af::TAKEOFF_OK * b.takeoff.ok as u16;
+    flags |= af::SJ_HOLD * b.takeoff.sj_held as u16;
     flags |= af::AIR_ABOVE
         * game
             .nav
