@@ -144,6 +144,16 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // Team match (`rtx_match 1on1`/`2on2`/…): seconds of spawn-protected countdown after the
         // match-start map reload before "FIGHT".
         ("rtx_match_countdown", Float(3.0)),
+        // The locked roster, carried across the match-start map reload. Written by `start_match`
+        // immediately before `changelevel` and consumed (and cleared) by `on_worldspawn`.
+        //
+        // Not a user knob — a persistence channel. The engine unloads the game module on a map
+        // change and builds a fresh `GameState`, so `resuming`, `roster` and `bot_roster` are all
+        // destroyed by the very reload that is supposed to arm the countdown: the match came back in
+        // warmup with an empty roster and simply never started. Cvars live in the engine and survive,
+        // which makes this the shortest honest way to carry the intent across. Registered here
+        // because `cvar_set` is a no-op on a cvar that does not exist yet.
+        ("rtx_match_resume", Str("")),
         // CTF: captures a team needs to win the match (`0` = no limit, ends on timelimit only).
         ("rtx_capturelimit", Float(8.0)),
         // CTF runes: `0` = on (with the Haste speed boost), `1` = off, `2` = on without the speed

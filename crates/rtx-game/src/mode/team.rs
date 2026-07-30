@@ -55,6 +55,16 @@ pub(crate) struct MatchConfig {
     pub size: usize,
 }
 
+/// The lifecycle phase as the control channel and refusal messages name it.
+pub(crate) fn match_phase_name(phase: MatchPhase) -> &'static str {
+    match phase {
+        MatchPhase::Warmup => "warmup",
+        MatchPhase::Countdown { .. } => "countdown",
+        MatchPhase::Live => "live",
+        MatchPhase::Ended { .. } => "ended",
+    }
+}
+
 /// Where the match is in its lifecycle.
 #[derive(Clone, Copy, Default)]
 pub(crate) enum MatchPhase {
@@ -434,8 +444,15 @@ pub(crate) fn on_worldspawn(g: &mut GameState) {
         g.team_match = MatchState::default();
         return;
     }
-    if g.team_match.resuming {
+    // `resuming` is normally already false here — the reload that brings us to this worldspawn also
+    // destroyed the `GameState` that set it — so the roster comes back off the cvar instead.
+    let carried = take_resume_roster(g);
+    if g.team_match.resuming || carried.is_some() {
         g.team_match.resuming = false;
+        if let Some(roster) = carried {
+            g.team_match.bot_roster = roster.iter().map(|(name, _)| name.clone()).collect();
+            g.team_match.roster = roster;
+        }
         let cd = g.host().cvar(c"rtx_match_countdown").max(0.0);
         g.team_match.phase = MatchPhase::Countdown { until: g.time() + cd };
         g.team_match.last_count = -1;
@@ -453,9 +470,22 @@ pub(crate) fn on_worldspawn(g: &mut GameState) {
 /// match seats exactly teams×size via [`pick_roster`] (refusing, with a message, if the warmup is
 /// short) and re-teams any moved players; an **open** team pickup (CTF) locks everyone currently in.
 /// The countdown is armed in [`on_worldspawn`] after the reload (via `resuming`).
-pub(crate) fn start_match(g: &mut GameState) {
-    if !lifecycle_active(g) || !matches!(g.team_match.phase, MatchPhase::Warmup) {
-        return;
+///
+/// Returns the refusal reason rather than only broadcasting it, so the control channel can tell a
+/// caller *why* nothing happened. Reporting `Queued` unconditionally is what left `match_start`
+/// waiting out a 90-second deadline on a roster that was one bot short.
+pub(crate) fn start_match(g: &mut GameState) -> Result<(), String> {
+    if !lifecycle_active(g) {
+        return Err(format!(
+            "no team lifecycle for this format ({} team(s)); set rtx_match to a team format first",
+            g.team_match.config.teams
+        ));
+    }
+    if !matches!(g.team_match.phase, MatchPhase::Warmup) {
+        return Err(format!(
+            "match is in {}, not warmup",
+            match_phase_name(g.team_match.phase)
+        ));
     }
     let cfg = g.team_match.config;
     let roster: Vec<(String, u8)> = if structured(g) {
@@ -475,11 +505,9 @@ pub(crate) fn start_match(g: &mut GameState) {
                 seated.iter().map(|&(e, team)| (g.netname_of(e), team)).collect()
             }
             Err(short) => {
-                g.broadcast(
-                    PrintLevel::High,
-                    &format!("start: {} needs {short} more player(s)\n", format_label(cfg)),
-                );
-                return;
+                let msg = format!("{} needs {short} more player(s)", format_label(cfg));
+                g.broadcast(PrintLevel::High, &format!("start: {msg}\n"));
+                return Err(msg);
             }
         }
     } else {
@@ -488,7 +516,7 @@ pub(crate) fn start_match(g: &mut GameState) {
             .map(|e| (g.netname_of(e), g.entities[e].mode_p.team))
             .collect();
         if r.is_empty() {
-            return;
+            return Err("nobody is in the game".to_string());
         }
         r
     };
@@ -500,9 +528,51 @@ pub(crate) fn start_match(g: &mut GameState) {
         .collect();
     g.team_match.roster = roster;
     g.team_match.resuming = true;
+    // Hand the roster to the engine before the reload takes this GameState with it.
+    let carry = cstring(&encode_roster(&g.team_match.roster));
+    g.host().cvar_set(c"rtx_match_resume", &carry);
     g.broadcast(PrintLevel::High, "Match starting — reloading map…\n");
     let map = cstring(&g.level.mapname);
     g.host().changelevel(&map);
+    Ok(())
+}
+
+/// Separators for the carried roster. A tab splits entries and a colon splits `team:name`, so a name
+/// is whatever follows the first colon — names may contain colons, team numbers may not.
+const RESUME_SEP: char = '\t';
+
+/// `team:name` per entry, tab-separated.
+fn encode_roster(roster: &[(String, u8)]) -> String {
+    roster
+        .iter()
+        .map(|(name, team)| format!("{team}:{name}"))
+        .collect::<Vec<_>>()
+        .join(&RESUME_SEP.to_string())
+}
+
+/// Parse one carried roster string. Malformed entries are dropped rather than failing the match:
+/// a half-restored roster still starts, an unstartable match strands the server in warmup.
+fn decode_roster(s: &str) -> Vec<(String, u8)> {
+    s.split(RESUME_SEP)
+        .filter(|e| !e.is_empty())
+        .filter_map(|entry| {
+            let (team, name) = entry.split_once(':')?;
+            Some((name.to_string(), team.parse().ok()?))
+        })
+        .collect()
+}
+
+/// Read and clear the carried roster. Clearing matters as much as reading: left set, the *next*
+/// ordinary map change would read it and start a match nobody asked for.
+fn take_resume_roster(g: &mut GameState) -> Option<Vec<(String, u8)>> {
+    let mut buf = [0u8; 1024];
+    let raw = g.host().cvar_string(c"rtx_match_resume", &mut buf).to_string();
+    if raw.is_empty() {
+        return None;
+    }
+    g.host().cvar_set(c"rtx_match_resume", c"");
+    let roster = decode_roster(&raw);
+    (!roster.is_empty()).then_some(roster)
 }
 
 /// Assign player `e` a team the first time they're placed (team `0`): reattach a reconnecting player
@@ -705,7 +775,7 @@ pub(crate) fn nearest_enemy_to(g: &GameState, my_team: u8, point: Vec3) -> Optio
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_match_alias, MatchConfig};
+    use super::{decode_roster, encode_roster, parse_match_alias, MatchConfig};
 
     fn cfg(teams: usize, size: usize) -> Option<MatchConfig> {
         Some(MatchConfig { teams, size })
@@ -778,6 +848,24 @@ mod tests {
         // Short warmup → Err(n) with how many more are needed.
         let short = [(EntId(1), 0, false), (EntId(2), 0, false)];
         assert_eq!(pick_roster(&short, two_by_two), Err(2));
+    }
+
+    /// The roster has to survive the reload that starts the match, because the reload destroys the
+    /// state that remembers it.
+    #[test]
+    fn a_roster_survives_the_reload_as_a_string() {
+        let roster = vec![
+            ("Grunt".to_string(), 1u8),
+            ("Ranger".to_string(), 2u8),
+            // Names are user data: spaces and colons are legal and must round-trip.
+            ("a player".to_string(), 1u8),
+            ("colon:in:name".to_string(), 2u8),
+        ];
+        assert_eq!(decode_roster(&encode_roster(&roster)), roster);
+        // Nothing carried is nothing to resume — an ordinary map change must not start a match.
+        assert!(decode_roster("").is_empty());
+        // Junk is dropped entry by entry rather than failing the whole start.
+        assert_eq!(decode_roster("nonsense\t1:Ok"), vec![("Ok".to_string(), 1u8)]);
     }
 
     #[test]

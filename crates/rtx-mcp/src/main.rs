@@ -21,7 +21,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -62,6 +62,10 @@ struct ControlConn {
     pending: Arc<StdMutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
     events: broadcast::Sender<Value>,
     next_id: AtomicI64,
+    /// Set when the reader task sees end of stream. The game tears the control socket down on every
+    /// map change — including the one `match_start` itself causes — so a connection outliving its
+    /// usefulness is the normal case, not an error case. [`RtxMcp::conn`] re-dials when this is set.
+    dead: Arc<AtomicBool>,
 }
 
 /// Read one length-prefixed (`[u32 LE len][payload]`) wire frame, or `None` at a clean end of stream.
@@ -76,6 +80,23 @@ async fn read_frame_async(r: &mut (impl AsyncReadExt + Unpin)) -> std::io::Resul
     let mut body = vec![0u8; n];
     r.read_exact(&mut body).await?;
     Ok(Some(body))
+}
+
+/// JSON pointers into a `status` reply's match block.
+///
+/// The field is `StatusResp::match_` and carries **no** serde rename, because `rtx-ctlproto` encodes
+/// with `rmp_serde::to_vec_named` — field names are on the wire, and `MatchInfo` has no `Default`, so
+/// renaming it to `match` would make every older peer fail to decode. The trailing underscore is
+/// therefore load-bearing, and pointing at `/match/...` silently resolves to nothing: that is what
+/// made `match_start` burn its full 90-second deadline on every call while never once running its
+/// own warmup-retry or warmup-diagnostic branches. [`match_phase_pointer_matches_the_struct`] pins
+/// these against a real serialized `StatusResp` so they cannot drift again.
+const MATCH_PHASE_PTR: &str = "/match_/phase";
+const MATCH_ROSTER_PTR: &str = "/match_/roster";
+
+/// The match phase from a `status` reply, or `None` if the reply has no match block.
+fn match_phase(status: &Value) -> Option<&str> {
+    status.pointer(MATCH_PHASE_PTR).and_then(Value::as_str)
 }
 
 /// Unwrap a typed [`Resp`] to the JSON value handed to callers: the enum's inner payload (so a reply
@@ -119,11 +140,13 @@ impl ControlConn {
         let pending: Arc<StdMutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>> =
             Arc::new(StdMutex::new(HashMap::new()));
         let (events, _) = broadcast::channel(256);
+        let dead = Arc::new(AtomicBool::new(false));
         let conn = Arc::new(ControlConn {
             writer: TokioMutex::new(write),
             pending: pending.clone(),
             events: events.clone(),
             next_id: AtomicI64::new(1),
+            dead: dead.clone(),
         });
         tokio::spawn(async move {
             while let Ok(Some(frame)) = read_frame_async(&mut read).await {
@@ -140,6 +163,13 @@ impl ControlConn {
                         let _ = events.send(event_to_value(ev)); // ignore "no subscribers"
                     }
                 }
+            }
+            // End of stream: the server went away (map change, restart, crash). Mark the connection
+            // so the next call re-dials instead of failing forever, and fail every in-flight request
+            // now rather than making each one wait out its own timeout.
+            dead.store(true, Ordering::SeqCst);
+            for (_, tx) in pending.lock().unwrap().drain() {
+                let _ = tx.send(Err("control connection closed".to_string()));
             }
         });
         Ok(conn)
@@ -200,6 +230,9 @@ struct Inner {
     proc: StdMutex<Option<Child>>,
     log: Arc<StdMutex<VecDeque<String>>>,
     conn: TokioMutex<Option<Arc<ControlConn>>>,
+    /// The control port last connected to, so a dropped connection can be re-dialled. Without it a
+    /// map change left every tool permanently broken until the caller thought to `server_connect`.
+    port: StdMutex<Option<u16>>,
     /// Cached `list_rj_links` result (invalidated on restart / any `map` command). Link ids aren't
     /// stable across map builds, so callers must re-list after a map change.
     links: StdMutex<Option<Vec<Value>>>,
@@ -223,19 +256,34 @@ impl RtxMcp {
                 proc: StdMutex::new(None),
                 log: Arc::new(StdMutex::new(VecDeque::new())),
                 conn: TokioMutex::new(None),
+                port: StdMutex::new(None),
                 links: StdMutex::new(None),
             }),
             tool_router: Self::tool_router(),
         }
     }
 
+    /// The live control connection, re-dialling once if the last one died.
+    ///
+    /// A map change — `console_cmd("map …")`, or the reload `match_start` triggers itself — tears the
+    /// control socket down and the module binds a fresh listener a few frames later. Recovering here
+    /// rather than at each call site means one dropped socket no longer breaks every tool until the
+    /// caller remembers to `server_connect`. Only the connection is retried; the request is not,
+    /// because commands like `RunCmd` are not idempotent.
     async fn conn(&self) -> Result<Arc<ControlConn>, String> {
-        self.inner
-            .conn
-            .lock()
+        let mut slot = self.inner.conn.lock().await;
+        if let Some(c) = slot.clone() {
+            if !c.dead.load(Ordering::SeqCst) {
+                return Ok(c);
+            }
+        }
+        let port = (*self.inner.port.lock().unwrap())
+            .ok_or_else(|| "not connected — call server_start or server_connect first".to_string())?;
+        let fresh = ControlConn::connect(port)
             .await
-            .clone()
-            .ok_or_else(|| "not connected — call server_start or server_connect first".to_string())
+            .map_err(|e| format!("control connection dropped and could not be re-established on {port}: {e}"))?;
+        *slot = Some(fresh.clone());
+        Ok(fresh)
     }
 
     async fn req(&self, cmd: Cmd, timeout: Duration) -> Result<Value, String> {
@@ -321,6 +369,7 @@ impl RtxMcp {
             }
         };
         *self.inner.conn.lock().await = Some(conn);
+        *self.inner.port.lock().unwrap() = Some(port);
 
         // Wait for the navmesh to finish building and a bot to spawn.
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -365,6 +414,7 @@ impl RtxMcp {
             .await
             .map_err(|e| format!("could not connect to 127.0.0.1:{port}: {e}"))?;
         *self.inner.conn.lock().await = Some(conn);
+        *self.inner.port.lock().unwrap() = Some(port);
         self.req(Cmd::Status, SHORT).await
     }
 
@@ -1378,18 +1428,33 @@ impl RtxMcp {
     async fn match_start(&self) -> Result<CallToolResult, McpError> {
         let r = async {
             self.inner.links.lock().unwrap().take();
-            self.req(Cmd::MatchStart, SHORT).await?;
             let started = Instant::now();
-            let mut last_start_attempt = started;
+            // The game now reports *why* it refused, and the usual reason is a roster still filling
+            // (bots rejoin one per frame after a map load). Retry a refusal for a while, then surface
+            // its text — a wrong format or too few bots should say so in seconds, not read as a
+            // generic timeout a minute and a half later.
+            while let Err(e) = self.req(Cmd::MatchStart, SHORT).await {
+                if started.elapsed() > Duration::from_secs(30) {
+                    return Err(format!("server refused to start the match: {e}"));
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            // Refusals seen *after* an accepted start are the interesting ones — they mean the match
+            // fell back to warmup rather than never leaving it.
+            let mut refusal: Option<String> = None;
             let mut start_attempts = 1u32;
+            let mut last_start_attempt = Instant::now();
             let deadline = started + Duration::from_secs(90);
             let mut last = Value::Null;
             loop {
+                // A dropped connection is expected here, not exceptional: accepting the start makes
+                // the game reload the map, which closes this very socket. `conn()` re-dials, so the
+                // only thing to do is keep polling until the deadline.
                 if let Ok(st) = self.req(Cmd::Status, SHORT).await {
-                    let phase = st.pointer("/match/phase").and_then(Value::as_str);
+                    let phase = match_phase(&st);
                     let nav_ready = st.get("navmesh").and_then(Value::as_str) == Some("ready");
                     let roster_len = st
-                        .pointer("/match/roster")
+                        .pointer(MATCH_ROSTER_PTR)
                         .and_then(Value::as_array)
                         .map_or(0, Vec::len);
                     let bots_len = st.get("bots").and_then(Value::as_array).map_or(0, Vec::len);
@@ -1400,13 +1465,19 @@ impl RtxMcp {
                     // the control socket before the lifecycle is startable. Retry only while a settled
                     // server still reports warmup; an accepted start immediately enters reload/countdown.
                     if phase == Some("warmup") && last_start_attempt.elapsed() >= Duration::from_secs(1) {
-                        self.req(Cmd::MatchStart, SHORT).await?;
+                        match self.req(Cmd::MatchStart, SHORT).await {
+                            Ok(_) => refusal = None,
+                            Err(e) => refusal = Some(e),
+                        }
                         last_start_attempt = Instant::now();
                         start_attempts += 1;
                     }
                     if phase == Some("warmup") && started.elapsed() > Duration::from_secs(30) {
+                        let why = refusal
+                            .as_deref()
+                            .map_or_else(|| format!("last status: {st}"), |e| format!("server says: {e}"));
                         return Err(format!(
-                            "match stayed in warmup after {start_attempts} start attempts (is the roster full?): {st}"
+                            "match stayed in warmup after {start_attempts} start attempts ({why})"
                         ));
                     }
                     last = st;
@@ -1818,6 +1889,51 @@ mod tests {
         assert_eq!(m["reverse_frames"], 1);
         assert_eq!(m["hopped"], true);
         assert!(m["max_heading_error"].as_f64().unwrap() > 170.0);
+    }
+
+    /// The match pointers must resolve against a real serialized [`proto::StatusResp`].
+    ///
+    /// They did not, for the whole life of the tool: the field is `match_` and the pointers said
+    /// `/match/…`, so `match_start` never saw a phase. It never returned on success, never ran its
+    /// warmup retry, and never printed its own warmup diagnostic — it just waited out ninety seconds
+    /// and reported a timeout, on every call. Nothing caught it because a bad JSON pointer is not an
+    /// error, it is `None`. Hence this test: it goes through `serde_json` rather than asserting a
+    /// string, so renaming the field breaks the test instead of the tool.
+    #[test]
+    fn match_phase_pointer_matches_the_struct() {
+        let mut resp = proto::StatusResp {
+            map: "dm3".into(),
+            time: 1.0,
+            navmesh: "ready".into(),
+            cells: 1,
+            links: 1,
+            rj_links: 0,
+            match_: proto::MatchInfo::default(),
+            oracle: proto::OracleInfo::default(),
+            bots: vec![],
+            players: vec![],
+        };
+        resp.match_.phase = "live".into();
+        resp.match_.roster = vec![
+            proto::RosterEntry {
+                name: "a".into(),
+                team: 1,
+            },
+            proto::RosterEntry {
+                name: "b".into(),
+                team: 2,
+            },
+        ];
+
+        let v = serde_json::to_value(&resp).expect("status serializes");
+        assert_eq!(match_phase(&v), Some("live"), "phase pointer must resolve: {v}");
+        assert_eq!(
+            v.pointer(MATCH_ROSTER_PTR).and_then(Value::as_array).map(Vec::len),
+            Some(2),
+            "roster pointer must resolve: {v}"
+        );
+        // And the shape the old code assumed is genuinely absent, so this can't silently pass both ways.
+        assert!(v.pointer("/match/phase").is_none());
     }
 }
 

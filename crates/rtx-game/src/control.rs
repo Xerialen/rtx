@@ -463,10 +463,10 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
     let Request { id, cmd } = req;
     let result: Result<Resp, String> = match cmd {
         Cmd::Status => Ok(Resp::Status(Box::new(status_resp(game)))),
-        Cmd::MatchStart => {
-            crate::mode::team::start_match(game);
-            Ok(Resp::Queued)
-        }
+        // Report a refusal rather than acknowledging one. A caller that cannot tell "accepted" from
+        // "one bot short" has no choice but to poll until a timeout, which is exactly what the MCP
+        // was doing for ninety seconds a call.
+        Cmd::MatchStart => crate::mode::team::start_match(game).map(|()| Resp::Queued),
         Cmd::Links => links_resp(game).map(Resp::Links),
         Cmd::Items => items_resp(game).map(Resp::Items),
         Cmd::Prep { bot, health, rockets } => do_prep(game, bot, health, rockets),
@@ -712,14 +712,7 @@ fn do_get(game: &mut GameState, name: &str) -> Result<Resp, String> {
 
 // --- status / links snapshots ---
 
-fn match_phase_name(phase: crate::mode::MatchPhase) -> &'static str {
-    match phase {
-        crate::mode::MatchPhase::Warmup => "warmup",
-        crate::mode::MatchPhase::Countdown { .. } => "countdown",
-        crate::mode::MatchPhase::Live => "live",
-        crate::mode::MatchPhase::Ended { .. } => "ended",
-    }
-}
+use crate::mode::match_phase_name;
 
 /// A compact reference to a live entity carried by strategy telemetry. Item goals need the
 /// classname + location; enemy/teammate references also benefit from the display name. Keeping the
@@ -888,6 +881,7 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
             bhop_peak: b.bhop.peak,
             packs: proto::PackStats {
                 sg_swaps: b.packs.sg_swaps,
+                hinted: b.packs.hinted,
                 secured: b.packs.secured,
                 fed: b.packs.fed,
             },

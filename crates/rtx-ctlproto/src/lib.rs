@@ -282,7 +282,7 @@ pub struct PlayerStatus {
     pub speed: f32,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MatchInfo {
     pub mode: String,
     pub format: String,
@@ -387,6 +387,9 @@ pub struct BotStatus {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackStats {
     pub sg_swaps: u32,
+    /// Claims handed out — the denominator for `secured`. Defaulted so an older server still parses.
+    #[serde(default)]
+    pub hinted: u32,
     pub secured: u32,
     pub fed: u32,
 }
@@ -405,13 +408,13 @@ pub struct EvalCounts {
     pub pending: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct EpisodeEval {
     pub counts: EvalCounts,
     pub by_kind: Vec<(String, EvalCounts)>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Eval {
     pub counts: EvalCounts,
     pub by_kind: Vec<(String, EvalCounts)>,
@@ -460,7 +463,7 @@ pub struct Plan {
     pub teams: Vec<PlanTeam>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OracleInfo {
     pub running: bool,
     pub epoch: u64,

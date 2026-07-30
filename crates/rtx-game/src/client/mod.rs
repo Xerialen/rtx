@@ -465,8 +465,9 @@ impl GameState {
             }
             // The match-lifecycle "start" command begins a team match (a no-op in open/non-team
             // play). Consume the token regardless so a stray "start" isn't handed to the engine.
+            // The refusal reason is already broadcast to the server for a console caller to read.
             "start" => {
-                crate::mode::team::start_match(self);
+                let _ = crate::mode::team::start_match(self);
                 1
             }
             _ => 0,
