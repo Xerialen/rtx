@@ -1728,15 +1728,21 @@ fn run_bot(game: &mut GameState, e: EntId) {
     // the bank above it than to the pool floor below, and snapping it onto dry land it is not
     // standing on yields a route it cannot walk — or, more often, no route at all.
     //
-    // And it *stays* on the cell it was on while that is still a fair answer. Water is layered every
-    // 64 units, so a bot climbing a column spends most of the climb midway between two cells that are
-    // within a few units of equally near — and a resolved cell that flips is a route rebuilt from a
-    // different place, a waypoint 64 units away from the last one, and a bot that shakes as it rises.
-    // Which cell of two near-equals is a tie, and a tie mid-climb belongs to whichever one the bot was
+    // And **in water** it stays on the cell it was on while that is still a fair answer. Water is
+    // layered every 64 units, so a bot climbing a column spends most of the climb midway between two
+    // cells within a few units of equally near — and a resolved cell that flips is a route rebuilt
+    // from a different place, a waypoint 64 units away from the last one, and a bot that shakes as it
+    // rises. Which of two near-equals is a tie, and a tie mid-climb belongs to whichever the bot was
     // already using.
+    //
+    // On dry ground it is only a lag. Cells there are one grid apart with nothing above or below to be
+    // ambiguous with, so the nearest is unambiguous — and holding a stale one means every route, every
+    // runway measurement and every LOD window starts from where the bot *was*, up to a third of a cell
+    // behind where it is. At hop speed that is the difference between a jump pre-armed on the right
+    // leg and one armed late.
     let fresh = graph.nearest_in_medium(origin, s.in_water);
     let bot_cell = match (game.entities[e].bot.cell, fresh) {
-        (Some(prev), Some(new)) if prev != new && graph.cell_in_water(prev) == s.in_water => {
+        (Some(prev), Some(new)) if s.in_water && prev != new && graph.cell_in_water(prev) => {
             let d = |c| (graph.cell_origin(c) - origin).length();
             if d(prev) <= d(new) * CELL_KEEP_FACTOR {
                 Some(prev)

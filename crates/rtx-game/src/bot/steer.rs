@@ -200,9 +200,10 @@ fn inside_box(p: Vec3, lo: Vec3, hi: Vec3) -> bool {
     p.x >= lo.x - m && p.x <= hi.x + m && p.y >= lo.y - m && p.y <= hi.y + m && p.z >= lo.z - 32.0 && p.z <= hi.z + 32.0
 }
 
-/// How far above the bot an exit target must sit before the climb-out drive engages. Below this the
-/// swimmer is level with its target and ordinary swimming reaches it.
-const WATER_EXIT_RISE: f32 = 16.0;
+/// How far down the route to look for dry land before deciding a swimmer is on its way out. A few
+/// legs: near enough that a bot merely passing a bank mid-crossing is not diverted onto it, far enough
+/// that the rim legs leading up to an exit still count as heading for it.
+const EXIT_LEGS_AHEAD: usize = 4;
 
 /// View pitch held while climbing out, in Quake's convention where negative looks up. Facing the
 /// bank is what `PM_CheckWaterJump` reads; tilting up is what carries the bot over the lip after the
@@ -651,9 +652,24 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 // legs still remain keeps the interim the few seconds ahead it was meant to be. It is
                 // monotone in progress, so it cannot bring back the boundary flip the commitment
                 // exists to prevent.
+                //
+                // **In water only**, and that scoping is the whole of it. The boundary flip this
+                // settles is a swimmer's problem: two cells a few units apart in a layered pool whose
+                // corridors point opposite ways. On land the same commitment is actively harmful, and
+                // in three ways that all showed up as "movement weirdness". It caps the fine route at
+                // the held interim, so the route shrinks toward a couple of legs — and `runway()`
+                // measures over the route's leading ground legs, so the runway collapses and the bhop
+                // controller never becomes eligible: the bot *runs* down corridors it should be
+                // hopping. At hop speed a repath interval covers some 280 units against a 48-unit
+                // release radius, so the bot sails past the thing it is holding and the route points
+                // *behind* it — the turning round for no reason. And a route truncated across a jump's
+                // legs starves the run-up and pre-arm sequencing that makes the jump work at all, which
+                // is the fumbled gap jump on the way to the red armour. None of that is a tie needing
+                // settling; it is a corridor being held still while the bot moves.
                 let legs_left = bot.route.len().saturating_sub(bot.route_pos);
                 let keep = bot.interim.filter(|&(g, i)| {
-                    g == target
+                    in_water
+                        && g == target
                         && i != bot_cell
                         && (graph.cell_origin(i) - origin).length() > INTERIM_REACHED
                         && legs_left > EYE_LOOKAHEAD_LEGS
@@ -713,7 +729,13 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // Nothing here overrides a *reason* to re-plan — a changed goal, a route we have walked off,
         // an emptied or priced-out plan all fail `route_still_ours` or leave `route` cheaper. This
         // only settles ties, and it settles them in favour of committing.
-        if !route.is_empty() && route_still_ours(graph, bot, origin, goal, &costs) {
+        //
+        // **In water only.** Ties that near-equal are a property of swimming: a layered pool offers
+        // many 3D paths of the same price, so the answer really does change under a bot that has
+        // merely moved. Dry ground rarely does that — its plans differ by whole traversals — and the
+        // ground watchdogs, run-up measurement and jump pre-arming are all built expecting the plan a
+        // fresh search returns. Keeping a stale one there buys nothing and quietly breaks them.
+        if in_water && !route.is_empty() && route_still_ours(graph, bot, origin, goal, &costs) {
             let fresh = remaining_cost(graph, origin, &route, &costs);
             let current = remaining_cost(graph, origin, &bot.route[bot.route_pos..], &costs);
             if fresh > current * ROUTE_SWITCH_GAIN {
@@ -2383,7 +2405,19 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // probe and scans outward from the route's own bearing, so the answer is the most
         // forward-facing direction that genuinely works, and `None` means this is not a way out at all
         // — in which case the stance stands down and the route is swum rather than pressed.
-        let exit_leg = cur_leg.filter(|_| matches!(kind, Some(LinkKind::Swim)) && surface.is_some());
+        // Armed whenever the route is *on its way out*, not only on the one leg that rises.
+        //
+        // Requiring the current leg to climb is too narrow, and narrow in exactly the wrong place. At
+        // the surface beside dm3's water bridge the current leg is usually a horizontal *rim* link, so
+        // the stance never armed and the bot followed the rim — swimming the length of the bridge with
+        // the bit it could have climbed passing by on its left. What decides that a bot wants out is
+        // the route reaching dry land shortly, so that is the test: any leg within the next few whose
+        // target is out of the water.
+        let leaving = bot.route[bot.route_pos..]
+            .iter()
+            .take(EXIT_LEGS_AHEAD)
+            .any(|&l| !graph.cell_in_water(graph.link_target(l)));
+        let exit_leg = cur_leg.filter(|_| leaving && surface.is_some());
         let held = bot
             .water_exit
             .is_some_and(|c| Some(c.leg) == exit_leg && now - c.since < WATER_EXIT_MAX);
@@ -2391,7 +2425,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             let face =
                 bsp.and_then(|b| swim::exit_yaw(&|p| b.pointcontents(p), origin, (waypoint - origin).truncate()));
             bot.water_exit = exit_leg
-                .filter(|_| waypoint.z > origin.z + WATER_EXIT_RISE && face.is_some())
+                .filter(|_| face.is_some())
                 .map(|leg| Commit { leg, since: now });
             // Chosen once, with the commitment, and held with it. Which directions the engine grants
             // depends on the bot's own height, so a rising bot that re-asks every frame watches the set

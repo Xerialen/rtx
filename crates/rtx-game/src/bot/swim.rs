@@ -195,9 +195,16 @@ pub fn deflect(trace: &impl Fn(Vec3, Vec3) -> (f32, Vec3), origin: Vec3, wish: V
 /// is to try. Earlier attempts inferred it — the bearing to the next cell, then the struck plane's
 /// normal — and both are indirections that fail in the case that matters most: a bot that has just
 /// fumbled a hop and dropped in beside a wall, whose route points somewhere else entirely and whose
-/// nearest surface is not the one it can climb. Scanned outward from `prefer` so the answer is the
-/// most forward-facing one available; `None` means this spot is not a way out at all, and the caller
-/// should swim on rather than press.
+/// nearest surface is not the one it can climb. `None` means this spot is not a way out at all, and
+/// the caller should swim on rather than press.
+///
+/// Among the directions that work, the one to take is the one facing the bank most **squarely**, and
+/// that is the one in which the bank is *nearest*. Preferring the most forward-facing instead — the
+/// first hit scanning out from the route's bearing — sounds harmless and is not: alongside dm3's water
+/// bridge the along-the-bridge direction often grants as well as the across-it one, so the bot took it
+/// and swam the length of the bridge instead of climbing the bit right next to it. Nearest-solid picks
+/// the perpendicular, which is both what a person does and what leaves the engine's 24-unit probe the
+/// most room to be inside the lip.
 pub fn exit_yaw(contents: &impl Fn(Vec3) -> i32, at: Vec3, prefer: Vec2) -> Option<Vec2> {
     let base = if prefer == Vec2::ZERO {
         Vec2::X
@@ -209,15 +216,33 @@ pub fn exit_yaw(contents: &impl Fn(Vec3) -> i32, at: Vec3, prefer: Vec2) -> Opti
         contents(spot + Vec3::Z * WATERJUMP_PROBE_LOW) == CONTENTS_SOLID
             && contents(spot + Vec3::Z * WATERJUMP_PROBE_HIGH) == CONTENTS_EMPTY
     };
-    // Straight ahead first, then alternating either side in `EXIT_SCAN_STEP` increments out to a full
-    // half turn — so a bank the route already points at wins, and one behind the bot is still found.
+    // How far away the lip is in this direction, measured at the height the engine's near probe reads.
+    // Small means square-on to the face; large means glancing along it.
+    let reach = |d: Vec2| {
+        let mut r = 4.0;
+        while r <= WATERJUMP_PROBE_AHEAD {
+            let p = at + (d * r).extend(0.0) + Vec3::Z * WATERJUMP_PROBE_LOW;
+            if contents(p) == CONTENTS_SOLID {
+                return r;
+            }
+            r += 4.0;
+        }
+        WATERJUMP_PROBE_AHEAD
+    };
+
+    let mut best: Option<(Vec2, f32, f32)> = None; // (direction, distance to lip, turn from prefer)
     let mut off = 0.0f32;
     while off <= 180.0 {
         for signed in [off, -off] {
             let (s, c) = signed.to_radians().sin_cos();
             let d = Vec2::new(base.x * c - base.y * s, base.x * s + base.y * c);
             if granted(d) {
-                return Some(d);
+                let score = (reach(d), off);
+                // Nearest lip wins; an equally near one is broken by the smaller turn, so a bank the
+                // route already faces is preferred over an identical one behind the bot.
+                if best.is_none_or(|(_, r, t)| score.0 < r - 0.5 || (score.0 <= r + 0.5 && score.1 < t)) {
+                    best = Some((d, score.0, score.1));
+                }
             }
             if off == 0.0 {
                 break; // +0 and -0 are the same direction
@@ -225,7 +250,7 @@ pub fn exit_yaw(contents: &impl Fn(Vec3) -> i32, at: Vec3, prefer: Vec2) -> Opti
         }
         off += EXIT_SCAN_STEP;
     }
-    None
+    best.map(|(d, _, _)| d)
 }
 
 /// How finely [`exit_yaw`] scans. The probe is a single point 24 units out, so 15 degrees moves it
@@ -583,6 +608,29 @@ mod tests {
         // Open water: no direction works, and saying so is what stops the bot pressing at nothing.
         let sea = |p: Vec3| if p.z < 0.0 { CONTENTS_WATER } else { CONTENTS_EMPTY };
         assert_eq!(exit_yaw(&sea, at, Vec2::new(1.0, 0.0)), None);
+
+        // Two banks at once, at different distances — dm3's water bridge, where the along-the-bridge
+        // direction grants as readily as the across-it one. Facing the nearer is facing squarely, and
+        // taking the merely-more-forward one is what had the bot swim the bridge's length instead of
+        // climbing the piece beside it.
+        let bridge = |p: Vec3| {
+            // Near bank 20 out along +y; far bank 96 out along +x. Both climbable.
+            let near = p.y >= 20.0 && p.z < 16.0;
+            let far = p.x >= 96.0 && p.z < 16.0;
+            if near || far {
+                CONTENTS_SOLID
+            } else if p.z < 0.0 {
+                CONTENTS_WATER
+            } else {
+                CONTENTS_EMPTY
+            }
+        };
+        // Route running along the bridge (+x, toward the far bank): the near one is still chosen.
+        let square = exit_yaw(&bridge, at, Vec2::new(1.0, 0.0)).expect("both banks grant");
+        assert!(
+            square.y > 0.7,
+            "should face the near bank square-on, not swim the length of the far one: {square}"
+        );
 
         // A wall too tall to climb: solid at +8 *and* at +32, so the engine refuses and so must this.
         let cliff = |p: Vec3| {
