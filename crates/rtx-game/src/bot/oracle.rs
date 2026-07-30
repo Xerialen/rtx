@@ -55,15 +55,25 @@ pub(crate) enum StrategicItemKind {
     GreenArmor,
     YellowArmor,
     RedArmor,
-    Weapon { bit: u32, ammo: AmmoChannel },
+    Weapon {
+        bit: u32,
+        ammo: AmmoChannel,
+    },
     Ammo(AmmoChannel),
     Quad,
-    OtherPowerup,
+    /// Pentagram of protection. Split from the ring because pricing them alike is a real error:
+    /// taking a pentagram is the biggest single event on the board (+1.55 forward team frags), while
+    /// a ring of shadows barely moves a fighter's power (×1.10) and prices at nothing.
+    Pent,
+    /// Ring of shadows, and any other artifact worth planning around this little.
+    Ring,
 }
 
 impl StrategicItemKind {
     fn is_major(self) -> bool {
-        matches!(self, Self::Mega | Self::RedArmor | Self::Quad | Self::OtherPowerup)
+        // The ring is deliberately absent: a major is something worth planning a cycle around, and
+        // the measurement says this one is not.
+        matches!(self, Self::Mega | Self::RedArmor | Self::Quad | Self::Pent)
     }
 
     fn is_strong_weapon(self) -> bool {
@@ -113,6 +123,9 @@ pub(crate) struct MemberSnapshot {
     /// This member's measured power — expected kills over the next minute as a multiple of a fresh
     /// spawn. Own-team data is truthful; see [`EnemySnapshot::power`] for the other side.
     pub power: f32,
+    /// The material state `power` was computed from, kept so the worker can ask what a *candidate
+    /// item* would add without reaching back into the entity it came from.
+    pub power_input: power::PowerInput,
 }
 
 impl MemberSnapshot {
@@ -136,9 +149,6 @@ pub(crate) struct EnemyCue {
 #[derive(Clone, Debug)]
 pub(crate) struct EnemySnapshot {
     pub ent: u32,
-    pub health: Option<f32>,
-    pub armor: Option<f32>,
-    pub items: Option<u32>,
     /// Newest observation incorporated into this enemy belief.
     pub evidence_at: f32,
     pub cue: Option<EnemyCue>,
@@ -147,6 +157,10 @@ pub(crate) struct EnemySnapshot {
     /// everywhere else in the snapshot, so a team can be wrong about how strong the other side is
     /// in exactly the ways its bots have earned.
     pub power: Option<f32>,
+    /// The believed material state `power` was computed from — `None` on the same terms. Lets the
+    /// worker price what an item would be worth *to him* in the same currency it prices its own, from
+    /// observation-gated fields only.
+    pub believed: Option<power::PowerInput>,
     /// Whether the enemy is believed to be holding a quad right now.
     pub quad: bool,
 }
@@ -1330,6 +1344,17 @@ fn team_snapshots(game: &GameState, graph: &NavGraph, now: f32) -> Vec<TeamSnaps
 fn member_snapshot(game: &GameState, graph: &NavGraph, e: EntId, now: f32) -> Option<MemberSnapshot> {
     let ent = &game.entities[e];
     let cell = graph.nearest(ent.v.origin)?;
+    let input = power::PowerInput {
+        health: ent.v.health,
+        armor_value: ent.v.armorvalue,
+        armor_type: ent.v.armortype,
+        items: ent.v.items,
+        rockets: ent.v.ammo_rockets,
+        cells: ent.v.ammo_cells,
+        quad_age: power::powerup_age(ent.combat.super_damage_finished, now),
+        pent_age: power::powerup_age(ent.combat.invincible_finished, now),
+        ring: ent.v.items.has(Items::INVISIBILITY),
+    };
     Some(MemberSnapshot {
         ent: e.0,
         cell,
@@ -1345,17 +1370,8 @@ fn member_snapshot(game: &GameState, graph: &NavGraph, e: EntId, now: f32) -> Op
             cells: ent.v.ammo_cells,
         },
         recovering: ent.bot.posture == CombatPosture::Recover,
-        power: power::power(&power::PowerInput {
-            health: ent.v.health,
-            armor_value: ent.v.armorvalue,
-            armor_type: ent.v.armortype,
-            items: ent.v.items,
-            rockets: ent.v.ammo_rockets,
-            cells: ent.v.ammo_cells,
-            quad_age: power::powerup_age(ent.combat.super_damage_finished, now),
-            pent_age: power::powerup_age(ent.combat.invincible_finished, now),
-            ring: ent.v.items.has(Items::INVISIBILITY),
-        }),
+        power: power::power(&input),
+        power_input: input,
     })
 }
 
@@ -1387,17 +1403,17 @@ fn enemy_snapshot(
             })
         })
         .max_by(|a, b| a.at.total_cmp(&b.at));
+    let believed = estimate.map(|e| crate::bot::model::believed_power_input(&e, now));
     Some(EnemySnapshot {
         ent: enemy.0,
-        health: estimate.map(|e| e.health),
-        armor: estimate.map(|e| e.armor_value),
-        items: estimate.map(|e| Items::from_f32(e.items).bits()),
         evidence_at: estimate
             .map(|e| e.last_update)
             .unwrap_or(0.0)
             .max(cue.map(|c| c.at).unwrap_or(0.0)),
         cue,
-        power: estimate.map(|e| crate::bot::model::est_power(&e, now)),
+        // One constructor for the belief and its score, so the two can never drift apart.
+        power: believed.map(|b| power::power(&b)),
+        believed,
         quad: estimate.is_some_and(|e| e.quad_until > now),
     })
 }
@@ -1445,7 +1461,8 @@ fn classify_item(game: &GameState, e: EntId) -> Option<StrategicItemKind> {
         "item_rockets" => StrategicItemKind::Ammo(AmmoChannel::Rockets),
         "item_cells" => StrategicItemKind::Ammo(AmmoChannel::Cells),
         "item_artifact_super_damage" => StrategicItemKind::Quad,
-        c if c.starts_with("item_artifact_") => StrategicItemKind::OtherPowerup,
+        "item_artifact_invulnerability" => StrategicItemKind::Pent,
+        c if c.starts_with("item_artifact_") => StrategicItemKind::Ring,
         _ => return None,
     })
 }
@@ -1800,7 +1817,7 @@ fn assign_major(
         .filter_map(|member| {
             let travel = travel_cost(&snapshot.graph, member.cell, item.cell)?;
             let need = member_item_need(member, item.kind);
-            Some((member, travel - need * 0.01))
+            Some((member, travel - need * NEED_TRAVEL_WEIGHT))
         })
         .collect();
     candidates.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.ent.cmp(&b.0.ent)));
@@ -2165,7 +2182,7 @@ fn strategic_family(kind: StrategicItemKind) -> u8 {
         StrategicItemKind::GreenArmor | StrategicItemKind::YellowArmor | StrategicItemKind::RedArmor => 1,
         StrategicItemKind::Weapon { .. } => 2,
         StrategicItemKind::Ammo(_) => 3,
-        StrategicItemKind::Quad | StrategicItemKind::OtherPowerup => 4,
+        StrategicItemKind::Quad | StrategicItemKind::Pent | StrategicItemKind::Ring => 4,
     }
 }
 
@@ -2276,6 +2293,125 @@ fn item_available(item: u32, memory: Option<&TeamMemory>, now: f32) -> bool {
 /// policy alone.
 const CARRIER_ITEM_NEED_BIAS: f32 = 3.0;
 
+/// Seconds of extra travel a unit of need is worth when picking who fetches a major.
+///
+/// Recalibrated with the needs themselves: the old hand tables topped out around 220 at `0.01`, so a
+/// missing weapon (140) pulled a member about 1.4 s further than the nearest. Δpower prices that same
+/// missing launcher near 334, and this keeps the pull at the same ~1.3 s rather than silently
+/// tripling it. Changing the currency without re-anchoring the exchange rate would have been a
+/// behaviour change disguised as a refactor.
+const NEED_TRAVEL_WEIGHT: f32 = 0.004;
+
+/// What `kind` would add to `input`'s measured power — the oracle's half of the goal layer's
+/// `item_power_gain`, over item *kinds* rather than live entities because the worker only ever sees
+/// a snapshot.
+///
+/// Kind-level standard quantities are enough: the two health pickups that differ in any interesting
+/// way are already separate kinds, and the spread inside a kind (a 20-rocket box versus a 5) is far
+/// smaller than the error the hand-written tables this replaces were carrying.
+fn kind_power_delta(input: &power::PowerInput, kind: StrategicItemKind) -> f32 {
+    let before = power::power(input);
+    let mut after = *input;
+    match kind {
+        StrategicItemKind::Health => {
+            if input.health >= 100.0 {
+                return 0.0;
+            }
+            after.health = (input.health + 25.0).min(100.0);
+        }
+        StrategicItemKind::Mega => {
+            if input.health >= 250.0 {
+                return 0.0;
+            }
+            after.health = (input.health + 100.0).min(250.0);
+        }
+        // Armour replaces rather than stacks, so a jacket is worth nothing to someone already in a
+        // better one — the "don't send the red-armour holder for the green" rule as arithmetic
+        // instead of a gate constant.
+        StrategicItemKind::GreenArmor => replace_armor(&mut after, 100.0, 0.3),
+        StrategicItemKind::YellowArmor => replace_armor(&mut after, 150.0, 0.6),
+        StrategicItemKind::RedArmor => replace_armor(&mut after, 200.0, 0.8),
+        StrategicItemKind::Weapon { bit, ammo } => {
+            after.items = Items::from_f32(after.items)
+                .union(Items::from_bits_truncate(bit))
+                .as_f32();
+            add_channel(&mut after, ammo, pickup_ammo(ammo));
+        }
+        StrategicItemKind::Ammo(ammo) => add_channel(&mut after, ammo, pickup_ammo(ammo)),
+        StrategicItemKind::Quad => after.quad_age = Some(0.0),
+        StrategicItemKind::Pent => after.pent_age = Some(0.0),
+        StrategicItemKind::Ring => after.ring = true,
+    }
+    (power::power(&after) - before).max(0.0)
+}
+
+fn replace_armor(input: &mut power::PowerInput, value: f32, at: f32) {
+    if input.armor_value >= value {
+        return;
+    }
+    input.armor_value = value;
+    input.armor_type = at;
+}
+
+/// What a standard box of `channel` carries. Shells and nails move no power factor at all (the fit
+/// has no term for them), which is why they need the scarcity floor below rather than a delta.
+fn pickup_ammo(channel: AmmoChannel) -> f32 {
+    match channel {
+        AmmoChannel::Rockets => 5.0,
+        AmmoChannel::Cells => 6.0,
+        AmmoChannel::Shells | AmmoChannel::Nails => 20.0,
+    }
+}
+
+fn add_channel(input: &mut power::PowerInput, channel: AmmoChannel, amount: f32) {
+    match channel {
+        AmmoChannel::Rockets => input.rockets = (input.rockets + amount).min(100.0),
+        AmmoChannel::Cells => input.cells = (input.cells + amount).min(100.0),
+        // Neither is an input to the power score; see [`pickup_ammo`].
+        AmmoChannel::Shells | AmmoChannel::Nails => {}
+    }
+}
+
+/// The forward team-frag price of *taking* `kind`, mirroring the goal layer's `event_price` over the
+/// kinds the oracle sees. This is the part of an item's worth that isn't marginal power: a red armour
+/// is worth taking at a full stack because of who then doesn't have it.
+fn kind_event_price(kind: StrategicItemKind) -> f32 {
+    match kind {
+        StrategicItemKind::Quad => power::price::QUAD,
+        StrategicItemKind::Pent => power::price::PENT,
+        StrategicItemKind::RedArmor => power::price::RED_ARMOR,
+        StrategicItemKind::YellowArmor => power::price::YELLOW_ARMOR,
+        StrategicItemKind::Mega => power::price::MEGA,
+        // The ring is the one pickup the measurement says to walk past if something else wants doing.
+        _ => 0.0,
+    }
+}
+
+/// Floor under the ammo channels the power score cannot see.
+///
+/// Shells and nails carry no factor in the fit, so on Δpower alone they price at exactly zero and the
+/// oracle would never send anyone for them again — a bot dry on both would stand there holding an
+/// axe. This keeps them **ranked last and still visible**: a dry member rates about 20, against ~334
+/// for a missing rocket launcher, so ammo is fetched when nothing that matters is wanted and not
+/// before. The bot's own goal layer prices these properly and is untouched; this is the team
+/// planner's fetch ranking only.
+fn ammo_scarcity_floor(held: f32) -> f32 {
+    (20.0 - held).max(0.0)
+}
+
+/// Whether a channel is invisible to the power score, and so needs the floor above.
+fn unscored_channel(channel: AmmoChannel) -> bool {
+    matches!(channel, AmmoChannel::Shells | AmmoChannel::Nails)
+}
+
+/// What `kind` is worth to a teammate, in the currency everything else prices in: `K·Δpower` plus the
+/// event-price floor, weighted for a powerup carrier.
+///
+/// Replaces a hand-written table of marginal values. The table had to assert things the power curves
+/// already know — that armour tops out, that a second jacket is worth less than the first, that a
+/// weapon you already own is worth only its ammo — and it asserted them with different numbers than
+/// the goal layer used, so the planner and the bot it was advising disagreed about what they were
+/// doing.
 fn member_item_need(member: &MemberSnapshot, kind: StrategicItemKind) -> f32 {
     let carrier = member.owns(Items::QUAD.bits()) || member.owns(Items::INVULNERABILITY.bits());
     let bias = if carrier && kind.is_major() {
@@ -2283,66 +2419,40 @@ fn member_item_need(member: &MemberSnapshot, kind: StrategicItemKind) -> f32 {
     } else {
         1.0
     };
-    bias * member_item_need_raw(member, kind)
-}
-
-fn member_item_need_raw(member: &MemberSnapshot, kind: StrategicItemKind) -> f32 {
-    match kind {
-        StrategicItemKind::Health => (100.0 - member.health).max(0.0),
-        StrategicItemKind::Mega => (250.0 - member.health).max(0.0),
-        StrategicItemKind::GreenArmor => (100.0 - member.armor).max(0.0) * 0.3,
-        StrategicItemKind::YellowArmor => (150.0 - member.armor).max(0.0) * 0.6,
-        StrategicItemKind::RedArmor => (200.0 - member.armor).max(0.0) * 0.8,
-        StrategicItemKind::Weapon { bit, ammo } => {
-            if !member.owns(bit) {
-                140.0
-            } else {
-                (20.0 - member.ammo.channel(ammo)).max(0.0)
-            }
+    // A *floor*, not an addend — the same composition `desire_with_floors` uses. Summing them would
+    // double-count: the price of taking a red armour and the power it adds are two readings of one
+    // event, and adding them put a jacket above a rocket launcher for a naked spawn while the goal
+    // layer, on identical inputs, said the opposite. Two layers disagreeing about the same pickup is
+    // the failure this whole workstream exists to remove.
+    let mut need = (super::goals::POWER_DESIRE_K * kind_power_delta(&member.power_input, kind))
+        .max(super::goals::POWER_DESIRE_L * kind_event_price(kind));
+    if let StrategicItemKind::Ammo(ch) | StrategicItemKind::Weapon { ammo: ch, .. } = kind {
+        if unscored_channel(ch) {
+            need = need.max(ammo_scarcity_floor(member.ammo.channel(ch)));
         }
-        StrategicItemKind::Ammo(ammo) => (20.0 - member.ammo.channel(ammo)).max(0.0),
-        StrategicItemKind::Quad | StrategicItemKind::OtherPowerup => 200.0,
     }
+    bias * need
 }
 
+/// The same question about an enemy, answered from belief alone.
+///
+/// An unbelieved enemy is priced as the fresh spawn the model's own baseline says he is, so an
+/// unscouted opponent reads as wanting what a spawn wants rather than as wanting nothing.
 fn enemy_item_need(enemy: &EnemySnapshot, kind: StrategicItemKind, memory: Option<&TeamMemory>) -> f32 {
-    let health = enemy.health.unwrap_or(100.0);
-    let armor = enemy.armor.unwrap_or(0.0);
-    let items = enemy.items.unwrap_or(0);
-    let need = match kind {
-        StrategicItemKind::Health => (100.0 - health).max(0.0),
-        StrategicItemKind::Mega => (250.0 - health).max(0.0) + 20.0,
-        StrategicItemKind::GreenArmor => (100.0 - armor).max(0.0) * 0.3,
-        StrategicItemKind::YellowArmor => (150.0 - armor).max(0.0) * 0.6,
-        StrategicItemKind::RedArmor => (200.0 - armor).max(0.0) * 0.8 + 20.0,
-        StrategicItemKind::Weapon { bit, ammo } => {
-            if items & bit == 0 {
-                160.0
-            } else if memory
-                .and_then(|m| m.ammo_spent.get(&(enemy.ent, ammo)))
+    let believed = enemy.believed.unwrap_or_else(power::spawn_input);
+    let mut need = (super::goals::POWER_DESIRE_K * kind_power_delta(&believed, kind))
+        .max(super::goals::POWER_DESIRE_L * kind_event_price(kind));
+    // Witnessed gunfire is the one ammo signal not carried by the loadout: somebody who has been
+    // firing wants the box even though the power score cannot see the channel.
+    if let StrategicItemKind::Ammo(ch) | StrategicItemKind::Weapon { ammo: ch, .. } = kind {
+        if unscored_channel(ch) {
+            let spent = memory
+                .and_then(|m| m.ammo_spent.get(&(enemy.ent, ch)))
                 .copied()
-                .unwrap_or(0)
-                >= 5
-            {
-                80.0
-            } else {
-                5.0
-            }
+                .unwrap_or(0);
+            need = need.max(if spent >= 5 { 70.0 } else { 2.0 });
         }
-        StrategicItemKind::Ammo(ammo) => {
-            if memory
-                .and_then(|m| m.ammo_spent.get(&(enemy.ent, ammo)))
-                .copied()
-                .unwrap_or(0)
-                >= 5
-            {
-                70.0
-            } else {
-                2.0
-            }
-        }
-        StrategicItemKind::Quad | StrategicItemKind::OtherPowerup => 220.0,
-    };
+    }
     // Scale by who is going for it. This feeds the intercept's destination hypotheses, so a strong
     // enemy heading for the quad now outweighs a freshly-spawned one heading for the same quad, and
     // the team spends its interception on the trip that would cost it most. The enemy's power here
@@ -2479,23 +2589,48 @@ mod tests {
         assert!(control_lead(StrategicItemKind::Quad) > control_lead(StrategicItemKind::RedArmor));
     }
 
-    /// The fitness screen, in the terms that produced it.
-    #[test]
-    fn only_fighters_who_can_win_the_room_are_sent_to_hold_it() {
-        let armed = |health: f32, armor: f32, armor_type: f32| MemberSnapshot {
+    /// A teammate snapshot whose `power_input` agrees with its plain fields — the invariant
+    /// `member_snapshot` maintains, and the thing every need question is asked of.
+    fn member(health: f32, armor: f32, armor_type: f32, items: Items, ammo: AmmoSnapshot) -> MemberSnapshot {
+        MemberSnapshot {
             ent: 1,
             cell: 0,
             alive: true,
             health,
             armor,
             armor_type,
-            items: Items::ROCKET_LAUNCHER.bits(),
-            ammo: AmmoSnapshot {
-                rockets: 10.0,
-                ..Default::default()
-            },
+            items: items.bits(),
+            ammo,
             recovering: false,
             power: 0.0,
+            power_input: power::PowerInput {
+                health,
+                armor_value: armor,
+                armor_type,
+                items: items.as_f32(),
+                rockets: ammo.rockets,
+                cells: ammo.cells,
+                quad_age: None,
+                pent_age: None,
+                ring: false,
+            },
+        }
+    }
+
+    /// The fitness screen, in the terms that produced it.
+    #[test]
+    fn only_fighters_who_can_win_the_room_are_sent_to_hold_it() {
+        let armed = |health: f32, armor: f32, armor_type: f32| {
+            member(
+                health,
+                armor,
+                armor_type,
+                Items::ROCKET_LAUNCHER,
+                AmmoSnapshot {
+                    rockets: 10.0,
+                    ..Default::default()
+                },
+            )
         };
 
         // The case from the live run: a full red jacket over almost no health. The armor counter
@@ -2936,5 +3071,192 @@ mod tests {
         assert!((far.0 + far.1 - 1.0).abs() < 1e-6);
         assert!(near.1 > far.1);
         assert!(near.0 > near.1);
+    }
+
+    // --- need pricing (K.dpower + event price) ---------------------------------------------------
+
+    fn spawn_member() -> MemberSnapshot {
+        member(100.0, 0.0, 0.0, Items::SHOTGUN, AmmoSnapshot::default())
+    }
+
+    fn rl() -> StrategicItemKind {
+        StrategicItemKind::Weapon {
+            bit: Items::ROCKET_LAUNCHER.bits(),
+            ammo: AmmoChannel::Rockets,
+        }
+    }
+
+    /// A spawn wants a launcher far more than it wants ammo or a green jacket, and the old table's
+    /// flat "missing weapon = 140" is gone.
+    ///
+    /// It does *not* assert launcher-over-red-armour. Asked directly, the power curves say a naked
+    /// spawn gains about as much from a full red jacket (100 → 300 effective health) as from a
+    /// launcher with the five rockets the pickup actually carries — and five lands in the one ammo
+    /// bin the fit is non-monotonic in. That is the measurement's answer rather than a bug, and the
+    /// goal layer gives the same one from the same curves, which is what matters here.
+    #[test]
+    fn a_missing_launcher_is_priced_by_what_it_adds() {
+        let m = spawn_member();
+        let launcher = member_item_need(&m, rl());
+        assert!(launcher > member_item_need(&m, StrategicItemKind::GreenArmor));
+        assert!(launcher > member_item_need(&m, StrategicItemKind::Ammo(AmmoChannel::Rockets)));
+        assert!(launcher > member_item_need(&m, StrategicItemKind::Health));
+        // The anchor the travel weight is calibrated against.
+        assert!((200.0..400.0).contains(&launcher), "launcher need was {launcher}");
+        // A member who already owns it wants only the ammo, which is worth far less.
+        let owns = member(
+            100.0,
+            0.0,
+            0.0,
+            Items::SHOTGUN.union(Items::ROCKET_LAUNCHER),
+            AmmoSnapshot {
+                rockets: 20.0,
+                ..Default::default()
+            },
+        );
+        assert!(member_item_need(&owns, rl()) < launcher / 2.0);
+    }
+
+    /// A stacked fighter gains almost nothing from another red armour, and should still take it.
+    #[test]
+    fn a_stacked_member_still_wants_red_armour_for_its_price() {
+        let stacked = member(
+            100.0,
+            200.0,
+            0.8,
+            Items::ROCKET_LAUNCHER,
+            AmmoSnapshot {
+                rockets: 50.0,
+                ..Default::default()
+            },
+        );
+        // Marginal power is ~0 — he is already wearing it.
+        assert!(kind_power_delta(&stacked.power_input, StrategicItemKind::RedArmor) < 0.05);
+        // The event price carries it anyway: denying the armour is most of what taking it buys.
+        let need = member_item_need(&stacked, StrategicItemKind::RedArmor);
+        assert!(need > 100.0, "red armour still worth fetching, got {need}");
+        // Green armour, by contrast, is worth nothing to him: it would replace nothing.
+        assert_eq!(member_item_need(&stacked, StrategicItemKind::GreenArmor), 0.0);
+    }
+
+    /// Shells and nails must stay *lower priority*, never invisible.
+    ///
+    /// The power fit has no term for either channel, so on marginal power alone they price at exactly
+    /// zero and the planner would stop fetching them for good — a bot dry on both would be left
+    /// holding an axe. The floor keeps them last in the ranking and still on it.
+    #[test]
+    fn a_dry_shotgun_still_rates_a_shell_fetch() {
+        let dry = member(100.0, 0.0, 0.0, Items::SHOTGUN, AmmoSnapshot::default());
+        let shells = member_item_need(&dry, StrategicItemKind::Ammo(AmmoChannel::Shells));
+        assert!(shells > 0.0, "a dry shotgun must still rate shells");
+
+        // ...but behind everything the power score can actually see.
+        assert!(shells < member_item_need(&dry, rl()));
+        assert!(shells < member_item_need(&dry, StrategicItemKind::RedArmor));
+        assert!(shells < member_item_need(&dry, StrategicItemKind::Quad));
+
+        // A member already carrying shells wants them less; a full one, not at all.
+        let stocked = member(
+            100.0,
+            0.0,
+            0.0,
+            Items::SHOTGUN,
+            AmmoSnapshot {
+                shells: 20.0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            member_item_need(&stocked, StrategicItemKind::Ammo(AmmoChannel::Shells)),
+            0.0
+        );
+        assert!(
+            shells
+                > member_item_need(
+                    &member(
+                        100.0,
+                        0.0,
+                        0.0,
+                        Items::SHOTGUN,
+                        AmmoSnapshot {
+                            shells: 10.0,
+                            ..Default::default()
+                        },
+                    ),
+                    StrategicItemKind::Ammo(AmmoChannel::Shells)
+                )
+        );
+    }
+
+    /// The ring prices out of team planning; the pentagram is the most valuable thing on the board.
+    #[test]
+    fn the_ring_prices_out_and_the_pentagram_does_not() {
+        let m = spawn_member();
+        let ring = member_item_need(&m, StrategicItemKind::Ring);
+        let pent = member_item_need(&m, StrategicItemKind::Pent);
+        let quad = member_item_need(&m, StrategicItemKind::Quad);
+        assert!(pent > quad, "pentagram {pent} is priced above quad {quad}");
+        assert!(ring < quad / 4.0, "ring {ring} must not read like a powerup");
+        // And it is not a major, so it never reaches the planner's cycle logic at all.
+        assert!(!StrategicItemKind::Ring.is_major());
+        assert!(StrategicItemKind::Pent.is_major());
+    }
+
+    /// Enemy needs come from belief, and an unseen enemy is a spawn rather than a nobody.
+    #[test]
+    fn enemy_needs_are_belief_not_truth() {
+        let unseen = EnemySnapshot {
+            ent: 2,
+            evidence_at: 0.0,
+            cue: None,
+            power: None,
+            believed: None,
+            quad: false,
+        };
+        // Nothing believed: priced as the fresh spawn the model's own baseline says he is, so he
+        // reads as wanting a launcher badly — which is exactly what a spawn wants.
+        let unseen_rl = enemy_item_need(&unseen, rl(), None);
+        assert!(unseen_rl > 0.0);
+
+        // Believed already holding one: the launcher is worth much less to him.
+        let armed_belief = power::PowerInput {
+            items: Items::SHOTGUN.union(Items::ROCKET_LAUNCHER).as_f32(),
+            rockets: 20.0,
+            ..power::spawn_input()
+        };
+        let armed = EnemySnapshot {
+            believed: Some(armed_belief),
+            power: Some(power::power(&armed_belief)),
+            ..unseen.clone()
+        };
+        assert!(
+            enemy_item_need(&armed, rl(), None) < unseen_rl,
+            "a believed launcher should collapse the launcher need"
+        );
+    }
+
+    /// Both layers that can hand out a major must agree on who gets it.
+    #[test]
+    fn a_powerup_carrier_outranks_a_bare_teammate_for_a_major() {
+        let bare = member(100.0, 0.0, 0.0, Items::ROCKET_LAUNCHER, AmmoSnapshot::default());
+        let mut carrier = bare.clone();
+        carrier.items = Items::ROCKET_LAUNCHER.union(Items::QUAD).bits();
+        carrier.power_input.items = Items::ROCKET_LAUNCHER.union(Items::QUAD).as_f32();
+        carrier.power_input.quad_age = Some(0.0);
+        assert!(
+            member_item_need(&carrier, StrategicItemKind::RedArmor)
+                > member_item_need(&bare, StrategicItemKind::RedArmor),
+            "feed the carrier"
+        );
+        // The explicit bias is majors-only. A carrier still rates ordinary pickups somewhat higher,
+        // but that is the power score being multiplicative — everything is worth more under a quad —
+        // not the feed-the-carrier rule reaching where it was not meant to.
+        let ammo = StrategicItemKind::Ammo(AmmoChannel::Rockets);
+        let (c_ammo, b_ammo) = (member_item_need(&carrier, ammo), member_item_need(&bare, ammo));
+        assert!(c_ammo > b_ammo);
+        assert!(
+            c_ammo < b_ammo * CARRIER_ITEM_NEED_BIAS,
+            "ordinary pickups must not get the major bias: {c_ammo} vs {b_ammo}"
+        );
     }
 }

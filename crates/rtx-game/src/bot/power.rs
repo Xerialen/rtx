@@ -100,6 +100,7 @@ pub(crate) mod control {
 /// the server-side bot fills it from its own entity, the netclient fills it from mirrored state, and
 /// [`model`](super::model) fills it from a *believed* opponent estimate — same function, three
 /// sources, so a bot never rates an enemy on a currency different from its own.
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct PowerInput {
     pub(crate) health: f32,
     pub(crate) armor_value: f32,
@@ -380,6 +381,25 @@ pub(crate) fn threat_scale(power: f32) -> f32 {
 #[allow(dead_code, reason = "wired into the oracle's team snapshot in a later phase")]
 pub(crate) fn team_power<I: IntoIterator<Item = Option<f32>>>(members: I) -> f32 {
     members.into_iter().map(|p| p.unwrap_or(DEAD_POWER)).sum()
+}
+
+/// A fighter with nothing but the spawn kit — the model's own baseline, scoring exactly `1.0`.
+///
+/// The honest stand-in for an opponent nobody has seen: the same thing [`DEAD_POWER`] says about a
+/// corpse. Pricing an unbelieved enemy at zero would read as "he wants nothing", which is the one
+/// thing a player who just spawned certainly isn't.
+pub(crate) fn spawn_input() -> PowerInput {
+    PowerInput {
+        health: 100.0,
+        armor_value: 0.0,
+        armor_type: 0.0,
+        items: Items::SHOTGUN.as_f32(),
+        rockets: 0.0,
+        cells: 0.0,
+        quad_age: None,
+        pent_age: None,
+        ring: false,
+    }
 }
 
 #[cfg(test)]

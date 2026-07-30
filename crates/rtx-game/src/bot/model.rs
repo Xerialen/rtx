@@ -299,9 +299,16 @@ pub(crate) fn target_bias(est_strength: f32, armed_big: bool, weapons_stay: bool
 /// assumed modestly fed — the same assumption the goal layer's `estimated_stats` makes, kept in step
 /// with it deliberately: two parts of the bot disagreeing about how dangerous the same enemy is
 /// would be worse than either being wrong.
-pub(crate) fn est_power(est: &OpponentEstimate, now: f32) -> f32 {
+/// The believed loadout, as a [`PowerInput`](crate::bot::power::PowerInput) — score it with
+/// [`power`](crate::bot::power::power).
+///
+/// Handing back the *input* rather than the score is what lets a consumer also ask "what would this
+/// item be worth to him", by applying the item to the same belief. The oracle prices what an enemy is
+/// walking toward exactly that way, and belief and score cannot drift apart when both come from one
+/// constructor.
+pub(crate) fn believed_power_input(est: &OpponentEstimate, now: f32) -> crate::bot::power::PowerInput {
     let has = |bit: Items| est.items.has(bit);
-    crate::bot::power::power(&crate::bot::power::PowerInput {
+    crate::bot::power::PowerInput {
         health: drifted_health(est.health, est.last_update, now),
         armor_value: est.armor_value,
         armor_type: est.armor_type,
@@ -316,7 +323,7 @@ pub(crate) fn est_power(est: &OpponentEstimate, now: f32) -> f32 {
         pent_age: crate::bot::power::powerup_age(est.pent_until, now),
         // Invisibility has no reliable tell and moves the score by a tenth; never believed.
         ring: false,
-    })
+    }
 }
 
 /// Floor on the weak-target preference once event pricing is on: a naked enemy no longer reads as
