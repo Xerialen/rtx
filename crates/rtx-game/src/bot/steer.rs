@@ -2504,8 +2504,18 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // the bit it could have climbed passing by on its left. What decides that a bot wants out is
         // the route reaching dry land shortly, so that is the test: any leg within the next few whose
         // target is out of the water.
-        let leaving = bot.route[bot.route_pos..]
-            .iter()
+        //
+        // Read the tail with `get`, not by indexing: a route can be *cleared* without `route_pos`
+        // being rewound — that is the convention every other reader here follows — and several of
+        // the failure paths above (progress watchdog, abandoned jump commitments, a lost plat) clear
+        // it part-way through this very function. A swimming bot that hit one of those would index
+        // a stale position into an empty slice, and since this runs inside an engine callback that
+        // cannot unwind, the panic took the whole server with it rather than the frame.
+        let leaving = bot
+            .route
+            .get(bot.route_pos..)
+            .into_iter()
+            .flatten()
             .take(EXIT_LEGS_AHEAD)
             .any(|&l| !graph.cell_in_water(graph.link_target(l)));
         let exit_leg = cur_leg.filter(|_| leaving && surface.is_some());
