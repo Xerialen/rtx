@@ -20,7 +20,7 @@ pub(crate) use aim::*;
 
 use crate::abi::EntVars;
 use crate::arsenal::{self, AmmoKind};
-use crate::bot::state::GrenadePhase;
+use crate::bot::state::{CombatPosture, GrenadePhase};
 use crate::bot::{grenade, BotCmd};
 use crate::defs::{
     Bits, Content, FieldEq, Flags, Items, Weapon, BOT_MOVE_SPEED as MOVE_SPEED, BUTTON_ATTACK, BUTTON_JUMP,
@@ -39,6 +39,9 @@ const NAIL_SPEED: f32 = 1000.0;
 const PREFERRED_RANGE: f32 = 400.0;
 /// Below this we're in self-splash territory for the RL — switch to the super shotgun.
 const SPLASH_RANGE: f32 = 140.0;
+/// Cells at which the lightning gun becomes the better mid-range pick than a fed rocket launcher —
+/// the measured step in the cell curve. See [`Loadout::lg_preferred_over_rl`].
+const LG_PREFER_CELLS: f32 = 16.0;
 /// The lightning gun's beam reaches this far (`w_fire_lightning` traces `v_forward * 600`). The normal
 /// mid-range pick caps LG at a conservative `PREFERRED_RANGE + 150` (550); the *finishing* pick uses
 /// the true reach, so a believed-low enemy in the 550–600 band still draws the bolt over the rocket.
@@ -85,6 +88,70 @@ const PRESS_FLOOR: f32 = 20.0;
 /// Whether to press a finishable kill rather than retreat — see the threshold constants above. Pure.
 fn press_advantage(own_health: f32, enemy_stack: f32, est_age: f32) -> bool {
     enemy_stack < FINISH_STACK && est_age < FINISH_FRESH && own_health >= PRESS_FLOOR
+}
+
+/// How much of the quad's thirty seconds must remain to count as *fresh*. Quad's value is
+/// front-loaded — a fresh one on a light gun measures ×2.52 and is down to ×1.32 by its final third —
+/// so the seconds are the resource. A bot holding one should be spending them on contact, not
+/// shopping or holding range.
+pub(crate) const QUAD_FRESH_SECS: f32 = 15.0;
+
+/// How the bot wants to hold range this frame: forward speed (positive closes, negative gives
+/// ground, zero holds and strafes). Pure, so the whole fight/flee policy is testable without a frame.
+///
+/// Three inputs beyond the original distance-and-health read, each closing a gap where a measured
+/// fact existed but no decision consumed it:
+///
+/// - **`posture`** — the hysteretic Recover/Hold/Press read from relative power. It was computed
+///   every frame and written to the bot, and then nothing in combat looked at it. `Recover` gives
+///   ground (the bot keeps facing and keeps firing — refusing a fight in QuakeWorld means refusing
+///   *ground*, never the trigger, because turning your back is how you die); `Press` closes.
+/// - **`own_quad_fresh`** — spend the quad.
+/// - **`enemy_quad`** / **`enemy_pent`** — *repelling*. See below.
+///
+/// # Powerup carriers repel, they do not merely widen the band
+///
+/// The first version widened the hold band by [`QUAD_STANDOFF`] and vetoed pressing, which is not
+/// enough and was seen not to be: a bot on a 200/200 stack with a shotgun and a nailgun stood at the
+/// wider band trading with a quad carrier and was deleted. Standing at 600 units is still standing in
+/// the kill zone — the quad's lightning reaches exactly 600, and quad rockets kill a full stack in
+/// two. The fight is only refused by *leaving*, so a believed carrier now produces retreat at any
+/// range while the bot keeps facing and firing.
+///
+/// The exception is evidence, not hope: `finishable` means the opponent model believes this carrier
+/// is nearly dead, and finishing him is the single most valuable kill available. Absent that belief
+/// there is no case for staying.
+///
+/// A pentagram carrier repels with **no** exception — damage against invulnerability is zero, so
+/// there is no version of that fight worth having, only a corpse to avoid becoming.
+#[allow(clippy::too_many_arguments)]
+fn range_intent(
+    posture: CombatPosture,
+    health: f32,
+    dist: f32,
+    finishable: bool,
+    own_quad_fresh: bool,
+    enemy_quad: bool,
+    enemy_pent: bool,
+) -> f32 {
+    // Nothing can be finished through invulnerability, so the evidence exception cannot apply.
+    if enemy_pent || (enemy_quad && !finishable) {
+        return -MOVE_SPEED;
+    }
+    // Past the repel check the only way `enemy_quad` is still set is the finishable exception, which
+    // means closing — so there is no widened standoff band any more. Holding one was the half-measure
+    // this replaced: it kept the bot at 600 units, which is exactly the quad lightning's reach.
+    let press = finishable || own_quad_fresh || posture == CombatPosture::Press;
+    let band = PREFERRED_RANGE;
+    let retreat_health = if press { LOW_HEALTH / 2.0 } else { LOW_HEALTH };
+    let give_ground = health < retreat_health || posture == CombatPosture::Recover;
+    if give_ground || dist < band - 100.0 {
+        -MOVE_SPEED // back off (outmatched, too hurt, or inside self-splash range)
+    } else if dist > band + 100.0 || press {
+        MOVE_SPEED // close in — normally only when far, but also to finish a pressed kill
+    } else {
+        0.0 // hold and strafe
+    }
 }
 
 /// A weapon choice for the current range: the impulse that selects it, the [`Weapon`] it yields
@@ -141,16 +208,21 @@ struct Loadout {
     nails: f32,
     rockets: f32,
     cells: f32,
+    /// Whether the measured ammo curves apply to this bot — the `rtx_bot_power` family, narrowed by
+    /// `rtx_bot_power_team`. Off, the mid-range pick keeps its historical "fed is fed" behaviour, so
+    /// a split-team match can tell whether the cell gate earned its place.
+    ammo_curves: bool,
 }
 
 impl Loadout {
-    fn of(v: &EntVars) -> Loadout {
+    fn of(v: &EntVars, ammo_curves: bool) -> Loadout {
         Loadout {
             items: Items::from_f32(v.items),
             shells: v.ammo_shells,
             nails: v.ammo_nails,
             rockets: v.ammo_rockets,
             cells: v.ammo_cells,
+            ammo_curves,
         }
     }
 
@@ -174,6 +246,21 @@ impl Loadout {
         let item = w.item();
         self.has(item)
             && arsenal::weapon_spec(item).is_some_and(|s| s.ammo_kind.is_none_or(|k| self.ammo(k) >= s.min_ammo))
+    }
+
+    /// Whether the lightning gun is worth *preferring* over the rocket launcher, as opposed to
+    /// merely being able to fire one shot ([`fed`](Self::fed) clears at 1 cell).
+    ///
+    /// The two ammo curves have opposite shapes. Cells are the scarce resource — a starved LG keeps
+    /// barely half its edge, a fed one comes within a few percent of an RL — while rockets are
+    /// plentiful enough that even a dry RL keeps most of its value. So a bot with a trickle of cells
+    /// and a working RL should be firing rockets: the LG only wins the mid-range pick once it has
+    /// enough cells to actually finish what it starts. `LG_PREFER_CELLS` is the measured bin edge
+    /// where the cell curve steps up.
+    ///
+    /// A bot with no fed RL keeps its LG regardless — a trickle beats the shotgun.
+    fn lg_preferred_over_rl(&self) -> bool {
+        !self.ammo_curves || self.cells >= LG_PREFER_CELLS || !self.fed(Weapon::RocketLauncher)
     }
 
     /// The direct (non-explosive, before-axe) guns [`choose_weapon`] can pick, best first.
@@ -240,8 +327,9 @@ fn choose_weapon(
             return WeaponChoice::of(Weapon::Shotgun);
         }
     }
-    // Mid range: the lightning gun (fast, high DPS) when fed — never submerged (it would discharge).
-    if dist < PREFERRED_RANGE + 150.0 && inv.fed(Weapon::Lightning) && !underwater {
+    // Mid range: the lightning gun (fast, high DPS) when fed *and* actually stocked — never
+    // submerged (it would discharge). See [`Loadout::lg_preferred_over_rl`] for the cell gate.
+    if dist < PREFERRED_RANGE + 150.0 && inv.fed(Weapon::Lightning) && inv.lg_preferred_over_rl() && !underwater {
         return WeaponChoice::of(Weapon::Lightning);
     }
     // A finishable enemy past point blank: a hitscan direct hit lands the kill the instant it fires,
@@ -251,6 +339,10 @@ fn choose_weapon(
     // within FINISH_SHOTGUN_RANGE, where two barrels still close the enemy out; beyond it the pattern
     // can't finish and we keep the rocket's splash. Only reached when the branches above didn't
     // already pick a hitscan gun, i.e. exactly the RL/projectile case.
+    //
+    // No cell gate here, unlike the mid-range branch: that gate asks "which gun do I fight with",
+    // and a trickle of cells makes a poor answer to it. This asks "can I land the last 30 damage
+    // right now", and two cells answer it perfectly well.
     if finishable && dist >= SPLASH_RANGE {
         if inv.fed(Weapon::Lightning) && dist < LG_RANGE && !underwater {
             return WeaponChoice::of(Weapon::Lightning);
@@ -1012,22 +1104,38 @@ fn combat_move(game: &mut GameState, e: EntId, enemy: EntId, now: f32, origin: V
     } else {
         -1.0
     };
-    let press = game.opponent_est(e, enemy, now).is_some_and(|est| {
+    let est = game.opponent_est(e, enemy, now);
+    let finishable = est.is_some_and(|est| {
         press_advantage(
             health,
             crate::bot::model::est_strength(&est, now),
             now - est.last_update,
         )
     });
-    let retreat_health = if press { LOW_HEALTH / 2.0 } else { LOW_HEALTH };
-    let dist = to_enemy.length().max(1.0);
-    let want_forward = if health < retreat_health || dist < PREFERRED_RANGE - 100.0 {
-        -MOVE_SPEED // back off (too hurt, or inside self-splash range)
-    } else if dist > PREFERRED_RANGE + 100.0 || press {
-        MOVE_SPEED // close in — normally only when far, but also to finish a pressed kill
+    // The measured-power combat reads sit behind the same gate as the rest of the power work, so a
+    // split-team match can attribute them. Ungated they reached both sides, which left the one arm
+    // of the experiment that could have exonerated or convicted them blind.
+    let power_combat = game.host().cvar_bool(c"rtx_bot_power") && game.power_team_allows(e);
+    let enemy_quad = power_combat && est.is_some_and(|est| est.quad_until > now);
+    let enemy_pent = power_combat && est.is_some_and(|est| est.pent_until > now);
+    let own_quad_fresh = power_combat && game.entities[e].combat.super_damage_finished - now > QUAD_FRESH_SECS;
+    let posture = if power_combat {
+        game.entities[e].bot.posture
     } else {
-        0.0 // hold and strafe
+        // What combat did before posture reached the feet: hold the band, and let `finishable` be
+        // the only thing that presses.
+        CombatPosture::Hold
     };
+    let dist = to_enemy.length().max(1.0);
+    let want_forward = range_intent(
+        posture,
+        health,
+        dist,
+        finishable,
+        own_quad_fresh,
+        enemy_quad,
+        enemy_pent,
+    );
     let dir = Vec3::new(to_enemy.x, to_enemy.y, 0.0).normalize_or_zero();
     let perp = Vec3::new(-dir.y, dir.x, 0.0);
     let enemy_eye = game.entities[enemy].v.origin + VEC_VIEW_OFS;
@@ -1156,6 +1264,56 @@ pub(crate) fn fire_pending(game: &mut GameState, e: EntId, skill: f32, view: Vec
     fire_gate(game, e, skill, view, shot)
 }
 
+/// How long a bot must have been out of a fight before it puts the big gun away. Long enough that
+/// a flickering line of sight, a corner, or a reload pause never triggers it; short enough that a
+/// bot crossing the map between fights is carrying the shotgun for nearly all of it.
+const PACK_SWAP_DWELL: f32 = 1.5;
+
+/// The weapon a disengaged bot should be holding, or `None` to leave the gun alone.
+///
+/// You drop the pack of the weapon **in your hands** when you die — not your best weapon, the one
+/// you are holding. So the discipline every strong QuakeWorld player has is to snap back to the
+/// shotgun whenever they are not actually shooting: the rocket launcher stays in the inventory,
+/// where death cannot give it away. Measured, this is worth about half the cost of dying armed
+/// (−0.99 forward frags becomes −0.48), and better than half of all armed deaths at the top level
+/// drop no weapon pack at all because of it.
+///
+/// The bot pays a weapon-switch delay on the first shot of the next fight, exactly as a human does.
+/// It does *not* try the harder version — swapping between shots inside a firefight — because that
+/// needs firing-cadence awareness this doesn't have, and mistiming it costs real damage.
+///
+/// A quad suspends the whole discipline. Its value is front-loaded into the seconds you hold it, so
+/// a switch delay at the start of a quad fight costs more than the pack it protects — and a quadded
+/// fighter is the one least likely to be doing the dying anyway.
+fn pack_swap_choice(weapon: Weapon, owns_shotgun: bool, idle_for: f32, busy: bool, quad: bool) -> Option<Weapon> {
+    if busy || quad || idle_for < PACK_SWAP_DWELL || !owns_shotgun {
+        return None;
+    }
+    // Only the guns whose packs are worth denying. Anything else is already harmless to drop.
+    matches!(
+        weapon,
+        Weapon::RocketLauncher | Weapon::Lightning | Weapon::GrenadeLauncher
+    )
+    .then_some(Weapon::Shotgun)
+}
+
+/// Put the big gun away when there is no fight on, so a death in transit doesn't hand it over.
+/// Returns whether it issued a swap (for the audit counter).
+pub(crate) fn pack_discipline(game: &mut GameState, e: EntId, now: f32, cmd: &mut BotCmd) -> bool {
+    // Never fight another impulse consumer (a gate shot, a rocket jump, a grenade lob) or a shot
+    // already armed for the fire gate — those are all "busy" in the sense that matters.
+    let busy = cmd.impulse != 0 || cmd.shot.is_some();
+    let quad = game.entities[e].combat.super_damage_finished > now;
+    let v = &game.entities[e].v;
+    let owns_shotgun = v.items.has(Items::SHOTGUN) && v.ammo_shells > 0.0;
+    let idle_for = now - game.entities[e].bot.last_engaged;
+    let Some(want) = pack_swap_choice(v.weapon, owns_shotgun, idle_for, busy, quad) else {
+        return false;
+    };
+    cmd.impulse = WeaponChoice::of(want).impulse;
+    true
+}
+
 /// Overlay combat onto the frame's decisions. `look` is the desired view (smoothed downstream by
 /// the aim spring in `bot.rs`); `move_world` is the desired world-space velocity — the two are
 /// independent, so the bot can run one way while looking another. With line of sight it aims
@@ -1186,6 +1344,10 @@ pub(crate) fn engage(game: &mut GameState, e: EntId, enemy: EntId, origin: Vec3,
         return;
     }
 
+    // A live duel from here on: stamp it, so the pack-protection swap knows the big gun is earning
+    // its place in our hands.
+    game.entities[e].bot.last_engaged = now;
+
     let to_enemy = enemy_eye - my_eye;
     let dist = to_enemy.length().max(1.0);
     let skill = game.host().cvar(c"rtx_bot_skill").clamp(0.0, 7.0);
@@ -1205,7 +1367,8 @@ pub(crate) fn engage(game: &mut GameState, e: EntId, enemy: EntId, origin: Vec3,
     };
 
     // Weapon inventory relevant to the projectile choice (RL and GL share the rocket ammo pool).
-    let inv = Loadout::of(&game.entities[e].v);
+    let ammo_curves = game.host().cvar_bool(c"rtx_bot_power") && game.power_team_allows(e);
+    let inv = Loadout::of(&game.entities[e].v, ammo_curves);
     // The lob→shoot combo (`grenade::grenade_combo`, run after us) owns grounded grenade offence when
     // shootable grenades are enabled; `idle`/`combos_on` tell `plan_ballistics` whether engage is the
     // driver (see its doc). The airborne intercept is engage-exclusive.
@@ -2572,6 +2735,8 @@ mod tests {
             nails: 100.0,
             rockets: 100.0,
             cells: 100.0,
+            // The measured ammo curves on, since that is what the cell-gate tests are about.
+            ammo_curves: true,
         }
     }
 
@@ -2592,6 +2757,137 @@ mod tests {
             choose_weapon(dry, 400.0, false, false, false, false).weapon,
             Weapon::Axe
         );
+    }
+
+    #[test]
+    fn starved_lightning_yields_the_mid_range_pick_to_a_fed_rl() {
+        let both = Items::ROCKET_LAUNCHER | Items::LIGHTNING | Items::SHOTGUN;
+        let mid = 400.0;
+        // Stocked on cells: the lightning gun wins mid range, as it always has.
+        assert_eq!(
+            choose_weapon(armed(both), mid, false, false, false, false).weapon,
+            Weapon::Lightning
+        );
+        // A trickle of cells fires exactly one burst. It used to win this pick anyway — `fed` clears
+        // at a single cell — and the bot would open with the weaker gun and then be holding it dry.
+        let trickle = Loadout {
+            cells: 5.0,
+            ..armed(both)
+        };
+        assert_eq!(
+            choose_weapon(trickle, mid, false, false, false, false).weapon,
+            Weapon::RocketLauncher
+        );
+        // Right at the measured step, the lightning gun is back.
+        let stocked = Loadout {
+            cells: LG_PREFER_CELLS,
+            ..armed(both)
+        };
+        assert_eq!(
+            choose_weapon(stocked, mid, false, false, false, false).weapon,
+            Weapon::Lightning
+        );
+        // With no rockets to fall back on, a trickle still beats the shotgun.
+        let lg_only = Loadout {
+            cells: 5.0,
+            rockets: 0.0,
+            ..armed(both)
+        };
+        assert_eq!(
+            choose_weapon(lg_only, mid, false, false, false, false).weapon,
+            Weapon::Lightning
+        );
+        // Finishing is a different question from fighting: two cells land the last 30 damage now,
+        // where a rocket's flight time lets a near-dead enemy strafe clear of it.
+        assert_eq!(
+            choose_weapon(trickle, mid, false, false, false, true).weapon,
+            Weapon::Lightning
+        );
+    }
+
+    #[test]
+    fn the_big_gun_goes_away_between_fights() {
+        let long_enough = PACK_SWAP_DWELL + 0.1;
+        let idle = |w, owns, t| pack_swap_choice(w, owns, t, false, false);
+        // Out of a fight and holding a launcher: holster it, so dying in transit gives nothing away.
+        assert_eq!(idle(Weapon::RocketLauncher, true, long_enough), Some(Weapon::Shotgun));
+        assert_eq!(idle(Weapon::Lightning, true, long_enough), Some(Weapon::Shotgun));
+
+        // Still in (or just out of) a fight: the gun stays out. A flickering line of sight, a
+        // corner, or a reload pause must never trigger this.
+        assert_eq!(idle(Weapon::RocketLauncher, true, 0.0), None);
+        assert_eq!(idle(Weapon::RocketLauncher, true, PACK_SWAP_DWELL - 0.1), None);
+        // Something else owns the impulse or a shot is armed — never fight it for the trigger.
+        assert_eq!(
+            pack_swap_choice(Weapon::RocketLauncher, true, long_enough, true, false),
+            None
+        );
+        // Quadded: the seconds are the scarce resource, and a switch delay at the start of a quad
+        // fight costs more than the pack it would protect.
+        assert_eq!(
+            pack_swap_choice(Weapon::RocketLauncher, true, long_enough, false, true),
+            None
+        );
+
+        // Nothing worth denying in hand, or nothing to swap to: leave it alone. (Swapping a bot with
+        // no shells to the shotgun would leave it holding a gun it cannot fire.)
+        assert_eq!(idle(Weapon::SuperShotgun, true, long_enough), None);
+        assert_eq!(idle(Weapon::Shotgun, true, long_enough), None);
+        assert_eq!(idle(Weapon::RocketLauncher, false, long_enough), None);
+    }
+
+    #[test]
+    fn range_intent_reads_posture_and_the_quads() {
+        use CombatPosture::{Hold, Press, Recover};
+        let healthy = 100.0;
+        let band = PREFERRED_RANGE; // 400: hold between 300 and 500
+
+        // Baseline: hold the band, close from far, back out of splash range.
+        assert_eq!(range_intent(Hold, healthy, band, false, false, false, false), 0.0);
+        assert!(range_intent(Hold, healthy, band + 200.0, false, false, false, false) > 0.0);
+        assert!(range_intent(Hold, healthy, band - 200.0, false, false, false, false) < 0.0);
+
+        // Recover gives ground at any range — the posture was computed all along and ignored here.
+        assert!(range_intent(Recover, healthy, band, false, false, false, false) < 0.0);
+        // Press closes, exactly as a finishable read does.
+        assert!(range_intent(Press, healthy, band, false, false, false, false) > 0.0);
+        assert!(range_intent(Hold, healthy, band, true, false, false, false) > 0.0);
+
+        // A fresh quad of our own converts the hold into a hunt.
+        assert!(range_intent(Hold, healthy, band, false, true, false, false) > 0.0);
+        // Pressing also lowers the retreat floor, so a hurt bot finishes instead of fleeing.
+        assert!(range_intent(Hold, 30.0, band, false, false, false, false) < 0.0);
+        assert!(range_intent(Hold, 30.0, band, false, true, false, false) > 0.0);
+    }
+
+    /// A powerup carrier is left, not out-ranged. Standing at a wider band and trading is what a
+    /// 200/200 bot with a shotgun was observed doing against a quad, right up until it died.
+    #[test]
+    fn a_powerup_carrier_repels_at_every_range() {
+        use CombatPosture::{Hold, Press};
+        let healthy = 100.0;
+        let band = PREFERRED_RANGE;
+
+        // Enemy quad: give ground wherever we are, including from outside the old standoff, and
+        // including while pressing or at full health. Merely refusing to close is not refusing.
+        for dist in [band - 200.0, band, band + 200.0, band + 600.0] {
+            assert!(
+                range_intent(Hold, healthy, dist, false, false, true, false) < 0.0,
+                "should be retreating from a quad at {dist}"
+            );
+        }
+        assert!(range_intent(Press, healthy, band, false, false, true, false) < 0.0);
+        // Our own quad does not license standing in theirs.
+        assert!(range_intent(Hold, healthy, band, false, true, true, false) < 0.0);
+
+        // The one exception is evidence: a carrier the model believes is nearly dead is worth
+        // finishing, since that kill is the most valuable on the board.
+        assert!(range_intent(Hold, healthy, band, true, false, true, false) > 0.0);
+
+        // A pentagram carrier repels unconditionally — nothing can be finished through
+        // invulnerability, so the evidence exception cannot apply.
+        assert!(range_intent(Hold, healthy, band, true, true, false, true) < 0.0);
+        assert!(range_intent(Press, healthy, band + 600.0, true, false, false, true) < 0.0);
     }
 
     #[test]
@@ -2626,6 +2922,28 @@ mod tests {
         assert_eq!(
             choose_weapon(all, 600.0, false, false, false, false).weapon,
             Weapon::RocketLauncher
+        );
+    }
+
+    /// With the measured curves off, the mid-range pick is the pre-power behaviour exactly: a fed LG
+    /// is a fed LG. The gate is what a split-team match toggles, so it has to be a real switch and
+    /// not a constant.
+    #[test]
+    fn the_cell_gate_is_off_when_the_measured_curves_are() {
+        let starved = |ammo_curves| Loadout {
+            cells: LG_PREFER_CELLS - 1.0,
+            ammo_curves,
+            ..armed(Items::all())
+        };
+        // On: a trickle of cells loses the mid-range pick to the fed rocket launcher.
+        assert_eq!(
+            choose_weapon(starved(true), 400.0, false, false, false, false).weapon,
+            Weapon::RocketLauncher
+        );
+        // Off: the historical pick, unchanged.
+        assert_eq!(
+            choose_weapon(starved(false), 400.0, false, false, false, false).weapon,
+            Weapon::Lightning
         );
     }
 

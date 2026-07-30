@@ -10,6 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
+use crate::bot::power;
 use crate::bot::state::CombatPosture;
 use crate::defs::{Bits, Items, Weapon};
 use crate::entity::EntId;
@@ -103,9 +104,15 @@ pub(crate) struct MemberSnapshot {
     pub alive: bool,
     pub health: f32,
     pub armor: f32,
+    /// The jacket's absorb fraction (0.3 / 0.6 / 0.8), needed to turn `armor` into effective health.
+    /// Armor points alone say nothing about survivability without the health to spend them.
+    pub armor_type: f32,
     pub items: u32,
     pub ammo: AmmoSnapshot,
     pub recovering: bool,
+    /// This member's measured power — expected kills over the next minute as a multiple of a fresh
+    /// spawn. Own-team data is truthful; see [`EnemySnapshot::power`] for the other side.
+    pub power: f32,
 }
 
 impl MemberSnapshot {
@@ -135,6 +142,13 @@ pub(crate) struct EnemySnapshot {
     /// Newest observation incorporated into this enemy belief.
     pub evidence_at: f32,
     pub cue: Option<EnemyCue>,
+    /// Measured power of the *believed* loadout, or `None` where nothing is believed. Strictly a
+    /// function of the observation-gated estimate — the honest-evidence rule holds here as
+    /// everywhere else in the snapshot, so a team can be wrong about how strong the other side is
+    /// in exactly the ways its bots have earned.
+    pub power: Option<f32>,
+    /// Whether the enemy is believed to be holding a quad right now.
+    pub quad: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +163,16 @@ pub(crate) struct TeamSnapshot {
     pub mode: OracleMode,
     pub members: Vec<MemberSnapshot>,
     pub enemies: Vec<EnemySnapshot>,
+    /// Our total measured power minus the believed enemy total — the one team-level number that
+    /// predicts anything. One unit of gap converts to about one team frag over the next minute, and
+    /// the *level* (both teams stacked, or both naked) predicts nothing at all, which is why this is
+    /// stored as a difference rather than as two totals.
+    ///
+    /// Dead players on either side count as a fresh spawn, not as zero. An advantage held as bodies
+    /// evaporates on respawn — measured at −1.0 frags per body at a fixed equipment gap — while an
+    /// advantage held as equipment keeps paying. A team that has just aced the other side is not
+    /// four power units ahead; it is ahead by whatever the survivors are carrying.
+    pub power_gap: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -233,6 +257,9 @@ pub(crate) struct TeamPlan {
     pub team: u8,
     pub mode: OracleMode,
     pub control: ControlState,
+    /// The measured equipment gap this plan was made under, carried through for observability —
+    /// reading it beside the control state is what makes the plan legible over the control channel.
+    pub power_gap: f32,
     pub nuggets: Vec<OracleNugget>,
 }
 
@@ -1263,30 +1290,44 @@ fn team_snapshots(game: &GameState, graph: &NavGraph, now: f32) -> Vec<TeamSnaps
         if bots.len() < 2 {
             continue;
         }
+        // An untreated team gets no plan at all, so a split-team match compares "team play" against
+        // "no team play" cleanly rather than leaving the control side half-advised.
+        if !game.power_team_allows(bots[0]) {
+            continue;
+        }
         let mode = match game.mode.name() {
             "dm" => OracleMode::TeamDeathmatch,
             "ctf" => OracleMode::CtfShadow,
             _ => continue,
         };
-        let members = bots.iter().filter_map(|&e| member_snapshot(game, graph, e)).collect();
+        let members: Vec<MemberSnapshot> = bots
+            .iter()
+            .filter_map(|&e| member_snapshot(game, graph, e, now))
+            .collect();
         let observer = bots[0];
-        let enemies = players
+        let enemies: Vec<EnemySnapshot> = players
             .iter()
             .copied()
             .filter(|&e| game.entities[e].mode_p.team != team)
             .filter_map(|enemy| enemy_snapshot(game, graph, &bots, observer, enemy, now))
             .collect();
+        // Both sides count a corpse as the fresh spawn it is about to be, and an unbelieved enemy as
+        // one too — which is exactly what the model's own baseline says about a player nobody has
+        // seen since he died.
+        let ours = power::team_power(members.iter().map(|m| m.alive.then_some(m.power)));
+        let theirs = power::team_power(enemies.iter().map(|e| e.power));
         teams.push(TeamSnapshot {
             team,
             mode,
             members,
             enemies,
+            power_gap: ours - theirs,
         });
     }
     teams
 }
 
-fn member_snapshot(game: &GameState, graph: &NavGraph, e: EntId) -> Option<MemberSnapshot> {
+fn member_snapshot(game: &GameState, graph: &NavGraph, e: EntId, now: f32) -> Option<MemberSnapshot> {
     let ent = &game.entities[e];
     let cell = graph.nearest(ent.v.origin)?;
     Some(MemberSnapshot {
@@ -1295,6 +1336,7 @@ fn member_snapshot(game: &GameState, graph: &NavGraph, e: EntId) -> Option<Membe
         alive: ent.is_alive(),
         health: ent.v.health,
         armor: ent.v.armorvalue,
+        armor_type: ent.v.armortype,
         items: Items::from_f32(ent.v.items).bits(),
         ammo: AmmoSnapshot {
             shells: ent.v.ammo_shells,
@@ -1303,6 +1345,17 @@ fn member_snapshot(game: &GameState, graph: &NavGraph, e: EntId) -> Option<Membe
             cells: ent.v.ammo_cells,
         },
         recovering: ent.bot.posture == CombatPosture::Recover,
+        power: power::power(&power::PowerInput {
+            health: ent.v.health,
+            armor_value: ent.v.armorvalue,
+            armor_type: ent.v.armortype,
+            items: ent.v.items,
+            rockets: ent.v.ammo_rockets,
+            cells: ent.v.ammo_cells,
+            quad_age: power::powerup_age(ent.combat.super_damage_finished, now),
+            pent_age: power::powerup_age(ent.combat.invincible_finished, now),
+            ring: ent.v.items.has(Items::INVISIBILITY),
+        }),
     })
 }
 
@@ -1344,6 +1397,8 @@ fn enemy_snapshot(
             .unwrap_or(0.0)
             .max(cue.map(|c| c.at).unwrap_or(0.0)),
         cue,
+        power: estimate.map(|e| crate::bot::model::est_power(&e, now)),
+        quad: estimate.is_some_and(|e| e.quad_until > now),
     })
 }
 
@@ -1527,6 +1582,30 @@ struct DeterministicBackend {
     generation: u64,
     last_plan_at: f32,
     teams: HashMap<u8, TeamMemory>,
+    /// Teams currently in [`ControlState::Reset`], so [`reset_by_gap`] can hold the state across the
+    /// band where entering and leaving disagree. Without it a team hovering at the threshold would
+    /// re-issue and withdraw rearm orders every second.
+    resetting: std::collections::HashSet<u8>,
+}
+
+/// Whether the team should drop what it is doing and rebuild, from the measured power gap.
+///
+/// The threshold is readable rather than tuned, which is the point of putting the team on a measured
+/// scale: one unit of power gap converts to about one team frag over the next minute, so
+/// `ENTER` means "we are losing this at better than a frag a minute on equipment alone". Fighting
+/// from there feeds the other side; the rebuild is what turns it around.
+///
+/// The old rule counted heads — two or more members unarmed or recovering — which fired on a team
+/// that had just lost two players *and was winning*, and stayed quiet for a team whose four living
+/// members were all a little behind.
+fn reset_by_gap(power_gap: f32, was_resetting: bool) -> bool {
+    const ENTER: f32 = -1.2;
+    const EXIT: f32 = -0.9;
+    if was_resetting {
+        power_gap < EXIT
+    } else {
+        power_gap < ENTER
+    }
 }
 
 impl DeterministicBackend {
@@ -1545,7 +1624,7 @@ impl DeterministicBackend {
         }
         self.last_plan_at = snapshot.at;
         self.generation = self.generation.wrapping_add(1).max(1);
-        let teams = snapshot
+        let teams: Vec<TeamPlan> = snapshot
             .teams
             .iter()
             .map(|team| self.plan_team(&snapshot, team))
@@ -1599,11 +1678,12 @@ impl DeterministicBackend {
         }
     }
 
-    fn plan_team(&self, snapshot: &OracleSnapshot, team: &TeamSnapshot) -> TeamPlan {
+    fn plan_team(&mut self, snapshot: &OracleSnapshot, team: &TeamSnapshot) -> TeamPlan {
+        let was_resetting = self.resetting.contains(&team.team);
         let memory = self.teams.get(&team.team);
         let alive: Vec<&MemberSnapshot> = team.members.iter().filter(|m| m.alive).collect();
         let weak = alive.iter().filter(|m| !m.armed() || m.recovering).count();
-        let control = if alive.len() >= 2 && weak >= 2 {
+        let control = if alive.len() >= 2 && weak >= 1 && reset_by_gap(team.power_gap, was_resetting) {
             ControlState::Reset
         } else if major_due(&snapshot.items, memory, snapshot.at).is_some() {
             ControlState::Prepare
@@ -1617,14 +1697,29 @@ impl DeterministicBackend {
             assign_major(snapshot, team, item, memory, self.generation, &mut nuggets);
         }
         if control != ControlState::Reset {
+            // Hunting the quad carrier comes before the ordinary intercept: it is the single most
+            // valuable kill available and it is on a timer, so the two nearest armed members get
+            // sent while it is still worth having killed him.
+            assign_quad_hunt(snapshot, team, self.generation, &mut nuggets);
             if let Some(intercept) = best_intercept(snapshot, team, memory, self.generation, &nuggets) {
                 nuggets.push(intercept);
             }
+            // Only from a position of material parity: holding rooms while outgunned is how a team
+            // feeds. Ahead or even, the armor cycle is where the next minute is decided.
+            if team.power_gap >= 0.0 {
+                assign_area_control(snapshot, team, memory, self.generation, &mut nuggets);
+            }
+        }
+        if control == ControlState::Reset {
+            self.resetting.insert(team.team);
+        } else {
+            self.resetting.remove(&team.team);
         }
         TeamPlan {
             team: team.team,
             mode: team.mode,
             control,
+            power_gap: team.power_gap,
             nuggets,
         }
     }
@@ -1727,7 +1822,13 @@ fn assign_major(
             .copied()
             .unwrap_or(0.0),
     ));
-    if let Some((cover, _)) = candidates.iter().copied().find(|(member, _)| member.ent != owner.ent) {
+    // The escort is going to a contested room to fight for it, so it answers the same fitness bar as
+    // area control — unlike the owner above, who is going to *take* an item and may well need it.
+    if let Some((cover, _)) = candidates
+        .iter()
+        .copied()
+        .find(|(member, _)| member.ent != owner.ent && fit_to_contest(member))
+    {
         let cover_cell = cover_cell(&snapshot.graph, item.cell).unwrap_or(item.cell);
         out.push(nugget(
             snapshot,
@@ -1743,6 +1844,166 @@ fn assign_major(
                 .and_then(|memory| memory.item_evidence_at.get(&item.ent))
                 .copied()
                 .unwrap_or(0.0),
+        ));
+    }
+}
+
+/// How long an area-control order stands. Longer than the item orders around it because holding a
+/// room *is* the task — a three-second cover order expires before the bot has finished walking there.
+const COVER_TTL: f32 = 8.0;
+
+/// How far ahead of an item's return the team starts taking its room. Control is future stack, and
+/// the value is in being there when it lands, not in arriving to find someone else already gone.
+///
+/// This has to be read against the item's *own* clock, which is why it is a function and not the
+/// single constant it started as. Both armors return every twenty seconds, so a twenty-five second
+/// lead was satisfied from the instant the armor was taken until the instant it came back — for the
+/// whole cycle, every cycle. "Head over shortly before it lands" quietly became "live here", and a
+/// member was parked on the red armor all game with whatever health he happened to have. The lead
+/// must stay well inside the respawn interval or there is never a moment when the order is off.
+fn control_lead(kind: StrategicItemKind) -> f32 {
+    match kind {
+        // A sixty-second cycle leaves room to set up, and the quad room is worth arriving early for.
+        StrategicItemKind::Quad => 15.0,
+        // Twenty-second armor clock: long enough to cross a room, and no longer.
+        _ => 8.0,
+    }
+}
+
+/// The effective health below which a member is not sent *into* a fight. A fresh spawn is exactly
+/// 100, so this asks only that a room-holder be no worse off than someone who just respawned —
+/// which is a low bar, and still excludes the case that prompted it.
+pub(crate) const CONTROL_MIN_EH: f32 = 100.0;
+
+/// Whether a member is fit to be sent somewhere a fight is the expected outcome: holding a contested
+/// room, or running down a quad carrier. Fetch orders deliberately do not ask — being hurt is a
+/// reason to go and take something, not a reason to stay away from it.
+///
+/// The bar is [effective health](power::effective_health) rather than power. Power answers "how many
+/// kills is this fighter worth over the next minute" and was fitted on humans who, at 19 health under
+/// a full red jacket, would break off and heal; it scores that fighter at around one and a half fresh
+/// spawns. Reading a sixty-second expectation as "fit to stand here and take a rocket" asks the
+/// measurement for advice it never gave.
+fn fit_to_contest(member: &MemberSnapshot) -> bool {
+    member.alive
+        && member.armed()
+        && power::effective_health(member.health, member.armor, member.armor_type) >= CONTROL_MIN_EH
+}
+
+/// Send a member to hold the room around an armor or quad spawn that is about to come back.
+///
+/// This is the *control channel*, the part of the game the bot had no representation of at all.
+/// Holding the red-armor area over the trailing thirty seconds swings the next minute by ±1.75 team
+/// frags **beyond** whatever stacks are currently standing in it; the quad area is worth ±1.6, an
+/// instantly-available yellow ±1.0. Weapon rooms measured at zero once stack is held fixed, which is
+/// why [`power::control`] lists no weapon: on this map, controlling the rocket launcher's room buys
+/// nothing you don't already have by holding the launcher.
+///
+/// Only witnessed timers are used — the same honest-evidence rule the rest of the planner keeps, and
+/// the reason a team never camps a spawn it has no business knowing about.
+fn assign_area_control(
+    snapshot: &OracleSnapshot,
+    team: &TeamSnapshot,
+    memory: Option<&TeamMemory>,
+    generation: u64,
+    out: &mut Vec<OracleNugget>,
+) {
+    let Some(memory) = memory else { return };
+    // The most valuable room whose item is genuinely on its way back.
+    let due = snapshot
+        .items
+        .iter()
+        .filter_map(|item| {
+            let weight = control_weight(item.kind)?;
+            let spawn_at = *memory.item_spawn_at.get(&item.ent)?;
+            let wait = spawn_at - snapshot.at;
+            (wait > 0.0 && wait <= control_lead(item.kind)).then_some((item, weight))
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.ent.cmp(&a.0.ent)));
+    let Some((item, _)) = due else { return };
+    // Whoever is free, fit, and nearest. A member already carrying an order keeps it: this is the
+    // least urgent thing the planner asks for, and it must never displace a rearm or a pickup.
+    //
+    // The fitness filter is what stops the room-holder being whoever just took the armor and is
+    // therefore both standing on it (travel zero, so always nearest) and freshly hurt from the fight
+    // they took it after. That bot should be leaving to heal, not holding the most contested spot on
+    // the map at a quarter of its effective health.
+    let holder = team
+        .members
+        .iter()
+        .filter(|m| fit_to_contest(m) && !out.iter().any(|n| n.recipient == m.ent))
+        .filter_map(|m| Some((m, travel_cost(&snapshot.graph, m.cell, item.cell)?)))
+        .min_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.ent.cmp(&b.0.ent)));
+    let Some((holder, _)) = holder else { return };
+    let cover_cell = cover_cell(&snapshot.graph, item.cell).unwrap_or(item.cell);
+    out.push(nugget(
+        snapshot,
+        generation,
+        team.team,
+        holder.ent,
+        NuggetKind::CoverArea,
+        cover_cell,
+        item.ent,
+        0.7,
+        COVER_TTL,
+        memory.item_evidence_at.get(&item.ent).copied().unwrap_or(0.0),
+    ));
+}
+
+/// The measured value of holding this item's room, or `None` for the rooms that measured at nothing.
+fn control_weight(kind: StrategicItemKind) -> Option<f32> {
+    match kind {
+        StrategicItemKind::RedArmor => Some(power::control::RED_ARMOR),
+        StrategicItemKind::Quad => Some(power::control::QUAD),
+        StrategicItemKind::YellowArmor => Some(power::control::YELLOW_ARMOR),
+        _ => None,
+    }
+}
+
+/// How long after a witnessed quad pickup the hunt is still worth ordering. Quad is front-loaded:
+/// what the carrier is going to do with it, he does early, so a kill in the first third is worth
+/// most of the +0.92 the event prices and one in the last third is worth arriving for a fight
+/// against a fighter who is merely slightly stronger than usual.
+const QUAD_HUNT_WINDOW: f32 = 20.0;
+
+/// Send the two nearest armed members after a believed quad carrier.
+///
+/// The estimate carried `quad_until` from the start and nothing consumed it, so a bot fought a
+/// quadded enemy exactly as it fought a naked one. Killing a quad carrier is worth +0.92 forward
+/// team frags — +1.61 if the pack is then secured, which the pack economy now handles — making it
+/// the most valuable kill on the board, and the one with the shortest shelf life.
+fn assign_quad_hunt(snapshot: &OracleSnapshot, team: &TeamSnapshot, generation: u64, out: &mut Vec<OracleNugget>) {
+    let carrier = team
+        .enemies
+        .iter()
+        .filter(|e| e.quad)
+        .filter_map(|e| Some((e, e.cue?)))
+        .filter(|(_, cue)| snapshot.at - cue.at <= QUAD_HUNT_WINDOW)
+        .max_by(|a, b| a.1.at.total_cmp(&b.1.at));
+    let Some((enemy, cue)) = carrier else { return };
+    // Fit hunters only. Sending a fighter who dies to one quadded rocket at the fighter holding the
+    // quad does not deny it — it feeds it, and hands over the pack that comes with the kill.
+    let mut hunters: Vec<(&MemberSnapshot, f32)> = team
+        .members
+        .iter()
+        .filter(|m| fit_to_contest(m) && !out.iter().any(|n| n.recipient == m.ent))
+        .filter_map(|m| Some((m, travel_cost(&snapshot.graph, m.cell, cue.cell)?)))
+        .collect();
+    hunters.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.ent.cmp(&b.0.ent)));
+    // Two, not the whole team: a quad carrier is worth converging on, but a team that abandons the
+    // map to chase one has handed over everything else on it.
+    for (hunter, _) in hunters.into_iter().take(2) {
+        out.push(nugget(
+            snapshot,
+            generation,
+            team.team,
+            hunter.ent,
+            NuggetKind::Intercept,
+            cue.cell,
+            enemy.ent,
+            cue.confidence,
+            3.0,
+            enemy.evidence_at,
         ));
     }
 }
@@ -2008,7 +2269,24 @@ fn item_available(item: u32, memory: Option<&TeamMemory>, now: f32) -> bool {
     memory.and_then(|m| m.item_spawn_at.get(&item)).copied().unwrap_or(now) - now <= 8.0
 }
 
+/// Weight on a powerup carrier's claim to a major, mirroring goal selection's
+/// [`POWERUP_CARRIER_OWNER_BIAS`](super::goals::POWERUP_CARRIER_OWNER_BIAS). Both layers can hand out
+/// the red armour, so both have to agree on who should get it — otherwise the planner sends the
+/// carrier and the goal layer lets somebody else take it on the way, which is worse than either
+/// policy alone.
+const CARRIER_ITEM_NEED_BIAS: f32 = 3.0;
+
 fn member_item_need(member: &MemberSnapshot, kind: StrategicItemKind) -> f32 {
+    let carrier = member.owns(Items::QUAD.bits()) || member.owns(Items::INVULNERABILITY.bits());
+    let bias = if carrier && kind.is_major() {
+        CARRIER_ITEM_NEED_BIAS
+    } else {
+        1.0
+    };
+    bias * member_item_need_raw(member, kind)
+}
+
+fn member_item_need_raw(member: &MemberSnapshot, kind: StrategicItemKind) -> f32 {
     match kind {
         StrategicItemKind::Health => (100.0 - member.health).max(0.0),
         StrategicItemKind::Mega => (250.0 - member.health).max(0.0),
@@ -2031,7 +2309,7 @@ fn enemy_item_need(enemy: &EnemySnapshot, kind: StrategicItemKind, memory: Optio
     let health = enemy.health.unwrap_or(100.0);
     let armor = enemy.armor.unwrap_or(0.0);
     let items = enemy.items.unwrap_or(0);
-    match kind {
+    let need = match kind {
         StrategicItemKind::Health => (100.0 - health).max(0.0),
         StrategicItemKind::Mega => (250.0 - health).max(0.0) + 20.0,
         StrategicItemKind::GreenArmor => (100.0 - armor).max(0.0) * 0.3,
@@ -2064,7 +2342,14 @@ fn enemy_item_need(enemy: &EnemySnapshot, kind: StrategicItemKind, memory: Optio
             }
         }
         StrategicItemKind::Quad | StrategicItemKind::OtherPowerup => 220.0,
-    }
+    };
+    // Scale by who is going for it. This feeds the intercept's destination hypotheses, so a strong
+    // enemy heading for the quad now outweighs a freshly-spawned one heading for the same quad, and
+    // the team spends its interception on the trip that would cost it most. The enemy's power here
+    // is a *belief* assembled from witnessed pickups, gunfire and damage — never exact, and never
+    // meant to be; it is the difference between "somebody is going for quad" and "their best player
+    // is going for quad", which is the whole of the decision.
+    need * power::threat_scale(enemy.power.unwrap_or(power::DEAD_POWER))
 }
 
 fn cover_cell(graph: &NavGraph, item: CellId) -> Option<CellId> {
@@ -2137,6 +2422,104 @@ fn set_revision(revisions: &mut [f32; MAX_EDICTS], subject: u32, at: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rebuild call now reads the equipment gap rather than counting heads, and holds its state
+    /// across the band so a team hovering at the threshold doesn't issue and withdraw rearm orders
+    /// every second.
+    #[test]
+    fn reset_follows_the_equipment_gap_with_hysteresis() {
+        // Comfortably behind on equipment: rebuild. The threshold is readable because the scale is —
+        // a gap of 1.2 is worth about 1.2 team frags over the next minute.
+        assert!(reset_by_gap(-2.0, false));
+        assert!(!reset_by_gap(-1.0, false), "not yet worth abandoning the map for");
+        assert!(!reset_by_gap(0.0, false));
+        assert!(!reset_by_gap(3.0, false));
+
+        // Once rebuilding, hold on until genuinely back in the fight.
+        assert!(reset_by_gap(-1.0, true), "the band keeps it from flapping");
+        assert!(!reset_by_gap(-0.5, true));
+
+        // Being *ahead* never triggers it, however few of us are left standing — which is the whole
+        // reason to count equipment instead of heads. Two survivors holding both launchers are not
+        // a team in trouble.
+        assert!(!reset_by_gap(2.5, false));
+        assert!(!reset_by_gap(2.5, true));
+    }
+
+    /// Only the rooms the measurement says are worth holding, ordered as it ordered them.
+    #[test]
+    fn control_weights_cover_the_armor_cycle_and_nothing_else() {
+        let ra = control_weight(StrategicItemKind::RedArmor).unwrap();
+        let quad = control_weight(StrategicItemKind::Quad).unwrap();
+        let ya = control_weight(StrategicItemKind::YellowArmor).unwrap();
+        assert!(ra > quad && quad > ya);
+        // A weapon room measured at zero once stack is held fixed: holding it buys nothing the
+        // weapon in your hands hasn't already bought.
+        assert!(control_weight(StrategicItemKind::Weapon {
+            bit: Items::ROCKET_LAUNCHER.bits(),
+            ammo: AmmoChannel::Rockets,
+        })
+        .is_none());
+        assert!(control_weight(StrategicItemKind::Health).is_none());
+    }
+
+    /// The lead has to leave a gap in the item's own cycle, or the order never lifts.
+    #[test]
+    fn control_lead_stays_inside_the_respawn_cycle() {
+        // Both armors return on a twenty-second clock. A lead at or above that is satisfied from the
+        // moment the item is taken until it lands, which is not "arrive as it spawns" — it is
+        // "stand here forever", and it is what parked a bot on the red armor for a whole match.
+        const ARMOR_RESPAWN: f32 = 20.0;
+        assert!(control_lead(StrategicItemKind::RedArmor) < ARMOR_RESPAWN);
+        assert!(control_lead(StrategicItemKind::YellowArmor) < ARMOR_RESPAWN);
+
+        // Quad's sixty-second cycle affords a longer approach, and still leaves most of it free.
+        const QUAD_RESPAWN: f32 = 60.0;
+        assert!(control_lead(StrategicItemKind::Quad) < QUAD_RESPAWN / 2.0);
+        assert!(control_lead(StrategicItemKind::Quad) > control_lead(StrategicItemKind::RedArmor));
+    }
+
+    /// The fitness screen, in the terms that produced it.
+    #[test]
+    fn only_fighters_who_can_win_the_room_are_sent_to_hold_it() {
+        let armed = |health: f32, armor: f32, armor_type: f32| MemberSnapshot {
+            ent: 1,
+            cell: 0,
+            alive: true,
+            health,
+            armor,
+            armor_type,
+            items: Items::ROCKET_LAUNCHER.bits(),
+            ammo: AmmoSnapshot {
+                rockets: 10.0,
+                ..Default::default()
+            },
+            recovering: false,
+            power: 0.0,
+        };
+
+        // The case from the live run: a full red jacket over almost no health. The armor counter
+        // reads 200 and the fighter dies to one direct rocket, because only 76 of those points can
+        // ever be spent at 19 health. Effective health 95 — under a fresh spawn, so: not sent.
+        assert!(!fit_to_contest(&armed(19.0, 200.0, 0.8)));
+        // The same jacket with enough health behind it to use it is exactly who should hold a room.
+        assert!(fit_to_contest(&armed(80.0, 200.0, 0.8)));
+        // A fresh spawn is the bar itself, and clears it.
+        assert!(fit_to_contest(&armed(100.0, 0.0, 0.0)));
+        // Hurt and unarmored is the same refusal for the same reason.
+        assert!(!fit_to_contest(&armed(40.0, 0.0, 0.0)));
+
+        // Being unarmed disqualifies at any health: an escort with nothing to shoot back with is
+        // donating a pack, not holding a room.
+        let mut naked = armed(100.0, 200.0, 0.8);
+        naked.items = 0;
+        assert!(!fit_to_contest(&naked));
+
+        // And the dead hold nothing.
+        let mut corpse = armed(100.0, 200.0, 0.8);
+        corpse.alive = false;
+        assert!(!fit_to_contest(&corpse));
+    }
 
     #[test]
     fn inbox_replaces_kind_then_evicts_earliest_expiry() {

@@ -294,6 +294,76 @@ pub(crate) fn target_bias(est_strength: f32, armed_big: bool, weapons_stay: bool
     strength_mult * armed_mult
 }
 
+/// The measured power of a *believed* loadout: what the observer thinks this opponent is worth,
+/// in the same currency it scores itself. Ammo isn't observable after a pickup, so a known weapon is
+/// assumed modestly fed — the same assumption the goal layer's `estimated_stats` makes, kept in step
+/// with it deliberately: two parts of the bot disagreeing about how dangerous the same enemy is
+/// would be worse than either being wrong.
+pub(crate) fn est_power(est: &OpponentEstimate, now: f32) -> f32 {
+    let has = |bit: Items| est.items.has(bit);
+    crate::bot::power::power(&crate::bot::power::PowerInput {
+        health: drifted_health(est.health, est.last_update, now),
+        armor_value: est.armor_value,
+        armor_type: est.armor_type,
+        items: est.items,
+        rockets: if has(Items::ROCKET_LAUNCHER) || has(Items::GRENADE_LAUNCHER) {
+            10.0
+        } else {
+            0.0
+        },
+        cells: if has(Items::LIGHTNING) { 30.0 } else { 0.0 },
+        quad_age: crate::bot::power::powerup_age(est.quad_until, now),
+        pent_age: crate::bot::power::powerup_age(est.pent_until, now),
+        // Invisibility has no reliable tell and moves the score by a tenth; never believed.
+        ring: false,
+    })
+}
+
+/// Floor on the weak-target preference once event pricing is on: a naked enemy no longer reads as
+/// less than three-quarters the distance he is. Killing an unarmed player is measured at −0.12 team
+/// frags over the next thirty seconds — *worse than nothing* going forward, because the frag lands
+/// before the window opens, no stack is denied, and the victim respawns at full spawn value, often
+/// better off than the starved state he died in. The old 0.4 floor made fresh spawns into magnets.
+const WEAK_TARGET_FLOOR: f32 = 0.7;
+
+/// Distance² multiplier for a *quad carrier*: hunt him. Worth +0.92 forward frags — the second
+/// biggest event on the board, and it decays fast, so the value is in killing him early.
+const QUAD_CARRIER_BIAS: f32 = 0.55;
+
+/// Distance² multiplier for a *pentagram carrier*: leave him alone.
+///
+/// This is not a value judgement, it is arithmetic — invulnerability zeroes incoming damage, so a
+/// rocket spent on a pentagram carrier does *nothing at all*. The first version of this used 1.6,
+/// which reads a pentagram carrier as only 1.26× the distance he is and therefore still picks him
+/// over a killable enemy twice as far away; a bot was duly observed shooting one. Twenty-five puts
+/// him at five times his true distance, so he is chosen only when there is effectively nobody else.
+///
+/// Applied *outside* the near-tie clamp for that reason: the clamp keeps ordinary value differences
+/// from overriding geometry, and this is not an ordinary value difference.
+const PENT_CARRIER_BIAS: f32 = 25.0;
+
+/// Distance² multiplier for choosing a target, priced by what killing each one is *worth* rather
+/// than only by how easy each is to kill. Multiplies [`target_bias`]'s likelihood read (a thin stack
+/// dies sooner) by the measured forward value of the kill, then re-clamps to the same 0.3–2.5 band so
+/// the combined bias still only reorders near-ties instead of sending a bot across the map.
+///
+/// The powerup terms are the reason this exists: quad and pentagram were modeled all along but no
+/// decision read them, so a bot fought a quad carrier exactly as it fought a naked spawn.
+pub(crate) fn target_value(est: &OpponentEstimate, now: f32, weapons_stay: bool) -> f32 {
+    let armed_big = est.items.has(Items::ROCKET_LAUNCHER) || est.items.has(Items::LIGHTNING);
+    let mut bias = target_bias(est_strength(est, now), armed_big, weapons_stay).max(WEAK_TARGET_FLOOR);
+    if est.quad_until > now {
+        bias *= QUAD_CARRIER_BIAS;
+    }
+    let bias = bias.clamp(0.3, 2.5);
+    // Outside the clamp — see [`PENT_CARRIER_BIAS`]. Shooting an invulnerable player is not a poor
+    // trade, it is no trade, so it must be able to override geometry rather than merely nudge it.
+    if est.pent_until > now {
+        return bias * PENT_CARRIER_BIAS;
+    }
+    bias
+}
+
 /// The `Items` bit a fired active weapon proves ownership of, or `None` for Axe / Grapple / no weapon
 /// (which carry no arsenal information worth recording).
 pub(crate) fn weapon_fire_bit(w: Weapon) -> Option<Items> {
@@ -456,13 +526,14 @@ impl GameState {
     /// [`target_bias`] fed by the shared estimate, or `1.0` when there's no belief (or modeling is
     /// off), so a caller can multiply its raw dist² unconditionally and get plain nearest when off.
     pub(crate) fn target_dist_bias(&self, observer: EntId, target: EntId, now: f32, weapons_stay: bool) -> f32 {
-        match self.opponent_est(observer, target, now) {
-            Some(est) => {
-                let armed_big = est.items.has(Items::ROCKET_LAUNCHER) || est.items.has(Items::LIGHTNING);
-                target_bias(est_strength(&est, now), armed_big, weapons_stay)
-            }
-            None => 1.0,
+        let Some(est) = self.opponent_est(observer, target, now) else {
+            return 1.0;
+        };
+        if self.host.cvar_bool(c"rtx_bot_power") && self.power_team_allows(observer) {
+            return target_value(&est, now, weapons_stay);
         }
+        let armed_big = est.items.has(Items::ROCKET_LAUNCHER) || est.items.has(Items::LIGHTNING);
+        target_bias(est_strength(&est, now), armed_big, weapons_stay)
     }
 
     /// Hook: `target` died or respawned — wipe its entry back to the spawn kit in every pool.
@@ -635,6 +706,69 @@ mod tests {
         // resets the kit); under weapons-stay there's nothing to deny, so no nudge.
         assert_eq!(target_bias(100.0, true, false), 0.8);
         assert_eq!(target_bias(100.0, true, true), 1.0);
+    }
+
+    #[test]
+    fn target_value_prices_the_kill_not_just_the_odds() {
+        let now = 100.0;
+        // Freshly observed, so the staleness drift doesn't heal these estimates back to 100.
+        let seen = |health, armor_value, armor_type| OpponentEstimate {
+            last_update: now,
+            ..est(health, armor_value, armor_type)
+        };
+        let naked = seen(30.0, 0.0, 0.0);
+        let healthy = seen(100.0, 0.0, 0.0);
+
+        // The spawn frag stops being a magnet: a thin naked stack no longer reads at 0.4× the
+        // distance it is, because killing it buys nothing forward.
+        assert!(target_bias(30.0, false, false) < WEAK_TARGET_FLOOR);
+        assert_eq!(target_value(&naked, now, false), WEAK_TARGET_FLOOR);
+
+        // A quad carrier is hunted even at a healthy stack — the biggest forward price on the board
+        // after the pentagram, and it decays, so it has to be taken early.
+        let quadded = OpponentEstimate {
+            quad_until: now + 20.0,
+            ..healthy
+        };
+        assert!(target_value(&quadded, now, false) < target_value(&naked, now, false));
+        assert!(target_value(&quadded, now, false) < target_value(&healthy, now, false));
+
+        // A pentagram carrier is avoided: damage spent on an invulnerable player buys nothing.
+        let pented = OpponentEstimate {
+            pent_until: now + 20.0,
+            ..healthy
+        };
+        assert!(target_value(&pented, now, false) > target_value(&healthy, now, false));
+
+        // An expired powerup is no powerup at all.
+        let stale = OpponentEstimate {
+            quad_until: now - 1.0,
+            ..healthy
+        };
+        assert_eq!(target_value(&stale, now, false), target_value(&healthy, now, false));
+
+        // Everything except the pentagram stays a near-tie reorder inside the 0.3–2.5 band, so
+        // value never sends a bot across the map for an ordinary difference in stack.
+        let monster = seen(250.0, 200.0, 0.8);
+        assert!((0.3..=2.5).contains(&target_value(&monster, now, false)));
+        let quad_monster = OpponentEstimate {
+            quad_until: now + 5.0,
+            ..monster
+        };
+        assert!((0.3..=2.5).contains(&target_value(&quad_monster, now, false)));
+
+        // The pentagram is the deliberate exception, and has to be: at 1.6 it read an invulnerable
+        // player as 1.26× his distance, which still picks him over a killable enemy twice as far —
+        // and a bot was duly seen shooting one. It must be able to beat geometry, not nudge it.
+        let pent_monster = OpponentEstimate {
+            pent_until: now + 20.0,
+            ..monster
+        };
+        assert!(target_value(&pent_monster, now, false) > 2.5);
+        // A killable enemy four times closer is still the better target than the invulnerable one.
+        let far = 400.0_f32.powi(2) * target_value(&healthy, now, false);
+        let near_pent = 100.0_f32.powi(2) * target_value(&pented, now, false);
+        assert!(far < near_pent, "an invulnerable player must lose to a killable one");
     }
 
     #[test]

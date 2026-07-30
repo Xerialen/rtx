@@ -77,6 +77,13 @@ const GATE_OPEN_COST: f32 = 8.0;
 /// free to cover armor, weapons, and approach routes.
 const POWERUP_DEFER_RATIO: f32 = 1.0;
 
+/// How much a live powerup weights a teammate's claim on red armour or mega — see
+/// [`strategic_owner_score`]. Three lets the carrier win the armour from roughly two rooms away
+/// (the distance term doubles every 320 units), and no further: past that the armour would sit
+/// unclaimed long enough for the other team to walk in and take it, which concedes more than
+/// concentration buys.
+pub(crate) const POWERUP_CARRIER_OWNER_BIAS: f32 = 3.0;
+
 /// Minimum *desire* an item must have for a bot to break off combat and detour for it (the
 /// optional `rtx_bot_greed` behavior). Set so a genuinely wanted weapon/health/armor swing clears
 /// it while a minor ammo top-off (≈2.5) doesn't. Major powerups bypass this optional gate entirely.
@@ -182,6 +189,33 @@ const CLAIM_DISCOUNT: f32 = 0.1;
 ///    so real needs always outrank denial.
 const DENIAL_DESIRE: f32 = 30.0;
 
+/// How long a claim on a freshly dropped backpack stays live. Short on purpose: after this the pack
+/// is either taken or the moment has passed, and the bot should be back on the item cycle rather
+/// than walking to a spot where something used to be. On dm3 essentially every dropped pack is
+/// claimed by someone, so a claim that hasn't paid off in this long has lost the race.
+pub(crate) const PACK_HINT_SECS: f32 = 12.0;
+
+/// Desire floor for a claimed backpack ([`GameState::note_pack_drop`]). Sized to sit above
+/// [`COMBAT_GREED_MIN_DESIRE`] and to clear [`GOAL_HYSTERESIS`] against an ordinary item already
+/// being fetched, because that is exactly the comparison it kept losing: a dropped RL is the single
+/// most valuable thing on the floor for the next few seconds, and it was scoring as a routine
+/// pickup. Below a powerup (200+), which still outranks it.
+const PACK_SECURE_DESIRE: f32 = 150.0;
+
+/// Rockets, or cells, at which a pack's ammo alone justifies a detour even with no weapon on it.
+const PACK_WORTH_ROCKETS: f32 = 5.0;
+const PACK_WORTH_CELLS: f32 = 25.0;
+
+/// Whether a dropped pack is worth putting a claim on: it carries a big weapon, or enough ammo to
+/// matter. A pack of five shells is not worth crossing a room for, and stamping a claim on one would
+/// only pull bots off better goals.
+fn pack_worth_securing(v: &crate::abi::EntVars) -> bool {
+    v.items.has(Items::ROCKET_LAUNCHER)
+        || v.items.has(Items::LIGHTNING)
+        || v.ammo_rockets >= PACK_WORTH_ROCKETS
+        || v.ammo_cells >= PACK_WORTH_CELLS
+}
+
 /// The weapons a bot can want, and the ammo kinds. Real enums (not raw [`Items`] bits) so the
 /// desire match stays exhaustive.
 #[derive(Clone, Copy)]
@@ -194,12 +228,23 @@ enum WeaponKind {
     Lg,
 }
 
+/// Which artifact a powerup pickup is. They are *not* interchangeable, though the bot treated them
+/// so for a long time: measured over the next thirty seconds, taking a pentagram is worth +1.55 team
+/// frags and a quad +1.11, while the ring of shadows barely moves a fighter's power at all (×1.10)
+/// and prices out near nothing. Chasing a ring as hard as a quad is a real, cheap mistake to stop.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PowerupKind {
+    Quad,
+    Pent,
+    Ring,
+}
+
 /// What kind of goal an item classname denotes. Armor carries its own absorb parameters so the
 /// effective-HP math is a single branch.
 #[derive(Clone, Copy)]
 enum Category {
-    /// Quad / pent / ring — always near-top priority.
-    Powerup,
+    /// Quad / pent / ring — always near-top priority, but not equally so: see [`PowerupKind`].
+    Powerup(PowerupKind),
     Health,
     /// `value`/`at` feed `TotalStrength`; `gate` is the current-absorb threshold above which it's
     /// not worth taking; `double` weights the cheap green armor up (matching ktx).
@@ -293,9 +338,9 @@ fn category(classname: &str) -> Option<Category> {
     use AmmoKind::*;
     use WeaponKind::*;
     Some(match classname {
-        "item_artifact_super_damage" | "item_artifact_invulnerability" | "item_artifact_invisibility" => {
-            Category::Powerup
-        }
+        "item_artifact_super_damage" => Category::Powerup(PowerupKind::Quad),
+        "item_artifact_invulnerability" => Category::Powerup(PowerupKind::Pent),
+        "item_artifact_invisibility" => Category::Powerup(PowerupKind::Ring),
         "item_health" => Category::Health,
         "item_armor1" => Category::Armor {
             value: 100.0,
@@ -465,6 +510,12 @@ struct Stats {
     armor: f32,
     /// 0–100 firepower proxy: how well the bot can already deal damage (gates weapon/ammo desire).
     firepower: f32,
+    /// Seconds the quad/pentagram has been held, or `None`. Powerups decay, so the *age* is state:
+    /// see [`power`](super::power). Filled from the engine's expiry stamps for a bot, and from the
+    /// observation-gated [`quad_until`](super::model::OpponentEstimate::quad_until) for an enemy.
+    quad_age: Option<f32>,
+    pent_age: Option<f32>,
+    ring: bool,
     /// "Weapons stay" mode (deathmatch 2/3/5): a picked-up weapon's entity lingers and re-touching
     /// it does nothing, so an owned weapon is worthless. Otherwise re-grabbing one refills its ammo.
     weapons_stay: bool,
@@ -472,6 +523,98 @@ struct Stats {
     /// stack and panic for a dry primary. An enemy's estimated `Stats` carries the *bot's own* flag so
     /// its denial desire scales the same way ("he's weak and needs that armour" is worth more).
     stack: bool,
+    /// Measured power scoring on (`rtx_bot_power`): rate fighters with [`power`](super::power)
+    /// instead of the legacy EHP×firepower product. Snapshotted like `stack` so a single evaluation
+    /// is internally consistent, and inherited by an enemy's estimated `Stats` so both sides of a
+    /// comparison are always in the same currency.
+    power: bool,
+    /// Measured item pricing on (`rtx_bot_power_goals`): value a pickup by the power it would add
+    /// plus its measured event price, instead of the hand-written per-category desire rules.
+    power_goals: bool,
+}
+
+/// How dangerous this fighter is, as one number — the quantity every relative-strength decision
+/// ranks on. With `rtx_bot_power` this is the measured [`power`](super::power) score (a multiple of
+/// a fresh spawn); otherwise it is the legacy product of effective HP and firepower.
+///
+/// Only *ratios* of this are ever used, which is what both currencies license and why the two can
+/// share every consumer. They do differ in shape, though, and deliberately: the legacy product spans
+/// three orders of magnitude and mixes "hurt" with "outgunned", while power compresses to roughly
+/// 0.5–7 and is dominated by equipment. Health disparity is left to the absolute health/strength
+/// gates in [`posture_step`], which is where it belongs — a hurt fighter with the same gun is in a
+/// fair fight he should finish, not a losing one he should flee.
+fn power_metric(s: &Stats) -> f32 {
+    if !s.power {
+        return s.strength * s.firepower.max(10.0);
+    }
+    super::power::power(&power_input(s))
+}
+
+/// A bot's (or a believed enemy's) material state, in the form the power score reads.
+fn power_input(s: &Stats) -> super::power::PowerInput {
+    super::power::PowerInput {
+        health: s.health,
+        armor_value: s.armor_value,
+        armor_type: s.armor_type,
+        items: s.items,
+        rockets: s.rockets,
+        cells: s.cells,
+        quad_age: s.quad_age,
+        pent_age: s.pent_age,
+        ring: s.ring,
+    }
+}
+
+/// Add to one ammo pool of a prospective state, respecting the engine's carry caps. Only the two
+/// pools the power score reads are tracked; shells and nails move no factor, so they are dropped
+/// rather than carried around unused.
+fn add_ammo(p: &mut super::power::PowerInput, kind: AmmoKind, amount: f32) {
+    match kind {
+        AmmoKind::Rockets => p.rockets = (p.rockets + amount).min(100.0),
+        AmmoKind::Cells => p.cells = (p.cells + amount).min(100.0),
+        AmmoKind::Shells | AmmoKind::Nails => {}
+    }
+}
+
+/// Converts a power gain into the desire scale the rest of goal scoring speaks. Chosen so a rocket
+/// launcher at spawn (Δpower ≈ 1.67) lands near 330 — comfortably the biggest thing on the board for
+/// an unarmed bot, ahead of red armor there (Δ ≈ 0.52 → 104) — which is the headline finding stated
+/// as arithmetic rather than as a special case: **the gun is worth more than the armor**.
+///
+/// The scale also keeps the existing thresholds meaningful without retuning them:
+/// [`COMBAT_GREED_MIN_DESIRE`] (40) now means "a fifth of a fresh spawn's worth of power", and a
+/// shard that moves power by 0.02 scores 4, still beneath every gate it was beneath before.
+const POWER_DESIRE_K: f32 = 200.0;
+
+/// Converts a measured event price (forward team frags over the next 30 s) into the desire scale.
+/// Sized so a quad lands around 255 and a pentagram around 355 — above every material desire, as
+/// they should be, and in the same ballpark as the old flat `200 + strength` so the timed-powerup
+/// machinery around them keeps behaving.
+const POWER_DESIRE_L: f32 = 230.0;
+
+/// The measured forward value of taking this kind of item, in team frags over the next thirty
+/// seconds. This is the half of an item's worth the power score cannot see: power says what the
+/// pickup does for *me*, and the price says what it does to the *game* — which for a contested,
+/// timed item is mostly that the other side no longer gets it.
+///
+/// It is why a bot at a full stack should still take red armor (marginal power ≈ 0, price 0.65), and
+/// why a quad is worth more than its ×1.32 on an already-armed fighter.
+fn event_price(cat: Category, mega: bool) -> f32 {
+    use super::power::price;
+    match cat {
+        Category::Powerup(PowerupKind::Quad) => price::QUAD,
+        Category::Powerup(PowerupKind::Pent) => price::PENT,
+        // The ring gets no price floor at all — it is the one pickup the measurement says to walk
+        // past if something else wants doing.
+        Category::Powerup(PowerupKind::Ring) => 0.0,
+        Category::Armor { at, .. } if at >= 0.7 => price::RED_ARMOR,
+        Category::Armor { at, .. } if at >= 0.45 => price::YELLOW_ARMOR,
+        Category::Health if mega => price::MEGA,
+        // Green armor and ordinary health boxes were never priced separately: they are uncontrolled
+        // and always available, so taking one denies nobody anything. They ride their power gain.
+        Category::Armor { .. } | Category::Health => 0.0,
+        Category::Weapon(_) | Category::Ammo(_) => 0.0,
+    }
 }
 
 /// A 0–100 estimate of the bot's offensive capability — its best weapon fed by its ammo. Higher
@@ -503,7 +646,12 @@ fn firepower(items: f32, shells: f32, nails: f32, rockets: f32, cells: f32) -> f
 /// Convert an observation-gated opponent estimate into the same scoring currency as the bot. Ammo
 /// is not observable after a pickup, so assume a modest fed loadout for weapons known to be owned;
 /// this is used only for relative risk and denial, never aiming or exact damage prediction.
-fn estimated_stats(est: crate::bot::model::OpponentEstimate, weapons_stay: bool, stack: bool) -> Stats {
+///
+/// The mode flags come from `observer` rather than the world so that a bot always compares itself
+/// against an enemy scored the same way it scores itself. Witnessed powerup expiries *are* carried
+/// over — quad glows and hums, the pentagram flashes — which is how enemy powerups reach every
+/// relative-strength decision at once.
+fn estimated_stats(est: crate::bot::model::OpponentEstimate, observer: &Stats, now: f32) -> Stats {
     let has = |bit: Items| est.items.has(bit);
     let shells = if has(Items::SUPER_SHOTGUN) { 20.0 } else { 10.0 };
     let nails = if has(Items::NAILGUN) || has(Items::SUPER_NAILGUN) {
@@ -530,23 +678,37 @@ fn estimated_stats(est: crate::bot::model::OpponentEstimate, weapons_stay: bool,
         strength,
         armor: est.armor_type * est.armor_value,
         firepower: firepower(est.items, shells, nails, rockets, cells),
-        weapons_stay,
-        stack,
+        quad_age: super::power::powerup_age(est.quad_until, now),
+        pent_age: super::power::powerup_age(est.pent_until, now),
+        // The ring is not modeled: it is the one powerup with no reliable tell, and it measured at
+        // barely a tenth above nothing anyway.
+        ring: false,
+        weapons_stay: observer.weapons_stay,
+        stack: observer.stack,
+        power: observer.power,
+        power_goals: observer.power_goals,
     }
 }
 
 /// Denial/contest adjustment in pure form for tests. A known enemy's need makes the item more useful
 /// to take away; if that enemy reaches an ordinary item first and the bot is weaker, the route is
 /// discounted rather than feeding a losing fight. Powerups remain contest-worthy.
+///
+/// `threat` is [`power::threat_scale`](super::power::threat_scale) of the believed enemy: **who** is
+/// about to get this matters, not only how much they want it. `enemy_desire` already carries how far
+/// the pickup moves the team gap — that part converts to frags on its own — and `threat` adds the
+/// separate concentration effect, so conceding a quad to a full stack outweighs conceding the same
+/// quad to somebody who just spawned.
 fn contest_adjust(
     own_desire: f32,
     enemy_desire: f32,
+    threat: f32,
     my_eta: f32,
     enemy_eta: Option<f32>,
     weaker: bool,
     powerup: bool,
 ) -> (f32, f32) {
-    let desire = own_desire.max(0.0) + ENEMY_DENIAL_WEIGHT * enemy_desire.max(0.0);
+    let desire = own_desire.max(0.0) + ENEMY_DENIAL_WEIGHT * threat * enemy_desire.max(0.0);
     let lost = enemy_eta.is_some_and(|eta| eta + 0.25 < my_eta);
     let mult = if lost && weaker && !powerup {
         LOST_CONTEST_MULT
@@ -564,6 +726,28 @@ fn disengage_safe(has_los: bool, enemy_dist: f32) -> bool {
     !has_los || enemy_dist >= DISENGAGE_SAFE_RANGE
 }
 
+/// Hysteretic fight posture from health, stack, and relative strength. `own_power`/`enemy_power`
+/// are [`power_metric`] values, so only their ratio is read and either currency works.
+///
+/// The ratio thresholds below (0.6 / 0.85 / 1.35) were tuned for the legacy currency and were kept
+/// when the measured power score arrived, because they land on the right side of every case that
+/// matters — power compresses the range, but it compresses both tails, so the *ordering* of these
+/// scenarios is unchanged and each one still clears its gate:
+///
+/// | matchup (power score)                          | ratio | posture |
+/// |------------------------------------------------|-------|---------|
+/// | fresh spawn vs an RL carrier                   | 0.37  | Recover |
+/// | RL vs a full red stack with fed RL+LG          | 0.51  | Recover |
+/// | fresh spawn vs a quadded shotgun               | 0.40  | Recover |
+/// | RL vs RL+yellow                                | 0.72  | Hold    |
+/// | RL vs a quadded RL (quad adds only ×1.32 here) | 0.76  | Hold    |
+/// | RL+yellow vs RL                                | 1.40  | Press   |
+/// | RL vs a fresh spawn                            | 2.67  | Press   |
+///
+/// What *does* change is the division of labour: in the legacy currency the ratio also carried
+/// health disparity, so a hurt bot with an equal gun read as outmatched. Under power the ratio is
+/// dominated by equipment, and being hurt is caught by the absolute `health`/`strength` gates — which
+/// is the better split, since a hurt fighter holding the same gun is in a fair fight, not a lost one.
 fn posture_step(
     previous: super::state::CombatPosture,
     health: f32,
@@ -683,7 +867,19 @@ fn ammo_desire(s: &Stats, a: AmmoKind) -> f32 {
 
 impl GameState {
     /// Snapshot a bot's combat state for desire scoring.
+    /// Whether the measured-power behaviour applies to this bot. `rtx_bot_power_team` narrows it to
+    /// one team so a single match becomes a controlled experiment rather than two runs that differ
+    /// in the map's mood as much as in the code. `0` means everyone, which is the normal case.
+    pub(crate) fn power_team_allows(&self, e: EntId) -> bool {
+        let only = self.host().cvar(c"rtx_bot_power_team").max(0.0) as u8;
+        only == 0 || self.entities[e].mode_p.team == only
+    }
+
     fn bot_stats(&self, e: EntId) -> Stats {
+        let now = self.time();
+        let combat = &self.entities[e].combat;
+        let quad_age = super::power::powerup_age(combat.super_damage_finished, now);
+        let pent_age = super::power::powerup_age(combat.invincible_finished, now);
         let v = &self.entities[e].v;
         Stats {
             health: v.health,
@@ -697,8 +893,13 @@ impl GameState {
             strength: total_strength(v.health, v.armorvalue, v.armortype),
             armor: v.armortype * v.armorvalue,
             firepower: firepower(v.items, v.ammo_shells, v.ammo_nails, v.ammo_rockets, v.ammo_cells),
+            quad_age,
+            pent_age,
+            ring: v.items.has(Items::INVISIBILITY),
             weapons_stay: matches!(self.level.deathmatch, 2 | 3 | 5),
             stack: self.host().cvar_bool(c"rtx_bot_stack"),
+            power: self.host().cvar_bool(c"rtx_bot_power") && self.power_team_allows(e),
+            power_goals: self.host().cvar_bool(c"rtx_bot_power_goals") && self.power_team_allows(e),
         }
     }
 
@@ -707,7 +908,7 @@ impl GameState {
     /// the ordinary armour/health they were, preserving ktx-parity valuation. Everything else ordinary.
     fn horizon_of(&self, item: EntId, cat: Category, stack: bool) -> Horizon {
         match cat {
-            Category::Powerup => Horizon::Powerup,
+            Category::Powerup(_) => Horizon::Powerup,
             Category::Health if stack && self.entities[item].item.healtype == 2.0 => Horizon::Major,
             Category::Armor { gate, .. } if stack && gate >= 160.0 => Horizon::Major,
             _ => Horizon::Ordinary,
@@ -715,10 +916,21 @@ impl GameState {
     }
 
     /// How much this bot wants `item` right now (0 = don't bother).
+    ///
+    /// With `rtx_bot_power_goals` this is the item's **marginal power**: how much more dangerous
+    /// taking it would make *this* bot, in the one measured currency, scaled by [`POWER_DESIRE_K`].
+    /// Everything the old per-category rules encoded by hand — a weapon matters more than armor, a
+    /// second armor matters less than the first, ammo matters in proportion to how starved the gun
+    /// is — falls out of the curve instead of being asserted, and the parts the old rules got wrong
+    /// (a rocket launcher priced *below* red armor at spawn; a cell box priced the same whether it
+    /// takes the lightning gun over its bin edge or not) come out right.
     fn item_desire(&self, s: &Stats, item: EntId, cat: Category) -> f32 {
+        if s.power_goals {
+            return POWER_DESIRE_K * self.item_power_gain(s, item, cat);
+        }
         match cat {
             // Quad/pent/ring dominate, scaled by the bot's current worth (ktx: `200 + strength`).
-            Category::Powerup => 200.0 + s.strength,
+            Category::Powerup(_) => 200.0 + s.strength,
             Category::Health => {
                 let (amount, mega) = {
                     let it = &self.entities[item].item;
@@ -772,6 +984,47 @@ impl GameState {
         }
     }
 
+    /// The bot's power *gain* from taking `item` — the whole of the measured desire model.
+    ///
+    /// Reads the pickup's real quantities off the entity (the health it heals, the ammo it carries,
+    /// the jacket it replaces) so a big rocket box and a small one are correctly different items,
+    /// then scores the resulting state with the same function that scores the bot now.
+    fn item_power_gain(&self, s: &Stats, item: EntId, cat: Category) -> f32 {
+        let before = power_input(s);
+        let mut after = power_input(s);
+        match cat {
+            Category::Powerup(PowerupKind::Quad) => after.quad_age = Some(0.0),
+            Category::Powerup(PowerupKind::Pent) => after.pent_age = Some(0.0),
+            Category::Powerup(PowerupKind::Ring) => after.ring = true,
+            Category::Health => {
+                let it = &self.entities[item].item;
+                let cap = if it.healtype == 2.0 { 250.0 } else { 100.0 };
+                if s.health >= cap {
+                    return 0.0;
+                }
+                after.health = (s.health + it.healamount).min(cap);
+            }
+            // Armor *replaces* rather than stacks, so a jacket no better than the one we have is
+            // worth nothing — which the curve says by itself, no gate constant needed.
+            Category::Armor { value, at, .. } => {
+                after.armor_value = value;
+                after.armor_type = at;
+            }
+            Category::Weapon(w) => {
+                let bit = weapon_bit(w);
+                if s.items.has(bit) && s.weapons_stay {
+                    return 0.0; // own it and it stays put — re-touching does nothing
+                }
+                after.items = after.items.with(bit);
+                if let Some(spec) = crate::arsenal::weapon_spec(bit) {
+                    add_ammo(&mut after, weapon_ammo(w), spec.pickup_ammo);
+                }
+            }
+            Category::Ammo(a) => add_ammo(&mut after, a, self.entities[item].item.aflag),
+        }
+        (super::power::power(&after) - super::power::power(&before)).max(0.0)
+    }
+
     /// How much this bot wants a dropped **backpack** (from a death drop or a teammate's toss).
     /// A backpack carries a single weapon bit plus a slice of ammo, so its worth is the best of the
     /// weapon it grants (if the bot lacks it) and the ammo it refills — the same currency the
@@ -796,6 +1049,74 @@ impl GameState {
             }
         }
         desire
+    }
+
+    /// Hook: `victim` died and dropped `pack`. Stamp a short-lived claim on the bots that have a
+    /// measured reason to go and get it — the killer, and the victim's nearest surviving teammate.
+    ///
+    /// This is the other half of the armed kill. Killing an RL/LG carrier is worth +0.48 forward
+    /// frags as pure denial, +0.99 when the killer's side also takes the pack, and it falls to
+    /// roughly a spawn frag when the victim's side reclaims it. Both sides of that swing are the
+    /// same ten seconds of nobody bothering to walk over, and on dm3 a dropped pack is claimed
+    /// essentially always — three times out of four by the enemy.
+    pub(crate) fn note_pack_drop(&mut self, victim: EntId, pack: EntId) {
+        // Counted whether or not the discipline is enabled — it is the A/B's headline number, and a
+        // baseline run has to produce it too.
+        let big =
+            weapon_kind_of(self.entities[pack].v.items).is_some_and(|w| matches!(w, WeaponKind::Rl | WeaponKind::Lg));
+        if big && self.entities[victim].bot.is_bot {
+            self.entities[victim].bot.packs.fed += 1;
+        }
+        if !self.host().cvar_bool(c"rtx_bot_pack") || !pack_worth_securing(&self.entities[pack].v) {
+            return;
+        }
+        let now = self.time();
+        let killer = self.entities[victim].enemy();
+        let killed_by_someone_else = killer != victim && self.entities[killer].is_player();
+        // The killer secures the transfer.
+        if killed_by_someone_else && self.power_team_allows(killer) {
+            self.stamp_pack_hint(killer, pack, now);
+        }
+        // The victim's nearest living teammate reclaims it — which is what turns the enemy's best
+        // kill back into a spawn frag. In FFA nobody shares a side with the victim, so nobody does.
+        let team = self.entities[victim].mode_p.team;
+        if team == 0 {
+            return;
+        }
+        let origin = self.entities[pack].v.origin;
+        let mate = (1..self.entities.len())
+            .map(|i| EntId(i as u32))
+            .filter(|&m| {
+                m != victim
+                    && self.entities[m].bot.is_bot
+                    && self.entities[m].is_player()
+                    && self.entities[m].v.health > 0.0
+                    && self.entities[m].mode_p.team == team
+            })
+            .min_by(|&a, &b| {
+                let d = |m: EntId| (self.entities[m].v.origin - origin).length_squared();
+                d(a).total_cmp(&d(b)).then_with(|| a.0.cmp(&b.0))
+            });
+        if let Some(mate) = mate.filter(|&m| self.power_team_allows(m)) {
+            self.stamp_pack_hint(mate, pack, now);
+        }
+    }
+
+    /// Give `bot` a claim on `pack`, unless it already holds a fresher one (two kills in quick
+    /// succession shouldn't make it abandon the first pack halfway there).
+    fn stamp_pack_hint(&mut self, bot: EntId, pack: EntId, now: f32) {
+        let goal = &mut self.entities[bot].bot.goal;
+        if goal.pack_hint != 0 && now - goal.pack_hint_at < PACK_HINT_SECS {
+            return;
+        }
+        goal.pack_hint = pack.0;
+        goal.pack_hint_at = now;
+    }
+
+    /// Whether this bot currently has a live claim on `item`.
+    fn pack_hinted(&self, bot_e: EntId, item: EntId, now: f32) -> bool {
+        let goal = &self.entities[bot_e].bot.goal;
+        goal.pack_hint == item.0 && now - goal.pack_hint_at < PACK_HINT_SECS
     }
 
     /// The effective time-to-collect for `item` given the raw travel cost: `None` if it's hidden
@@ -842,7 +1163,7 @@ impl GameState {
         // takes ownership on its later frame. Without this check the first bot's Powerup commit
         // prevents re-selection and both remain locked onto Quad until somebody touches it.
         let my_team = self.entities[bot_e].mode_p.team;
-        if matches!(cat, Category::Powerup) && my_team != 0 {
+        if matches!(cat, Category::Powerup(_)) && my_team != 0 {
             let point = ent.v.origin;
             let my_dist = (point - self.entities[bot_e].v.origin).length();
             if defer_powerup_to_teammate(
@@ -926,7 +1247,7 @@ impl GameState {
             };
             let desire = self.item_desire(&stats, item, cat);
             let commit = match cat {
-                Category::Powerup => super::state::GoalCommit::Powerup,
+                Category::Powerup(_) => super::state::GoalCommit::Powerup,
                 Category::Health | Category::Armor { .. }
                     if desire >= LOCAL_RECOVERY_GAIN || (stats.health <= 40.0 && desire > 0.0) =>
                 {
@@ -1089,11 +1410,10 @@ impl GameState {
     ) -> (super::state::CombatPosture, Option<(EntId, CellId)>) {
         use super::state::CombatPosture::*;
         let s = self.bot_stats(bot_e);
-        let own_power = s.strength * s.firepower.max(10.0);
-        let enemy_power = self.opponent_est(bot_e, enemy, now).map(|est| {
-            let es = estimated_stats(est, s.weapons_stay, s.stack);
-            es.strength * es.firepower.max(10.0)
-        });
+        let own_power = power_metric(&s);
+        let enemy_power = self
+            .opponent_est(bot_e, enemy, now)
+            .map(|est| power_metric(&estimated_stats(est, &s, now)));
         let posture = posture_step(previous, s.health, s.strength, own_power, enemy_power, s.stack);
         if posture != Recover {
             return (posture, None);
@@ -1206,7 +1526,10 @@ impl GameState {
                     let stats = self.bot_stats(t);
                     let desire = self.desire_with_floors(t, &stats, item, cat, self.deny_active(t), now);
                     let distance = (e.v.origin - point).length();
-                    (t, strategic_owner_score(desire, distance))
+                    // Feed the carrier: a teammate running a quad or pentagram is where the team's
+                    // next minute is, and the armour is worth more under him than under anyone else.
+                    let carrier = stats.quad_age.is_some() || stats.pent_age.is_some();
+                    (t, strategic_owner_score(desire, distance, carrier))
                 })
             })
             .collect();
@@ -1256,6 +1579,13 @@ impl GameState {
     /// through here, or a denial goal would be invalidated the frame after it's chosen (mod.rs re-pick).
     fn desire_with_floors(&self, bot_e: EntId, s: &Stats, item: EntId, cat: Category, deny: bool, now: f32) -> f32 {
         let mut desire = self.item_desire(s, item, cat);
+        // Event prices apply whether or not there's a live enemy to model: they are what an item is
+        // worth *to the game*, most of which is that the other side no longer has it. A red armor is
+        // worth taking at full stack, and the marginal-power reading of that is nearly zero.
+        if s.power_goals {
+            let mega = self.entities[item].item.healtype == 2.0;
+            desire = desire.max(POWER_DESIRE_L * event_price(cat, mega));
+        }
         if !deny {
             return desire;
         }
@@ -1422,7 +1752,7 @@ impl GameState {
         let pricing = self.bot_link_pricing(bot_e, now);
         let base = pricing.costs(0);
         let s = self.bot_stats(bot_e);
-        let own_power = s.strength * s.firepower.max(10.0);
+        let own_power = power_metric(&s);
         // Only a currently remembered opponent contributes denial/contest information. Position is
         // the perception hypothesis (exact only when seen), and inventory/stack comes exclusively
         // from the observation-gated model — never from the live enemy edict. The *flood* from their
@@ -1434,8 +1764,8 @@ impl GameState {
             if enemy.0 != 0 && now < p.known_until && self.entities[enemy].v.health > 0.0 {
                 match self.opponent_est(bot_e, enemy, now).and_then(|est| {
                     let cell = graph.nearest(p.last_seen)?;
-                    let stats = estimated_stats(est, s.weapons_stay, s.stack);
-                    let power = stats.strength * stats.firepower.max(10.0);
+                    let stats = estimated_stats(est, &s, now);
+                    let power = power_metric(&stats);
                     // Price the enemy's flood by *their* strength: how far they can get is no business
                     // of our health (hazards are valued by whoever is wading).
                     let theirs = pricing.for_strength(stats.strength);
@@ -1475,6 +1805,17 @@ impl GameState {
                 _ => None,
             };
             (PlanCosts::Exact(normal), enemy_c)
+        };
+        // How much it matters that *this* enemy is the one who might get there first. Fixed for the
+        // whole scan, so it is scored once rather than per item.
+        //
+        // Only meaningful in the power currency: [`threat_scale`](super::power::threat_scale) is
+        // calibrated against a fresh spawn being 1.0, and the legacy effective-HP × firepower
+        // product runs in the thousands, which would peg it at its upper clamp for every enemy
+        // alive. Off, denial keeps exactly its historical flat weight.
+        let enemy_threat = match &enemy_context {
+            Some((stats, _, _)) if s.power => super::power::threat_scale(power_metric(stats)),
+            _ => 1.0,
         };
         // Valuation prices a shut door the bot can *open* as the button-detour errand it is, not the
         // full route-around wall — otherwise a prize reachable only through a gate (the ultrav quad
@@ -1550,7 +1891,7 @@ impl GameState {
             let Some(cat) = self.entities[item].classname().and_then(category) else {
                 continue;
             };
-            let powerup = matches!(cat, Category::Powerup);
+            let powerup = matches!(cat, Category::Powerup(_));
             // The scoring tier (RA/mega reach farther than a shard). Only a true powerup keeps contest
             // immunity and the team split below — a major is contested and yielded like an ordinary
             // item (a weaker bot losing a mega race shouldn't feed a fight over it).
@@ -1569,12 +1910,13 @@ impl GameState {
                 continue; // unreachable from here
             }
             let ent = &self.entities[item];
-            if ent.v.solid != Solid::Trigger
-                && matches!(ent.think, Think::SubRegen)
-                && ent.v.nextthink > now
-                && !respawn_departure_ready(horizon, ent.v.nextthink - now, travel)
-            {
-                continue;
+            if ent.v.solid != Solid::Trigger && matches!(ent.think, Think::SubRegen) && ent.v.nextthink > now {
+                let respawn_wait = ent.v.nextthink - now;
+                if !respawn_departure_ready(horizon, respawn_wait, travel)
+                    || quad_refuses_to_wait(s.quad_age, respawn_wait, travel)
+                {
+                    continue;
+                }
             }
             let Some(t) = self.item_collect_time(item, travel, now) else {
                 continue;
@@ -1602,7 +1944,7 @@ impl GameState {
             }
             let (desire, contest_mult) = if let Some((enemy_stats, _, weaker)) = &enemy_context {
                 let enemy_desire = self.item_desire(enemy_stats, item, cat);
-                contest_adjust(desire, enemy_desire, t, enemy_eta, *weaker, powerup)
+                contest_adjust(desire, enemy_desire, enemy_threat, t, enemy_eta, *weaker, powerup)
             } else {
                 (desire, 1.0)
             };
@@ -1659,7 +2001,12 @@ impl GameState {
                 continue;
             }
             let item = EntId(i as u32);
-            let desire = self.backpack_desire(&s, item);
+            let mut desire = self.backpack_desire(&s, item);
+            // A pack this bot has a claim on outranks whatever routine errand it was running: it
+            // either just made the kill that dropped this, or its teammate did the dying.
+            if self.pack_hinted(bot_e, item, now) {
+                desire = desire.max(PACK_SECURE_DESIRE);
+            }
             if desire <= 0.0 {
                 continue;
             }
@@ -1774,7 +2121,7 @@ impl GameState {
             || self.entities[item]
                 .classname()
                 .and_then(category)
-                .is_some_and(|c| matches!(c, Category::Powerup))
+                .is_some_and(|c| matches!(c, Category::Powerup(_)))
     }
 
     /// Whether an item is a *major* pickup (red armour or megahealth) under resource discipline — the
@@ -1801,8 +2148,17 @@ fn reservation_owner(candidates: &[(EntId, f32)]) -> Option<EntId> {
 /// Need-versus-distance score used to reserve RA/mega within one team. One second of straight-line
 /// running roughly doubles the denominator; actual route cost still decides whether the owner's
 /// ordinary goal selection considers the item reachable at all.
-fn strategic_owner_score(desire: f32, distance: f32) -> f32 {
-    desire.max(DENIAL_DESIRE) / (1.0 + distance.max(0.0) / 320.0)
+///
+/// `carrier` marks a teammate holding a powerup, who gets [`POWERUP_CARRIER_OWNER_BIAS`]. At a fixed
+/// team total, concentration beats breadth — one unit of top-share gap is worth about +0.7 team
+/// frags per minute on dm3 — so the armour belongs on the fighter who is already the threat. The
+/// marginal-power desire does lean that way on its own (power is multiplicative, so a jacket is
+/// worth more under a quad), but only by the quad's ×1.32 on an already-armed fighter, which a
+/// couple of rooms of distance erases. Without the explicit bias the bot standing on the armour
+/// simply takes it, which is the "stole it from the quad" case.
+fn strategic_owner_score(desire: f32, distance: f32, carrier: bool) -> f32 {
+    let bias = if carrier { POWERUP_CARRIER_OWNER_BIAS } else { 1.0 };
+    desire.max(DENIAL_DESIRE) * bias / (1.0 + distance.max(0.0) / 320.0)
 }
 
 fn strategic_reservation_owner(candidates: &[(EntId, f32)]) -> Option<EntId> {
@@ -1854,6 +2210,20 @@ fn respawn_departure_ready(horizon: Horizon, respawn_wait: f32, travel: f32) -> 
         Horizon::Ordinary => return true,
     };
     respawn_wait <= travel + lead
+}
+
+/// Whether a fighter holding a quad should decline to *wait* for a pickup that has not spawned yet.
+///
+/// Quad is the one resource on the map that is spent by the clock rather than by use: it is measured
+/// at ×1.74 over its first ten seconds and ×1.12 averaged to death, so the value is front-loaded and
+/// the seconds are the whole of it. A bot standing on a red-armour spawn with a live quad, waiting
+/// for the armour to come back, is converting the most valuable thirty seconds in the game into
+/// nothing — and doing it in the one spot the other team is also walking to.
+///
+/// Arriving as it lands is fine; the test is specifically on *idle time bought with quad seconds*,
+/// so an item already on the floor is unaffected and so is a trip that happens to end as it spawns.
+fn quad_refuses_to_wait(quad_age: Option<f32>, respawn_wait: f32, travel: f32) -> bool {
+    quad_age.is_some() && respawn_wait > travel
 }
 
 /// The goal score for an item, or `None` beyond its horizon. Ordinary items decay to zero at
@@ -1914,11 +2284,11 @@ mod tests {
 
     #[test]
     fn major_owner_balances_need_distance_and_stable_ties() {
-        let weak_far = strategic_owner_score(120.0, 320.0);
-        let stacked_near = strategic_owner_score(0.0, 64.0);
+        let weak_far = strategic_owner_score(120.0, 320.0, false);
+        let stacked_near = strategic_owner_score(0.0, 64.0, false);
         assert!(weak_far > stacked_near, "real recovery need should beat nearby denial");
 
-        let tiny_need_far = strategic_owner_score(31.0, 640.0);
+        let tiny_need_far = strategic_owner_score(31.0, 640.0, false);
         assert!(
             tiny_need_far < stacked_near,
             "a marginal need must not pull a bot across the map"
@@ -1926,6 +2296,44 @@ mod tests {
 
         let tied = [(EntId(7), 10.0), (EntId(3), 10.0)];
         assert_eq!(strategic_reservation_owner(&tied), Some(EntId(3)));
+    }
+
+    /// Feed the carrier: the red armour belongs to the quad, not to whoever is standing on it.
+    #[test]
+    fn a_powerup_carrier_outbids_a_closer_teammate_for_the_armour() {
+        // The observed case — a teammate parked on the armour, the quad carrier a room away. Equal
+        // need; without the bias the man on the spot simply wins and takes it off the carrier.
+        let thief_on_the_spot = strategic_owner_score(100.0, 0.0, false);
+        let carrier_a_room_away = strategic_owner_score(100.0, 320.0, true);
+        assert!(carrier_a_room_away > thief_on_the_spot);
+
+        // Two rooms is about the limit, and past it the armour is better taken than left standing:
+        // conceding it to the other team costs more than concentrating it buys.
+        let carrier_across_the_map = strategic_owner_score(100.0, 1600.0, true);
+        assert!(carrier_across_the_map < thief_on_the_spot);
+
+        // The bias is a tiebreak between teammates, not a licence to ignore need: a carrier at a
+        // full stack (no marginal want, so only the denial floor) still yields to real recovery.
+        let stacked_carrier = strategic_owner_score(0.0, 320.0, true);
+        let desperate_mate = strategic_owner_score(400.0, 320.0, false);
+        assert!(desperate_mate > stacked_carrier);
+    }
+
+    /// Quad seconds are the resource; standing still spends them on nothing.
+    #[test]
+    fn a_quadded_bot_will_not_stand_and_wait_for_a_respawn() {
+        let quad = Some(3.0);
+
+        // The observed case: on top of the armour spawn with eight seconds to go. Refused.
+        assert!(quad_refuses_to_wait(quad, 8.0, 0.5));
+        // Arriving exactly as it lands costs no quad time at all, so it stays allowed — the rule is
+        // about idling, not about armour.
+        assert!(!quad_refuses_to_wait(quad, 8.0, 8.0));
+        assert!(!quad_refuses_to_wait(quad, 8.0, 12.0));
+        // An item already on the floor never waits.
+        assert!(!quad_refuses_to_wait(quad, 0.0, 4.0));
+        // Without a quad the ordinary setup-lead policy is untouched.
+        assert!(!quad_refuses_to_wait(None, 8.0, 0.5));
     }
 
     #[test]
@@ -2036,8 +2444,13 @@ mod tests {
             strength: 100.0,
             armor: 0.0,
             firepower: fp,
+            quad_age: None,
+            pent_age: None,
+            ring: false,
             weapons_stay: false,
             stack,
+            power: true,
+            power_goals: false,
         };
         let bar = COMBAT_GREED_MIN_DESIRE;
         // RL nearly dry (fp 16): rocket boxes clear the combat bar.
@@ -2072,16 +2485,43 @@ mod tests {
 
     #[test]
     fn observed_enemy_need_adds_denial_without_forcing_a_lost_fight() {
-        let (desire, mult) = contest_adjust(40.0, 80.0, 2.0, Some(3.0), false, false);
+        let (desire, mult) = contest_adjust(40.0, 80.0, 1.0, 2.0, Some(3.0), false, false);
         assert_eq!(desire, 80.0);
         assert_eq!(mult, 1.0);
 
         // A substantially earlier, stronger enemy makes an ordinary pickup a poor feed. Timed
         // powerups are still worth contesting because yielding those can decide the whole fight.
-        let (_, lost_mult) = contest_adjust(40.0, 80.0, 3.0, Some(2.0), true, false);
+        let (_, lost_mult) = contest_adjust(40.0, 80.0, 1.0, 3.0, Some(2.0), true, false);
         assert_eq!(lost_mult, LOST_CONTEST_MULT);
-        let (_, powerup_mult) = contest_adjust(40.0, 80.0, 3.0, Some(2.0), true, true);
+        let (_, powerup_mult) = contest_adjust(40.0, 80.0, 1.0, 3.0, Some(2.0), true, true);
         assert_eq!(powerup_mult, 1.0);
+    }
+
+    /// Who is about to take it changes how hard it is worth contesting — the concentration finding,
+    /// which sits on top of the gap effect the enemy's own desire already carries.
+    #[test]
+    fn denial_weighs_who_is_about_to_take_it() {
+        use super::super::power::threat_scale;
+
+        // A believed full stack (power ≈ 5.3) versus somebody who just spawned (1.0), both heading
+        // for the same quad and wanting it the same amount.
+        let stacked = threat_scale(5.26);
+        let fresh = threat_scale(1.0);
+        assert!(stacked > fresh);
+
+        let against = |threat| contest_adjust(20.0, 300.0, threat, 3.0, Some(3.5), false, true).0;
+        assert!(
+            against(stacked) > against(fresh),
+            "conceding to their best should outrank conceding to their worst"
+        );
+
+        // Still bounded: this reweights a contest, it never manufactures a cross-map errand. Even
+        // the worst case stays inside twice the old flat weighting.
+        assert!(against(stacked) < 20.0 + 2.0 * ENEMY_DENIAL_WEIGHT * 300.0);
+
+        // An unbelieved enemy — nothing witnessed — falls back to the historical flat weight, so a
+        // team with no information behaves exactly as it did before.
+        assert_eq!(against(1.0), 20.0 + ENEMY_DENIAL_WEIGHT * 300.0);
     }
 
     #[test]
@@ -2111,6 +2551,195 @@ mod tests {
         let red = total_strength(30.0, 200.0, 0.8);
         assert!(red > RECOVER_ENTER_STRENGTH);
         assert_eq!(posture_step(Hold, 30.0, red, 100.0, None, true), Recover);
+    }
+
+    /// The shopping list, in the measured currency. `item_desire` needs a live `GameState` for the
+    /// per-entity quantities, so this exercises the pure core it delegates to — the power delta
+    /// scaled by [`POWER_DESIRE_K`], floored by [`event_price`] × [`POWER_DESIRE_L`] — over the
+    /// standard Quake pickup amounts.
+    #[test]
+    fn power_pricing_reorders_the_shopping_list() {
+        use super::super::power::{power, PowerInput};
+
+        let spawn = PowerInput {
+            health: 100.0,
+            armor_value: 0.0,
+            armor_type: 0.0,
+            items: Items::SHOTGUN.as_f32(),
+            rockets: 0.0,
+            cells: 0.0,
+            quad_age: None,
+            pent_age: None,
+            ring: false,
+        };
+        let base = power(&spawn);
+        let desire = |after: &PowerInput| POWER_DESIRE_K * (power(after) - base).max(0.0);
+
+        // The four things an unarmed bot could walk to.
+        let rl = desire(&PowerInput {
+            items: spawn.items + Items::ROCKET_LAUNCHER.as_f32(),
+            rockets: 10.0,
+            ..spawn
+        });
+        let ra = desire(&PowerInput {
+            armor_value: 200.0,
+            armor_type: 0.8,
+            ..spawn
+        });
+        let ya = desire(&PowerInput {
+            armor_value: 150.0,
+            armor_type: 0.6,
+            ..spawn
+        });
+        let mega = desire(&PowerInput { health: 200.0, ..spawn });
+
+        // The headline finding, as the bot's own arithmetic: the gun outranks the armor. Under the
+        // old rules the rocket launcher scored `100 − firepower` = 90 and red armor scored its
+        // marginal EHP of ~200 — backwards, and it sent unarmed bots to the armor first.
+        assert!(rl > ra, "rocket launcher {rl} should outrank red armor {ra}");
+        assert!(ra > ya, "red armor {ra} should outrank yellow {ya}");
+        assert!(ya > mega, "yellow armor {ya} should outrank megahealth {mega}");
+
+        // Powerups: priced by measurement rather than by a flat constant, so they order among
+        // themselves. The pentagram outranks the quad (+1.55 vs +1.11 forward frags), and the ring
+        // — which barely moves a fighter's power — stops riding along with the other two.
+        let floor = |k| POWER_DESIRE_L * event_price(Category::Powerup(k), false);
+        let quad = desire(&PowerInput {
+            quad_age: Some(0.0),
+            ..spawn
+        })
+        .max(floor(PowerupKind::Quad));
+        let pent = desire(&PowerInput {
+            pent_age: Some(0.0),
+            ..spawn
+        })
+        .max(floor(PowerupKind::Pent));
+        let ring = desire(&PowerInput { ring: true, ..spawn }).max(floor(PowerupKind::Ring));
+        assert!(pent > quad, "pentagram {pent} outranks quad {quad}");
+        assert!(quad > ring * 4.0, "quad {quad} is not a ring {ring}");
+
+        // A fresh quad and a rocket launcher are genuinely close in *desire* for an unarmed bot —
+        // both roughly double it. Powerup dominance doesn't live here: it lives in the horizon
+        // curve, which understands a quad three times as far out and decays it far more gently. At
+        // the same travel time the quad wins by a wide margin, which is the behaviour that matters.
+        let t = 5.0;
+        let quad_score = item_score(quad, t, Horizon::Powerup).unwrap();
+        let rl_score = item_score(rl, t, Horizon::Ordinary).unwrap();
+        assert!(quad_score > rl_score * 4.0, "{quad_score} vs {rl_score}");
+
+        // Red armor stays worth taking at a full stack, where its marginal power is nil: the price
+        // is what the *other* side no longer gets. This is the floor's whole job.
+        let stacked = PowerInput {
+            armor_value: 200.0,
+            armor_type: 0.8,
+            items: spawn.items + Items::ROCKET_LAUNCHER.as_f32(),
+            rockets: 20.0,
+            ..spawn
+        };
+        let ra_again = POWER_DESIRE_K * (power(&stacked) - power(&stacked)).max(0.0);
+        assert_eq!(ra_again, 0.0);
+        let floored = ra_again.max(POWER_DESIRE_L * event_price(ra_category(0.8), false));
+        assert!(floored >= COMBAT_GREED_MIN_DESIRE, "a full-stack bot still takes red");
+    }
+
+    /// The red-armor category, for the pricing test above.
+    fn ra_category(at: f32) -> Category {
+        Category::Armor {
+            value: 200.0,
+            at,
+            gate: 160.0,
+            double: false,
+        }
+    }
+
+    /// Feeding the carrier is not a rule the bot follows — it is what multiplicative power does.
+    /// The same red armor is worth more to a teammate who already holds a rocket launcher than to a
+    /// naked one, so the team's existing need-versus-distance ownership sends it to the carrier.
+    #[test]
+    fn armor_is_worth_more_to_the_carrier() {
+        use super::super::power::{power, PowerInput};
+        let base = PowerInput {
+            health: 100.0,
+            armor_value: 0.0,
+            armor_type: 0.0,
+            items: Items::SHOTGUN.as_f32(),
+            rockets: 0.0,
+            cells: 0.0,
+            quad_age: None,
+            pent_age: None,
+            ring: false,
+        };
+        let carrier = PowerInput {
+            items: base.items + Items::ROCKET_LAUNCHER.as_f32(),
+            rockets: 10.0,
+            ..base
+        };
+        let with_ra = |p: &PowerInput| PowerInput {
+            armor_value: 200.0,
+            armor_type: 0.8,
+            ..*p
+        };
+        let naked_gain = power(&with_ra(&base)) - power(&base);
+        let carrier_gain = power(&with_ra(&carrier)) - power(&carrier);
+        assert!(
+            carrier_gain > naked_gain,
+            "red armor should flow to the carrier: {carrier_gain} vs {naked_gain}"
+        );
+    }
+
+    /// The posture thresholds were tuned in the legacy currency and kept when the measured power
+    /// score arrived. This pins the claim that they still land correctly, matchup by matchup — the
+    /// table in [`posture_step`]'s docs, executed.
+    #[test]
+    fn posture_thresholds_hold_in_the_power_currency() {
+        use super::super::power::{power, PowerInput};
+        use super::super::state::CombatPosture::{Hold, Press, Recover};
+
+        let kit =
+            |health: f32, armor_value: f32, armor_type: f32, items: Items, rockets: f32, cells: f32, quad: bool| {
+                power(&PowerInput {
+                    health,
+                    armor_value,
+                    armor_type,
+                    items: items.as_f32(),
+                    rockets,
+                    cells,
+                    quad_age: quad.then_some(0.0),
+                    pent_age: None,
+                    ring: false,
+                })
+            };
+        let spawn = kit(100.0, 0.0, 0.0, Items::SHOTGUN, 0.0, 0.0, false);
+        let rl = kit(100.0, 0.0, 0.0, Items::ROCKET_LAUNCHER, 10.0, 0.0, false);
+        let rl_ya = kit(100.0, 150.0, 0.6, Items::ROCKET_LAUNCHER, 10.0, 0.0, false);
+        let full = kit(
+            100.0,
+            200.0,
+            0.8,
+            Items::ROCKET_LAUNCHER | Items::LIGHTNING,
+            30.0,
+            50.0,
+            false,
+        );
+        let quad_sg = kit(100.0, 0.0, 0.0, Items::SHOTGUN, 0.0, 0.0, true);
+        let quad_rl = kit(100.0, 0.0, 0.0, Items::ROCKET_LAUNCHER, 10.0, 0.0, true);
+
+        // Healthy but outgunned: the ratio alone must break off the fight.
+        let healthy = |own, enemy| posture_step(Hold, 100.0, 100.0, own, Some(enemy), true);
+        assert_eq!(healthy(spawn, rl), Recover, "shotgun should not fight an RL");
+        assert_eq!(healthy(rl, full), Recover, "an RL should not fight a full stack");
+        assert_eq!(healthy(spawn, quad_sg), Recover, "flee a quad you cannot answer");
+
+        // Near-even equipment: fight it out. A quad on top of an RL is measured at only ×1.32, so it
+        // is a disadvantage to respect at range (see combat's quad discipline), not one to flee.
+        assert_eq!(healthy(rl, rl_ya), Hold);
+        assert_eq!(healthy(rl, quad_rl), Hold);
+        assert_eq!(healthy(rl, rl), Hold);
+
+        // Clearly outgunning them: close and convert.
+        assert_eq!(healthy(rl_ya, rl), Press);
+        assert_eq!(healthy(rl, spawn), Press);
+        assert_eq!(healthy(full, rl), Press);
     }
 
     #[test]

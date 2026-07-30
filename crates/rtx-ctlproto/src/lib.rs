@@ -323,6 +323,10 @@ pub struct Ammo {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BotGoal {
+    /// Times this bot has swapped one live item goal for another — the goal-churn tripwire for a
+    /// change to item valuation. Defaulted so an older server still parses.
+    #[serde(default)]
+    pub switches: u32,
     pub item: Option<EntRef>,
     pub commit: String,
     pub since: f32,
@@ -371,6 +375,20 @@ pub struct BotStatus {
     pub speed: f32,
     pub bhop: String,
     pub bhop_peak: f32,
+    /// Pack-economy tallies for this bot. Defaulted so an older server still parses.
+    #[serde(default)]
+    pub packs: PackStats,
+}
+
+/// What this bot did in the weapon-transfer market: how often it holstered the big gun with no
+/// fight on, how many claimed packs it collected, and how many times it died holding a big weapon
+/// and handed one over. The scoreboard doesn't show any of this, and it is worth about half of
+/// every armed kill.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackStats {
+    pub sg_swaps: u32,
+    pub secured: u32,
+    pub fed: u32,
 }
 
 // --- oracle -----------------------------------------------------------------------------------------
@@ -427,6 +445,11 @@ pub struct PlanTeam {
     pub team: u32,
     pub mode: String,
     pub control: String,
+    /// Our measured power total minus the believed enemy total, corpses counted as fresh spawns.
+    /// One unit is worth about one team frag over the next minute, so this reads directly as "how
+    /// far ahead are we, on equipment" — and it is what the control state is decided from.
+    #[serde(default)]
+    pub power_gap: f32,
     pub nuggets: Vec<Nugget>,
 }
 

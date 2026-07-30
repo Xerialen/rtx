@@ -99,6 +99,12 @@ pub struct BotState {
     /// Strategic fight posture derived from relative effective strength/firepower. Recovery owns
     /// movement toward a useful item; Hold/Press leave full movement to combat.
     pub posture: CombatPosture,
+    /// World time this bot was last in a live fight — set every frame [`crate::bot::combat::engage`]
+    /// runs. Drives the pack-protection weapon swap: you drop the pack of the weapon *in your hands*
+    /// when you die, so a bot with no fight on should not be holding the rocket launcher.
+    pub last_engaged: f32,
+    /// Running tallies for the pack economy. See [`PackStats`].
+    pub packs: PackStats,
     /// Expiring, timestamped team-strategy advice. The oracle worker never touches this directly;
     /// the main bot frame validates and delivers addressed nuggets.
     pub oracle: crate::bot::oracle::OracleInbox,
@@ -525,6 +531,22 @@ pub struct GoalState {
     /// weapons-stay trigger can't re-capture the goal slot the same second). A small ring: a fresh
     /// entry evicts the soonest-to-expire slot. `(item entid, until)`; a `0` item marks an empty slot.
     pub avoid_items: [(u32, f32); 4],
+    /// A backpack this bot has a *claim* on, and when the claim was stamped. Set when the bot fragged
+    /// an armed enemy (secure the transfer) or when a teammate died nearby (reclaim it before the
+    /// enemy does). `0` = none. See [`crate::bot::goals::PACK_HINT_SECS`].
+    ///
+    /// Why this exists: a dropped pack is otherwise just another ordinary-horizon item, and it loses
+    /// to the hysteresis bonus on whatever the bot was already fetching. But the measurement is
+    /// blunt — killing an armed enemy is worth +0.48 on its own and +0.99 when your side takes the
+    /// pack, and it collapses to a spawn frag when *their* side reclaims it. Half the value of the
+    /// best kill in the game is in the five seconds after it.
+    pub pack_hint: u32,
+    pub pack_hint_at: f32,
+    /// How many times this bot has abandoned one live item goal for another. Not a bug on its own —
+    /// re-picking is the whole design — but the *rate* is the tripwire for a valuation change that
+    /// has made two pickups trade places every re-pick. An oscillating bot never trips a navigation
+    /// watchdog, because it never stops moving.
+    pub switches: u32,
 }
 
 /// How strongly the current item goal is committed. Ordinary goals remain freely re-scored;
@@ -535,6 +557,24 @@ pub enum GoalCommit {
     None,
     Pickup,
     Powerup,
+}
+
+/// Per-bot tallies for the pack economy — the scoreboard for the weapon-transfer market that the
+/// frag count doesn't show. Read back over the control channel so a bot-vs-bot A/B can be judged on
+/// the thing that was actually changed, rather than only on frags (which move slowly and noisily).
+///
+/// The measured stakes, per armed kill: +0.48 forward team frags for the denial alone, +0.99 when
+/// the killing side also takes the pack, and about zero when the victim's side reclaims it. From the
+/// dying side, holding the shotgun instead of the launcher halves what the death costs.
+#[derive(Default)]
+pub struct PackStats {
+    /// Times this bot holstered a big gun because no fight was on.
+    pub sg_swaps: u32,
+    /// Claimed packs this bot went and collected.
+    pub secured: u32,
+    /// Times this bot died holding a big gun, dropping a pack an enemy could take. The number the
+    /// swap discipline exists to drive down.
+    pub fed: u32,
 }
 
 /// Strategic combat posture with hysteresis. This is intentionally independent of aim skill: low

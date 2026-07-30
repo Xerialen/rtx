@@ -873,6 +873,7 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
             posture: format!("{:?}", b.posture),
             known_enemy: ent_ref(game, b.percept.known_enemy),
             goal: proto::BotGoal {
+                switches: b.goal.switches,
                 item: ent_ref(game, b.goal.item),
                 commit: format!("{:?}", b.goal.commit),
                 since: b.goal.since,
@@ -885,6 +886,11 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
             speed: ent.v.velocity.xy().length(),
             bhop: format!("{:?}", b.bhop.phase),
             bhop_peak: b.bhop.peak,
+            packs: proto::PackStats {
+                sg_swaps: b.packs.sg_swaps,
+                secured: b.packs.secured,
+                fed: b.packs.fed,
+            },
         });
     }
     // Human clients, for movement-lab monitoring. A separate array from `bots` on purpose:
@@ -967,6 +973,7 @@ fn oracle_info(game: &GameState) -> proto::OracleInfo {
                 team: team.team as u32,
                 mode: format!("{:?}", team.mode),
                 control: format!("{:?}", team.control),
+                power_gap: team.power_gap,
                 nuggets: team
                     .nuggets
                     .iter()

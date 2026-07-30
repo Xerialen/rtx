@@ -182,6 +182,33 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // major "must-cycle" pickups, and panic for ammo when a bot's firepower is about to collapse.
         // Off = the leaner ktx-parity valuation (a topped-up bot ignores items until a true need). On.
         ("rtx_bot_stack", Bool(true)),
+        // Measured power scoring: rate a fighter by the frozen power score — expected kills over the
+        // next minute as a multiple of a fresh spawn, fitted on 550 dm3 4on4 games — instead of the
+        // legacy effective-HP × firepower product. Changes what "am I winning this?" means (equipment
+        // dominates, and enemy quad/pentagram finally count), and reprices target selection by what a
+        // kill is *worth*: a naked spawn stops being a magnet, a quad carrier becomes one. On.
+        // Off restores the legacy currency for A/B measurement. See [`crate::bot::power`].
+        ("rtx_bot_power", Bool(true)),
+        // Pack discipline: you drop the pack of the weapon *in your hands* when you die, so a bot
+        // with no fight on holsters the rocket launcher back to the shotgun, and a bot that just
+        // fragged an armed enemy (or whose teammate just died) goes and takes the pack before the
+        // other side does. Measured, an armed kill is worth +0.48 forward frags as denial and +0.99
+        // when the weapon changes sides — half its value is decided in the seconds after the frag.
+        // On. Off restores the old behaviour (carry the big gun always, treat packs as routine).
+        ("rtx_bot_pack", Bool(true)),
+        // Measured item pricing: value a pickup by how much power it would add to *this* bot, plus
+        // the measured forward frag price of taking it (which is mostly the denial). Replaces the
+        // hand-written per-category desire rules, and reorders the shopping list where they were
+        // wrong: an unarmed bot now wants the rocket launcher more than red armor, cells are priced
+        // by the step they move the lightning gun's ammo curve over, and the ring of shadows stops
+        // being chased like a quad. On. Off restores the ktx-style desires for A/B measurement.
+        ("rtx_bot_power_goals", Bool(true)),
+        // Restrict every measured-power behaviour (`rtx_bot_power`, `rtx_bot_power_goals`,
+        // `rtx_bot_pack`, and the oracle's team planning) to a single team number, so one match is
+        // the whole experiment: same map, same clock, same machine, the two sides differing only in
+        // how they value what they are looking at, and the frag differential is the answer.
+        // Sequential arms cannot control for any of that. `0` (default) = every team.
+        ("rtx_bot_power_team", Float(0.0)),
         // Per-bot goal/pickup diagnostics (off by default). When on, high-rate trace lines go to the
         // per-bot audit ring buffer (dumped via the control channel's `audit` verb), not the console —
         // a per-frame `conprint` floods the console and drops packets. See [`crate::bot::state::Audit`].
@@ -258,8 +285,25 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // 0 = the old estimate-free behavior.
         ("rtx_bot_model", Bool(true)),
         // Slow team-level reasoning. The worker observes only owned, observation-gated snapshots and
-        // publishes expiring advice; off by default while its value is measured on recorded matches.
-        ("rtx_bot_oracle", Bool(false)),
+        // publishes expiring advice: rebuild when the measured equipment gap says we are losing on
+        // material, take the room around an armor or quad that is about to return (control is future
+        // stack — holding the red-armor area swings the next minute by ±1.75 team frags beyond
+        // whatever is standing in it), and converge on a believed quad carrier while the kill is
+        // still worth its +0.92.
+        //
+        // **On since it was measured.** A five-arm leave-one-out on dm3 4on4 — each arm a ~24 minute
+        // split-team match with `rtx_bot_power_team 1`, so the treated and control sides shared a map,
+        // an opponent and a clock — put this at the largest single contribution of the whole bundle:
+        // the treated team took 56.5% of frags with everything on and 42.3% with only this switched
+        // off, a 14-point swing and the biggest of the four. That is a direct outcome measurement,
+        // which is strictly better evidence than the nugget-level holdout originally planned for the
+        // promotion, so the holdout (`rtx_bot_oracle_eval` + `rtx_bot_oracle_holdout`) is now a tool
+        // for attributing *which* advice pays rather than a gate on shipping any of it.
+        //
+        // Caveat kept honest: one match per arm, and slice-to-slice variance within a match is large
+        // enough that a single 20-minute window has been seen to reverse. The ordering held across
+        // every arm, which is what this rests on.
+        ("rtx_bot_oracle", Bool(true)),
         ("rtx_bot_oracle_debug", Bool(false)),
         ("rtx_bot_oracle_eval", Bool(false)),
         // Fraction of complete team-plan episodes retained as shadow controls during evaluation.

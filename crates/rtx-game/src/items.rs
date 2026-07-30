@@ -506,13 +506,16 @@ impl GameState {
             return;
         }
         let netname = weapon_spec(weapon.item()).map_or("", |spec| spec.backpack_name);
-        self.spawn_backpack(
+        let pack = self.spawn_backpack(
             origin,
             Model::PROGS_BACKPACK,
             netname,
             weapon.as_f32(),
             [shells, nails, rockets, cells],
         );
+        // Tell the bots who has a reason to walk over: the killer, to complete the transfer, and the
+        // victim's nearest teammate, to deny it. See [`GameState::note_pack_drop`].
+        self.note_pack_drop(e, pack);
     }
 
     /// Spawn a dropped backpack-like item at `origin`: a toss-physics trigger carrying `items`

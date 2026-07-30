@@ -27,6 +27,7 @@ pub(crate) mod oracle;
 pub(crate) mod par;
 pub(crate) mod perception;
 mod population;
+pub(crate) mod power;
 pub(crate) mod prof;
 mod rj;
 pub(crate) mod state;
@@ -444,7 +445,16 @@ fn bot_pickup_items(game: &mut GameState, e: EntId) {
             continue;
         }
         if game.entities[item].v.solid == Solid::Trigger {
+            // A claimed pack collected is the transfer completed (or denied, if we were the victim's
+            // teammate) — the half of an armed kill's value that lives after the frag.
+            let claimed = game.entities[e].bot.goal.pack_hint == item.0
+                && now - game.entities[e].bot.goal.pack_hint_at < goals::PACK_HINT_SECS;
             game.run_touch(item, e);
+            if claimed {
+                let b = &mut game.entities[e].bot;
+                b.packs.secured += 1;
+                b.goal.pack_hint = 0;
+            }
             // Just collected our goal item — briefly avoid it so an instant-respawn pickup (or a
             // weapons-stay trigger that lingers solid) can't recapture the goal slot the same second;
             // the slot frees up for the next-best pickup instead of re-fixating in place.
@@ -889,6 +899,14 @@ fn reject_oracle_advice(game: &mut GameState, e: EntId, nugget: oracle::OracleNu
 /// perception and urgent recovery; this helper refuses hard mode goals, committed traversal, and
 /// handoff holds. Item advice is deliberately an uncommitted goal, so visible combat can still own
 /// movement. Positional advice only redirects idle/search movement, never a visible engagement.
+/// Runtime half of the oracle's [fitness screen](oracle::CONTROL_MIN_EH): is this bot, right now,
+/// in a state to be sent into a fight it did not pick? Effective health, not power — see
+/// [`power::effective_health`] for why the two must not be confused here.
+fn fit_to_contest(game: &GameState, e: EntId) -> bool {
+    let v = &game.entities[e].v;
+    power::effective_health(v.health, v.armorvalue, v.armortype) >= oracle::CONTROL_MIN_EH
+}
+
 fn apply_oracle_advice(
     game: &mut GameState,
     e: EntId,
@@ -944,6 +962,21 @@ fn apply_oracle_advice(
         oracle::NuggetKind::Regroup | oracle::NuggetKind::CoverArea | oracle::NuggetKind::Intercept => {
             let visible_fight = matches!(intent, Some(BotIntent::Fight(_))) && combat_last_seen.is_none();
             if visible_fight || matches!(intent, Some(BotIntent::Advance(_))) {
+                return None;
+            }
+            // Hold-this-room and go-kill-that orders are refused while too hurt to win the fight
+            // they walk into. The planner already screens recipients for this, but it plans at 1 Hz
+            // and a cover order stands for eight seconds — plenty of time to be shot down to a
+            // sliver and still be carrying an order that says stay. Refusing here also frees the
+            // goal layer to price a health pickup, which it cannot do while the nugget below is
+            // clearing `goal.item` every frame: that combination is what kept a bot standing on the
+            // red armor at nineteen health instead of leaving to heal.
+            if matches!(
+                nugget.kind,
+                oracle::NuggetKind::CoverArea | oracle::NuggetKind::Intercept
+            ) && !fit_to_contest(game, e)
+            {
+                reject_oracle_advice(game, e, nugget, now);
                 return None;
             }
             let target = graph.cell_origin(nugget.target_cell);
@@ -1083,7 +1116,11 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3) -> 
         }
     };
 
-    let greedy = matches!(intent, Some(BotIntent::Fight(_))) && host.cvar_bool(c"rtx_bot_greed");
+    // A fresh quad suspends shopping. Quad's value is front-loaded — a fresh one is worth ×2.52 on a
+    // light gun and barely ×1.32 by its last third — so the seconds are the resource, and no shard
+    // picked up mid-quad is worth one of them. Detours resume as it ages out.
+    let quad_fresh = game.entities[e].combat.super_damage_finished - now > combat::QUAD_FRESH_SECS;
+    let greedy = matches!(intent, Some(BotIntent::Fight(_))) && host.cvar_bool(c"rtx_bot_greed") && !quad_fresh;
 
     // A mode-issued Move/Spectate is a hard objective (flag running, race checkpoint, arena
     // audience). It supersedes an old item completion inherited from a previous Fight/idle frame.
@@ -1238,6 +1275,13 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3) -> 
             let b = &mut game.entities[e].bot;
             if new_item != b.goal.item {
                 b.goal.since = now; // restart the watchdog for a new goal
+                                    // Churn tripwire. Reprising every item value is exactly the kind of change that can
+                                    // make two pickups trade places on alternate re-picks, and a bot oscillating between
+                                    // two goals still *looks* busy — it keeps moving, so no navigation watchdog fires.
+                                    // A/B this against a baseline run rather than trusting the frag count to notice.
+                if new_item != 0 && b.goal.item != 0 {
+                    b.goal.switches += 1;
+                }
             }
             (b.goal.item, b.goal.item_cell) = (new_item, new_cell);
             (b.goal.next_item, b.goal.next_cell, b.goal.next_commit) = (next_item, next_cell, next_commit);
@@ -1923,6 +1967,11 @@ fn run_bot(game: &mut GameState, e: EntId) {
                 grenade::grenade_combo(game, e, enemy, origin, now, &mut cmd);
             }
         }
+    }
+    // Last word on the weapon: with no fight on, holster the big gun so a death in transit doesn't
+    // hand it to whoever killed us. Runs after every overlay so it can see the final impulse/shot.
+    if host.cvar_bool(c"rtx_bot_pack") && game.power_team_allows(e) && combat::pack_discipline(game, e, now, &mut cmd) {
+        game.entities[e].bot.packs.sg_swaps += 1;
     }
     game.bot_prof.add_phase(prof::Phase::Combat, t.stop());
     emit(game, e, s, cmd, bhop_cmd, &hook, &rj, enemy);
