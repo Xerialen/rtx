@@ -176,11 +176,27 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
                 "arrive_z",
                 "prep_health",
                 "prep_rockets",
+                "quick_attempts",
             },
         )
         _vec3(run["start"], f"{source}.run.start")
         _vec3(run["target"], f"{source}.run.target")
-        _integer(run["attempts"], f"{source}.run.attempts", positive=True)
+        attempts = _integer(
+            run["attempts"], f"{source}.run.attempts", positive=True
+        )
+        if "quick_attempts" in run:
+            quick_attempts = _integer(
+                run["quick_attempts"],
+                f"{source}.run.quick_attempts",
+                positive=True,
+            )
+            # Quick is a cut, never a raise: a drill asking quick to run MORE
+            # attempts than its full regime would make the two regimes
+            # incomparable in the direction nobody intends.
+            if quick_attempts > attempts:
+                raise ScenarioError(
+                    f"{source}.run.quick_attempts: cannot exceed run.attempts"
+                )
         _number(run["timeout_s"], f"{source}.run.timeout_s", positive=True)
         _number(run["pause_s"], f"{source}.run.pause_s")
         _number(run["arrive_box"], f"{source}.run.arrive_box", positive=True)

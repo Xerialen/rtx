@@ -391,7 +391,13 @@ def _run_goto(
     for link in scenario.get("setup", {}).get("plant_links", []):
         control.request(f"planlink {link}")
     full_attempts = scenario["run"]["attempts"]
-    attempts_count = 3 if quick else full_attempts
+    # A drill may pin its own quick count: the cut to three exists to save rig
+    # time, not to grade a drill on less evidence than its verdict needs.
+    quick_attempts = scenario["run"].get("quick_attempts")
+    attempts_count = (
+        int(quick_attempts) if quick and quick_attempts is not None
+        else 3 if quick else full_attempts
+    )
     attempts = []
     for index in range(attempts_count):
         result = _outcome(control, bot_id, scenario, recording)

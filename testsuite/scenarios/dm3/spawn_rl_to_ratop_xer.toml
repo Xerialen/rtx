@@ -25,7 +25,7 @@ regoto_max = 6
 # line to the target — never points derived from the navmesh or
 # from geometry.
 via = [
-  { at = [1572.9, -82.4, -158.2], box = 96, name = "bridge låg" },
+  { at = [1572.9, -82.4, -158.2], box = 128, name = "bridge låg" },
   { at = [202.2, -99.2, -176.0], box = 96, name = "RA tunneln" },
   { at = [-196.9, -222.5, -166.2], box = 96, name = "RA tunneln 2" },
   { at = [-35.0, -725.5, 7.2], box = 96, name = "RA låg" },

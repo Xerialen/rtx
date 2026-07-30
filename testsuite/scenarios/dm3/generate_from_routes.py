@@ -91,6 +91,12 @@ def place_of(points, position) -> str:
 # route on dm3 except the pent jump.
 ROUTE_RUN: dict[str, dict[str, object]] = {
     "rj_pent_to_lifts_to_window_to_quad": {"prep_rockets": 100},
+    # Its passing times sit in two bands, 7.50-7.91 and 8.09-8.19 against a
+    # limit of 8.42, and it abandons intermittently — 2-3 of 15 in both arms
+    # of the planted-links A/B. Three attempts with a required of two turns
+    # that variance into a verdict that flips between runs; this is the drill
+    # the quick cut is not allowed to shortchange.
+    "ring_to_ratop": {"quick_attempts": 5},
 }
 
 # A capability the route needs that the build has to have been given, and the
@@ -146,6 +152,11 @@ ROUTE_REQUIRES: dict[str, dict[str, str]] = {
 # the sixty units a bot at full speed covers between two polls, which is the
 # floor below which a gate can simply be stepped over.
 VIA_BOX = 96
+
+# A via entry is normally a bare point sharing the route's box. An entry may
+# instead be a ([x, y, z], box) pair when one waypoint has measured grounds
+# for its own width — the reason belongs in a comment beside that entry, and
+# the width still has to reject the straight line for its own route.
 
 ROUTE_VIA: dict[str, dict[str, object]] = {
     "hex_quad_to_sng": {
@@ -206,7 +217,13 @@ ROUTE_VIA: dict[str, dict[str, object]] = {
     "spawn_rl_to_ratop_xer": {
         "box": VIA_BOX,
         "via": [
-            [1572.9, -82.4, -158.2],
+            # The bot corner-cuts this one at 97.4-103.7 on the worst axis in
+            # all six recorded attempts while clearing the three waypoints
+            # after it by 13-26 — and the ordered chain means a first-waypoint
+            # miss silences the rest. 128 covers the corner-cut; the straight
+            # line passes 311 away, so the gate keeps a 2.4x margin, and the
+            # owner goes through at 0.1.
+            ([1572.9, -82.4, -158.2], 128),
             [202.2, -99.2, -176.0],
             [-196.9, -222.5, -166.2],
             [-35.0, -725.5, 7.2],
@@ -353,14 +370,17 @@ def main() -> int:
             # distinct-enough name, so a repeat gets numbered.
             seen: dict[str, int] = {}
             entries = []
-            for at in via_data["via"]:
+            for entry in via_data["via"]:
+                at, box = (
+                    entry if isinstance(entry, tuple) else (entry, via_data["box"])
+                )
                 label = place_of(points, tuple(at))
                 seen[label] = seen.get(label, 0) + 1
                 if seen[label] > 1:
                     label = f"{label} {seen[label]}"
                 coords = [round(value, 1) for value in at]
                 entries.append(
-                    f'  {{ at = {coords}, box = {via_data["box"]}, name = "{label}" }},'
+                    f'  {{ at = {coords}, box = {box}, name = "{label}" }},'
                 )
             route_block = (
                 "\n[route]\n"

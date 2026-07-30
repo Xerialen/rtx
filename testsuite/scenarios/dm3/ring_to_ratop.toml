@@ -16,6 +16,7 @@ timeout_s = 30
 pause_s = 1.0
 arrive_box = 70
 regoto_max = 6
+quick_attempts = 5
 
 [route]
 # Ordered waypoints the attempt must pass through, in this order,
