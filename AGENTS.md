@@ -162,3 +162,18 @@ reproduces it (`MATCHED` / `TOWARD`), crosses the gap another way (`JUMP`), mere
   `-p rtx-client`.
 - Run `cargo fmt` before committing — the tree is rustfmt-clean, with `rustfmt.toml` pinning
   `max_width = 120`.
+
+## Commit messages
+
+- End with a `Co-Authored-By:` trailer naming the **model**, not just the tool — the history is a
+  mix of them, and which model wrote a change is worth being able to read back:
+
+  ```
+  Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+  ```
+
+- **No `Claude-Session:` trailer.** Some tooling appends a `https://claude.ai/code/session_…` link;
+  strip it. The URL resolves only for the account that ran the session, so in a shared history it is
+  a dead link that dates the commit to a transcript nobody else can open — everything worth keeping
+  from a session belongs in the message itself. Same for the `🤖 Generated with Claude Code` footer
+  in PR bodies.
