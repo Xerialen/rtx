@@ -445,7 +445,6 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
             # every other way of not arriving has no bound to report — it
             # never had one, so a number there would be invented.
             if "min_possible_s" in attempt:
-                _num_or_null(attempt["min_possible_s"], f"{attempt_path}.min_possible_s")
                 if attempt["status"] in {"passed", "slow"}:
                     _fail(
                         f"{attempt_path}.min_possible_s",
@@ -455,6 +454,18 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
                     _fail(
                         f"{attempt_path}.min_possible_s",
                         "a bound only exists for an attempt abandoned as impossible",
+                    )
+                elif not isinstance(attempt["min_possible_s"], (int, float)) or isinstance(
+                    attempt["min_possible_s"], bool
+                ):
+                    # Present-but-null passed here for as long as the key
+                    # check below only caught absence. An abandoned attempt
+                    # exists BECAUSE a bound was computed; null is the same
+                    # thrown-away knowledge as no key at all.
+                    _fail(
+                        f"{attempt_path}.min_possible_s",
+                        "an abandoned attempt's bound is a number, not a null"
+                        " wearing the key",
                     )
             elif attempt.get("status") == "abandoned":
                 _fail(
@@ -557,8 +568,19 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
             _fail(f"{item_path}.threshold.of", "must equal attempt count")
         if required > len(attempts):
             _fail(f"{item_path}.threshold.required", "cannot exceed attempt count")
-        if data.get("regime_note") == "quick" and len(attempts) != 3:
-            _fail(f"{item_path}.attempts", "quick runs require three attempts")
+        # Quick cuts to three, but a drill may pin its own quick count
+        # (`run.quick_attempts`), and the pin lives in the scenario file the
+        # envelope deliberately does not embed — so an exact count is no
+        # longer checkable here. What remains enforceable is the floor: quick
+        # exists to spend less rig time, never to grade a drill on fewer than
+        # the three attempts the cut guarantees. The ceiling is the writer's
+        # (`of` must equal the attempt count, checked above, and the schema
+        # rejects a pin above the full count at load).
+        if data.get("regime_note") == "quick" and len(attempts) < 3:
+            _fail(
+                f"{item_path}.attempts",
+                "a quick run grades no drill on fewer than three attempts",
+            )
         if _int(item["passed"], f"{item_path}.passed") != passed_count:
             _fail(f"{item_path}.passed", "must equal passed attempts")
         expected = "PASS" if passed_count >= required else "FAIL"
