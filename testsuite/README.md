@@ -53,7 +53,14 @@ is marked `smoke` and is not comparable with acceptance runs:
 python3 testflow.py t2 --secs 60
 ```
 
-Import an already-produced cargo summary; the adapter does not run Cargo:
+Produce the summary from a cargo run, then import it; the adapter itself
+does not run Cargo:
+
+```
+cargo test --workspace --release 2>&1 | python3 tools/cargo_summary.py cargo-summary.json
+```
+
+Import an already-produced cargo summary:
 
 ```sh
 python3 testflow.py t0-import cargo-summary.json
@@ -488,6 +495,14 @@ during the pre-match countdown, so movement can only be proven after launch.
 A failed gate writes a `failed` envelope and no score.
 
 ## Static dashboard
+
+After a build, `dashboard/verify_against_evidence.py <index-file>` reads the
+RUNS JSON back out of the built page and compares it field by field against
+the raw envelopes the index file names (`t0 evidence/t0-....json` per line) —
+the same direction of proof as the demo readback: never trust the pipeline,
+read the output. The only presentation transforms it accepts are the Swedish
+verdict labels and the ladder's padded unplayed rungs; everything else must
+match exactly.
 
 `dashboard/build_dashboard.py` builds one self-contained HTML file from
 `rtx-testflow/1` evidence. It groups tier attempts by branch and build
