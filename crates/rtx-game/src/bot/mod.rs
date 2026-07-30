@@ -1970,9 +1970,18 @@ fn run_bot(game: &mut GameState, e: EntId) {
     }
     // Last word on the weapon: with no fight on, holster the big gun so a death in transit doesn't
     // hand it to whoever killed us. Runs after every overlay so it can see the final impulse/shot.
-    if host.cvar_bool(c"rtx_bot_pack") && game.power_team_allows(e) && combat::pack_discipline(game, e, now, &mut cmd) {
-        game.entities[e].bot.packs.sg_swaps += 1;
+    //
+    // Counted on the rising edge. `pack_discipline` returns true every frame it wants the shotgun
+    // out, so incrementing unconditionally counted frames-spent-holstered and reported ~1100 for a
+    // match — a number that looked like thrash and wasn't measuring swaps at all. The edge counts
+    // decisions, which is what a "did the discipline fire too often" question needs.
+    let holstering =
+        host.cvar_bool(c"rtx_bot_pack") && game.power_team_allows(e) && combat::pack_discipline(game, e, now, &mut cmd);
+    let bot = &mut game.entities[e].bot;
+    if holstering && !bot.packs.swap_active {
+        bot.packs.sg_swaps += 1;
     }
+    bot.packs.swap_active = holstering;
     game.bot_prof.add_phase(prof::Phase::Combat, t.stop());
     emit(game, e, s, cmd, bhop_cmd, &hook, &rj, enemy);
 }

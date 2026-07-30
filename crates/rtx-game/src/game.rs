@@ -813,6 +813,13 @@ impl GameState {
 
     /// Free an entity slot, both on our side and in the engine.
     pub(crate) fn free(&mut self, id: EntId) {
+        // A backpack leaves by being taken (`backpack_touch`) or by timing out (`SubRemove`), and
+        // both come through here — so this is the one place a bot's claim on it can be retired
+        // without hunting the exits. A claim left pointing at a freed slot blocks every later claim
+        // until it ages out, and entity numbers are reused.
+        if self.entities[id].touch == crate::entity::Touch::Backpack {
+            self.clear_pack_hints(id);
+        }
         self.entities[id].in_use = false;
         // The trap only tells the *engine* to stop sending the entity to clients. With no engine
         // there's nobody to tell, and the line above is the whole of what freeing means.

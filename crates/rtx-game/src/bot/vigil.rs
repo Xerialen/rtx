@@ -27,6 +27,15 @@ use crate::navmesh::{CellId, LinkCosts, LinkKind, NavGraph};
 const VIGIL_NEAR: f32 = 250.0;
 const VIGIL_DZ: f32 = 96.0;
 
+/// Longest a single watch may hold off the give-up watchdog.
+///
+/// A vigil refreshes `goal.since` every frame and suppresses both steer watchdogs, so without a cap
+/// there is *nothing* that can end one — the module's own comment claimed `GOAL_GIVEUP_TIME` bounded
+/// it, and the refresh it sits next to is what made that untrue. Twelve seconds is one ordinary item
+/// horizon ([`super::goals::LOOKAHEAD`], 10 s) plus slack, so a legitimate armour wait is never cut
+/// short while an indefinite one now ends.
+const VIGIL_MAX_WAIT: f32 = 12.0;
+
 /// Cruise-post ring around the pickup: far enough not to idle inside the pickup box (`PICKUP_XY` 40),
 /// close enough to scout it and get back on spawn. A handoff hold uses the tight max so the
 /// reservation stays defensible against the 400u contest range.
@@ -88,6 +97,25 @@ pub(crate) fn maybe(
     } else {
         return None; // collectable now (bot_pickup_items will grab it) or truly gone — not a wait
     };
+
+    // Start (or continue) the watch clock, and refuse to keep watching past the cap.
+    //
+    // This bound is the whole reason the state exists. `update` refreshes `goal.since` every frame,
+    // which makes GOAL_GIVEUP_TIME unreachable, and the two steer watchdogs (stuck, and path
+    // progress) are both suppressed while a vigil is live — so before the cap a stalled watch had
+    // *nothing* that could end it, and bots were measured loitering in the yellow-armour room for
+    // tens of seconds. A handoff hold keeps its own HOLD_MAX deadline and does not need this, but it
+    // costs nothing to bound it the same way.
+    {
+        let v = &mut game.entities[e].bot.vigil;
+        if v.over != item.0 {
+            v.over = item.0;
+            v.began = now;
+        }
+    }
+    if now - game.entities[e].bot.vigil.began > VIGIL_MAX_WAIT {
+        return None;
+    }
     Some(update(game, e, origin, item_org, holding, respawn_at, now))
 }
 
@@ -105,7 +133,9 @@ fn update(
 ) -> (Vec3, Option<CellId>) {
     // Waiting near a known respawn *is* making progress toward the goal — keep the give-up watchdog
     // (super::resolve_objective's GOAL_GIVEUP_TIME) from abandoning a legitimate wait. A hold is
-    // bounded by its own HOLD_MAX deadline, so refreshing this is safe there too.
+    // bounded by its own HOLD_MAX deadline, so refreshing this is safe there too. `maybe` caps how
+    // long this may go on ([`VIGIL_MAX_WAIT`]); the postless branch below takes it back.
+    let since_before = game.entities[e].bot.goal.since;
     game.entities[e].bot.goal.since = now;
 
     let (post, post_until, scan, scan_until) = {
@@ -141,17 +171,23 @@ fn update(
         (item_org, g.nearest(item_org), Vec3::ZERO, post_until)
     } else if post != Vec3::ZERO && !post_due(post, post_until, origin, now) {
         (post, g.nearest(post), post, post_until) // keep heading to the current post
-    } else if let Some((cell, p)) = g
-        .nearest(origin)
-        .and_then(|from| pick_post(g, from, item_org, POST_MIN, max_r, r_post))
-    {
+    } else if let Some((cell, p)) = g.nearest(origin).and_then(|from| {
+        // Walk/step first — a cruise should not be a series of leaps. Falling back to allowing jumps
+        // rather than to standing still: a post reached by a hop is still a post, and standing on the
+        // spawn is the one outcome a vigil must never produce (see below).
+        pick_post(g, from, item_org, POST_MIN, max_r, r_post, PostRoute::Trivial)
+            .or_else(|| pick_post(g, from, item_org, POST_MIN, max_r, r_post, PostRoute::Jumpy))
+    }) {
         (p, Some(cell), p, now + POST_HOLD + r_hold * POST_JITTER)
     } else {
-        // No trivial post anywhere in the ring — sit on the item itself. The one spot a vigil can still
-        // put a bot under a raised lift, and only when the item is *itself* in the shaft and not one cell
-        // of the surrounding ring could be walked to; on a real map the ring always has something. Left
-        // as-is rather than grown a special case: `GOAL_GIVEUP_TIME` already bounds a wait that never pays.
-        (item_org, g.nearest(item_org), Vec3::ZERO, post_until)
+        // No post at all, by either route class. Stand *off* the spawn rather than on it, and — the
+        // part that matters — leave `goal.since` alone this frame so the give-up watchdog can see the
+        // wait. The old code sat on the item and justified it with "GOAL_GIVEUP_TIME already bounds a
+        // wait that never pays", which the `goal.since` refresh four lines earlier had already made
+        // false: nothing bounded it, and this is exactly the shape that produced a bot standing on a
+        // spawn point for tens of seconds.
+        game.entities[e].bot.goal.since = since_before;
+        (origin, g.nearest(origin), Vec3::ZERO, post_until)
     };
 
     let b = &mut game.entities[e].bot;
@@ -202,7 +238,23 @@ fn pick_scan(eye: Vec3, prev: Vec3, r: f32) -> Vec3 {
 /// burning, and route cost alone never ruled it out (`route_is_trivial` is happy to stroll into a
 /// pool). Mirrors the filter `roam_target` applies to its wander destinations. Candidates are tried
 /// from a random offset; `None` if none validate.
-fn pick_post(g: &NavGraph, from: CellId, item: Vec3, min: f32, max: f32, r: f32) -> Option<(CellId, Vec3)> {
+/// How hard a post is allowed to be to reach. A cruise wants plain ground; but a ring that only
+/// connects by a hop is still a ring, and preferring it to standing still is the whole point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PostRoute {
+    Trivial,
+    Jumpy,
+}
+
+fn pick_post(
+    g: &NavGraph,
+    from: CellId,
+    item: Vec3,
+    min: f32,
+    max: f32,
+    r: f32,
+    class: PostRoute,
+) -> Option<(CellId, Vec3)> {
     let ring: Vec<CellId> = (0..g.cells.len() as CellId)
         .filter(|&c| {
             let o = g.cells[c as usize].origin;
@@ -224,7 +276,7 @@ fn pick_post(g: &NavGraph, from: CellId, item: Vec3, min: f32, max: f32, r: f32)
             continue; // a post at our own cell is no cruise — keep the bot actually moving
         }
         if let Some(route) = g.find_path(from, cell, &LinkCosts::default()) {
-            if !route.is_empty() && route_is_trivial(g, &route) {
+            if !route.is_empty() && route_ok(g, &route, class) {
                 return Some((cell, g.cell_origin(cell)));
             }
         }
@@ -232,12 +284,24 @@ fn pick_post(g: &NavGraph, from: CellId, item: Vec3, min: f32, max: f32, r: f32)
     None
 }
 
-/// Whether a route is a plain walk — only `Walk`/`Step` legs and no gated link. An empty route (the
-/// bot is already at the cell) is trivially fine.
-fn route_is_trivial(g: &NavGraph, route: &[u32]) -> bool {
+/// Whether a route is acceptable for a cruise post at `class`. Gated links are barred either way —
+/// a watch is not the time to be working a door — and `Jumpy` additionally allows a plain hop, which
+/// is what keeps a ring that only connects by a jump from reading as "no ring at all".
+fn route_ok(g: &NavGraph, route: &[u32], class: PostRoute) -> bool {
     route
         .iter()
-        .all(|&li| matches!(g.link_kind(li), LinkKind::Walk | LinkKind::Step) && g.gate_of_link(li).is_none())
+        .all(|&li| g.gate_of_link(li).is_none() && kind_ok(g.link_kind(li), class))
+}
+
+/// Whether one leg kind belongs in a cruise at `class`.
+fn kind_ok(kind: LinkKind, class: PostRoute) -> bool {
+    match (kind, class) {
+        (LinkKind::Walk | LinkKind::Step, _) => true,
+        // A hop or a short fall is still a cruise; a double/speed jump, plat ride, teleport or hook
+        // swing is a traversal, and a bot that leaves the room is not watching it.
+        (LinkKind::JumpGap | LinkKind::Drop, PostRoute::Jumpy) => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -291,5 +355,40 @@ mod tests {
     fn scan_due_respects_hold() {
         assert!(!scan_due(2.0, 1.9));
         assert!(scan_due(2.0, 2.0));
+    }
+
+    /// The cap has to outlast a legitimate armour wait and still end an indefinite one.
+    #[test]
+    fn the_watch_cap_outlasts_a_real_wait_but_not_a_stuck_one() {
+        // An ordinary item is only a legal goal inside its own scoring horizon, so a genuine wait
+        // cannot exceed that — the cap must sit above it or it would cut short real armour timing.
+        assert!(VIGIL_MAX_WAIT > super::super::goals::LOOKAHEAD);
+        // And it must actually bound something: an unbounded watch is what let a bot stand in the
+        // yellow-armour room for tens of seconds with all three watchdogs suppressed.
+        assert!(VIGIL_MAX_WAIT.is_finite() && VIGIL_MAX_WAIT < 30.0);
+    }
+
+    /// A cruise post may be a hop away, but never a traversal — a bot that leaves is not watching.
+    #[test]
+    fn a_jumpy_post_is_allowed_but_leaving_the_room_is_not() {
+        assert_eq!(PostRoute::Trivial, PostRoute::Trivial);
+        // The distinction the two classes encode, stated as the property it exists for: relaxing to
+        // `Jumpy` must admit strictly more routes than `Trivial`, and neither may admit a teleport,
+        // plat ride, hook swing or speed jump — those take the bot out of the room it is guarding.
+        for kind in [LinkKind::Walk, LinkKind::Step] {
+            assert!(kind_ok(kind, PostRoute::Trivial) && kind_ok(kind, PostRoute::Jumpy));
+        }
+        for kind in [LinkKind::JumpGap, LinkKind::Drop] {
+            assert!(!kind_ok(kind, PostRoute::Trivial), "{kind:?} is not a plain walk");
+            assert!(kind_ok(kind, PostRoute::Jumpy), "{kind:?} is still a cruise");
+        }
+        for kind in [
+            LinkKind::Teleport,
+            LinkKind::Plat,
+            LinkKind::SpeedJump,
+            LinkKind::DoubleJump,
+        ] {
+            assert!(!kind_ok(kind, PostRoute::Jumpy), "{kind:?} leaves the room");
+        }
     }
 }

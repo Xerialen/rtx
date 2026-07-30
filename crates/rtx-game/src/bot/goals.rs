@@ -51,6 +51,11 @@ const MAJOR_LOOKAHEAD: f32 = 20.0;
 /// seconds is enough to take a nearby position and contest while leaving most of the 20-second RA
 /// cycle for weapons, health, and territory control.
 const MAJOR_SETUP_LEAD: f32 = 2.0;
+/// The same margin for an *ordinary* timed pickup, once measured-power discipline is on. A shard or
+/// a yellow armour is worth arriving for, not worth standing around for: two seconds buys the walk
+/// in without buying the wait. Only applies with `rtx_bot_power`; off, ordinary items keep their
+/// historical "no departure test" behaviour.
+const ORDINARY_WAIT_LEAD: f32 = 2.0;
 /// Give-up leash for a *major* (RA/mega) goal: longer than an ordinary item's 10 s (a cross-room run
 /// is legitimate), shorter than a powerup's, sized to [`MAJOR_LOOKAHEAD`] plus a margin.
 pub(crate) const MAJOR_GIVEUP: f32 = 25.0;
@@ -584,13 +589,13 @@ fn add_ammo(p: &mut super::power::PowerInput, kind: AmmoKind, amount: f32) {
 /// The scale also keeps the existing thresholds meaningful without retuning them:
 /// [`COMBAT_GREED_MIN_DESIRE`] (40) now means "a fifth of a fresh spawn's worth of power", and a
 /// shard that moves power by 0.02 scores 4, still beneath every gate it was beneath before.
-const POWER_DESIRE_K: f32 = 200.0;
+pub(crate) const POWER_DESIRE_K: f32 = 200.0;
 
 /// Converts a measured event price (forward team frags over the next 30 s) into the desire scale.
 /// Sized so a quad lands around 255 and a pentagram around 355 — above every material desire, as
 /// they should be, and in the same ballpark as the old flat `200 + strength` so the timed-powerup
 /// machinery around them keeps behaving.
-const POWER_DESIRE_L: f32 = 230.0;
+pub(crate) const POWER_DESIRE_L: f32 = 230.0;
 
 /// The measured forward value of taking this kind of item, in team frags over the next thirty
 /// seconds. This is the half of an item's worth the power score cannot see: power says what the
@@ -1102,15 +1107,45 @@ impl GameState {
         }
     }
 
-    /// Give `bot` a claim on `pack`, unless it already holds a fresher one (two kills in quick
-    /// succession shouldn't make it abandon the first pack halfway there).
+    /// Give `bot` a claim on `pack`, unless it already holds a fresher one on a pack that still
+    /// exists (two kills in quick succession shouldn't make it abandon the first pack halfway there).
+    ///
+    /// The liveness half matters as much as the age: the old guard checked only the timer, so a bot
+    /// whose claimed pack had already been taken by somebody else stayed deaf to every new claim for
+    /// the rest of the twelve seconds — including nearer, richer packs it was standing next to.
+    /// Missing one pack cost you the next two.
     fn stamp_pack_hint(&mut self, bot: EntId, pack: EntId, now: f32) {
-        let goal = &mut self.entities[bot].bot.goal;
-        if goal.pack_hint != 0 && now - goal.pack_hint_at < PACK_HINT_SECS {
+        let held = self.entities[bot].bot.goal.pack_hint;
+        if held != 0 && now - self.entities[bot].bot.goal.pack_hint_at < PACK_HINT_SECS && self.pack_alive(EntId(held))
+        {
             return;
         }
+        let goal = &mut self.entities[bot].bot.goal;
         goal.pack_hint = pack.0;
         goal.pack_hint_at = now;
+        // Act on it now. The re-pick throttle is 1.1–1.9 s and the claim only lasts twelve, so a
+        // third of the window could otherwise be spent waiting for permission to reconsider.
+        goal.next_pick = now;
+        self.entities[bot].bot.packs.hinted += 1;
+    }
+
+    /// Whether `pack` is still a backpack lying on the floor. Entity slots are reused, so this also
+    /// stops a stale claim from resolving against whatever now occupies the number.
+    fn pack_alive(&self, pack: EntId) -> bool {
+        self.entities
+            .get(pack.0 as usize)
+            .is_some_and(|e| e.touch == Touch::Backpack && e.v.solid == Solid::Trigger)
+    }
+
+    /// Drop every bot's claim on `pack` — it has been taken or has expired, so the claim is now a
+    /// pointer to nothing that would otherwise block fresh claims until it aged out.
+    pub(crate) fn clear_pack_hints(&mut self, pack: EntId) {
+        for e in 1..self.entities.len() {
+            let goal = &mut self.entities[EntId(e as u32)].bot.goal;
+            if goal.pack_hint == pack.0 {
+                goal.pack_hint = 0;
+            }
+        }
     }
 
     /// Whether this bot currently has a live claim on `item`.
@@ -1145,9 +1180,14 @@ impl GameState {
         }
         let ent = &self.entities[item];
         // A backpack has no goal classname and never respawns: it's valid while it's still on the
-        // floor (solid) and still carries something this bot wants.
+        // floor (solid) and still carries something this bot wants — *or* while this bot holds a
+        // claim on it. Without the claim clause the scan's [`PACK_SECURE_DESIRE`] floor was written
+        // and then immediately thrown away: a claimed pack carrying nothing the bot separately wants
+        // was selected and invalidated in the same frame, forever. Selection and validation have to
+        // price through the same floors, exactly as the denial floors below do.
         if ent.touch == Touch::Backpack {
-            return ent.v.solid == Solid::Trigger && self.backpack_desire(&self.bot_stats(bot_e), item) > 0.0;
+            return ent.v.solid == Solid::Trigger
+                && (self.backpack_desire(&self.bot_stats(bot_e), item) > 0.0 || self.pack_hinted(bot_e, item, now));
         }
         if ent.touch == Touch::Rune {
             return ent.v.solid == Solid::Trigger
@@ -1912,7 +1952,7 @@ impl GameState {
             let ent = &self.entities[item];
             if ent.v.solid != Solid::Trigger && matches!(ent.think, Think::SubRegen) && ent.v.nextthink > now {
                 let respawn_wait = ent.v.nextthink - now;
-                if !respawn_departure_ready(horizon, respawn_wait, travel)
+                if !respawn_departure_ready(horizon, respawn_wait, travel, s.power)
                     || quad_refuses_to_wait(s.quad_age, respawn_wait, travel)
                 {
                     continue;
@@ -2004,7 +2044,8 @@ impl GameState {
             let mut desire = self.backpack_desire(&s, item);
             // A pack this bot has a claim on outranks whatever routine errand it was running: it
             // either just made the kill that dropped this, or its teammate did the dying.
-            if self.pack_hinted(bot_e, item, now) {
+            let hinted = self.pack_hinted(bot_e, item, now);
+            if hinted {
                 desire = desire.max(PACK_SECURE_DESIRE);
             }
             if desire <= 0.0 {
@@ -2017,7 +2058,20 @@ impl GameState {
             if !travel.is_finite() {
                 continue;
             }
-            consider(item, cell, desire, travel, claim_mult(i as u32), Horizon::Ordinary);
+            // A claimed pack is scored on the *major* curve, not the ordinary one. The floor above
+            // was calibrated against desire-space quantities (`GOAL_HYSTERESIS`,
+            // `COMBAT_GREED_MIN_DESIRE`) but selection happens in *score* space, and the ordinary
+            // curve is zero past ten seconds of travel and below every live major before that — so no
+            // value of the floor could win. On the major curve a claimed pack at three seconds beats
+            // a wanted mega and still loses to a quad, which is the order the prices ask for: the
+            // transfer half of an armed kill is worth about a red armour.
+            //
+            // The deliberate consequence is that a claimed pack also clears `major_wanted`, so
+            // `select_major_item` can take it *mid-fight* — which is exactly when the killer is
+            // standing next to it and is the only selector that runs under a visible enemy with greed
+            // off. Only claimed packs ever reach this tier; an ordinary pack is scored as before.
+            let horizon = if hinted { Horizon::Major } else { Horizon::Ordinary };
+            consider(item, cell, desire, travel, claim_mult(i as u32), horizon);
         }
 
         // KTX-style two-goal evaluation, bounded to six continuation floods. A second goal changes
@@ -2201,12 +2255,19 @@ fn defer_powerup_to_teammate(claimed: bool, my_dist: f32, best_mate_dist: Option
 
 /// Whether it is time to leave for a hidden timed pickup. The broad scoring horizons still bound
 /// how far ahead the bot understands a cycle, but departure is `route travel + setup lead`: a bot
-/// across the map starts earlier than one already standing beside the spawn. Ordinary items retain
-/// their historical horizon behavior; the anti-camp policy applies only to strategic timed items.
-fn respawn_departure_ready(horizon: Horizon, respawn_wait: f32, travel: f32) -> bool {
+/// across the map starts earlier than one already standing beside the spawn.
+///
+/// `power` is the measured-power family's gate. With it off, ordinary items keep their historical
+/// behaviour exactly — no departure test at all, which is the ktx-parity valuation. With it on they
+/// get the same treatment as everything else, because "no test" turned out to mean a yellow armour
+/// could be a legal standing goal for the last ten seconds of every twenty-second cycle: half the
+/// cycle, and measured at 22–36% of the time bots spent in that room actually motionless. Waiting
+/// out an armour you are standing next to is not free — it is the fights elsewhere you were not in.
+fn respawn_departure_ready(horizon: Horizon, respawn_wait: f32, travel: f32, power: bool) -> bool {
     let lead = match horizon {
         Horizon::Powerup => POWERUP_SETUP_LEAD,
         Horizon::Major => MAJOR_SETUP_LEAD,
+        Horizon::Ordinary if power => ORDINARY_WAIT_LEAD,
         Horizon::Ordinary => return true,
     };
     respawn_wait <= travel + lead
@@ -2273,13 +2334,36 @@ mod tests {
     #[test]
     fn timed_items_depart_by_travel_plus_setup_not_full_respawn() {
         // A bot beside a just-taken RA or halfway-due Quad keeps cycling the rest of the map.
-        assert!(!respawn_departure_ready(Horizon::Major, 20.0, 0.25));
-        assert!(!respawn_departure_ready(Horizon::Powerup, 30.0, 2.0));
+        assert!(!respawn_departure_ready(Horizon::Major, 20.0, 0.25, false));
+        assert!(!respawn_departure_ready(Horizon::Powerup, 30.0, 2.0, false));
         // A remote bot leaves sooner, but still arrives only by the intended setup margin.
-        assert!(respawn_departure_ready(Horizon::Major, 5.0, 3.0));
-        assert!(respawn_departure_ready(Horizon::Powerup, 7.0, 3.0));
-        // Ordinary item behavior is deliberately unchanged.
-        assert!(respawn_departure_ready(Horizon::Ordinary, 9.0, 0.0));
+        assert!(respawn_departure_ready(Horizon::Major, 5.0, 3.0, false));
+        assert!(respawn_departure_ready(Horizon::Powerup, 7.0, 3.0, false));
+        // Ordinary item behavior with measured power *off* is deliberately unchanged: no test at all,
+        // which is the ktx-parity valuation this shipped with.
+        assert!(respawn_departure_ready(Horizon::Ordinary, 9.0, 0.0, false));
+    }
+
+    /// With measured power on, an ordinary pickup is worth arriving for and not worth waiting for.
+    #[test]
+    fn an_ordinary_item_is_no_longer_worth_standing_around_for() {
+        // The yellow-armour case: standing on the spawn with nine seconds to go. Under the old rule
+        // this was a legal goal for the last ten seconds of every twenty-second cycle — half the
+        // cycle — and the bot simply stood there, because nothing downstream bounded the wait.
+        assert!(!respawn_departure_ready(Horizon::Ordinary, 9.0, 0.5, true));
+        // Walking in so as to arrive with it is still fine — the rule is against idling, not armour.
+        assert!(respawn_departure_ready(Horizon::Ordinary, 9.0, 7.5, true));
+        assert!(respawn_departure_ready(Horizon::Ordinary, 9.0, 20.0, true));
+        // The margin is the same shape the majors use, so a short walk-in is not shaved off.
+        assert!(respawn_departure_ready(
+            Horizon::Ordinary,
+            ORDINARY_WAIT_LEAD,
+            0.0,
+            true
+        ));
+        // Majors and powerups are untouched by the gate.
+        assert!(!respawn_departure_ready(Horizon::Major, 20.0, 0.25, true));
+        assert!(respawn_departure_ready(Horizon::Major, 5.0, 3.0, true));
     }
 
     #[test]
@@ -2296,6 +2380,44 @@ mod tests {
 
         let tied = [(EntId(7), 10.0), (EntId(3), 10.0)];
         assert_eq!(strategic_reservation_owner(&tied), Some(EntId(3)));
+    }
+
+    /// The claimed pack has to *win*, and the floor alone never could.
+    #[test]
+    fn a_claimed_pack_beats_the_armour_cycle_but_not_a_quad() {
+        // What the floor was up against on the ordinary curve: nothing, past ten seconds, and less
+        // than a mega before it. No value of PACK_SECURE_DESIRE fixes a curve that is zero.
+        assert_eq!(item_score(PACK_SECURE_DESIRE, 10.0, Horizon::Ordinary), None);
+        let mega_at_3 = item_score(100.0, 3.0, Horizon::Major).unwrap();
+        assert!(item_score(PACK_SECURE_DESIRE, 3.0, Horizon::Ordinary).unwrap() < mega_at_3);
+
+        // On the major curve it wins that comparison, which is the order the prices ask for: the
+        // transfer half of an armed kill (+0.51) is worth about a red armour (+0.65).
+        let pack_at_3 = item_score(PACK_SECURE_DESIRE, 3.0, Horizon::Major).unwrap();
+        assert!(pack_at_3 > mega_at_3);
+        // ...and it is still reachable at a distance the ordinary curve had already zeroed.
+        assert!(item_score(PACK_SECURE_DESIRE, 12.0, Horizon::Major).unwrap() > 0.0);
+
+        // A live quad outranks it at equal range, by a wide margin — securing a pack is worth
+        // breaking off a fight for, and is not worth losing a quad over.
+        for t in [1.0, 3.0, 6.0] {
+            assert!(
+                item_score(200.0, t, Horizon::Powerup).unwrap()
+                    > item_score(PACK_SECURE_DESIRE, t, Horizon::Major).unwrap(),
+                "quad must outrank a claimed pack at {t}s"
+            );
+        }
+        // A pack underfoot does beat a quad ten seconds away, and should: it costs a second on the
+        // way, and the quad is still there afterwards. The ordering that matters is the one above.
+        assert!(
+            item_score(PACK_SECURE_DESIRE, 1.0, Horizon::Major).unwrap()
+                > item_score(200.0, 10.0, Horizon::Powerup).unwrap()
+        );
+
+        // Clearing COMBAT_GREED_MIN_DESIRE is deliberate: it is what lets `select_major_item` take
+        // the pack mid-fight, which is the only selector running while the killer can still see the
+        // enemy it just killed.
+        assert!(major_wanted(Horizon::Major, PACK_SECURE_DESIRE));
     }
 
     /// Feed the carrier: the red armour belongs to the quad, not to whoever is standing on it.

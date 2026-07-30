@@ -410,6 +410,10 @@ pub struct Vigil {
     pub post_until: f32,
     pub scan_point: Vec3,
     pub scan_until: f32,
+    /// Which item this watch is over, and when it started — the bound on how long the watch may keep
+    /// the give-up watchdog at bay. `0` when no watch is running.
+    pub over: u32,
+    pub began: f32,
 }
 
 /// A latched route-leg commitment — a speed jump or a plain-jump arc — that freezes the route while
@@ -568,13 +572,23 @@ pub enum GoalCommit {
 /// dying side, holding the shotgun instead of the launcher halves what the death costs.
 #[derive(Default)]
 pub struct PackStats {
-    /// Times this bot holstered a big gun because no fight was on.
+    /// Times this bot holstered a big gun because no fight was on. Counts *decisions* — the rising
+    /// edge of the discipline's verdict — not frames it held true, which is what it used to count
+    /// and which inflated the figure by roughly the length of every holster.
     pub sg_swaps: u32,
+    /// Claims handed to this bot: a kill it made, or a teammate's death it was nearest to. The
+    /// denominator `secured` needs — without it, a low secured count cannot distinguish "rarely
+    /// claimed" from "claimed and never converted", which is exactly the ambiguity that hid a broken
+    /// conversion path behind a plausible-looking number.
+    pub hinted: u32,
     /// Claimed packs this bot went and collected.
     pub secured: u32,
     /// Times this bot died holding a big gun, dropping a pack an enemy could take. The number the
     /// swap discipline exists to drive down.
     pub fed: u32,
+    /// Whether the holster discipline wanted the shotgun out last frame — the edge detector behind
+    /// `sg_swaps`. Not reported; it is bookkeeping, not a statistic.
+    pub swap_active: bool,
 }
 
 /// Strategic combat posture with hysteresis. This is intentionally independent of aim skill: low
