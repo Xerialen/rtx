@@ -76,6 +76,29 @@ pub enum Frozen {
     Pinned,
 }
 
+/// The kind of nav link at the route cursor — the leg the bot is flying (mirror of `LinkKind`).
+///
+/// "It walked off the ledge instead of jumping" and "it jumped and came up short" are the same three
+/// lines of trace without this: grounded, then falling. Which failure it is depends on what the route
+/// asked for, and that is a property of the graph the frame record otherwise doesn't carry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Leg {
+    /// No route, or the cursor is past its end.
+    #[default]
+    None,
+    Walk,
+    Step,
+    Drop,
+    Jump,
+    DoubleJump,
+    SpeedJump,
+    Plat,
+    Teleport,
+    Hook,
+    RocketJump,
+    Swim,
+}
+
 /// Item-goal commitment (mirror of the game's `bot::state::GoalCommit`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Commit {
@@ -164,6 +187,20 @@ pub struct AuditFrame {
     pub band: i16,
     /// Why the route could not be re-planned this frame — see [`Frozen`].
     pub frozen: Frozen,
+    /// The kind of leg at the route cursor — see [`Leg`].
+    pub leg: Leg,
+    /// Takeoff run-up gate: the speed carried *toward* the steering waypoint, the distance to that
+    /// waypoint, and how much floor is left ahead along the bot's travel (`-1` when not probed).
+    ///
+    /// The gate holds the takeoff until the bot already carries speed at the gap, because applying
+    /// forward after the leap barely moves a QW player. That makes "did not jump" a *measurement*
+    /// rather than a mystery — but only if all three numbers are recorded: the gate compares `runup`
+    /// against a threshold while `lip` runs out, and it is the race between them that decides whether
+    /// the bot leaps or walks into the gap. `wp` is what the gate's own escape hatch reads, which is
+    /// how that escape was found to be measuring the wrong distance.
+    pub runup: f32,
+    pub wp: f32,
+    pub lip: f32,
     /// The navmesh cell the bot resolved *itself* to when planning (-1 = none found).
     ///
     /// Every route starts here, so a wrong answer here is a wrong route with no other symptom. The
@@ -233,6 +270,10 @@ pub mod flags {
     /// A repath ran on this frame. With `route_len == 0` this says the search itself came back
     /// empty; without it, the route was never rebuilt (frozen, or cleared after the fact).
     pub const REPLANNED: u16 = 1 << 10;
+    /// The takeoff run-up gate was open this frame — the bot *may* jump for its leg. Paired with
+    /// [`JUMP`] (what it actually pressed) and [`ON_GROUND`], this separates "the gate refused" from
+    /// "the gate allowed it but the frame arrived after the lip".
+    pub const TAKEOFF_OK: u16 = 1 << 11;
 }
 
 /// A per-bot ring buffer of [`AuditFrame`]s. A single fixed `Vec<AuditFrame>` is allocated once to the

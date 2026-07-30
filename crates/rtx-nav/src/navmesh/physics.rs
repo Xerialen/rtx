@@ -145,7 +145,7 @@ pub(super) const CURL_Z_TOL: f32 = 24.0;
 /// once `v·wishdir` exceeds the wish speed). So the spread is a property of the takeoff regime, not
 /// something to tune away — the certifier has to prove the arc across it. At the old 6° the build
 /// certified a tighter envelope than the runtime delivers and links landed 3/5.
-pub(super) const CURL_PSI_TOL: f32 = 12.0;
+pub const CURL_PSI_TOL: f32 = 12.0;
 /// Run-up headings tried around the corridor's compass axis (degrees). A real lip's approach is rarely
 /// exactly on an axis and certification is sharply heading-sensitive, so the from-cell is placed along
 /// whichever of these certifies — the runtime then flies precisely the proven line. On-axis first, so

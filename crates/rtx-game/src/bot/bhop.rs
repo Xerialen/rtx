@@ -77,6 +77,19 @@ const PHASE_LOCK_MIN_SPEED: f32 = 600.0;
 /// past it) triggers the leap — a radial ball the weave can skirt would U-turn. Distinct from the eager
 /// [`LAUNCH_MIN_FRAC`] leap a plain hop takes. `pub` so steer gates the run-up aim on the same threshold.
 pub const LIP_REACH: f32 = 28.0;
+/// Run-up remaining (units) within which the takeoff regime's speed-building weave tightens onto the
+/// run-up axis, and the half-angle it may then swing.
+///
+/// [`weave_band`] is sized for *speed*: at a takeoff speed of ~450 ups it swings ±24°, which is twice
+/// [`CURL_PSI_TOL`](crate::navmesh::CURL_PSI_TOL). So a serpentine still mid-swing when the takeoff line arrives leaves the lip up to
+/// 24° off the axis the certifier proved the arc from — and since the leap fires on crossing the line,
+/// which phase of the swing that is, is luck. (This is the spread `CURL_PSI_TOL` was widened to 12° to
+/// tolerate.) Measured on dm3's big gap: takeoffs 14-26° off the axis fell into the pit even at a
+/// perfectly good speed. Tightening the final stretch bounds the takeoff heading by construction; the
+/// circle-strafe's gain is set by its wish *angle* off the velocity, not by how far it wanders, so a
+/// narrow weave still builds — it just builds along the line instead of around it.
+const ALIGN_REACH: f32 = 160.0;
+const ALIGN_BAND: f32 = 6.0;
 /// Fixed runway required to engage — enough for one worthwhile hop (a flat hop at walk speed
 /// covers ~216u). Deliberately *not* speed-scaled: the old `speed·0.9` bar rose as the bot gained
 /// speed and disengaged it mid-run — the policy capped the very thing it built.
@@ -407,7 +420,10 @@ impl Bhop {
             // runway, leaving slow). Everything else launches at target speed / time / runway-out.
             let sj_build = i.committed && i.takeoff_speed > 0.0;
             let launch = if sj_build {
-                !i.on_ground || i.runway < LIP_REACH
+                // `hold_jump` is the certified-envelope hold (see steer's `sj_hold`): at the line but
+                // outside the band or off the run-up axis, keep building rather than leap an arc the
+                // rollout never proved.
+                !i.on_ground || (i.runway < LIP_REACH && !i.hold_jump)
             } else {
                 !i.on_ground
                     || speed >= env.profile.prestrafe_target
@@ -501,8 +517,10 @@ impl Bhop {
         // the air cap below maxspeed, so holding on the ground only ever helps the speed.
         let sj_takeoff = i.committed && i.takeoff_speed > 0.0;
         if sj_takeoff {
-            if i.runway >= LIP_REACH {
-                // Hold the solved takeoff speed to the lip (coast above the band, build below).
+            if i.runway >= LIP_REACH || i.hold_jump {
+                // Hold the solved takeoff speed to the lip (coast above the band, build below) — and
+                // past the lip too while `hold_jump` says the takeoff is still outside the envelope the
+                // build certified. Bounded: steer drops the hold once the run-up is spent.
                 return Some(self.takeoff_cmd(i, a_g, env));
             }
         } else if i.hold_jump
@@ -616,7 +634,13 @@ impl Bhop {
                 jump: false,
             };
         }
-        self.ground_cmd(i, a_g, env, i.weave_cap)
+        // Tighten the serpentine onto the run-up axis for the last stretch — see [`ALIGN_REACH`].
+        let cap = if i.runway < ALIGN_REACH {
+            i.weave_cap.min(ALIGN_BAND)
+        } else {
+            i.weave_cap
+        };
+        self.ground_cmd(i, a_g, env, cap)
     }
 
     /// A prestrafe cmd, with sigma/flip bookkeeping. `band_cap` clamps the weave deadband — `∞` for
@@ -1331,6 +1355,55 @@ mod sim {
             );
             assert!(rw < LIP_REACH + 8.0, "entry {entry}: leaped {rw}u short of the lip");
         }
+    }
+
+    #[test]
+    fn curl_at_the_lip_holds_while_outside_the_certified_envelope() {
+        // The takeoff regime used to leap a committed curl on geometry alone — the frame the bot crossed
+        // the takeoff line — so whatever speed the speed-building serpentine happened to be at became
+        // the takeoff. `certify_curl` only ever proved the arc from inside `v_req · (1 ± CURL_V_HOLD_TOL)`
+        // and within `CURL_PSI_TOL` of the run-up axis, and on dm3's big gap every takeoff outside that
+        // envelope fell into the pit. steer measures the envelope and raises `hold_jump`; the controller
+        // must honour it *at* the lip, not only behind it.
+        let at_lip = |hold: bool| {
+            let mut w = World::grounded(415.0);
+            let mut b = Bhop::default();
+            let mut leaped = false;
+            for f in 0..12 {
+                let now = f as f32 * DT;
+                let input = Input {
+                    v_xy: w.v,
+                    on_ground: w.on_ground,
+                    bearing: 0.0,
+                    runway: LIP_REACH - 8.0, // at the lip, still short of the line
+                    eligible: false,
+                    zigzag: false,
+                    sustain: false,
+                    veto: false,
+                    committed: true,
+                    carry: false,
+                    hold_jump: hold,
+                    takeoff_speed: 450.0,
+                    curl_gain: 12.0,
+                    weave_cap: f32::INFINITY,
+                    guide_gain: 0.0,
+                    clear: f32::INFINITY,
+                    now,
+                };
+                let cmd = b.step(&input, &ENV).unwrap_or(run_cmd(0.0));
+                if cmd.jump {
+                    leaped = true;
+                    break;
+                }
+                pm_frame(&mut w, &cmd, false);
+            }
+            leaped
+        };
+        assert!(
+            !at_lip(true),
+            "leaped at the lip while steer held the takeoff outside the certified envelope"
+        );
+        assert!(at_lip(false), "held at the lip with the envelope satisfied");
     }
 
     #[test]

@@ -201,6 +201,30 @@ pub struct BotState {
     pub route_goal: Option<u32>,
     /// Whether a repath ran on this frame (cleared at the top of every steer pass).
     pub replanned: bool,
+    /// What this frame's steering decided about the leg it is flying. Diagnostic only.
+    ///
+    /// A fumbled jump and a jump the bot never attempted look identical in the rest of the record —
+    /// both are "grounded, then falling". Which one it was depends on the *kind* of the leg at the
+    /// route cursor and on whether the takeoff gate was open, and neither is derivable from the
+    /// route cursor alone (the leg's kind lives in the graph, and the gate is a velocity test against
+    /// a waypoint that moves). See [`crate::bot::steer`]'s run-up gate.
+    pub takeoff: TakeoffDiag,
+}
+
+/// One frame's view of the leg being flown and its takeoff gate. Diagnostic only.
+#[derive(Clone, Copy, Default)]
+pub struct TakeoffDiag {
+    /// The kind of the link at the route cursor, if the route has one.
+    pub leg: Option<rtx_nav::navmesh::LinkKind>,
+    /// Speed carried *toward the steering waypoint* — what the run-up gate measures.
+    pub runup: f32,
+    /// Distance to that waypoint (the gate's own escape hatch reads this).
+    pub wp: f32,
+    /// Floor left ahead along travel before it drops away, or `None` when not probed (not grounded, or
+    /// not on a jump leg). This is the quantity the takeoff is really racing.
+    pub lip: Option<f32>,
+    /// The run-up gate's verdict this frame.
+    pub ok: bool,
 }
 
 impl BotState {

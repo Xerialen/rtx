@@ -42,7 +42,7 @@ pub use lod::{CoarseCosts, Corridor};
 use physics::*;
 pub use physics::{
     attainable_speed, band_of, bhop_k, prestrafe_delivered_from, BAND_EDGES, BAND_FLOOR, BAND_V_MAX, BHOP_EFF,
-    CURL_LIP_REACH, CURL_V_HOLD_TOL, DOUBLE_ARC_PEAK, JUMP_APEX, MAX_SPEED, NBANDS, SJ_MARGIN,
+    CURL_LIP_REACH, CURL_PSI_TOL, CURL_V_HOLD_TOL, DOUBLE_ARC_PEAK, JUMP_APEX, MAX_SPEED, NBANDS, SJ_MARGIN,
 };
 use reach::Reach;
 pub use rocketjump::RJ_CERT_AIM_DEG;

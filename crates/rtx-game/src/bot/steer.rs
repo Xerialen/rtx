@@ -18,9 +18,11 @@ use crate::bot::swim;
 use crate::bsp::Bsp;
 use crate::defs::{Weapon, BOT_MOVE_SPEED as MOVE_SPEED, BUTTON_ATTACK, BUTTON_JUMP};
 use crate::game::cstring;
-use crate::math::{angle_vectors, angles_to, yaw_of};
+use crate::math::{angle_vectors, angles_to, wrap180, yaw_of};
 use crate::nav_build::PlatStatus;
-use crate::navmesh::{CellId, Corridor, LinkCosts, LinkKind, NavGraph, RJ_UNFIT_PENALTY};
+use crate::navmesh::{
+    CellId, Corridor, LinkCosts, LinkKind, NavGraph, CURL_PSI_TOL, CURL_V_HOLD_TOL, RJ_UNFIT_PENALTY,
+};
 use crate::nearfield;
 use rtx_nav::qphys::ORIGIN_TO_FEET;
 
@@ -262,6 +264,29 @@ fn walk_line_pts(graph: &NavGraph, bot: &BotState, cur_leg: Option<u32>) -> Opti
 /// The lip is "right here" — inside this distance the takeoff jump must fire *now* or the bot wedges
 /// against the step face; beyond it the run-up gate applies.
 const JUMP_NOW_DIST: f32 = 40.0;
+
+/// How far ahead the takeoff looks for the end of the floor. Three grid columns: far enough that the
+/// number is recorded (and readable in the audit) well before it matters, short enough to stay a
+/// handful of point probes on the frames that run it.
+const LIP_LOOKAHEAD: f32 = 96.0;
+/// Frames of travel (plus [`LIP_PAD`]) of remaining floor at which a jump leg stops waiting for its
+/// run-up and takes off regardless. Two, not one: the bot's own frame is not the engine's, and pmove
+/// can advance the player more than once between commands, so a one-frame window is not reliably the
+/// last frame that can still jump.
+const LIP_FRAMES: f32 = 2.0;
+const LIP_PAD: f32 = 4.0;
+/// How aligned with the leg the travel must be for the lip commitment to fire: merely *toward* it.
+///
+/// Only the sign is load-bearing, and deliberately so. The tempting reading is that a badly aligned
+/// takeoff is not worth making, but at a vanishing lip the alternative is not a better jump — it is
+/// walking into the gap, which has no air control and no chance. dm3's stair crest is the case that
+/// settled it: the cursor turns onto the jump leg with the velocity pointing 97° *away*, the bot swings
+/// 45° in the 0.08s of tread it has left, and arrives at the lip 62° off (0.46 of its speed toward the
+/// target) — under a 60° cone by a hair. Jumping there lands it: the arc keeps air-strafing to 229 ups
+/// toward the target and the platform's near edge is 76u away. Refusing there dropped it 300u to the
+/// floor and cost a full climb back, which is what made the route time out. So the only takeoff this
+/// rejects is one heading *away* from the leg, where a leap would carry the bot further from safety.
+const LIP_ALIGN_COS: f32 = 0.0;
 
 /// A fast Walk/Step can cross a 32u waypoint between frames while its bhop lobe is laterally offset.
 /// Treat crossing the waypoint's forward plane as progress while still inside this corridor. Without
@@ -1369,16 +1394,19 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // Signed along-corridor distance from the bot to a curl's takeoff (>0 behind the lip, <0 past it):
     // the run-up direction is the link's `from`→takeoff line. Used to trigger the leap on crossing the
     // takeoff *line* (not a radial ball the weave can skirt into a U-turn) and to gate the run-up aim.
-    let sj_progress: Option<f32> = if sj_curl {
+    // Carries the run-up *axis* as well, because that axis is the heading the certifier proved the arc
+    // from — see `sj_hold` below.
+    let sj_run_up: Option<(f32, f32)> = if sj_curl {
         if let (Some((takeoff, _)), Some(leg)) = (sj_takeoff, cur_leg) {
             let dir = (takeoff.xy() - graph.cell_origin(graph.link_source(leg)).xy()).normalize_or_zero();
-            Some((takeoff.xy() - origin.xy()).dot(dir))
+            Some(((takeoff.xy() - origin.xy()).dot(dir), yaw_of(dir)))
         } else {
             None
         }
     } else {
         None
     };
+    let sj_progress: Option<f32> = sj_run_up.map(|(p, _)| p);
     // Curl too-slow abort: the bhop takeoff regime leaps a curl *unconditionally* at the lip, so if the
     // bot won't build `v_req` by the lip from where it is now (shoved, blocked, or dropped onto the leg
     // slow by a repath), bail the leg here rather than leap short into the pit. Predict the lip speed
@@ -1414,15 +1442,37 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             sj_active = false;
         }
     }
-    let sj_hold = sj_active && {
-        match sj_takeoff {
-            Some((takeoff, v_req)) => {
+    // Hold the leap until the takeoff is inside the envelope the build actually certified.
+    //
+    // `certify_curl` proves one arc from one *band*: a takeoff speed within `v_req · (1 ±
+    // CURL_V_HOLD_TOL)` and a velocity within `CURL_PSI_TOL` of the run-up axis. The controller,
+    // though, leaps a committed curl on geometry alone — the frame the bot crosses the takeoff line —
+    // so whatever speed and heading the speed-building serpentine happens to be at becomes the
+    // takeoff, certified or not. dm3's big gap (link 35450, `v_req` 443.8) shows what that costs: of
+    // 31 live takeoffs, all 17 inside the envelope landed on the far shelf, and all 14 outside it fell
+    // into the pit — 427-432 ups (under the band floor of 430) or 14-26° off the axis. A fall there is
+    // not a small error: the bot climbs the whole spiral again, which is why the route timed out more
+    // often than it arrived.
+    //
+    // So while any run-up is left (`p > 0`), stay on the ground and keep building. The wait is bounded
+    // by construction — the bot is travelling toward the line, so `p` reaches 0 and it commits — and it
+    // is cheap: ground prestrafe adds ~500 ups/s, so the last 28u of shelf is worth ~40 ups.
+    let sj_hold = sj_active
+        && match (sj_takeoff, sj_run_up) {
+            // A curl: the full certified envelope.
+            (Some((_, v_req)), Some((p, psi))) => {
+                let in_band = speed >= v_req * (1.0 - CURL_V_HOLD_TOL);
+                let on_axis = wrap180(psi - yaw_of(v_xy)).abs() <= CURL_PSI_TOL;
+                p > 0.0 && !(in_band && on_axis)
+            }
+            // A straight speed jump: run-up and leap are collinear, so heading takes care of itself and
+            // the takeoff point is a radial ball rather than a line.
+            (Some((takeoff, v_req)), None) => {
                 let to_edge = takeoff.xy() - origin.xy();
                 (to_edge.length() < 48.0 || to_edge.dot(v_xy) < 0.0) && speed < v_req * 0.9
             }
-            None => false,
-        }
-    };
+            _ => false,
+        };
 
     // Near-field ensure (see [`crate::nearfield`]): build/refresh the fine 8u clearance grid whenever
     // the bot is doing GROUNDED locomotion on a walk/step/approach leg — walking, zigzagging, OR
@@ -1585,7 +1635,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                     // Curl run-up: aim at the takeoff (follow the corridor) while still behind the lip —
                     // grounded *or* briefly airborne (a bumped or carried-airborne entry) — so it never
                     // curls toward the offset landing while still over the run-up and pulls off the edge.
-                    (Some((takeoff, _)), Some(p)) if p > bhop::LIP_REACH => takeoff,
+                    // ...and keep aiming there while the leap is held for its envelope: the aim is what
+                    // the speed-building weave centres on, so switching to the landing bearing mid-hold
+                    // would turn the bot off the run-up axis — the very thing the hold is waiting for.
+                    (Some((takeoff, _)), Some(p)) if p > bhop::LIP_REACH || sj_hold => takeoff,
                     // Straight speed jump on the ground: aim at the takeoff (collinear → no-op vs landing).
                     (Some((takeoff, _)), None) if on_ground => takeoff,
                     _ => waypoint,
@@ -2082,11 +2135,43 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // standstill and air-accelerating into a stub arc. Escapes at the lip and when disabled keep it from
     // wedging; `force_jump` (the stuck detector) and the bhop controller bypass it too.
     let runup_ok = jump_runup_ok(v_xy, to_wp, dist, jump_runup, jump_maxspeed);
-    if on_ground
-        && (force_jump
-            || bhop_cmd.is_some_and(|c| c.jump)
-            || (matches!(kind, Some(LinkKind::JumpGap | LinkKind::DoubleJump)) && runup_ok))
-    {
+    let plain_jump_leg = matches!(kind, Some(LinkKind::JumpGap | LinkKind::DoubleJump));
+    // How much floor is left along travel. The run-up gate is a per-frame test on a quantity the bot's
+    // own motion changes — it holds the takeoff while the bot turns onto the jump line, and the turn
+    // takes most of a short ledge — so the gate is in a race with the edge and can lose it by one
+    // frame. `jump_runup_ok`'s own escape ("the lip is near, jump now") cannot settle that race: it
+    // reads `dist`, the distance to the waypoint *across the gap*, which at takeoff is the whole jump
+    // (110u on dm3's spiral crest) and only falls under `JUMP_NOW_DIST` mid-flight. Measure the floor
+    // instead — see [`crate::hazard::lip_ahead`].
+    let lip = if on_ground && plain_jump_leg && speed > LEDGE_MIN_SPEED {
+        let vdir = v_xy.normalize_or_zero();
+        bsp.filter(|_| vdir != Vec2::ZERO).and_then(|b| {
+            crate::hazard::lip_ahead(
+                &|p| b.is_solid(p),
+                origin - Vec3::new(0.0, 0.0, ORIGIN_TO_FEET),
+                Vec3::new(vdir.x, vdir.y, 0.0),
+                LIP_LOOKAHEAD,
+            )
+        })
+    } else {
+        None
+    };
+    // Last-frame commitment: the floor runs out within a frame or two of travel, and the bot is going
+    // roughly the way the leg wants (so this can't fire it off a side edge while it is still turning
+    // in). Taking off with imperfect alignment beats walking into the gap — the arc has air control,
+    // the walk has nothing.
+    let lip_now = lip.is_some_and(|d| d <= speed * frametime * LIP_FRAMES + LIP_PAD)
+        && v_xy.normalize_or_zero().dot(to_wp.normalize_or_zero()) > LIP_ALIGN_COS;
+    // Record what the gate saw, not just its verdict: a takeoff that never fires and one that fires a
+    // frame after the lip are the same trace without the leg kind, the carried speed and the floor left.
+    bot.takeoff = state::TakeoffDiag {
+        leg: kind,
+        runup: v_xy.dot(to_wp.normalize_or_zero()),
+        wp: dist,
+        lip,
+        ok: (runup_ok || lip_now) && plain_jump_leg,
+    };
+    if on_ground && (force_jump || bhop_cmd.is_some_and(|c| c.jump) || (plain_jump_leg && (runup_ok || lip_now))) {
         buttons |= BUTTON_JUMP;
     }
     // Mid-air (double) jump: rtx grants one air jump per air travel. On a double-jump leg, spend it

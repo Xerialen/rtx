@@ -302,6 +302,30 @@ pub fn ledge_ahead(is_solid: &impl Fn(Vec3) -> bool, feet: Vec3, dir: Vec3) -> b
     })
 }
 
+/// Stride of the [`lip_ahead`] march. Fine enough that the answer is a usable *distance* rather than a
+/// bucket — the caller compares it against a frame of travel (a few units at hop speed).
+const LIP_STEP: f32 = 4.0;
+
+/// How far ahead of `feet`, along horizontal unit `dir`, the walkable floor ends — `None` if it holds
+/// out past `reach`.
+///
+/// This is [`ledge_ahead`] as a measurement instead of a verdict, and the reason to want the number is
+/// takeoff timing: a bot on a jump leg has to press jump on the last frame that still has floor under
+/// it, and "an edge is somewhere in the next 72u" cannot answer that. Uses the same walkable-descent
+/// tolerance, so a staircase reads as continuous floor and only a real drop stops the march. Pure over
+/// `is_solid`.
+pub fn lip_ahead(is_solid: &impl Fn(Vec3) -> bool, feet: Vec3, dir: Vec3, reach: f32) -> Option<f32> {
+    let mut d = 0.0;
+    while d <= reach {
+        let p = feet + dir * d + Vec3::new(0.0, 0.0, 8.0);
+        if drop_below(is_solid, p, 8.0 + STEP_HEIGHT * (1.0 + d / GRID)) {
+            return Some(d);
+        }
+        d += LIP_STEP;
+    }
+    None
+}
+
 /// A sideways steering nudge that keeps a walking bot off drop edges beside its path. Probes a
 /// body-width to each side of `dir` (a touch ahead) for a drop; returns a horizontal unit vector
 /// pushing *away* from a one-sided drop, or zero when both sides are safe (open floor — no nudge) or
@@ -375,6 +399,35 @@ mod tests {
     // Oracle helpers: a flat floor at z ≤ 0 by default.
     fn floor(p: Vec3) -> bool {
         p.z <= 0.0
+    }
+
+    #[test]
+    fn lip_ahead_measures_the_distance_to_the_edge() {
+        // Floor out to x = 100, void beyond. Standing at x = 0 the edge is 100u ahead; walking toward it
+        // the number has to shrink, because the takeoff that reads it is deciding "is this the last frame
+        // that still has floor under me". A bool ("an edge is somewhere in the next 72u") cannot answer
+        // that, which is why this exists alongside `ledge_ahead`.
+        let solid = |p: Vec3| p.z <= 0.0 && p.x <= 100.0;
+        let east = Vec3::X;
+        let at = |x: f32| lip_ahead(&solid, Vec3::new(x, 0.0, 0.0), east, 96.0);
+        // The last column *with* floor still reads as floor, so the answer is the first probe past it.
+        assert_eq!(at(20.0), Some(84.0));
+        assert_eq!(at(95.0), Some(8.0));
+        assert_eq!(at(100.0), Some(4.0));
+        // Away from the edge, and out of reach of the probe: no answer rather than a wrong one.
+        assert_eq!(at(0.0), None, "the edge is 100u off, past the 96u reach");
+        assert_eq!(
+            lip_ahead(&solid, Vec3::new(20.0, 0.0, 0.0), -east, 96.0),
+            None,
+            "walking away from the edge finds no lip"
+        );
+        // A staircase descending one step per grid column is floor, not a lip.
+        let stairs = |p: Vec3| p.z <= -(p.x / GRID).floor() * STEP_HEIGHT;
+        assert_eq!(
+            lip_ahead(&stairs, Vec3::ZERO, east, 96.0),
+            None,
+            "a walkable descent is not an edge"
+        );
     }
 
     #[test]

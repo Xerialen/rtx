@@ -602,6 +602,26 @@ fn ax_frozen(b: &state::BotState) -> rtx_auditlog::Frozen {
     }
 }
 
+/// The audit's mirror of the leg kind at the route cursor.
+fn ax_leg(leg: Option<rtx_nav::navmesh::LinkKind>) -> rtx_auditlog::Leg {
+    use rtx_auditlog::Leg as L;
+    use rtx_nav::navmesh::LinkKind as K;
+    match leg {
+        None => L::None,
+        Some(K::Walk) => L::Walk,
+        Some(K::Step) => L::Step,
+        Some(K::Drop) => L::Drop,
+        Some(K::JumpGap) => L::Jump,
+        Some(K::DoubleJump) => L::DoubleJump,
+        Some(K::SpeedJump) => L::SpeedJump,
+        Some(K::Plat) => L::Plat,
+        Some(K::Teleport) => L::Teleport,
+        Some(K::Hook) => L::Hook,
+        Some(K::RocketJump) => L::RocketJump,
+        Some(K::Swim) => L::Swim,
+    }
+}
+
 /// Capture one bot frame's sensor snapshot for the per-bot audit ring (`rtx_bot_debug`). Reads only —
 /// a handful of field copies, no allocation, no formatting — so it is cheap to run every frame. The
 /// caller pushes the returned frame under the `rtx_bot_debug` gate.
@@ -651,6 +671,7 @@ fn capture_frame(
     // `SUBMERGED`, and "why did it not surface" is unanswerable without knowing whether it could.
     flags |= af::SUBMERGED * (ent.v.waterlevel >= 3.0) as u16;
     flags |= af::REPLANNED * b.replanned as u16;
+    flags |= af::TAKEOFF_OK * b.takeoff.ok as u16;
     flags |= af::AIR_ABOVE
         * game
             .nav
@@ -675,6 +696,10 @@ fn capture_frame(
         route_pos: bpos as u16,
         band: b.route_bands.get(bpos).copied().unwrap_or(0) as i16,
         frozen: ax_frozen(b),
+        leg: ax_leg(b.takeoff.leg),
+        runup: b.takeoff.runup,
+        wp: b.takeoff.wp,
+        lip: b.takeoff.lip.unwrap_or(-1.0),
         cell: b.cell.map_or(-1, |c| c as i32),
         target: b.route_target.map_or(-1, |c| c as i32),
         route_goal: b.route_goal.map_or(-1, |c| c as i32),
