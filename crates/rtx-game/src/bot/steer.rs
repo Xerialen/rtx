@@ -204,11 +204,6 @@ fn inside_box(p: Vec3, lo: Vec3, hi: Vec3) -> bool {
 /// swimmer is level with its target and ordinary swimming reaches it.
 const WATER_EXIT_RISE: f32 = 16.0;
 
-/// How far ahead to trace for the bank's face when squaring up to climb out. Comfortably past the
-/// engine's own 24-unit probe, so the normal comes back even when the lip is still a stroke away and
-/// the bot has time to finish turning before it arrives.
-const WATER_EXIT_FACE_PROBE: f32 = 56.0;
-
 /// View pitch held while climbing out, in Quake's convention where negative looks up. Facing the
 /// bank is what `PM_CheckWaterJump` reads; tilting up is what carries the bot over the lip after the
 /// engine launches it.
@@ -647,8 +642,21 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 // bot straddles the boundary, and requiring membership drops the commitment on the
                 // frames it exists to survive. `windowed_route` already falls back to an unrestricted
                 // search when the window cannot reach the target.
+                //
+                // Released on *progress* as well as distance, and that second release matters more
+                // than it looks. Held to the 48u test alone the corridor only advances once the bot is
+                // almost on top of the interim, so the route it plans keeps shrinking to one or two
+                // legs — and a route that short is shorter than the eyes look ahead, which drops the
+                // view onto the distant objective over and over. Advancing the corridor while a few
+                // legs still remain keeps the interim the few seconds ahead it was meant to be. It is
+                // monotone in progress, so it cannot bring back the boundary flip the commitment
+                // exists to prevent.
+                let legs_left = bot.route.len().saturating_sub(bot.route_pos);
                 let keep = bot.interim.filter(|&(g, i)| {
-                    g == target && i != bot_cell && (graph.cell_origin(i) - origin).length() > INTERIM_REACHED
+                    g == target
+                        && i != bot_cell
+                        && (graph.cell_origin(i) - origin).length() > INTERIM_REACHED
+                        && legs_left > EYE_LOOKAHEAD_LEGS
                 });
                 let interim = keep.map_or(c.interim, |(_, i)| i);
                 bot.interim = Some((target, interim));
@@ -1008,8 +1016,24 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         } else {
             waypoint
         }
-    } else {
+    } else if bsp.is_none_or(|b| {
+        b.hull0_trace(origin + Vec3::new(0.0, 0.0, 22.0), target_origin)
+            .fraction
+            >= 1.0
+    }) {
+        // The objective, but only when the eyes can actually reach it.
+        //
+        // Looking where you are going is right; looking *through a wall* at where you are going is
+        // both an aimbot tell and a real cost, because the hop bearing follows the eyes — so a
+        // wall-blocked stare is a U-turn waiting to happen, and it earned one on the climb from the
+        // pool up to the yellow armour. `hull0_trace` is the engine's own `traceline`: a widthless ray,
+        // which is the right question for line of sight.
         target_origin
+    } else if speed > 20.0 {
+        // Blocked: look where we are travelling, exactly as the combat-blind case does.
+        origin + Vec3::new(v_xy.x, v_xy.y, 0.0)
+    } else {
+        waypoint
     };
 
     let goal_dist = (target_origin.xy() - origin.xy()).length();
@@ -2306,6 +2330,11 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             MOVE_SPEED,
         );
 
+        // A corridor look-ahead for the *horizontal* was tried here and removed: averaging the next
+        // few legs into one bearing did not settle the ascent (the zigzag count moved around without
+        // trending), which means the swing is not the route's staircase being followed faithfully. It
+        // is downstream of here. Left as a note so the same shape is not tried a third time.
+
         // Everything above composes the wish from the route, which knows nothing about what is in
         // the way. `PM_WaterMove` clips against the planes it hits, so a wish pressed square into a
         // corner nets zero and the bot hangs there at full effort. Deflect it around the solid.
@@ -2345,39 +2374,48 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // through a roof, so under a bridge deck the stance is a bot holding a 45-degree view and a
         // full upward wish against the underside of the span until the timeout releases it — which is
         // the brief stick under dm3's bridge. No surface overhead, no climb: swim the route instead.
+        // Which way out, found by asking the engine rather than inferring it.
+        //
+        // Two earlier versions guessed the bank: the bearing to the next cell, then the struck plane's
+        // normal. Both are indirections, and both fail in the case that matters most — a bot that
+        // fumbled a hop and dropped in beside a wall, whose route points somewhere else and whose
+        // nearest surface is not the one it can climb. `swim::exit_yaw` mirrors `PM_CheckWaterJump`'s
+        // probe and scans outward from the route's own bearing, so the answer is the most
+        // forward-facing direction that genuinely works, and `None` means this is not a way out at all
+        // — in which case the stance stands down and the route is swum rather than pressed.
         let exit_leg = cur_leg.filter(|_| matches!(kind, Some(LinkKind::Swim)) && surface.is_some());
         let held = bot
             .water_exit
             .is_some_and(|c| Some(c.leg) == exit_leg && now - c.since < WATER_EXIT_MAX);
         if !held {
+            let face =
+                bsp.and_then(|b| swim::exit_yaw(&|p| b.pointcontents(p), origin, (waypoint - origin).truncate()));
             bot.water_exit = exit_leg
-                .filter(|_| waypoint.z > origin.z + WATER_EXIT_RISE)
+                .filter(|_| waypoint.z > origin.z + WATER_EXIT_RISE && face.is_some())
                 .map(|leg| Commit { leg, since: now });
+            // Chosen once, with the commitment, and held with it. Which directions the engine grants
+            // depends on the bot's own height, so a rising bot that re-asks every frame watches the set
+            // change under it and swings between members of it. The grant only has to hold at the
+            // instant of the jump, so choosing once is both steadier and no less correct.
+            bot.water_exit_face = bot.water_exit.and(face);
         }
-        if bot.water_exit.is_some() {
-            let mut out = (waypoint - origin).truncate().normalize_or_zero();
-            // Square to the bank, not merely toward it.
-            //
-            // `PM_CheckWaterJump`'s probe is a single *point* 24 units along the flattened view which
-            // has to land inside solid. Off perpendicular by an angle it reaches only `24·cos` into the
-            // lip, so an oblique approach is refused outright — which is why a bot whose route runs
-            // along the shore can press against it indefinitely and never be let out. The direction
-            // that penetrates furthest is the lip's own normal, and the trace hands it over, so face
-            // that rather than trusting the bearing to the next cell to be perpendicular to anything.
-            if let Some(bsp) = bsp {
-                let ahead = origin + (out * WATER_EXIT_FACE_PROBE).extend(0.0);
-                let n = -bsp.hull1_trace(origin, ahead).plane_normal.truncate();
-                if n.length() > 0.5 {
-                    out = n.normalize_or_zero();
-                }
-            }
-            if out != Vec2::ZERO {
+        match bot.water_exit_face.filter(|_| bot.water_exit.is_some()) {
+            Some(out) => {
                 look = Vec3::new(WATER_EXIT_PITCH, yaw_of(out), 0.0);
                 move_world = Vec3::new(out.x, out.y, 0.0) * MOVE_SPEED + Vec3::Z * MOVE_SPEED;
             }
+            // Not climbing out: leave the view to the eye chain above.
+            //
+            // Pointing it along the wish was tried, so that an ascending swimmer would look up rather
+            // than flatly ahead. It looked worse, not better: the horizontal wish still swings, and
+            // aiming the eyes straight down it removed the only smoothing in front of that swing. The
+            // view should follow the swim, but only once the swim itself is steady.
+            None => {}
         }
     } else {
-        bot.water_exit = None; // out of the water: the haul-out is over, however it ended
+        // Out of the water: the haul-out is over, however it ended.
+        bot.water_exit = None;
+        bot.water_exit_face = None;
     }
 
     // Bundle the frame's decisions into one command for the combat/grenade overlays to mutate.

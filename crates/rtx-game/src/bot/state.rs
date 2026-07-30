@@ -163,6 +163,14 @@ pub struct BotState {
     /// the bot is actively *rising through*, so re-deciding each frame snaps the view between the
     /// exit stance and the path look a few units apart, several times a second.
     pub water_exit: Option<Commit>,
+    /// The direction the committed haul-out is facing, fixed when it armed.
+    ///
+    /// Recomputed per frame it is not stable: which directions `PM_CheckWaterJump` grants depends on
+    /// the bot's own height, so a rising bot sees the set change under it and the stance swings between
+    /// members of it — the climb oscillating in heading for no reason the bot could act on. The grant
+    /// only has to hold at the instant of the jump, so choosing once and holding is both steadier and
+    /// no less correct.
+    pub water_exit_face: Option<glam::Vec2>,
     /// Rocket-jump traversal machine (see [`RjState`]): stance → jump → fire → ride the blast arc
     /// onto a high ledge.
     pub rj: RjState,

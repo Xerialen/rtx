@@ -26,7 +26,9 @@
 //! opinion about it. Below the reserve, with air overhead to reach, surfacing outranks everything;
 //! one breath refills the tank and the crossing resumes.
 
-use glam::Vec3;
+use glam::{Vec2, Vec3};
+
+use rtx_nav::bsp::{CONTENTS_EMPTY, CONTENTS_SOLID};
 
 /// What the bot can perceive about being in water this frame.
 #[derive(Clone, Copy, Debug)]
@@ -182,6 +184,61 @@ pub fn deflect(trace: &impl Fn(Vec3, Vec3) -> (f32, Vec3), origin: Vec3, wish: V
     }
 }
 
+/// The direction to face to be let out of the water here, if there is one.
+///
+/// Not a guess at where the bank is — the engine's own question, asked directly. `PM_CheckWaterJump`
+/// probes a single point 24 units along the *flattened view*, and grants the climb only when that
+/// point is `CONTENTS_SOLID` 8 above the origin and `CONTENTS_EMPTY` 32 above it. Nothing else about
+/// the bot matters: not where its route goes, not which way it is swimming, only where it is looking.
+///
+/// So the way to leave the water is to face a direction that satisfies that, and the way to find one
+/// is to try. Earlier attempts inferred it — the bearing to the next cell, then the struck plane's
+/// normal — and both are indirections that fail in the case that matters most: a bot that has just
+/// fumbled a hop and dropped in beside a wall, whose route points somewhere else entirely and whose
+/// nearest surface is not the one it can climb. Scanned outward from `prefer` so the answer is the
+/// most forward-facing one available; `None` means this spot is not a way out at all, and the caller
+/// should swim on rather than press.
+pub fn exit_yaw(contents: &impl Fn(Vec3) -> i32, at: Vec3, prefer: Vec2) -> Option<Vec2> {
+    let base = if prefer == Vec2::ZERO {
+        Vec2::X
+    } else {
+        prefer.normalize()
+    };
+    let granted = |d: Vec2| {
+        let spot = at + (d * WATERJUMP_PROBE_AHEAD).extend(0.0);
+        contents(spot + Vec3::Z * WATERJUMP_PROBE_LOW) == CONTENTS_SOLID
+            && contents(spot + Vec3::Z * WATERJUMP_PROBE_HIGH) == CONTENTS_EMPTY
+    };
+    // Straight ahead first, then alternating either side in `EXIT_SCAN_STEP` increments out to a full
+    // half turn — so a bank the route already points at wins, and one behind the bot is still found.
+    let mut off = 0.0f32;
+    while off <= 180.0 {
+        for signed in [off, -off] {
+            let (s, c) = signed.to_radians().sin_cos();
+            let d = Vec2::new(base.x * c - base.y * s, base.x * s + base.y * c);
+            if granted(d) {
+                return Some(d);
+            }
+            if off == 0.0 {
+                break; // +0 and -0 are the same direction
+            }
+        }
+        off += EXIT_SCAN_STEP;
+    }
+    None
+}
+
+/// How finely [`exit_yaw`] scans. The probe is a single point 24 units out, so 15 degrees moves it
+/// about 6 units sideways — fine enough not to step over a doorway-width opening in the bank.
+const EXIT_SCAN_STEP: f32 = 15.0;
+
+/// `PM_CheckWaterJump`'s probe, verbatim: 24 units along the flattened view, solid at +8, empty at
+/// +32. Empty and not merely non-solid — water at the high probe fails it, which is what stops a bot
+/// "climbing out" onto something still submerged.
+const WATERJUMP_PROBE_AHEAD: f32 = 24.0;
+const WATERJUMP_PROBE_LOW: f32 = 8.0;
+const WATERJUMP_PROBE_HIGH: f32 = 32.0;
+
 /// How far ahead the deflection looks for a surface to slide along.
 ///
 /// Only anticipation now that the deflection keys on the plane rather than on proximity: a wall the
@@ -217,6 +274,7 @@ pub const AIR_RESERVE: f32 = 3.0;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rtx_nav::bsp::CONTENTS_WATER;
 
     /// The bot sits at z 0; `air_above` places a surface far enough overhead that the float target
     /// is well above it (so "reachable air" reads as a strong upward ask, as it used to).
@@ -489,6 +547,54 @@ mod tests {
             );
         }
         assert!(first.y > 0.0, "should commit to the waypoint's flank, got {first}");
+    }
+
+    /// Leaving the water is entirely about where the bot looks, so the direction has to be *found*,
+    /// not inferred — and the case that decides it is a bot that fumbled a hop into the water beside a
+    /// wall, whose route points somewhere else.
+    #[test]
+    fn the_exit_direction_is_the_one_the_engine_grants() {
+        // A bank across +x whose walkable top is 16 above the bot, so `PM_CheckWaterJump`'s probe finds
+        // solid at +8 and air at +32. Everything else is water.
+        let w = |p: Vec3| {
+            if p.x >= 24.0 && p.z < 16.0 {
+                CONTENTS_SOLID
+            } else if p.z < 0.0 {
+                CONTENTS_WATER
+            } else {
+                CONTENTS_EMPTY
+            }
+        };
+        let at = Vec3::new(0.0, 0.0, -10.0);
+
+        // Already pointing at it: keep pointing at it.
+        let east = exit_yaw(&w, at, Vec2::new(1.0, 0.0)).expect("the bank is right there");
+        assert!(east.x > 0.9, "should face the bank, got {east}");
+
+        // The route runs *along* the shore — the old bearing-based guess would face north and press
+        // forever. The scan must still find the bank to the east.
+        let along = exit_yaw(&w, at, Vec2::new(0.0, 1.0)).expect("the bank is still there");
+        assert!(along.x > 0.5, "must turn toward the bank, got {along}");
+
+        // Route pointing flat away from it — the fumbled-hop case. Still found.
+        let away = exit_yaw(&w, at, Vec2::new(-1.0, 0.0)).expect("a bank behind is still a bank");
+        assert!(away.x > 0.5, "must turn round to the bank, got {away}");
+
+        // Open water: no direction works, and saying so is what stops the bot pressing at nothing.
+        let sea = |p: Vec3| if p.z < 0.0 { CONTENTS_WATER } else { CONTENTS_EMPTY };
+        assert_eq!(exit_yaw(&sea, at, Vec2::new(1.0, 0.0)), None);
+
+        // A wall too tall to climb: solid at +8 *and* at +32, so the engine refuses and so must this.
+        let cliff = |p: Vec3| {
+            if p.x >= 24.0 {
+                CONTENTS_SOLID
+            } else if p.z < 0.0 {
+                CONTENTS_WATER
+            } else {
+                CONTENTS_EMPTY
+            }
+        };
+        assert_eq!(exit_yaw(&cliff, at, Vec2::new(1.0, 0.0)), None);
     }
 
     /// Never more than was asked for, whatever the geometry does.
