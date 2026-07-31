@@ -324,6 +324,28 @@ fn jump_runup_ok(v_xy: Vec2, to_wp: Vec2, dist: f32, frac: f32, maxspeed: f32) -
     v_xy.dot(to_wp.normalize_or_zero()) >= frac * maxspeed
 }
 
+/// How long a committed chained speed-jump leg's first velocity reading gets to settle before the
+/// leg-hold chain-entry guard judges it (see [`chain_entry_hold_expired`]) — a landing carries real
+/// speed the instant physics applies it, but the very first frame or two can read low from settling
+/// noise. Well under [`STUCK_TIME`] (0.7s), the fastest existing watchdog that would otherwise fire
+/// first on a chained leg held in place.
+const CHAIN_ENTRY_GRACE: f32 = 0.3;
+
+/// Whether the leg-hold chain-entry guard should divert *this tick*: a leg is committed (`commit`),
+/// grounded (not mid-leap — diverting an airborne bot is meaningless, it's already committed to the
+/// jump's physics), past its settling grace, and still [`NavGraph::chain_entry_blocked`] at the
+/// bot's real speed (`blocked`, precomputed by the caller since it needs the graph).
+///
+/// The timing/state half of the check, split out from the graph lookup the same way
+/// [`crate::navmesh::NavGraph::chain_entry_leg_ok`] splits the speed predicate from
+/// `chain_entry_exclusions` — so the grace window and the ground/commit gating are directly
+/// testable without a live `NavGraph`. See the call site for why this exists *in addition to* the
+/// leg-transition guard: a chained jump committed at a borderline speed has no runway to build the
+/// rest on, so without this it just holds until an existing watchdog eventually notices.
+fn chain_entry_hold_expired(commit: Option<Commit>, now: f32, on_ground: bool, blocked: bool) -> bool {
+    on_ground && blocked && commit.is_some_and(|c| now - c.since > CHAIN_ENTRY_GRACE)
+}
+
 /// How many legs ahead the winding gate looks, and the total heading change (degrees) over them that
 /// counts as "too tight to hop". A straight corridor reads ~0; a spiral staircase's curved treads
 /// read tens of degrees per leg.
@@ -1362,6 +1384,35 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 bot.repath_time = now;
                 sj_active = false;
             }
+        }
+    }
+    // Leg-hold chain-entry guard: the transition-instant check above only catches a commit that was
+    // *already* too slow. A chained jump committed at a borderline speed — enough to clear the loose
+    // transition threshold, not enough to actually fly — has, by definition (no runway of its own),
+    // nowhere to build the rest: `sj_hold` below just holds it on the ground circle-strafing in
+    // place, and without this check nothing notices until either this fires or the generic 4s
+    // `speedjump_stall` watchdog does. Measured live: a second dual-instrument capture on the
+    // transition-only guard still found 21 ring stalls, 20 of them under half of v_req and 13 at
+    // `route_pos == 1` — most of them `displacement` (the *generic* stuck watchdog, `STUCK_TIME` ==
+    // 0.7s, firing first because a bot holding in place barely displaces) rather than the sj-specific
+    // 4s one, which a chained hold essentially never survives to reach. So this has to run every
+    // tick, not just at commit, and has to beat 0.7s.
+    //
+    // [`CHAIN_ENTRY_GRACE`] gives a landing's first velocity reading a moment to settle before this
+    // judges it — the transition check has none, deliberately (an outright standstill needs no
+    // grace) — and `on_ground` excludes the actual airborne leap: once launched the bot is committed
+    // to the physics of the jump, and diverting mid-arc is meaningless. Fires at most once per
+    // commit (clearing `bot.sj` takes it out of `sj_active` for the rest of this leg), and reuses the
+    // same penalize+repath mechanism as every other watchdog here — no `note_stall`: this is still a
+    // diversion before a takeoff was ever attempted, not a failure to log.
+    if sj_active && host.cvar_bool(c"rtx_bot_chain_entry_gate") {
+        let blocked = bot.sj.is_some_and(|c| !graph.chain_entry_leg_ok(Some(c.leg), speed));
+        if chain_entry_hold_expired(bot.sj, now, on_ground, blocked) {
+            penalize_leg(bot, cur_leg, kind, now);
+            bot.sj = None;
+            bot.route.clear();
+            bot.repath_time = now;
+            sj_active = false;
         }
     }
     if sj_active {
@@ -2688,5 +2739,28 @@ mod tests {
         assert!(!jump_runup_ok(Vec2::new(0.0, 300.0), fwd, 200.0, 0.5, 320.0));
         // Gate disabled → always allowed (today's behavior).
         assert!(jump_runup_ok(Vec2::ZERO, fwd, 200.0, 0.0, 320.0));
+    }
+
+    /// Reproduces the leg-hold gap the transition-only guard left open: a chained speed jump
+    /// committed at a borderline speed has no runway to build the rest on, so `sj_hold` just holds
+    /// it grounded — and a live dual-instrument capture on the transition-only guard alone still
+    /// found 21 ring stalls (20 under half of v_req, 13 at `route_pos == 1`), mostly `displacement`
+    /// (the generic 0.7s stuck watchdog winning the race against the 4s sj-specific one). This is
+    /// the every-tick check that closes it: fires only once its grace has passed, only while
+    /// grounded (never mid-leap), and only when the leg is still genuinely blocked.
+    #[test]
+    fn chain_entry_hold_expired_fires_only_grounded_past_grace_and_blocked() {
+        let commit = Some(Commit { leg: 7, since: 10.0 });
+        // Still inside the settling grace → not yet.
+        assert!(!chain_entry_hold_expired(commit, 10.1, true, true));
+        // Past grace, but the bot actually has the speed now (or this isn't a chained link at all)
+        // → nothing to divert.
+        assert!(!chain_entry_hold_expired(commit, 10.4, true, false));
+        // Past grace and blocked, but airborne — already committed to the leap's physics.
+        assert!(!chain_entry_hold_expired(commit, 10.4, false, true));
+        // Past grace, blocked, grounded → fires.
+        assert!(chain_entry_hold_expired(commit, 10.4, true, true));
+        // No commit at all (not on a speed-jump leg, or already diverted) → nothing to divert.
+        assert!(!chain_entry_hold_expired(None, 10.4, true, true));
     }
 }
