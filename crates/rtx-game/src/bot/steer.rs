@@ -21,7 +21,8 @@ use crate::game::cstring;
 use crate::math::{angle_vectors, angles_to, wrap180, yaw_of};
 use crate::nav_build::PlatStatus;
 use crate::navmesh::{
-    CellId, Corridor, LinkCosts, LinkKind, NavGraph, CURL_PSI_TOL, CURL_V_HOLD_TOL, RJ_UNFIT_PENALTY,
+    CellId, Corridor, LinkCosts, LinkKind, NavGraph, CLOSED_GATE_PENALTY, CURL_PSI_TOL, CURL_V_HOLD_TOL,
+    RJ_UNFIT_PENALTY,
 };
 use crate::nearfield;
 use rtx_nav::qphys::ORIGIN_TO_FEET;
@@ -630,6 +631,33 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // own escape-hatch cvar. `speed` seeds the start band, so a mid-run re-path keeps a hop
         // chain alive. Falls back to the plain cell A* (bands all-zero) when off.
         let use_bands = host.cvar_bool(c"rtx_bot_bhop") && host.cvar_bool(c"rtx_bot_bandplan");
+        // Chain-entry gate (`rtx_bot_chain_entry_gate`, on by default): surcharge, for *this search
+        // only*, any chained speed jump leaving `bot_cell` the bot's real speed can't carry (see
+        // `NavGraph::chain_entry_exclusions` for why the banded planner's own feasibility check
+        // misses exactly this case). Shadows `costs` for the rest of this repath block — the corridor,
+        // banded/plain search and the priced-out fallback all see the exclusion; nothing outside this
+        // block (the gate-errand route, the watchdogs) does. A bot that later reaches the same cell
+        // carrying real speed gets the ordinary, unexcluded query.
+        let chain_gate_penalties: Vec<(u32, f32)>;
+        let costs = if host.cvar_bool(c"rtx_bot_chain_entry_gate") {
+            let excluded: Vec<u32> = graph.chain_entry_exclusions(bot_cell, speed).collect();
+            if excluded.is_empty() {
+                costs
+            } else {
+                chain_gate_penalties = costs
+                    .penalties
+                    .iter()
+                    .copied()
+                    .chain(excluded.into_iter().map(|li| (li, CLOSED_GATE_PENALTY)))
+                    .collect();
+                LinkCosts {
+                    penalties: &chain_gate_penalties,
+                    ..costs
+                }
+            }
+        } else {
+            costs
+        };
         // Where can we actually head? Unreachability is pure topology (every dynamic cost term is
         // finite — see `navmesh::reach`), so resolve the target *before* searching instead of
         // discovering a dead goal by watching a whole-graph search exhaust and then flooding to find

@@ -62,6 +62,15 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // Bots plan over speed bands (kinodynamic A*), crediting speed carried between legs so
         // chained speed jumps and hot corridors route; on by default. Escape hatch: 0 → plain A*.
         ("rtx_bot_bandplan", Bool(true)),
+        // Chain-entry gate: when a fresh repath's first leg from the bot's current cell is a
+        // *chained* speed jump (no runway of its own — see `navmesh::SpeedJumpTraversal::chained`)
+        // and the bot's actual speed is under half the link's `v_req`, exclude that link from just
+        // this one search and replan. Measured on dm3 (two sub-`MAX_SPEED` chained links, v_req
+        // 296/304): the banded planner's start band floors at `MAX_SPEED` regardless of a bot's real
+        // speed, so it read those links as already flyable from a dead stop — 0% success stationary,
+        // 80-100% with any carried speed, and every failed attempt fired the stall watchdog into a
+        // repath that chose the identical link again. On by default; `0` restores that behavior.
+        ("rtx_bot_chain_entry_gate", Bool(true)),
         // Fan a goal pick's independent navmesh floods out across a persistent worker pool (see
         // `bot::par`) — on by default; the result is bit-identical to serial. 0 → run them inline on
         // the main thread (the live A/B switch, and the fallback if the pool can't be built).
