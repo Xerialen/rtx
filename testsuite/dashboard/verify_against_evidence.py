@@ -2,7 +2,9 @@
 
 Reads the RUNS JSON back out of the built HTML — the artifact the browser
 renders — and compares it against the raw envelopes on disk. Field names below
-are the embedded structure's own, read from a built page, not guessed.
+are the embedded structure's own, read from a built page, not guessed. Complete
+tiers are checked field by field; failed and aborted tiers are checked as state
+and error and are never interpreted as measurements.
 
 Zones are deliberately out of scope: the map view draws them from snapshot
 files, not from the embedded JSON, so the page carries no zone numbers to
@@ -58,11 +60,16 @@ def main(index_path: str) -> None:
     for tier, envelope in sorted(envelopes.items()):
         level = level_for(tier, envelope["run_id"])
         check(f"{tier}.status", level.get("status"), envelope["status"])
+        if envelope["status"] != "complete":
+            check(f"{tier}.error", level.get("error"), envelope.get("error"))
+            check(f"{tier}.verdict", level.get("verdict"), envelope["status"].upper())
+            continue
         payload = envelope["payload"]
 
         if tier == "t0":
             check("t0.total", level["total"], payload["total"])
             check("t0.verdict", level["verdict"], payload["verdict"])
+            check("t0.qualityFloors", level["qualityFloors"], payload["quality_floors"])
             check(
                 "t0.modules",
                 {m["name"]: (m["tests"], m["passed"]) for m in level["modules"]},
@@ -93,7 +100,7 @@ def main(index_path: str) -> None:
                     [r["status"] for r in drill["results"]],
                     [a["status"] for a in scenario.get("attempts") or []],
                 )
-            check("t1.dash.verdict", data["dash"]["verdict"], payload["dash"]["verdict"])
+            check("t1.dash.verdict", data["dash"]["verdict"], payload["dash"].get("verdict"))
         elif tier == "t2":
             for key in (
                 "stall_firings", "speed_1s", "speed_100ms", "still_s_per_bot",
@@ -108,6 +115,7 @@ def main(index_path: str) -> None:
                 "MEASURED" if level["verdict"] == "MÄTT" else level["verdict"],
                 payload["verdict"],
             )
+            check("t2.sources", level["metricSources"], payload.get("sources", {}))
             for html_key, env_key in (("cells", "cells"), ("rjLinks", "rj_links")):
                 check(f"t2.nav.{env_key}", level["nav"][html_key], envelope["nav"][env_key])
         elif tier == "t3":

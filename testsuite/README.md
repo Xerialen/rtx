@@ -18,6 +18,13 @@ Every invocation writes one atomic JSON evidence file. The common envelope and
 tier payloads are defined in [`schema/SCHEMA.md`](schema/SCHEMA.md). Dashboard
 and analysis tools consume that contract rather than runner internals.
 
+For an acceptance or published run, follow the phase-by-phase
+[`docs/RUNBOOK.md`](docs/RUNBOOK.md). It adds the operational and semantic gates
+that schema validation cannot prove: immutable SHA pins, explicit `rtx_mcp`
+coverage, bot-free T2 powerup timing, full-match T3 process survival, retraction,
+remote readback, demo checks, and exact rig restoration. A valid envelope is not
+by itself proof that the intended measurement happened.
+
 ## Requirements
 
 - Python 3.11 or newer.
@@ -28,8 +35,10 @@ and analysis tools consume that contract rather than runner internals.
   the full commit, branch, and dirty state.
 - Server `status` must expose the cvars changed by a run under its `cvars`
   object. T2 additionally requires item availability under `items`. The runner
-  refuses to mutate a rig without a cvar snapshot or to publish incomplete
-  powerup statistics.
+  refuses to mutate a rig without a cvar snapshot. The acceptance runbook adds
+  the stricter powerup gate: a zero-take/null-average interval is right-censored,
+  not a completed lay-time measurement, and analyzer values must agree with the
+  independent live item observer before publication.
 
 The runner uses only the Python standard library. Its msgpack subset is
 vendored in `runner/mpwire.py`.
