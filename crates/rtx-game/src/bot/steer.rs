@@ -1336,8 +1336,35 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         matches!(kind, Some(LinkKind::SpeedJump)) && host.cvar_bool(c"rtx_bot_bhop") && !hook_active && !rj_active;
     if sj_active {
         if bot.sj.map(|c| c.leg) != cur_leg {
-            bot.sj = cur_leg.map(|leg| Commit { leg, since: now });
+            // Leg-transition chain-entry guard (`rtx_bot_chain_entry_gate`): the plan-time exclusion
+            // above only covers a route's *first* leg from the bot's cell at the moment it was
+            // planned — a route whose leg 0 is an ordinary walk/step into the ledge cell and whose leg
+            // 1 is the chained jump sails straight through it, because at plan time the walk hadn't
+            // happened yet and the chained link wasn't adjacent to the bot's *then*-current cell. But
+            // `sj_active` above engages the very instant this leg becomes current — "committed bhop
+            // run-up + leap" — with no check at all that the bot actually arrived carrying speed, so a
+            // bot that merely walked into the ledge (dm3 measured ~38 ups, well under either link's
+            // v_req) commits anyway and only the 4s stall watchdog below ever notices. Catch it here,
+            // once, at the exact frame the leg becomes current (not on every frame of an already-
+            // engaged run — that would also catch a leg mid-flight, which is exactly the traffic this
+            // must leave alone): a bot landing from a preceding jump already carries real speed at
+            // this instant, so the check clears it naturally without any special-casing for "mid-chain".
+            let chain_entry_ok =
+                !host.cvar_bool(c"rtx_bot_chain_entry_gate") || graph.chain_entry_leg_ok(cur_leg, speed);
+            if chain_entry_ok {
+                bot.sj = cur_leg.map(|leg| Commit { leg, since: now });
+            } else {
+                // Same finite-penalty + immediate-replan mechanism the watchdogs below use — deliberately
+                // *not* `note_stall`: nothing was attempted here to fail. Diverting before the takeoff is
+                // the fix, not a stall to log.
+                penalize_leg(bot, cur_leg, kind, now);
+                bot.route.clear();
+                bot.repath_time = now;
+                sj_active = false;
+            }
         }
+    }
+    if sj_active {
         // Watchdog: the route is frozen mid-leg, so if the run-up stalls (blocked, shoved, never
         // built speed) abandon it and re-path rather than wedging on the runway forever. Penalize the
         // leg so the deterministic A* actually diverts instead of handing back the same run-up.
