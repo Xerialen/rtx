@@ -12,6 +12,14 @@
     "digest_md5": "aaaabbbb",
     "dirty": false
   },
+  "nav": {
+    "map": "dm3",
+    "state": "ready",
+    "cells": 4634,
+    "links": 36956,
+    "rj_links": 2021,
+    "waited_s": 0.0
+  },
   "config_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "runner_version": "0.1.0",
   "provenance": "synthetic",

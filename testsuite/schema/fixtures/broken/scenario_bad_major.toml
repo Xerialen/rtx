@@ -2,6 +2,8 @@ schema = "rtx-scenario/2"
 name = "bad"
 map = "dm3"
 kind = "goto"
+category = "grunddrill"
+place = "någonstans"
 description = "Unsupported major."
 
 [run]

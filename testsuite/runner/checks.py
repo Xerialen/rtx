@@ -226,6 +226,64 @@ def _build(value: Any, path: str) -> None:
     _bool(build["dirty"], f"{path}.dirty")
 
 
+def _nav(value: Any, path: str, envelope_map: str) -> None:
+    """The preflight's stamp: which graph was ready when the run measured it.
+
+    T1 and T2 both wait on this before touching a bot, so the block is the
+    receipt for that wait, not a measurement in its own right. Every check
+    here is one the reader would otherwise have to reconstruct from a raw
+    `status` poll by hand.
+    """
+    block = _fields(
+        value, path, {"map", "state", "cells", "links", "rj_links", "waited_s"}
+    )
+    if block["map"] != envelope_map:
+        _fail(
+            f"{path}.map",
+            "a ready graph for another map is the wrong graph, and drills"
+            " against it would fail for a reason that has nothing to do"
+            " with the bot",
+        )
+    if block["state"] != "ready":
+        _fail(
+            f"{path}.state",
+            "the runner refuses to measure on a graph that is not ready, so"
+            " any other value in a written envelope is a stamp nothing produced",
+        )
+    if (
+        isinstance(block["cells"], bool)
+        or not isinstance(block["cells"], int)
+        or block["cells"] <= 0
+    ):
+        _fail(f"{path}.cells", "a ready graph with zero cells is not a graph")
+    if (
+        isinstance(block["links"], bool)
+        or not isinstance(block["links"], int)
+        or block["links"] <= 0
+    ):
+        _fail(f"{path}.links", "a ready graph with zero links is not a graph")
+    if (
+        isinstance(block["rj_links"], bool)
+        or not isinstance(block["rj_links"], int)
+        or block["rj_links"] < 0
+    ):
+        _fail(
+            f"{path}.rj_links",
+            "a build with no rocket-jump links is a legitimate build, and a"
+            " negative count could not describe one",
+        )
+    if (
+        isinstance(block["waited_s"], bool)
+        or not isinstance(block["waited_s"], (int, float))
+        or block["waited_s"] < 0
+    ):
+        _fail(
+            f"{path}.waited_s",
+            "waited_s is the record that the preflight happened, and a"
+            " preflight cannot have waited a negative amount of time",
+        )
+
+
 def _t0(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
     data = _fields(
         payload, path, {"modules", "total", "quality_floors", "verdict"}
@@ -289,6 +347,7 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
     if "regime_note" in data and data["regime_note"] != "quick":
         _fail(f"{path}.regime_note", "expected 'quick'")
     all_pass = True
+    withheld: list[str] = []
     scenarios = _list(data["scenarios"], f"{path}.scenarios")
     if not scenarios:
         _fail(f"{path}.scenarios", "expected at least one scenario")
@@ -307,14 +366,67 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
                 "verdict",
                 "evidence",
             },
-            {"arrived", "best_time_s"},
+            {"arrived", "best_time_s", "requires"},
         )
         _str(item["name"], f"{item_path}.name")
         _str(item["place"], f"{item_path}.place")
         if item["category"] not in {"grunddrill", "cellprov"}:
             _fail(f"{item_path}.category", "expected 'grunddrill' or 'cellprov'")
         _evidence(item["evidence"], f"{item_path}.evidence")
+        requires = item.get("requires")
+        if requires is not None:
+            requires = _fields(
+                requires,
+                f"{item_path}.requires",
+                {"capability", "engine_cvar", "note", "state"},
+            )
+            for field in ("capability", "engine_cvar", "note"):
+                if not _str(requires[field], f"{item_path}.requires.{field}").strip():
+                    _fail(
+                        f"{item_path}.requires.{field}",
+                        "expected non-empty string",
+                    )
+            if requires["state"] not in {"present", "absent", "unknown"}:
+                _fail(
+                    f"{item_path}.requires.state",
+                    "expected 'present', 'absent' or 'unknown'",
+                )
         attempts = _list(item["attempts"], f"{item_path}.attempts")
+        # A drill can go ungraded, but only by saying which capability the
+        # build was missing — otherwise a run that simply crashed halfway could
+        # present itself as a principled abstention.
+        if item["verdict"] is None:
+            if requires is None or requires["state"] != "absent":
+                _fail(
+                    f"{item_path}.verdict",
+                    "a drill without a verdict has to name the capability the"
+                    " build was missing",
+                )
+            if attempts:
+                _fail(f"{item_path}.attempts", "a withheld drill was never run")
+            withheld_threshold = _fields(
+                item["threshold"],
+                f"{item_path}.threshold",
+                {"required", "of"},
+                {"reference_time_s", "max_time_s"},
+            )
+            if _int(withheld_threshold["of"], f"{item_path}.threshold.of") != 0:
+                _fail(f"{item_path}.threshold.of", "no attempt was made")
+            # Nothing measured is null, never zero — except the counts of
+            # attempts, which are honestly zero because there were none.
+            if _int(item["passed"], f"{item_path}.passed") != 0:
+                _fail(f"{item_path}.passed", "a withheld drill passed nothing")
+            if item.get("arrived") not in (None, 0):
+                _fail(f"{item_path}.arrived", "a withheld drill arrived nowhere")
+            if item.get("best_time_s") is not None:
+                _fail(f"{item_path}.best_time_s", "a withheld drill has no time")
+            if item["evidence"] is not None:
+                _fail(
+                    f"{item_path}.evidence",
+                    "a withheld drill has nothing to watch",
+                )
+            withheld.append(_str(item["name"], f"{item_path}.name"))
+            continue
         passed_count = 0
         arrived_count = 0
         for attempt_index, attempt_value in enumerate(attempts):
@@ -327,24 +439,66 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
             )
             if attempt.get("demo_t_s") is not None:
                 _num_or_null(attempt["demo_t_s"], f"{attempt_path}.demo_t_s")
-            # The lower bound only exists for attempts abandoned as impossible;
-            # an attempt that arrived has a real time instead.
+            # The lower bound exists for exactly one status: `abandoned`, the
+            # attempt the impossibility check cut short while it was still
+            # travelling. An attempt that arrived has a real time instead, and
+            # every other way of not arriving has no bound to report — it
+            # never had one, so a number there would be invented.
             if "min_possible_s" in attempt:
-                _num_or_null(attempt["min_possible_s"], f"{attempt_path}.min_possible_s")
                 if attempt["status"] in {"passed", "slow"}:
                     _fail(
                         f"{attempt_path}.min_possible_s",
                         "an attempt that arrived carries its time, not a bound",
                     )
+                elif attempt["status"] != "abandoned":
+                    _fail(
+                        f"{attempt_path}.min_possible_s",
+                        "a bound only exists for an attempt abandoned as impossible",
+                    )
+                elif not isinstance(attempt["min_possible_s"], (int, float)) or isinstance(
+                    attempt["min_possible_s"], bool
+                ):
+                    # Present-but-null passed here for as long as the key
+                    # check below only caught absence. An abandoned attempt
+                    # exists BECAUSE a bound was computed; null is the same
+                    # thrown-away knowledge as no key at all.
+                    _fail(
+                        f"{attempt_path}.min_possible_s",
+                        "an abandoned attempt's bound is a number, not a null"
+                        " wearing the key",
+                    )
+            elif attempt.get("status") == "abandoned":
+                _fail(
+                    f"{attempt_path}.min_possible_s",
+                    "an abandoned attempt without its bound has thrown away"
+                    " the only thing it knew",
+                )
             if attempt["status"] not in {
                 "passed",
                 "slow",
                 "fell",
                 "timeout",
+                # The impossibility bound cut this attempt short while it was
+                # still travelling — a weaker claim than a timeout, and the
+                # bound it could not have beaten (`min_possible_s`) is the
+                # whole reason it is not folded into `timeout`. Unlike
+                # `rocketjump` and `offroute` below, this is not void: it is
+                # a real failure to arrive, same as `timeout`, just cut early.
+                "abandoned",
                 "stall",
                 "loop",
                 "detoured",
                 "died",
+                # The bot rocket-jumped on a drill that handed it no rockets,
+                # so it picked them up on the way. The attempt answered a
+                # different question than the one asked and counts as neither
+                # an arrival nor a failure to arrive.
+                "rocketjump",
+                # The bot reached the target without passing the route's
+                # `via` waypoints in order — it answered where, never how.
+                # Void, the same shape as `rocketjump`: neither an arrival
+                # nor a failure to arrive.
+                "offroute",
             }:
                 _fail(f"{attempt_path}.status", "unknown outcome")
             # `stall` is read off the telemetry event, so a build that emits
@@ -414,14 +568,45 @@ def _t1(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
             _fail(f"{item_path}.threshold.of", "must equal attempt count")
         if required > len(attempts):
             _fail(f"{item_path}.threshold.required", "cannot exceed attempt count")
-        if data.get("regime_note") == "quick" and len(attempts) != 3:
-            _fail(f"{item_path}.attempts", "quick runs require three attempts")
+        # Quick cuts to three, but a drill may pin its own quick count
+        # (`run.quick_attempts`), and the pin lives in the scenario file the
+        # envelope deliberately does not embed — so an exact count is no
+        # longer checkable here. What remains enforceable is the floor: quick
+        # exists to spend less rig time, never to grade a drill on fewer than
+        # the three attempts the cut guarantees. The ceiling is the writer's
+        # (`of` must equal the attempt count, checked above, and the schema
+        # rejects a pin above the full count at load).
+        if data.get("regime_note") == "quick" and len(attempts) < 3:
+            _fail(
+                f"{item_path}.attempts",
+                "a quick run grades no drill on fewer than three attempts",
+            )
         if _int(item["passed"], f"{item_path}.passed") != passed_count:
             _fail(f"{item_path}.passed", "must equal passed attempts")
         expected = "PASS" if passed_count >= required else "FAIL"
         if item["verdict"] != expected:
             _fail(f"{item_path}.verdict", f"expected {expected}")
         all_pass &= expected == "PASS"
+    # The drill and the envelope have to tell the same story. A drill withheld
+    # in silence would leave the column reading `5/8 drillar` with nothing to
+    # say the eighth was never asked; a declaration naming a drill that ran
+    # would excuse a number the run actually produced.
+    declared = set((capabilities or {}).get("unavailable") or [])
+    for name in withheld:
+        if f"t1:{name}" not in declared:
+            _fail(
+                f"{path}.scenarios",
+                f"{name} was withheld for a missing capability, but"
+                f" capabilities.unavailable does not name 't1:{name}'",
+            )
+    for value in scenarios:
+        name = value.get("name") if isinstance(value, dict) else None
+        if isinstance(name, str) and name not in withheld and f"t1:{name}" in declared:
+            _fail(
+                f"{path}.scenarios",
+                f"capabilities.unavailable names 't1:{name}' as missing, yet"
+                " the drill was run and graded",
+            )
     dash = _fields(
         data["dash"],
         f"{path}.dash",
@@ -544,11 +729,14 @@ def _t2(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
         "still_s_per_bot",
     ):
         _num_or_null(stats[field], f"{path}.stats.{field}")
-    count_sum = reason_sum = 0
+    count_sum = reason_sum = kind_sum = 0
     for index, value in enumerate(_list(data["cells"], f"{path}.cells")):
         item_path = f"{path}.cells[{index}]"
         item = _fields(
-            value, item_path, {"id", "pos", "n", "reasons", "links"}, {"evidence"}
+            value,
+            item_path,
+            {"id", "pos", "n", "reasons", "kinds", "links"},
+            {"evidence"},
         )
         _evidence(item.get("evidence"), f"{item_path}.evidence")
         _str(item["id"], f"{item_path}.id")
@@ -564,6 +752,11 @@ def _t2(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
         reason_sum += sum(
             _int(count, f"{item_path}.reasons.{reason}")
             for reason, count in reasons.items()
+        )
+        kinds = _dict(item["kinds"], f"{item_path}.kinds")
+        kind_sum += sum(
+            _int(count, f"{item_path}.kinds.{kind}")
+            for kind, count in kinds.items()
         )
         links = _dict(item["links"], f"{item_path}.links")
         for link, count in links.items():
@@ -581,6 +774,12 @@ def _t2(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
         _fail(
             path,
             "invariant failed: stall_firings != sum(cells.n) != sum(reasons)",
+        )
+    elif firings != kind_sum:
+        _fail(
+            path,
+            "invariant failed: stall_firings != sum(kinds) — every firing"
+            " happened on exactly one kind of route leg, offroute included",
         )
     if data["verdict"] != "MEASURED":
         _fail(f"{path}.verdict", "expected 'MEASURED'")
@@ -747,7 +946,7 @@ def validate_result(document: Any, source: str = "<result>") -> dict[str, Any]:
             "provenance",
             "payload",
         },
-        {"error", "capabilities"},
+        {"error", "capabilities", "nav"},
     )
     if root["schema"] != "rtx-testflow/1":
         _fail(
@@ -782,6 +981,29 @@ def validate_result(document: Any, source: str = "<result>") -> dict[str, Any]:
             _fail(source, "non-complete result requires error")
         _str(root["error"], f"{source}.error")
     _build(root["build"], f"{source}.build")
+    # The stamp is singular, and only T1 and T2 measure against exactly one
+    # graph. T0 never connects at all; T3 and T4 do, but to two client builds
+    # at once, each of which builds its own navmesh after joining — one block
+    # beside a single `build` could not say which side it described. T1 and T2
+    # both gate on the preflight before they measure anything, so a complete
+    # run of either has to carry the receipt; a non-complete one may have died
+    # before the preflight finished and so may legitimately have nothing to
+    # show.
+    if "nav" in root:
+        if tier not in {"T1", "T2"}:
+            _fail(
+                f"{source}.nav",
+                "only T1 and T2 measure against exactly one graph; T0 has"
+                " none and a two-sided tier has two, so a single stamp here"
+                " could not say which one it described",
+            )
+        _nav(root["nav"], f"{source}.nav", root["map"])
+    elif tier in {"T1", "T2"} and root["status"] == "complete":
+        _fail(
+            f"{source}.nav",
+            "a complete T1/T2 run measured against a graph, and the"
+            " envelope has to name which one",
+        )
     digest = _str(root["config_digest"], f"{source}.config_digest")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         _fail(f"{source}.config_digest", "expected sha256:<64 lowercase hex>")

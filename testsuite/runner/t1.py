@@ -16,6 +16,8 @@ from .runlib import (
     config_path,
     connect,
     engine_declares,
+    nav_preflight,
+    nav_stamp,
 )
 
 from .scenario import load_scenarios
@@ -61,6 +63,18 @@ def _outcome(
     control.request(f"stop {bot_id}")
     control.request(f"hold {bot_id}")
     control.request(f"teleport {bot_id} {_coordinates(start)}")
+    # What the bot carries decides which routes exist for it: the planner
+    # prices a rocket jump away for a bot that cannot fly one. Left to the map,
+    # that is whatever the bot happened to pick up earlier in the run, and it
+    # moves the answer a long way — the same drill runs 8.7 s carrying rockets
+    # and 14–25 s without, on the same rig and the same build. So every attempt
+    # starts from a stated loadout rather than an inherited one.
+    #
+    # Rockets are also the permission: a drill that hands the bot none is a
+    # drill where the rocket jump is not allowed, which is the rule for every
+    # route here except the pent jump.
+    rockets = run.get("prep_rockets", 0.0)
+    control.request(f"prep {bot_id} {run.get('prep_health', 100.0)} {rockets}")
     time.sleep(1.0)
     control.events.clear()
     control.request(f"goto {bot_id} {_coordinates(target)}")
@@ -71,6 +85,13 @@ def _outcome(
     crossed = False
     fall_gate = scenario.get("fail", {}).get("fall_gate")
     crossing = scenario.get("fail", {}).get("crossing")
+    # An arrival is where the bot ended up, not how it got there — `via` closes
+    # that gap. The index only ever moves forward and is reset here, per
+    # attempt: a previous attempt's progress must never carry into the next
+    # one, and being inside a later waypoint while an earlier one is still
+    # unmet counts for nothing.
+    via = scenario.get("route", {}).get("via", [])
+    route_index = 0
     # An attempt ends the moment it can no longer succeed, rather than when its
     # clock runs out. Two independent ways of knowing that:
     #
@@ -78,7 +99,10 @@ def _outcome(
     # here, it cannot reach the target before the deadline. Straight-line
     # distance understates the real path and the ceiling is above any speed
     # measured on this map, so the bound only ever fires when arriving is
-    # genuinely out of reach.
+    # genuinely out of reach. Reported as `abandoned`, not `timeout`: the bot
+    # was still travelling when this cut it off, and might well have arrived
+    # a second or two late — that is a different statement than the other
+    # two, so it gets its own name and carries the bound it could not beat.
     #
     # Wedged — the bound above goes quiet when a bot is stuck a few units from
     # the target, because the remaining distance is trivial. Ground covered
@@ -104,11 +128,29 @@ def _outcome(
     # window.
     previous_position: list[float] = list(start)
 
-    def inside_box(where: list[float]) -> bool:
+    # Height matters for arriving and not for giving up, so the two are
+    # separate tests. `inside_column` is the old box: a square in X and Y of
+    # unbounded height. Half the drills on dm3 have walkable ground on another
+    # floor inside their own square — the RA targets have floor 344 units below
+    # them — and a run of these drills put the bot in that square, on that
+    # floor, twelve times. None of them was credited, but nothing here stopped
+    # it: the only thing in the way was the engine's `arrived` not landing in
+    # the same instant.
+    arrive_z = run.get("arrive_z", 48.0)
+
+    def inside_column(where: list[float]) -> bool:
         return (
             abs(where[0] - target[0]) < run["arrive_box"]
             and abs(where[1] - target[1]) < run["arrive_box"]
         )
+
+    def inside_box(where: list[float]) -> bool:
+        if not inside_column(where):
+            return False
+        # Zero means the drill is asking about a place rather than a floor, and
+        # takes the old height-blind behaviour deliberately.
+        return arrive_z <= 0 or abs(where[2] - target[2]) < arrive_z
+
     while time.monotonic() - began < run["timeout_s"]:
         bots = control.request("status")["data"].get("bots", [])
         bot = next(
@@ -117,6 +159,15 @@ def _outcome(
         )
         if bot is None or not bot.get("alive"):
             return {"status": "died", "time_s": None, "demo_t_s": demo_t}
+        # Starting empty is not the same as staying empty: the map hands out
+        # rockets and the bot picks them up, so a drill that denied it the
+        # ammunition can still watch it jump. `rj_phase` leaves `Idle` the
+        # moment the bot commits to one, which is a state this loop already
+        # fetches on every poll and nothing has ever read. An attempt that
+        # takes a route it was not given the means for is not a slow attempt
+        # or a failed one — it answered a different question, so it is void.
+        if rockets <= 0 and (bot.get("rj_phase") or "Idle") != "Idle":
+            return {"status": "rocketjump", "time_s": None, "demo_t_s": demo_t}
         position = bot["origin"]
         highest_z = max(highest_z, position[2])
         now = time.monotonic()
@@ -125,6 +176,21 @@ def _outcome(
         # as a bot that stopped moving.
         moved += math.dist(position, previous_position)
         previous_position = position
+        # Matched in order and never skipped, per-axis against `box` the same
+        # way `inside_box` tests arrival — not Euclidean distance, so a corner
+        # of the box counts the same as its centre.
+        # A loop, not an `if`: the poll runs roughly fourteen times a second and
+        # a bot at full speed covers sixty units between samples, so one sample
+        # can legitimately sit inside two consecutive waypoints. Advancing only
+        # one per poll would leave the second unmet and report a bot that took
+        # the route exactly as `offroute`.
+        while route_index < len(via):
+            waypoint = via[route_index]
+            at = waypoint["at"]
+            box = waypoint["box"]
+            if not all(abs(position[axis] - at[axis]) < box for axis in range(3)):
+                break
+            route_index += 1
         if (
             fall_gate
             and highest_z >= fall_gate["armed_z"]
@@ -153,6 +219,11 @@ def _outcome(
             if inside_box(position):
                 if crossing and not crossed:
                     return {"status": "detoured", "time_s": None, "demo_t_s": demo_t}
+                if route_index < len(via):
+                    # It reached the target, so this is not a failure to
+                    # arrive; it did not take the route, so it is not an
+                    # arrival either. It answered a different question.
+                    return {"status": "offroute", "time_s": None, "demo_t_s": demo_t}
                 elapsed = round(time.monotonic() - began, 2)
                 # A timed drill is measured against a human run of the route:
                 # arriving late is its own outcome, not a pass and not a miss.
@@ -170,12 +241,20 @@ def _outcome(
         # the rest in a straight line at a speed nothing here has ever reached.
         # Distance is measured the way arrival is judged — on X and Y — so a bot
         # already standing in the arrive box cannot be written off over a height
-        # difference while its `arrived` event is still in flight.
-        if ceiling > 0 and not inside_box(position):
+        # difference while its `arrived` event is still in flight. That is why
+        # both give-up tests ask `inside_column` and not `inside_box`: the
+        # height requirement decides what counts as arriving, never what counts
+        # as still trying.
+        if ceiling > 0 and not inside_column(position):
             earliest = (now - began) + math.dist(position[:2], target[:2]) / ceiling
             if earliest > deadline:
+                # This attempt was still travelling — it did not stop moving
+                # and its clock had not run out — the moment the bound above
+                # said arriving in time had become impossible. That is a
+                # weaker claim than a timeout, so it gets its own name rather
+                # than being folded into the two ways of never arriving.
                 return {
-                    "status": "timeout",
+                    "status": "abandoned",
                     "time_s": None,
                     "demo_t_s": demo_t,
                     "min_possible_s": round(earliest, 2),
@@ -185,13 +264,56 @@ def _outcome(
             # this floor only catches one that is wedged or spinning in place.
             # The window has to lie entirely after the arming point, or a bot
             # that stood still early would be cut on ground it was still
-            # allowed to make up.
-            if window_began - began >= late_after and moved < 64.0:
+            # allowed to make up. A bot standing on the target is not wedged —
+            # it is waiting for an `arrived` the engine has not sent — so the
+            # same exemption the bound above has applies here too.
+            if (
+                window_began - began >= late_after
+                and moved < 64.0
+                and not inside_column(position)
+            ):
                 return {"status": "timeout", "time_s": None, "demo_t_s": demo_t}
             moved = 0.0
             window_began = now
         time.sleep(0.07)
     return {"status": "timeout", "time_s": None, "demo_t_s": demo_t}
+
+
+def _declare_withheld(
+    capabilities: dict[str, Any] | None, results: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Say in the envelope that a drill in this column was never run.
+
+    Same channel the missing telemetry uses, because it is the same statement:
+    a number the column does not contain, and the reason. A reader comparing
+    columns sees `5/8 drillar` either way; only the declaration distinguishes
+    a build that failed a drill from one that was never asked it.
+    """
+    withheld = [item for item in results if item["verdict"] is None]
+    if not withheld:
+        return capabilities
+    block = dict(capabilities) if capabilities else {
+        "telemetry": True,
+        "unavailable": [],
+        "note": "",
+    }
+    block["unavailable"] = list(block.get("unavailable", [])) + [
+        f"t1:{item['name']}" for item in withheld
+    ]
+    # Swedish, unlike the rest of this module: the note is not a log line, it
+    # is rendered verbatim in the dashboard's panel header, and that page is
+    # read in Swedish.
+    reasons = "; ".join(
+        f"{item['name']} kräver {item['requires']['capability']}"
+        for item in withheld
+    )
+    addition = (
+        "en drill vars rutt bara finns i en navmesh det här bygget inte fått"
+        f" avstås i stället för att fällas: {reasons}"
+    )
+    note = str(block.get("note") or "").strip()
+    block["note"] = f"{note}; {addition}" if note else addition
+    return block
 
 
 def _scaled_required(required: int, full_attempts: int, attempts: int) -> int:
@@ -200,17 +322,82 @@ def _scaled_required(required: int, full_attempts: int, attempts: int) -> int:
     return max(1, round(attempts * required / full_attempts))
 
 
+def _requirement(
+    config: dict[str, Any],
+    scenario: dict[str, Any],
+    server_status: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Whether the build carries the capability this drill's route needs.
+
+    The witness is a cvar that ships with the capability, read off the engine
+    binary rather than asked of the server — `engine_declares` explains why the
+    server cannot answer this and why absence is the direction it establishes
+    reliably. Absence is also the only direction that changes anything here:
+    `present` and `unknown` both run the drill, and the difference between them
+    is recorded rather than acted on. Withholding a drill because we could not
+    read the binary would turn a rig problem into a silence about the bot.
+    """
+    requires = scenario.get("requires")
+    if requires is None:
+        return None
+    declared = engine_declares(config, requires["engine_cvar"], server_status)
+    return {
+        "capability": requires["capability"],
+        "engine_cvar": requires["engine_cvar"],
+        "note": requires["note"],
+        "state": "unknown" if declared is None else ("present" if declared else "absent"),
+    }
+
+
+def _withheld(scenario: dict[str, Any], requirement: dict[str, Any]) -> dict[str, Any]:
+    """A drill the build cannot be asked, recorded as unanswered.
+
+    Nothing was run, so nothing here is a zero: no attempts, no best time, and
+    no verdict. A FAIL would have been the only other shape available and it
+    would have said the bot could not walk the route, when what happened is
+    that the route was not in the map the bot was given.
+    """
+    return {
+        "name": scenario["name"],
+        "category": scenario["category"],
+        "place": scenario["place"],
+        "attempts": [],
+        "threshold": {"required": scenario["threshold"]["required"], "of": 0},
+        "passed": 0,
+        "arrived": 0,
+        "best_time_s": None,
+        "verdict": None,
+        "evidence": None,
+        "requires": requirement,
+    }
+
+
 def _run_goto(
     control: Control,
     bot_id: int,
     scenario: dict[str, Any],
     quick: bool,
     recording: evidence_mod.Recording | None = None,
+    requirement: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if requirement is not None and requirement["state"] == "absent":
+        print(
+            f"  {scenario['name']}: withheld — this build does not carry "
+            f"{requirement['capability']} ({requirement['engine_cvar']} is not "
+            "registered), so the route it needs is not in the graph",
+            flush=True,
+        )
+        return _withheld(scenario, requirement)
     for link in scenario.get("setup", {}).get("plant_links", []):
         control.request(f"planlink {link}")
     full_attempts = scenario["run"]["attempts"]
-    attempts_count = 3 if quick else full_attempts
+    # A drill may pin its own quick count: the cut to three exists to save rig
+    # time, not to grade a drill on less evidence than its verdict needs.
+    quick_attempts = scenario["run"].get("quick_attempts")
+    attempts_count = (
+        int(quick_attempts) if quick and quick_attempts is not None
+        else 3 if quick else full_attempts
+    )
     attempts = []
     for index in range(attempts_count):
         result = _outcome(control, bot_id, scenario, recording)
@@ -236,7 +423,7 @@ def _run_goto(
     for field in ("reference_time_s", "max_time_s"):
         if field in scenario["threshold"]:
             threshold[field] = scenario["threshold"][field]
-    return {
+    result = {
         "name": scenario["name"],
         "category": scenario["category"],
         "place": scenario["place"],
@@ -248,6 +435,13 @@ def _run_goto(
         "verdict": "PASS" if passed >= required else "FAIL",
         "evidence": None,
     }
+    # A drill that declared a requirement carries the answer even when the
+    # answer was yes: a reader comparing two columns needs to know the graded
+    # ones were graded against the same map, and `unknown` says the binary
+    # could not be read rather than that the capability was there.
+    if requirement is not None:
+        result["requires"] = requirement
+    return result
 
 
 def _representative(attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -317,6 +511,14 @@ def _run_dash(
     run_id: str,
 ) -> tuple[dict[str, Any], Control]:
     control = _change_map(control, config, scenario["map"], 5.0)
+    # Gated, not stamped: the dash runs on its own map, and a second graph
+    # identity inside an envelope whose `map` names the main map would invite
+    # the reader to attribute one to the other. This is only the floor that
+    # stops the dash being measured against a graph that has not finished
+    # building — the 5 s settle above is a guess about that build, this is
+    # the check.
+    control.request("set rtx_bot_count 1")
+    nav_preflight(control, scenario["map"])
     # The dash lives on its own map, so it gets its own demo: a recording
     # cannot survive the map change that brings us here.
     recording = evidence_mod.open_recording(
@@ -487,15 +689,35 @@ def run(
                         "attempt will be recorded as a timeout",
                         flush=True,
                     )
+                # The navmesh is built lazily, on the first bot wanted — status
+                # at connect can only ever say "none", so the graph can only be
+                # verified once something has asked for a bot. Ordering it this
+                # way also keeps a rig whose graph never finishes failing for
+                # the right reason: without this, it fails at `_wait_for_bots`
+                # with "server did not expose 1 live bot(s)", a true sentence
+                # about the wrong thing.
+                control.request("set rtx_bot_count 1")  # this is what starts the build
+                nav_status, waited_s = nav_preflight(control, main_map)
+                recorder.nav = nav_stamp(nav_status, waited_s)
                 bot_id = _wait_for_bots(control, 1)[0]
                 recording = evidence_mod.open_recording(
                     control, recorder.run_id, config, main_map, config_path
                 )
                 recording.start()
                 results = [
-                    _run_goto(control, bot_id, scenario, quick, recording)
+                    _run_goto(
+                        control,
+                        bot_id,
+                        scenario,
+                        quick,
+                        recording,
+                        _requirement(config, scenario, initial_status),
+                    )
                     for scenario in goto_scenarios
                 ]
+                recorder.capabilities = _declare_withheld(
+                    recorder.capabilities, results
+                )
                 control.request(f"stop {bot_id}")
                 control.request(f"hold {bot_id}")
                 recording.stop()
@@ -513,7 +735,15 @@ def run(
                     control, config, dash_scenarios[0], recorder.run_id
                 )
                 control = _change_map(control, config, main_map, 6.0)
-                drills_pass = all(result["verdict"] == "PASS" for result in results)
+                # A withheld drill neither passes nor fails the level: it was
+                # never asked, and the envelope says so. Letting it fail here
+                # would put the build's verdict on a question about the build's
+                # navmesh rather than about its bot.
+                drills_pass = all(
+                    result["verdict"] == "PASS"
+                    for result in results
+                    if result["verdict"] is not None
+                )
                 dash_pass = dash["verdict"] != "FAIL"
                 payload = {
                     "scenarios": results,

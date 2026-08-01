@@ -75,7 +75,7 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
             "run",
             "threshold",
         },
-        {"setup", "fail", "workaround"},
+        {"setup", "fail", "workaround", "requires", "route"},
     )
     if root["schema"] != "rtx-scenario/1":
         raise ScenarioError(
@@ -106,6 +106,56 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
         if root["kind"] != "goto":
             raise ScenarioError(f"{source}.setup: only valid for goto scenarios")
 
+    # Some routes only exist in a navmesh the build has to have been given. A
+    # drill anchored on one of those is not measuring the bot when the build
+    # lacks it — it is measuring the absence, and reporting that as a failure
+    # to walk the route says something untrue about the bot. So the drill names
+    # what it needs and how to tell whether the build has it, and a run without
+    # it is withheld instead of graded. Naming the capability explicitly rather
+    # than deriving it from a route that turns out to have no links keeps the
+    # two apart: a missing capability and a bot that cannot use one it has are
+    # different findings, and only the first is the harness's fault.
+    if "requires" in root:
+        if root["kind"] != "goto":
+            raise ScenarioError(f"{source}.requires: only valid for goto scenarios")
+        requires = _fields(
+            root["requires"],
+            f"{source}.requires",
+            {"capability", "engine_cvar", "note"},
+        )
+        for field in ("capability", "engine_cvar", "note"):
+            value = requires[field]
+            if not isinstance(value, str) or not value.strip():
+                raise ScenarioError(
+                    f"{source}.requires.{field}: expected non-empty string"
+                )
+
+    # An arrival says where the bot ended up and nothing about how it got
+    # there: `spawn_lift_to_pent_to_pentmega` passed 5/5 by stepping off the
+    # pent ledge and freefalling most of the descent, and the endpoint was
+    # right while the run was worthless. `via` is the fix — ordered waypoints
+    # anchored on points the owner actually occupied, never derived from the
+    # navmesh or from geometry, because a box built from the route it is meant
+    # to gate would gate nothing. It does not replace `fail.fall_gate` or
+    # `fail.crossing`: those end an attempt early with an honest name of their
+    # own, `via` decides whether an arrival counts.
+    if "route" in root:
+        if root["kind"] != "goto":
+            raise ScenarioError(f"{source}.route: only valid for goto scenarios")
+        route = _fields(root["route"], f"{source}.route", {"via"})
+        via = route["via"]
+        if not isinstance(via, list) or not via:
+            raise ScenarioError(f"{source}.route.via: expected a non-empty array")
+        for index, waypoint in enumerate(via):
+            waypoint_path = f"{source}.route.via[{index}]"
+            fields = _fields(waypoint, waypoint_path, {"at", "box", "name"})
+            _vec3(fields["at"], f"{waypoint_path}.at")
+            _number(fields["box"], f"{waypoint_path}.box", positive=True)
+            if not isinstance(fields["name"], str) or not fields["name"]:
+                raise ScenarioError(
+                    f"{waypoint_path}.name: expected non-empty string"
+                )
+
     if root["kind"] == "goto":
         run = _fields(
             root["run"],
@@ -119,15 +169,57 @@ def validate_scenario(document: Any, source: str = "<scenario>") -> dict[str, An
                 "arrive_box",
                 "regoto_max",
             },
-            {"no_progress_s", "speed_ceiling", "give_up_grace_s"},
+            {
+                "no_progress_s",
+                "speed_ceiling",
+                "give_up_grace_s",
+                "arrive_z",
+                "prep_health",
+                "prep_rockets",
+                "quick_attempts",
+            },
         )
         _vec3(run["start"], f"{source}.run.start")
         _vec3(run["target"], f"{source}.run.target")
-        _integer(run["attempts"], f"{source}.run.attempts", positive=True)
+        attempts = _integer(
+            run["attempts"], f"{source}.run.attempts", positive=True
+        )
+        if "quick_attempts" in run:
+            quick_attempts = _integer(
+                run["quick_attempts"],
+                f"{source}.run.quick_attempts",
+                positive=True,
+            )
+            # Quick is a cut, never a raise: a drill asking quick to run MORE
+            # attempts than its full regime would make the two regimes
+            # incomparable in the direction nobody intends.
+            if quick_attempts > attempts:
+                raise ScenarioError(
+                    f"{source}.run.quick_attempts: cannot exceed run.attempts"
+                )
         _number(run["timeout_s"], f"{source}.run.timeout_s", positive=True)
         _number(run["pause_s"], f"{source}.run.pause_s")
         _number(run["arrive_box"], f"{source}.run.arrive_box", positive=True)
         _integer(run["regoto_max"], f"{source}.run.regoto_max")
+        # `arrive_box` bounds the square; `arrive_z` bounds the height inside
+        # it. Without one the box is a shaft: dm3 puts walkable ground 344
+        # units under the RA targets and inside their own square, so a drill
+        # could be credited from the wrong floor. Zero restores that on
+        # purpose, for a drill that asks about a place rather than a floor.
+        if "arrive_z" in run:
+            _number(run["arrive_z"], f"{source}.run.arrive_z")
+            if run["arrive_z"] < 0:
+                raise ScenarioError(f"{source}.run.arrive_z: cannot be negative")
+        # The loadout the attempt starts from. It is stated rather than
+        # inherited because what the bot carries decides which routes the
+        # planner will even consider — and `prep_rockets` doubles as the
+        # permission: a drill that hands out no rockets is a drill where the
+        # rocket jump is not allowed, and taking one anyway voids the attempt.
+        for key in ("prep_health", "prep_rockets"):
+            if key in run:
+                _number(run[key], f"{source}.run.{key}")
+                if run[key] < 0:
+                    raise ScenarioError(f"{source}.run.{key}: cannot be negative")
         # An attempt ends when it can no longer succeed rather than when its
         # clock runs out. `speed_ceiling` must be above any speed the map has
         # produced, or the impossibility bound would cut attempts that were

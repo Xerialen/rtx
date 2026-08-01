@@ -6,6 +6,11 @@ category = "grunddrill"
 place = "pent → quad"
 description = "rj-pent-to-lifts-to-window-to-quad: anchored on the owner's own run of the route (5.42 s, peak 809 u/s, ending at quad@Quad). The bot has to arrive within 6.07 s to pass."
 
+[requires]
+capability = "navpatch:dm3-pentlift-rj"
+engine_cvar = "rtx_rj_cost_scale"
+note = "rutten går genom en raketskuttlänk som navpatchen planterar i pent-hissen; utan patchen finns länken inte i grafen och drillen mäter kartan i stället för botten"
+
 [run]
 # Anchors and reference time come from rj-pent-to-lifts-to-window-to-quad.qwd via the owner's route
 # manifest (see scenarios/dm3/routes-v1.json).
@@ -16,6 +21,20 @@ timeout_s = 23
 pause_s = 1.0
 arrive_box = 70
 regoto_max = 6
+prep_rockets = 100
+
+[route]
+# Ordered waypoints the attempt must pass through, in this order,
+# before an arrival counts. Anchored on the owner's own run of the
+# route: points he actually occupied, in the order he occupied
+# them, at the places his path genuinely departs from a straight
+# line to the target — never points derived from the navmesh or
+# from geometry.
+via = [
+  { at = [610.4, 874.9, -55.0], box = 96, name = "lifts" },
+  { at = [1184.4, 667.6, 96.1], box = 96, name = "window" },
+  { at = [641.5, 364.8, 97.0], box = 96, name = "window quad" },
+]
 
 [threshold]
 required = 4

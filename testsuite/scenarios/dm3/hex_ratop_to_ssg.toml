@@ -17,6 +17,19 @@ pause_s = 1.0
 arrive_box = 70
 regoto_max = 6
 
+[route]
+# Ordered waypoints the attempt must pass through, in this order,
+# before an arrival counts. Anchored on the owner's own run of the
+# route: points he actually occupied, in the order he occupied
+# them, at the places his path genuinely departs from a straight
+# line to the target — never points derived from the navmesh or
+# from geometry.
+via = [
+  { at = [418.6, -553.9, 56.0], box = 96, name = "RA låg" },
+  { at = [494.2, -192.5, 89.4], box = 96, name = "ring" },
+  { at = [1369.5, -944.0, 123.0], box = 96, name = "YA up" },
+]
+
 [threshold]
 required = 4
 reference_time_s = 7.08

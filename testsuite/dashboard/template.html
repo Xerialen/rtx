@@ -164,6 +164,9 @@
   }
   .panel-head h2 { margin: 4px 0 2px; font: 600 20px/1.2 var(--mono); }
   .panel-head p { margin: 5px 0 0; color: var(--ink-2); font-size: 12px; line-height: 1.45; }
+  /* Quieter than the subtitle above it: the graph the numbers were measured
+     against, not one of the numbers. */
+  .nav-line { margin: 4px 0 0; font-size: 11px; }
   .panel-body { padding: 18px; }
   .panel-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
   .section-title {
@@ -206,7 +209,9 @@
     min-width: 660px; display: grid; grid-template-columns: 205px minmax(220px, 1fr) 118px;
     gap: 12px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--rule-2);
   }
-  .drill-name { font: 11px var(--mono); }
+  /* Drillnamnen är långa och kolumnen är smal, så namnet rann in i
+     försöksrutorna. Bryt hellre namnet än att låta det överlappa. */
+  .drill-name { font: 11px var(--mono); overflow-wrap: anywhere; }
   .drill-name small { display: block; margin-top: 3px; color: var(--muted); }
   /* .drill-name small sätter också färg, så tidsraden måste vinna på specificitet. */
   .drill-name small.drill-time { color: var(--ink-2); font-variant-numeric: tabular-nums; }
@@ -228,10 +233,30 @@
   }
   .attempt.fell { background: var(--r-airoff); }
   .attempt.timeout { background: var(--bad); }
+  /* abandoned is timeout's weaker cousin, not a different kind of thing: the
+     impossibility bound cut the attempt while it was still travelling, so it
+     is a real non-arrival, not a void one — a plain fill, not rocketjump's or
+     offroute's stripe. Blending bad with muted (rather than the solid alarm
+     timeout gets) is the "we stopped this" reading; it stays a fill so it
+     can't be mistaken for withheld's dashed emptiness either. */
+  .attempt.abandoned { background: color-mix(in srgb, var(--bad) 50%, var(--muted)); }
   .attempt.stall { background: var(--r-pre); }
   .attempt.loop { background: var(--r-sj); color: var(--ground); }
   .attempt.detoured { background: var(--r-airtime); }
+  .attempt.rocketjump { background: repeating-linear-gradient(135deg,
+    var(--warn) 0 5px, var(--bad) 5px 10px); }
+  /* offroute = samma "ogiltigt försök" -idiom som rocketjump (rand i stället
+     för fast färg), men gott+muted i stället för varning+dåligt: botten kom
+     fram (grönt), men det räknas inte (muted) eftersom vägpunkterna missades
+     — ingen anklagelse om fusk, bara en fråga som blev obesvarad. */
+  .attempt.offroute { background: repeating-linear-gradient(135deg,
+    var(--good) 0 5px, var(--muted) 5px 10px); }
   .attempt.died { background: var(--mesh-mid); }
+  /* Ingen färg alls: en drill som inte kördes har inget utfall att gradera,
+     och en tom ruta säger det tydligare än vilken utfallsfärg som helst. */
+  .attempt.withheld {
+    background: none; border-style: dashed; color: var(--muted);
+  }
   .legend { display: flex; flex-wrap: wrap; gap: 8px 13px; margin-top: 12px; color: var(--ink-2); font: 10px var(--mono); }
   .legend span { display: inline-flex; align-items: center; gap: 5px; }
   .legend i { width: 9px; height: 9px; display: inline-block; }
@@ -240,9 +265,16 @@
     background: repeating-linear-gradient(135deg, var(--good) 0 2px,
       color-mix(in srgb, var(--good) 15%, var(--warn)) 2px 4px);
   }
-  .legend .timeout { background: var(--bad); } .legend .stall { background: var(--r-pre); }
+  .legend .timeout { background: var(--bad); }
+  .legend .abandoned { background: color-mix(in srgb, var(--bad) 50%, var(--muted)); }
+  .legend .stall { background: var(--r-pre); }
   .legend .loop { background: var(--r-sj); } .legend .detoured { background: var(--r-airtime); }
+  .legend .rocketjump { background: repeating-linear-gradient(135deg,
+    var(--warn) 0 5px, var(--bad) 5px 10px); }
+  .legend .offroute { background: repeating-linear-gradient(135deg,
+    var(--good) 0 5px, var(--muted) 5px 10px); }
   .legend .died { background: var(--mesh-mid); }
+  .legend .withheld { background: none; border: 1px dashed var(--muted); }
   .dash {
     margin-top: 14px; display: flex; align-items: baseline; justify-content: space-between;
     gap: 16px; border: 1px solid var(--rule); padding: 11px 13px; flex-wrap: wrap;
@@ -259,6 +291,7 @@
   a.evidence-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .group-note { margin: -4px 0 8px; color: var(--muted); font: 10.5px/1.4 var(--mono); }
   .drill-place { display: block; margin-top: 3px; color: var(--ink-2); font: 10.5px/1.35 var(--mono); }
+  .drill-name small.drill-missing { color: var(--warn); }
   .drill-verdict { display: grid; gap: 5px; justify-items: start; }
   .metric-source { display: block; margin-top: 2px; color: var(--muted); font: 9.5px var(--mono); }
   .metric-evidence { display: block; margin-top: 3px; }
@@ -487,6 +520,7 @@ const TERM_TITLES = {
   "matchkort": "Slutställningen som analysatorn läste ur matchdemon: lagens frags överst, sedan en rad per spelare. Namnet länkar till spelarens POV i demospelaren.",
   "spree": "Längsta obrutna fragsvit spelaren hade under matchen.",
   "teleport → goto": "Drillen startar med att botten teleporteras till startpunkten och får ett goto-mål — samma förutsättningar varje försök.",
+  "navmesh": "Grafen botten planerar sina rutter i. Körningen vägrade starta förrän den var färdigbyggd, så de här talen är dess storlek i det ögonblicket — inte ett mätvärde, utan beviset på vilken kartkunskap resten av panelen mättes mot.",
   "ägartid": "Tiden ägaren själv körde sträckan på i sitt eget demo. Ankarna för start och mål är hämtade ur samma körning.",
   "gränstid": "Långsammaste ankomst som fortfarande räknas som klarad: ägarens tid plus marginal. Långsammare ankomst blir slow, inte passed.",
   "framme": "Antal försök där botten nådde målet över huvud taget — oavsett om det gick inom gränstiden.",
@@ -497,10 +531,14 @@ const TERM_TITLES = {
   "slow": "nådde målet, men långsammare än gränstiden",
   "fell": "föll från höjd på vägen",
   "timeout": "hann inte fram",
+  "abandoned": "fortfarande på väg när försöket avbröts, eftersom ankomst inom gränstiden hade blivit omöjlig — tidigast möjliga ankomst visas; inte samma sak som att aldrig komma fram",
   "stall": "stall-vakten löste ut",
   "loop": "fastnade i omtags-loop (goto gavs om 6 gånger utan framkomst)",
   "detoured": "tog omväg i stället för hoppet",
+  "rocketjump": "raketskutt på en rutt som inte delade ut raketer \u2014 försöket ogiltigt",
+  "offroute": "nådde målet utan att passera ruttens vägpunkter \u2014 försöket ogiltigt, inte ett misslyckat ankomstförsök",
   "died": "dog under försöket",
+  "AVSTÅDD": "drillen kördes aldrig: rutten den frågar om finns bara i en navmesh bygget inte fått, och ett FAIL hade sagt att botten inte klarade sträckan",
   "PASS": "alla trösklar klarade",
   "FAIL": "minst en tröskel missad",
   "PIPELINE-OK": "en singelmatch verifierar pipeline, inte grenkvalitet",
@@ -592,12 +630,24 @@ function panelBadges(level, focus, ref) {
   return parts.join("");
 }
 
+// T1 keeps nav under data with its other payload-derived fields; T2 has no
+// such wrapper and carries it at the top level. Either way it is provenance
+// for the numbers below, not one of them, so it renders quiet and small
+// under the subtitle rather than as a badge beside the verdict.
+function navLine(level, item) {
+  const nav = level === "t1" ? (item.data && item.data.nav) : item.nav;
+  if (!nav) return "";
+  return '<p class="nav-line muted mono">' + term("navmesh", "navmesh") + " · " +
+    fmt(nav.cells) + " celler · " + fmt(nav.links) + " länkar · " +
+    fmt(nav.rjLinks) + " rj-länkar</p>";
+}
+
 function panelShell(level, title, subtitle, body) {
   const focus = RUNS[focusIndex].levels[level];
   const ref = refOff ? null : RUNS[refIndex].levels[level];
   return '<div class="panel-head"><div><div class="eyebrow">' + level.toUpperCase() +
     ' · samma nivå mot samma nivå</div><h2>' + title + "</h2><p>" + subtitle +
-    '</p></div><div class="panel-badges">' + panelBadges(level, focus, ref) +
+    '</p>' + navLine(level, focus) + '</div><div class="panel-badges">' + panelBadges(level, focus, ref) +
     '</div></div><div class="panel-body">' + body +
     '<details class="doc"><summary>Vad &amp; varför</summary><p>' + DOCS[level] + "</p></details></div>";
 }
@@ -731,6 +781,12 @@ function drillPasses(drill) {
 function resultLabel(result) {
   const arrived = result.status === "passed" || result.status === "slow";
   if (arrived && typeof result.time_s === "number") return result.time_s.toFixed(2) + "s";
+  // abandoned carries the one fact that separates it from timeout: the bound
+  // it could not have beaten. Showing the bare word "abandoned" would erase
+  // that difference right where it matters most; the tooltip says the rest.
+  if (result.status === "abandoned" && typeof result.min_possible_s === "number") {
+    return "≥" + result.min_possible_s.toFixed(1) + "s";
+  }
   return result.status || "okänt";
 }
 
@@ -761,6 +817,17 @@ function drillRow(drill, refDrill) {
   const place = drill.place
     ? '<small class="drill-place">' + esc(drill.place) + "</small>"
     : "";
+  // Drillen kördes aldrig: rutten den frågar om finns bara i en navmesh som
+  // bygget inte fått. Raden visar vad som saknades i stället för ett FAIL, som
+  // hade sagt att botten inte klarade sträckan.
+  if (drill.verdict == null && drill.requires && drill.requires.state === "absent") {
+    return '<div class="drill-row"><div class="drill-name">' + esc(drill.name) + place +
+      '<small class="drill-missing">kräver ' + esc(drill.requires.capability) +
+      "</small></div>" +
+      '<div class="attempts"><span class="attempt withheld" title="' +
+      esc(drill.requires.note || "") + '">EJ<br>KÖRD</span></div>' +
+      '<div class="drill-verdict">' + verdictChip("AVSTÅDD") + "</div></div>";
+  }
   // Tidsatta drillar bär ägarens egen tid och gränstiden; äldre drillar har
   // varken och bedöms bara på ankomster.
   const timed = drill.referenceTime != null && drill.maxTime != null;
@@ -838,9 +905,13 @@ function renderT1() {
     '<div class="legend" aria-label="Utfallsklasser"><span><i class="passed"></i>' + term("passed") +
     '</span><span><i class="slow"></i>' + term("slow") +
     '</span><span><i class="fell"></i>' + term("fell") + '</span><span><i class="timeout"></i>' +
-    term("timeout") + '</span><span><i class="stall"></i>' + term("stall") +
+    term("timeout") + '</span><span><i class="abandoned"></i>' + term("abandoned") +
+    '</span><span><i class="stall"></i>' + term("stall") +
     '</span><span><i class="loop"></i>' + term("loop") + '</span><span><i class="detoured"></i>' +
-    term("detoured") + '</span><span><i class="died"></i>' + term("died") + "</span></div>" +
+    term("detoured") + '</span><span><i class="rocketjump"></i>' + term("rocketjump") +
+    '</span><span><i class="offroute"></i>' + term("offroute") +
+    '</span><span><i class="died"></i>' + term("died") +
+    '</span><span><i class="withheld"></i>' + term("avstådd", "AVSTÅDD") + "</span></div>" +
     '<div class="dash"><div><div class="eyebrow">' + term("dash_100m", "peak u/s (100m)") +
     " · golv " + fmt(dash.floor) + " u/s</div>" +
     (dash.place ? '<span class="drill-place">' + esc(dash.place) + "</span>" : "") +
@@ -1231,13 +1302,11 @@ function renderExplanations() {
       'Grinden svarar på: "är logiken hel?" — inte "spelar botten bra?".</p></section>' +
       '<section class="explanation-level"><h3>T1 — Enbotsdrillar</h3><p>Deterministiska drillar på DM3 med ' +
       term("teleport → goto") + ', en bot, ~8 min totalt:</p><ul>' +
-      '<li><strong>ra_klattring</strong> (10/10): från golvet vid RA-trappan upp till RA-plattformen på höjd 328. ' +
-      'Fallvakt: har botten nått över höjd 140 och sedan hamnar under 70 räknas försöket som fall.</li>' +
       '<li><strong>sng_mega</strong> (≥8/10): från SNG-spawnen till mega. Testar ruttvalet över hyllan.</li>' +
-      '<li><strong>hexagon_sod_tur</strong> (≥9/10): hexagonhoppet, södra vägen tur — över gropen med planterad ' +
-      'SpeedJump-länk. Omväg runt (' + term("detoured") + ') eller fall i gropen underkänns.</li>' +
       '<li><strong>cell_724_503</strong> och <strong>cell_503_194</strong> (10/10 vardera): cellövergångarna på SNG-hyllan ' +
-      'respektive vidare mot mega — Nanos mergekriterier.</li>' +
+      'respektive vidare mot mega — Nanos mergekriterier. De är de enda drillarna utan ' +
+      'vägpunkter, och det är med flit: ett cellprov <em>är</em> cellparet, så det finns ingen ' +
+      'väg att ta en annan version av.</li>' +
       '<li><strong>dash_100m</strong> (golv 800 u/s): kartbyte till 100m, två raka dashar, bästa peak. ' +
       'En graderad dash bär ett eget verdikt som räknas in i T1-domen; en informativ dash visas bara.</li>' +
       '</ul><p style="margin-top:9px">Svarar på: "klarar botten de svåra passagerna isolerat?"</p></section>' +

@@ -243,6 +243,10 @@ def default_level(level: str) -> dict[str, Any]:
             },
             "note": None,
             "demo": None,
+            # The graph the run measured against. Absent by default: every
+            # envelope before this stamp existed, and every T1 that never
+            # reached connect, has nothing to say here.
+            "nav": None,
         }
     elif level == "t2":
         common["stats"] = {
@@ -262,6 +266,8 @@ def default_level(level: str) -> dict[str, Any]:
             moments=[],
             cellEvidence=[],
             metricSources={},
+            # Same absence-by-default as T1's data.nav — see there for why.
+            nav=None,
         )
     elif level == "t3":
         empty_side = {
@@ -322,6 +328,68 @@ def normalize_capabilities(value: Any) -> dict[str, Any] | None:
         "telemetry": value.get("telemetry") is not False,
         "unavailable": unavailable,
         "note": note.strip(),
+    }
+
+
+def normalize_requires(value: Any) -> dict[str, Any] | None:
+    """Why a drill carries no verdict: a capability the build never had.
+
+    Dropped rather than half-trusted, for the same reason as the capabilities
+    block: an unexplained absence must not be able to look like an explained
+    one. A drill whose requirement was met keeps the block too — it is what
+    tells a reader the graded columns were graded against the same map.
+    """
+    if not isinstance(value, dict):
+        return None
+    capability = value.get("capability")
+    if not isinstance(capability, str) or not capability.strip():
+        return None
+    if value.get("state") not in {"present", "absent", "unknown"}:
+        return None
+    note = value.get("note")
+    return {
+        "capability": capability.strip(),
+        "state": value["state"],
+        "note": note.strip() if isinstance(note, str) else "",
+    }
+
+
+def normalize_nav(value: Any) -> dict[str, Any] | None:
+    """The navmesh a T1/T2 run was measured against — provenance, not a result.
+
+    checks.py enforces the schema on envelopes before they are trusted (state
+    must be "ready", cells must be positive, and so on); the dashboard does
+    none of that here, it only checks the shape is one it can render. Every
+    envelope written before this stamp existed has no `nav` at all, and that
+    must render exactly as it always has — so absence and a wrong-shaped
+    block both degrade to None rather than a half-drawn panel or a crash.
+    """
+    if not isinstance(value, dict):
+        return None
+    map_name = value.get("map")
+    state = value.get("state")
+    cells = number(value.get("cells"))
+    links = number(value.get("links"))
+    rj_links = number(value.get("rj_links"))
+    waited_s = number(value.get("waited_s"))
+    if (
+        not isinstance(map_name, str)
+        or not map_name
+        or not isinstance(state, str)
+        or not state
+        or cells is None
+        or links is None
+        or rj_links is None
+        or waited_s is None
+    ):
+        return None
+    return {
+        "map": map_name,
+        "state": state,
+        "cells": cells,
+        "links": links,
+        "rjLinks": rj_links,
+        "waitedS": waited_s,
     }
 
 
@@ -448,15 +516,27 @@ def t1_level(envelope: dict[str, Any]) -> dict[str, Any]:
                 "maxTime": number(threshold.get("max_time_s")),
                 "arrived": number(scenario.get("arrived")),
                 "bestTime": number(scenario.get("best_time_s")),
+                # Present only on drills that named a capability. `absent` is
+                # the one that withholds the verdict; the others are recorded
+                # so the page can say what the drill was graded against.
+                "requires": normalize_requires(scenario.get("requires")),
             }
         )
     regime_note = payload.get("regime_note")
     regime_note = regime_note if isinstance(regime_note, str) and regime_note else None
     verdict = payload.get("verdict") if payload.get("verdict") in {"PASS", "FAIL"} else "OFULLSTÄNDIG"
     dash = payload.get("dash") if isinstance(payload.get("dash"), dict) else {}
+    # The denominator is the drills that were actually asked. Counting a
+    # withheld drill among them would report the build as failing one, which is
+    # the reading the whole mechanism exists to prevent.
+    graded = sum(1 for drill in drills if drill["verdict"] in {"PASS", "FAIL"})
+    unasked = len(drills) - graded
+    key = f"{passed_scenarios}/{graded} drillar"
+    if unasked:
+        key += f" · {unasked} avstådd" + ("a" if unasked > 1 else "")
     item.update(
         verdict=verdict,
-        key=f"{passed_scenarios}/{len(drills)} drillar",
+        key=key,
         regimeNote=regime_note,
         comparisonKey=f"t1:{regime_note or 'full'}",
         data={
@@ -472,6 +552,9 @@ def t1_level(envelope: dict[str, Any]) -> dict[str, Any]:
             },
             "note": payload.get("note") if isinstance(payload.get("note"), str) else None,
             "demo": payload.get("demo") if isinstance(payload.get("demo"), str) else None,
+            # Envelope-level, beside build — the graph the preflight waited
+            # for, and found ready, before any drill ran.
+            "nav": normalize_nav(envelope.get("nav")),
         },
     )
     return item
@@ -604,6 +687,9 @@ def t2_level(
         moments=moments,
         cellEvidence=cell_evidence,
         metricSources=metric_sources,
+        # Envelope-level, beside build — T2 counts navmesh cells, so this is
+        # the graph the count itself was taken from.
+        nav=normalize_nav(envelope.get("nav")),
     )
     return item, [
         snapshot(
@@ -983,6 +1069,48 @@ def selftest() -> None:
         assert "http://" not in html
         assert "https://" not in html
         assert len(runs) >= 5
+        # A drill the build could not be asked: no verdict, no attempts, and a
+        # denominator that counts only the drills that were run. Counting it
+        # among them would report the build as failing a drill nobody gave it.
+        withheld = next(run for run in runs if run["branch"] == "withheld-drill")
+        drills = withheld["levels"]["t1"]["data"]["drills"]
+        assert [drill["verdict"] for drill in drills] == ["PASS", None]
+        assert drills[1]["requires"]["state"] == "absent"
+        assert drills[1]["requires"]["capability"] == "navpatch:dm3-pentlift-rj"
+        assert drills[0]["requires"] is None
+        assert withheld["levels"]["t1"]["key"] == "1/1 drillar · 1 avstådd"
+        assert withheld["levels"]["t1"]["verdict"] == "PASS"
+        assert withheld["levels"]["t1"]["capabilities"]["unavailable"] == [
+            "t1:rj_pent_to_lifts_to_window_to_quad"
+        ]
+        # An attempt that reached the target without taking the route answered
+        # a different question than the drill asked: it is void, not a failed
+        # arrival. time_s stays null like every other non-arriving status, and
+        # it does not count toward "arrived" or the pass threshold.
+        offroute = next(run for run in runs if run["branch"] == "offroute-drill")
+        offroute_drill = offroute["levels"]["t1"]["data"]["drills"][0]
+        assert [result["status"] for result in offroute_drill["results"]] == [
+            "passed", "offroute"
+        ]
+        assert offroute_drill["results"][1]["time_s"] is None
+        assert offroute_drill["arrived"] == 1
+        assert offroute_drill["verdict"] == "FAIL"
+        # abandoned is a real non-arrival (unlike offroute), just one the
+        # impossibility bound cut short instead of the clock: time_s stays
+        # null like every other non-arriving status, but min_possible_s must
+        # survive the trip through so the dashboard can put the bound on the
+        # cell face instead of leaving it to read like an ordinary timeout.
+        abandoned = next(run for run in runs if run["branch"] == "abandoned-drill")
+        abandoned_drill = abandoned["levels"]["t1"]["data"]["drills"][0]
+        assert [result["status"] for result in abandoned_drill["results"]] == [
+            "passed", "abandoned", "abandoned"
+        ]
+        assert [result["time_s"] for result in abandoned_drill["results"][1:]] == [None, None]
+        assert [result["min_possible_s"] for result in abandoned_drill["results"][1:]] == [
+            8.4, 12.3
+        ]
+        assert abandoned_drill["arrived"] == 1
+        assert abandoned_drill["verdict"] == "FAIL"
         rich = next(run for run in runs if run["branch"] == "evidence-rich")
         t1 = rich["levels"]["t1"]
         categories = [drill["category"] for drill in t1["data"]["drills"]]
@@ -1028,6 +1156,28 @@ def selftest() -> None:
         assert golden["levels"]["t2"]["metricSources"] == {}
         assert golden["levels"]["t3"]["scoreboard"] is None
         assert all(rung["scoreboard"] is None for rung in golden["levels"]["t4"]["rungs"])
+        # The navmesh a run was measured against: same figures on both tiers
+        # that stamp one, since both fixtures record the same preflight.
+        golden_nav = {
+            "map": "dm3",
+            "state": "ready",
+            "cells": 4634,
+            "links": 36956,
+            "rjLinks": 2021,
+            "waitedS": 0.0,
+        }
+        assert golden["levels"]["t1"]["data"]["nav"] == golden_nav
+        assert golden["levels"]["t2"]["nav"] == golden_nav
+        # The figures the JS renderer reads for the panel-header line, present
+        # in the page's embedded run data (sort_keys, so the field order here
+        # is fixed).
+        assert (
+            '"cells":4634,"links":36956,"map":"dm3","rjLinks":2021,'
+            '"state":"ready","waitedS":0.0' in html
+        )
+        # Envelopes from before this stamp existed have no nav at all, and that
+        # must keep rendering exactly as it always has: nothing, not a crash.
+        assert withheld["levels"]["t1"]["data"]["nav"] is None
         # Host-relative demo links reach the page and open in a new tab.
         assert "/demo-player/?demoUrl=" in html
         assert 'target="_blank" rel="noopener"' in html
@@ -1051,6 +1201,10 @@ def selftest() -> None:
         assert blind_t2["stats"]["stall_firings"] is None
         assert blind_t2["key"] == "stall ej mätbar"
         assert blind_t2["snapshotIds"] == []
+        # T2 never connected to a control layer on this fixture either, so it
+        # has nothing to stamp — same absence, different reason than golden's
+        # pre-stamp envelopes.
+        assert blind_t2["nav"] is None
         assert golden["levels"]["t2"]["capabilities"] is None
         # The two phrases the page owes such a column, in the code that renders
         # it; the browser check drives the page itself.

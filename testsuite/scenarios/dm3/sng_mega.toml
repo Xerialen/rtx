@@ -15,5 +15,20 @@ pause_s = 1.0
 arrive_box = 70
 regoto_max = 6
 
+[route]
+# Ordered waypoints the attempt must pass through, in this order, before an
+# arrival counts. This drill is a leg of a longer route the owner recorded, so
+# the points come from the segment of his run of
+#   lifts-or-ring-to-sngmega
+# between the drill's own start and target: he passes the start within 20
+# units and the target within 25. They are places he actually occupied, in
+# the order he occupied them, where his path genuinely departs from a straight
+# line to the target — never points derived from the navmesh or from geometry.
+via = [
+  { at = [-494.5, 224.6, 176.0], box = 96, name = "SNG" },
+  { at = [-872.2, 246.1, 215.6], box = 96, name = "SNG mega" },
+  { at = [-862.1, 133.9, 225.8], box = 96, name = "SNG mega 2" },
+]
+
 [threshold]
 required = 8

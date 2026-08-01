@@ -17,6 +17,8 @@ from .runlib import (
     config_path,
     connect,
     engine_declares,
+    nav_preflight,
+    nav_stamp,
 )
 
 NOLINK = 4_294_967_295
@@ -80,6 +82,7 @@ def _summarize_cells(stalls: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "n": 0,
             "pos": None,
             "reasons": Counter(),
+            "kinds": Counter(),
             "links": Counter(),
             "first_at_s": None,
             "first_ent": None,
@@ -94,6 +97,14 @@ def _summarize_cells(stalls: list[dict[str, Any]]) -> list[dict[str, Any]]:
             entity = event.get("ent")
             cell["first_ent"] = int(entity) if isinstance(entity, int) else None
         cell["reasons"][str(event["reason"])] += 1
+        # The LinkKind of the route leg in force when the watchdog fired.
+        # `reason` says which watchdog; only this says what the bot was
+        # traversing — a jump-pricing change is invisible without it, which is
+        # why the margin-tax measurement had to be a hand probe outside the
+        # suite. "offroute" is the empty kind the engine sends when the bot
+        # held no leg: a name, because an empty-string key reads as a
+        # serializer accident rather than a state.
+        cell["kinds"][str(event.get("kind") or "offroute")] += 1
         origin = event.get("origin")
         if cell["pos"] is None and isinstance(origin, list) and len(origin) == 3:
             cell["pos"] = [round(float(value), 1) for value in origin]
@@ -110,6 +121,7 @@ def _summarize_cells(stalls: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "pos": cell["pos"] or [0.0, 0.0, 0.0],
                 "n": cell["n"],
                 "reasons": dict(cell["reasons"]),
+                "kinds": dict(cell["kinds"]),
                 "links": dict(cell["links"].most_common(4)),
                 "first_at_s": cell["first_at_s"],
                 "first_ent": cell["first_ent"],
@@ -364,7 +376,14 @@ def run(
                     else:
                         control.request("set rtx_telemetry 1")
                     control.request("set rtx_bot_pacifist 1")
+                    # T2 counts navmesh cells, so a run started on a building
+                    # graph would report zero of precisely the thing it exists
+                    # to count. Wanting bots is what starts the build (the
+                    # graph is built lazily), so the count has to be set before
+                    # there is anything to verify.
                     control.request("set rtx_bot_count 4")
+                    nav_status, waited_s = nav_preflight(control, map_name)
+                    recorder.nav = nav_stamp(nav_status, waited_s)
                     _wait_for_bots(control, 4)
                     probe = control.request("items", timeout=8.0)["data"]
                     if not isinstance(probe, list):

@@ -1,0 +1,81 @@
+{
+ "schema": "rtx-testflow/1",
+ "run_id": "t1-20260729T091400Z-77777777",
+ "tier": "T1",
+ "status": "complete",
+ "started_utc": "2026-07-29T09:00:00Z",
+ "ended_utc": "2026-07-29T09:07:41Z",
+ "map": "dm3",
+ "build": {
+  "branch": "testsuite",
+  "commit": "7777777777777777777777777777777777777777",
+  "digest_md5": "9ab12c3d",
+  "dirty": false
+ },
+ "config_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "runner_version": "0.1.0",
+ "provenance": "synthetic",
+ "payload": {
+  "scenarios": [
+   {
+    "name": "spawn_lift_to_pent_to_pentmega",
+    "attempts": [
+     {
+      "status": "passed",
+      "time_s": 9.12,
+      "demo_t_s": 14.0
+     },
+     {
+      "status": "offroute",
+      "time_s": 11.4,
+      "demo_t_s": 30.5
+     },
+     {
+      "status": "abandoned",
+      "time_s": null,
+      "demo_t_s": 52.0,
+      "min_possible_s": 6.8
+     }
+    ],
+    "threshold": {
+     "required": 1,
+     "of": 3,
+     "reference_time_s": 8.7,
+     "max_time_s": 9.6
+    },
+    "passed": 1,
+    "verdict": "PASS",
+    "category": "grunddrill",
+    "place": "Spawnhissen \u2192 pent \u2192 pentmega",
+    "evidence": {
+     "demo": "t1-20260729T090000Z-22222222.mvd",
+     "attempt": 2,
+     "status": "offroute",
+     "at_s": 30.5,
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260729T090000Z-22222222.mvd&map=dm3&duration=500&from=27.5&track=1"
+    },
+    "arrived": 1,
+    "best_time_s": 9.12
+   }
+  ],
+  "dash": {
+   "peaks": [
+    540,
+    611
+   ],
+   "peak": 611,
+   "floor": 800,
+   "informative": false,
+   "place": "100m, rak bana",
+   "verdict": "FAIL",
+   "evidence": {
+    "demo": "t1dash-20260729T090000Z-22222222.mvd",
+    "dash": 1,
+    "at_s": 6.9,
+    "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1dash-20260729T090000Z-22222222.mvd&map=100m&duration=40&from=3.9&track=1"
+   }
+  },
+  "verdict": "FAIL",
+  "demo": "t1-20260729T090000Z-22222222.mvd"
+ }
+}

@@ -68,6 +68,51 @@ codec is vendored in `runner/mpwire.py`.
   different answers and only one of them is a finding. An empty `unavailable` or a
   blank `note` is rejected: the block exists to explain an absence, so an
   unexplained one is worse than none.
+- `nav` is required on every complete T1 or T2 envelope and rejected on every other
+  tier. Those two are the tiers that measure a bot against exactly one graph. T0 never
+  connects at all; T3 and T4 do connect, but to two client builds at once, and each
+  side builds its own navmesh after joining — a single block beside a single `build`
+  could not say which side's graph it described, so rather than stamp an ambiguous
+  one they stamp none.
+
+  ```json
+  "nav": {
+    "map": "dm3",
+    "state": "ready",
+    "cells": 4634,
+    "links": 36956,
+    "rj_links": 2021,
+    "waited_s": 0.0
+  }
+  ```
+
+  `map` must equal the envelope's own `map`: a ready graph for another map is the
+  wrong graph, and a drill measured against it would fail for a reason that has
+  nothing to do with the bot. `state` is always `"ready"` in a written envelope — the
+  runner refuses to measure otherwise, so any other value here is a stamp nothing
+  produced. A non-complete envelope (`failed`/`aborted`) may still carry one if the
+  run died after the preflight passed, or carry none if it died during the preflight,
+  before there was anything to stamp. `cells` and `links` are positive integers: a
+  ready graph reporting zero cells is not a graph, which is the concrete case the "a
+  value that could not be measured is null, never 0" rule exists for here — a graph
+  that never finished building must not be able to sit at zero and read as measured.
+  `rj_links` is `>= 0`; a build with no rocket-jump links is a legitimate build and
+  must not be rejected for having none. `waited_s` is `>= 0`, how long the preflight
+  polled before the graph was ready — provenance for the stamp itself, not a
+  measurement of anything the bot did, and it tells a reader whether the rig was hot
+  or cold when the numbers were taken.
+
+  The block exists because the control layer's `navmesh` status is transient on both
+  ends of "not ready": immediately after a spawn or a map change it reads `"building"`
+  with `cells`/`links`/`rj_links` all at zero, and `"none"` means no build is in
+  flight *yet* — both look exactly like a broken build if read once. Reading `status`
+  a single time and judging the answer would treat "not yet" the same as "never
+  will", so `nav_preflight` polls about once a second until `navmesh == "ready"` and
+  the map matches, and only the deadline — 120 s, twice the engine's own MCP helper's
+  wait for the same condition, because a loaded lab rig is slower than a developer's
+  laptop — is a verdict. `nav` is that verdict, stamped once the poll succeeds; it is
+  what lets two runs with different graphs be told apart after the fact instead of
+  being silently compared as if they had measured the same map knowledge.
 
 ## T0 payload (import adapter — cargo runs stay upstream)
 
@@ -88,9 +133,9 @@ stops before T1 when T0 import is missing or FAIL.
 {
   "scenarios": [
     {
-      "name": "ra_climb",
+      "name": "ralow_to_ratop",
       "category": "grunddrill",
-      "place": "RA-ingången → RA-plattan (uppför trapporna)",
+      "place": "RA låg → RA",
       "attempts": [
         {"status": "passed", "time_s": 5.37, "demo_t_s": 12.5},
         {"status": "slow", "time_s": 9.02, "demo_t_s": 27.4},
@@ -116,16 +161,59 @@ stops before T1 when T0 import is missing or FAIL.
   "verdict": "FAIL"
 }
 ```
-- `attempts[].status`: `passed|slow|fell|timeout|stall|loop|detoured|died`. `time_s`
-  exactly for the two arriving statuses (`passed`, `slow`), else null. Attempt count
+- `attempts[].status`: `passed|slow|fell|timeout|abandoned|stall|loop|detoured|rocketjump|offroute|died`.
+  `time_s` exactly for the two arriving statuses (`passed`, `slow`), else null. Attempt count
   and order are preserved. `demo_t_s` is the moment the attempt began on the run's
-  own demo clock. `timeout` covers three ways of not arriving: running the clock
-  out, being cut short once reaching the target in time became impossible (then
-  the attempt also carries `min_possible_s`, the bound it could not have beaten),
-  and being cut short past the time limit with the bot no longer moving. A cut
-  attempt is indistinguishable from one that never would have arrived, which is
-  the price of not waiting — `run.give_up_grace_s` sets how many seconds past
-  the limit the bot is still allowed to aim for.
+  own demo clock. `timeout` now covers two ways of not arriving: running the
+  clock out, and being cut short past the time limit with the bot no longer
+  moving. A cut attempt is indistinguishable from one that never would have
+  arrived, which is the price of not waiting — `run.give_up_grace_s` sets how
+  many seconds past the limit the bot is still allowed to aim for.
+  `abandoned` is the third way an attempt can end early, and it is not folded
+  into `timeout`: it is cut the moment reaching the target in time becomes
+  impossible, while the bot is still travelling. That is a weaker claim than a
+  timeout — the bot might well have arrived a second or two late — so it reads
+  as "we stopped this" rather than "it failed", and it carries `min_possible_s`,
+  the bound it could not have beaten, so the fact that was cut short is visible
+  instead of collapsing into an ordinary non-arrival. `min_possible_s` is
+  present exactly for `abandoned` attempts. `rocketjump` is neither an arrival
+  nor a failure to arrive, and neither is `abandoned` a member of that group:
+  the drill handed the bot no rockets, so the jump was not sanctioned on that
+  route, and the bot picked some up and took it anyway. The attempt answered a
+  different question and counts as void. `offroute` is the same shape, for a
+  scenario carrying a `[route]` table: the bot reached the target without
+  passing all of its waypoints, in order, on the way — it answered where,
+  never how, and the attempt is void rather than a pass or a failure to
+  arrive.
+- A scenario may carry `requires` instead of a verdict:
+
+  ```json
+  "verdict": null,
+  "attempts": [],
+  "threshold": {"required": 4, "of": 0},
+  "passed": 0, "arrived": 0, "best_time_s": null, "evidence": null,
+  "requires": {
+    "capability": "navpatch:dm3-pentlift-rj",
+    "engine_cvar": "rtx_rj_cost_scale",
+    "state": "absent",
+    "note": "the route runs through a rocket-jump link the navpatch plants"
+  }
+  ```
+
+  The route only exists in a navmesh this build was not given, so the drill was
+  never run. `state` is `present|absent|unknown`, read off the engine binary the
+  same way `capabilities` is; only `absent` withholds a drill, and `unknown`
+  runs it, because a binary we could not read is a rig problem and must not
+  become a silence about the bot. A withheld drill is graded by nobody: it
+  counts toward neither `verdict` nor the dashboard's denominator, and a FAIL
+  would have said the bot could not walk a route that was never in its map.
+  A drill that ran keeps its `requires` block too, so a reader knows the graded
+  columns were graded against the same map.
+
+  A withheld drill MUST be named in `capabilities.unavailable` as `t1:<name>`
+  and a graded one MUST NOT be — the drill and the envelope have to tell the
+  same story, or the column reads `5/8 drillar` with nothing to say the eighth
+  was never asked.
 - `threshold.reference_time_s` and `threshold.max_time_s` are optional and come as a
   pair: the time the owner ran the route in, and the slowest arrival still counted as
   a pass (a limit faster than its own reference is rejected). With them set, an
@@ -139,9 +227,11 @@ stops before T1 when T0 import is missing or FAIL.
 - `evidence` links the attempt worth watching — the first failure, else the first
   pass — opening the demo player three seconds before it, POV on the drilling bot.
   Null when the rig has no readable demo directory.
-- Run `verdict` = PASS iff ALL scenario thresholds hold AND the dash clears its
-  floor when it is graded (`informative: false`). An informative dash carries
-  `verdict: null` and never flips the run.
+- Run `verdict` = PASS iff ALL graded scenario thresholds hold AND the dash
+  clears its floor when it is graded (`informative: false`). An informative dash
+  carries `verdict: null` and never flips the run, and neither does a withheld
+  drill — the level's verdict is about the bot, and a missing navmesh capability
+  is a question about the build.
 - A quick run (3 attempts) scales thresholds like suite.py and MUST set
   `"regime_note": "quick"`; quick runs are never compared against full runs.
 
@@ -160,7 +250,7 @@ stops before T1 when T0 import is missing or FAIL.
   },
   "sources": {"quad_takes": "qw-analyze/items", "quad_lay_avg": "qw-analyze/items"},
   "cells": [ {"id": "m4569", "pos": [1984,-288,-72], "n": 350, "reasons": {"displacement": 350},
-              "links": {}, "evidence": { }} ],
+              "kinds": {"offroute": 350}, "links": {}, "evidence": { }} ],
   "demo": "t2-....mvd",
   "evidence": {"demo": "t2-....mvd", "at_s": 0.0, "link": "/demo-player/?..."},
   "moments": [ {"demo": "t2-....mvd", "metric": "quad_takes", "at_s": 33.2,
@@ -186,7 +276,14 @@ stops before T1 when T0 import is missing or FAIL.
   not here.
 - `still_s_per_bot` divides by `stats.bots` (recorded, not assumed 4).
 - Invariant, checked by the writer: `stall_firings == sum(cells[].n) == sum over
-  cells of sum(reasons.values())`. Violation ⇒ `status: "failed"`.
+  cells of sum(reasons.values()) == sum over cells of sum(kinds.values())`.
+  Violation ⇒ `status: "failed"`.
+- `cells[].kinds` is the LinkKind of the route leg in force per firing
+  (`JumpGap`, `Walk`, `SpeedJump`, `Step`, …), with `offroute` for a bot that
+  held no leg. `reasons` says which watchdog fired; `kinds` says what the bot
+  was traversing. A pricing change on one link kind is invisible without it —
+  the margin-tax measurement had to be a hand-written probe for exactly this
+  reason.
 - `stall_firings` is `null` with `cells: []` when the envelope declares
   `capabilities.telemetry: false`, and the invariant is then read the other way
   round: nothing was counted, so nothing may appear on the map. A null without that
@@ -314,5 +411,8 @@ question with the POV locked to the bot the number is about.
 `schema/fixtures/` holds one valid example per tier + deliberately broken ones
 (bad major version, missing field, violated T2 invariant, T4 ladder that continues
 after a loss, an unmeasured stall count with no declared reason, a declared absence
-that nonetheless carries a count, and one that carries map zones). `runner/selftest.py` validates all fixtures with the hand-rolled
+that nonetheless carries a count, one that carries map zones, a `nav` block stuck at
+`"building"`, a `"ready"` one with zero cells, one whose `nav.map` names a different
+map than the envelope, one on a two-sided tier, where a single stamp could not say which side it described, and a
+complete T1 with no `nav` at all). `runner/selftest.py` validates all fixtures with the hand-rolled
 checkers — this is the schema conformance suite and runs offline in CI.

@@ -1,0 +1,885 @@
+{
+ "build": {
+  "branch": "detached",
+  "commit": "817849aebe25134eae912a3017c623ec331400b1",
+  "digest_md5": "e301bbc0",
+  "dirty": false
+ },
+ "capabilities": {
+  "note": "en drill vars rutt bara finns i en navmesh det h\u00e4r bygget inte f\u00e5tt avst\u00e5s i st\u00e4llet f\u00f6r att f\u00e4llas: rj_pent_to_lifts_to_window_to_quad kr\u00e4ver navpatch:dm3-pentlift-rj",
+  "telemetry": true,
+  "unavailable": [
+   "t1:rj_pent_to_lifts_to_window_to_quad"
+  ]
+ },
+ "config_digest": "sha256:cf8b26a0c3293308dcedc82288f232dee2f3166407e8b8fa243ca8524ab49080",
+ "ended_utc": "2026-07-30T07:22:15Z",
+ "map": "dm3",
+ "nav": {
+  "cells": 4634,
+  "links": 36956,
+  "map": "dm3",
+  "rj_links": 2021,
+  "state": "ready",
+  "waited_s": 35.4
+ },
+ "payload": {
+  "dash": {
+   "evidence": {
+    "at_s": 20.6,
+    "dash": 1,
+    "demo": "t1dash-t1-20260730t070755z-817849ae.mvd",
+    "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1dash-t1-20260730t070755z-817849ae.mvd&map=100m&duration=71&from=17&track=93"
+   },
+   "floor": 790,
+   "informative": false,
+   "peak": 525,
+   "peaks": [
+    525,
+    524
+   ],
+   "place": "100m, rak bana",
+   "verdict": "FAIL"
+  },
+  "demo": "t1-20260730t070755z-817849ae.mvd",
+  "regime_note": "quick",
+  "scenarios": [
+   {
+    "arrived": 3,
+    "attempts": [
+     {
+      "demo_t_s": 1.0985387989785522,
+      "status": "passed",
+      "time_s": 5.33
+     },
+     {
+      "demo_t_s": 7.997772586008068,
+      "status": "passed",
+      "time_s": 5.3
+     },
+     {
+      "demo_t_s": 14.881724720995408,
+      "status": "passed",
+      "time_s": 5.37
+     }
+    ],
+    "best_time_s": 5.3,
+    "category": "cellprov",
+    "evidence": {
+     "at_s": 1.1,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=0&track=92",
+     "status": "passed"
+    },
+    "name": "cell_503_194",
+    "passed": 3,
+    "place": "SNG-hyllan \u2192 mega (SNG MH)",
+    "threshold": {
+     "of": 3,
+     "required": 3
+    },
+    "verdict": "PASS"
+   },
+   {
+    "arrived": 3,
+    "attempts": [
+     {
+      "demo_t_s": 21.83871335000731,
+      "status": "passed",
+      "time_s": 3.11
+     },
+     {
+      "demo_t_s": 26.534226853982545,
+      "status": "passed",
+      "time_s": 2.87
+     },
+     {
+      "demo_t_s": 31.002886397007387,
+      "status": "passed",
+      "time_s": 2.87
+     }
+    ],
+    "best_time_s": 2.87,
+    "category": "cellprov",
+    "evidence": {
+     "at_s": 21.8,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=18&track=92",
+     "status": "passed"
+    },
+    "name": "cell_724_503",
+    "passed": 3,
+    "place": "SNG-l\u00e5g \u2192 SNG-hyllan",
+    "threshold": {
+     "of": 3,
+     "required": 3
+    },
+    "verdict": "PASS"
+   },
+   {
+    "arrived": 0,
+    "attempts": [
+     {
+      "demo_t_s": 35.46699158800766,
+      "min_possible_s": 11.77,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 47.92449986201245,
+      "min_possible_s": 11.67,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 60.62935164500959,
+      "min_possible_s": 11.69,
+      "status": "abandoned",
+      "time_s": null
+     }
+    ],
+    "best_time_s": null,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 35.5,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=32&track=92",
+     "status": "abandoned"
+    },
+    "name": "hex_quad_to_sng",
+    "passed": 0,
+    "place": "quad \u2192 SNG",
+    "threshold": {
+     "max_time_s": 6.66,
+     "of": 3,
+     "reference_time_s": 5.95,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 0,
+    "attempts": [
+     {
+      "demo_t_s": 73.76882177498192,
+      "min_possible_s": 12.94,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 87.539317251998,
+      "min_possible_s": 12.95,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 101.5440813099849,
+      "min_possible_s": 12.94,
+      "status": "abandoned",
+      "time_s": null
+     }
+    ],
+    "best_time_s": null,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 73.8,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=70&track=92",
+     "status": "abandoned"
+    },
+    "name": "hex_ratop_to_ssg",
+    "passed": 0,
+    "place": "RA \u2192 YA",
+    "threshold": {
+     "max_time_s": 7.93,
+     "of": 3,
+     "reference_time_s": 7.08,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 0,
+    "attempts": [
+     {
+      "demo_t_s": 115.24453054496553,
+      "min_possible_s": 12.05,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 128.00710106099723,
+      "min_possible_s": 12.07,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 140.71484047197737,
+      "min_possible_s": 12.06,
+      "status": "abandoned",
+      "time_s": null
+     }
+    ],
+    "best_time_s": null,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 115.2,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=112&track=92",
+     "status": "abandoned"
+    },
+    "name": "hex_sng_to_quad",
+    "passed": 0,
+    "place": "SNG \u2192 quad",
+    "threshold": {
+     "max_time_s": 7.05,
+     "of": 3,
+     "reference_time_s": 6.3,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 0,
+    "attempts": [
+     {
+      "demo_t_s": 153.62409145897254,
+      "status": "rocketjump",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 170.7618542109849,
+      "min_possible_s": 16.69,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 189.36213841900462,
+      "min_possible_s": 16.71,
+      "status": "abandoned",
+      "time_s": null
+     }
+    ],
+    "best_time_s": null,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 153.6,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=150&track=92",
+     "status": "rocketjump"
+    },
+    "name": "hex_ssg_to_ratop",
+    "passed": 0,
+    "place": "YA \u2192 RA",
+    "threshold": {
+     "max_time_s": 11.68,
+     "of": 3,
+     "reference_time_s": 10.43,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 0,
+    "attempts": [
+     {
+      "demo_t_s": 207.9389918789966,
+      "status": "offroute",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 214.37774574902141,
+      "status": "offroute",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 221.34474212297937,
+      "status": "offroute",
+      "time_s": null
+     }
+    ],
+    "best_time_s": null,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 207.9,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=204&track=92",
+     "status": "offroute"
+    },
+    "name": "highbridge_to_rl",
+    "passed": 0,
+    "place": "bridge h\u00f6g \u2192 RL",
+    "threshold": {
+     "max_time_s": 3.46,
+     "of": 3,
+     "reference_time_s": 3.09,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 0,
+    "attempts": [
+     {
+      "demo_t_s": 227.79950878897216,
+      "min_possible_s": 16.95,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 246.31378248799592,
+      "min_possible_s": 16.96,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 264.8113547709654,
+      "min_possible_s": 16.94,
+      "status": "abandoned",
+      "time_s": null
+     }
+    ],
+    "best_time_s": null,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 227.8,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=224&track=92",
+     "status": "abandoned"
+    },
+    "name": "lg_to_pent_to_pentmega",
+    "passed": 0,
+    "place": "water LG \u2192 pent",
+    "threshold": {
+     "max_time_s": 11.93,
+     "of": 3,
+     "reference_time_s": 10.65,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 2,
+    "attempts": [
+     {
+      "demo_t_s": 283.2567501440062,
+      "min_possible_s": 13.67,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 298.2186584699666,
+      "status": "slow",
+      "time_s": 10.46
+     },
+     {
+      "demo_t_s": 310.76354350999463,
+      "status": "slow",
+      "time_s": 9.93
+     }
+    ],
+    "best_time_s": 9.93,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 283.3,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=280&track=92",
+     "status": "abandoned"
+    },
+    "name": "lifts_or_ring_to_sngmega",
+    "passed": 0,
+    "place": "lifts \u2192 SNG mega",
+    "threshold": {
+     "max_time_s": 8.67,
+     "of": 3,
+     "reference_time_s": 7.74,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 3,
+    "attempts": [
+     {
+      "demo_t_s": 322.793679481023,
+      "status": "slow",
+      "time_s": 11.09
+     },
+     {
+      "demo_t_s": 335.9646362719941,
+      "status": "slow",
+      "time_s": 11.15
+     },
+     {
+      "demo_t_s": 349.2072773100226,
+      "status": "slow",
+      "time_s": 11.45
+     }
+    ],
+    "best_time_s": 11.09,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 322.8,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=319&track=92",
+     "status": "slow"
+    },
+    "name": "ralow_to_ratop",
+    "passed": 0,
+    "place": "RA l\u00e5g \u2192 RA",
+    "threshold": {
+     "max_time_s": 8.71,
+     "of": 3,
+     "reference_time_s": 7.78,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 4,
+    "attempts": [
+     {
+      "demo_t_s": 362.7521347469883,
+      "status": "passed",
+      "time_s": 8.15
+     },
+     {
+      "demo_t_s": 372.98910120897926,
+      "status": "passed",
+      "time_s": 8.12
+     },
+     {
+      "demo_t_s": 383.2118260199786,
+      "min_possible_s": 13.45,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": null,
+      "status": "passed",
+      "time_s": 7.61
+     },
+     {
+      "demo_t_s": null,
+      "status": "passed",
+      "time_s": 7.58
+     }
+    ],
+    "best_time_s": 7.58,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 383.2,
+     "attempt": 3,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=380&track=92",
+     "status": "abandoned"
+    },
+    "name": "ring_to_ratop",
+    "passed": 4,
+    "place": "RA ing\u00e5ngen \u2192 RA",
+    "threshold": {
+     "max_time_s": 8.42,
+     "of": 5,
+     "reference_time_s": 7.52,
+     "required": 4
+    },
+    "verdict": "PASS"
+   },
+   {
+    "arrived": 0,
+    "attempts": [
+     {
+      "demo_t_s": 398.5812237780192,
+      "status": "offroute",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 410.17715367797064,
+      "status": "offroute",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 421.8138134899782,
+      "status": "offroute",
+      "time_s": null
+     }
+    ],
+    "best_time_s": null,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 398.6,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=395&track=92",
+     "status": "offroute"
+    },
+    "name": "ring_to_rl",
+    "passed": 0,
+    "place": "ring \u2192 RL",
+    "threshold": {
+     "max_time_s": 6.5,
+     "of": 3,
+     "reference_time_s": 5.8,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 0,
+    "attempts": [],
+    "best_time_s": null,
+    "category": "grunddrill",
+    "evidence": null,
+    "name": "rj_pent_to_lifts_to_window_to_quad",
+    "passed": 0,
+    "place": "pent \u2192 quad",
+    "requires": {
+     "capability": "navpatch:dm3-pentlift-rj",
+     "engine_cvar": "rtx_rj_cost_scale",
+     "note": "rutten g\u00e5r genom en raketskuttl\u00e4nk som navpatchen planterar i pent-hissen; utan patchen finns l\u00e4nken inte i grafen och drillen m\u00e4ter kartan i st\u00e4llet f\u00f6r botten",
+     "state": "absent"
+    },
+    "threshold": {
+     "of": 0,
+     "required": 4
+    },
+    "verdict": null
+   },
+   {
+    "arrived": 3,
+    "attempts": [
+     {
+      "demo_t_s": 432.4231392699876,
+      "status": "passed",
+      "time_s": 4.75
+     },
+     {
+      "demo_t_s": 439.25239301199326,
+      "status": "passed",
+      "time_s": 4.68
+     },
+     {
+      "demo_t_s": 446.01901629398344,
+      "status": "passed",
+      "time_s": 4.74
+     }
+    ],
+    "best_time_s": 4.68,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 432.4,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=429&track=92",
+     "status": "passed"
+    },
+    "name": "sng_mega",
+    "passed": 3,
+    "place": "SNG \u2192 mega (SNG MH) \u00f6ver hyllan",
+    "threshold": {
+     "of": 3,
+     "required": 2
+    },
+    "verdict": "PASS"
+   },
+   {
+    "arrived": 1,
+    "attempts": [
+     {
+      "demo_t_s": 452.85068373399554,
+      "min_possible_s": 13.27,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 467.9508955840138,
+      "status": "slow",
+      "time_s": 10.33
+     },
+     {
+      "demo_t_s": 480.3571520849946,
+      "min_possible_s": 13.26,
+      "status": "abandoned",
+      "time_s": null
+     }
+    ],
+    "best_time_s": 10.33,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 452.9,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=449&track=92",
+     "status": "abandoned"
+    },
+    "name": "sngspawns_to_sngmega",
+    "passed": 0,
+    "place": "SNG tele \u2192 SNG mega",
+    "threshold": {
+     "max_time_s": 8.26,
+     "of": 3,
+     "reference_time_s": 7.38,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 0,
+    "attempts": [
+     {
+      "demo_t_s": 494.96792831498897,
+      "status": "offroute",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 502.078310752986,
+      "status": "offroute",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 509.2342237170087,
+      "status": "offroute",
+      "time_s": null
+     }
+    ],
+    "best_time_s": null,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 495.0,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=491&track=92",
+     "status": "offroute"
+    },
+    "name": "spawn_lift_to_pent_to_pentmega",
+    "passed": 0,
+    "place": "lifts \u2192 pent",
+    "threshold": {
+     "max_time_s": 10.27,
+     "of": 3,
+     "reference_time_s": 9.17,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 2,
+    "attempts": [
+     {
+      "demo_t_s": 516.3843427560059,
+      "status": "slow",
+      "time_s": 8.04
+     },
+     {
+      "demo_t_s": 526.4962955450173,
+      "status": "stall",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 539.2480473549804,
+      "status": "slow",
+      "time_s": 8.06
+     }
+    ],
+    "best_time_s": 8.04,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 516.4,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=513&track=92",
+     "status": "slow"
+    },
+    "name": "spawn_ra_tunnel_to_lg",
+    "passed": 0,
+    "place": "RA tunneln \u2192 water LG",
+    "threshold": {
+     "max_time_s": 5.66,
+     "of": 3,
+     "reference_time_s": 5.05,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 0,
+    "attempts": [
+     {
+      "demo_t_s": 549.4093928899965,
+      "min_possible_s": 9.28,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 559.2085678449948,
+      "min_possible_s": 9.25,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 568.7911427249783,
+      "min_possible_s": 9.34,
+      "status": "abandoned",
+      "time_s": null
+     }
+    ],
+    "best_time_s": null,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 549.4,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=546&track=92",
+     "status": "abandoned"
+    },
+    "name": "spawn_rarox_to_quad",
+    "passed": 0,
+    "place": "SNG tele \u2192 quad",
+    "threshold": {
+     "max_time_s": 4.25,
+     "of": 3,
+     "reference_time_s": 3.79,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 0,
+    "attempts": [
+     {
+      "demo_t_s": 578.3169144249987,
+      "status": "stall",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 596.9353146539652,
+      "status": "stall",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 615.7274443649803,
+      "status": "stall",
+      "time_s": null
+     }
+    ],
+    "best_time_s": null,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 578.3,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=575&track=92",
+     "status": "stall"
+    },
+    "name": "spawn_rl_to_ratop_xer",
+    "passed": 0,
+    "place": "RL \u2192 RA",
+    "threshold": {
+     "max_time_s": 16.25,
+     "of": 3,
+     "reference_time_s": 14.51,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 0,
+    "attempts": [
+     {
+      "demo_t_s": 634.5521703989943,
+      "status": "offroute",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 651.5619706609868,
+      "status": "offroute",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 668.368298011017,
+      "min_possible_s": 14.9,
+      "status": "abandoned",
+      "time_s": null
+     }
+    ],
+    "best_time_s": null,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 634.6,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=631&track=92",
+     "status": "offroute"
+    },
+    "name": "spawn_sngspawn_to_ring_to_ratop",
+    "passed": 0,
+    "place": "SNG tele \u2192 RA",
+    "threshold": {
+     "max_time_s": 9.89,
+     "of": 3,
+     "reference_time_s": 8.83,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   },
+   {
+    "arrived": 2,
+    "attempts": [
+     {
+      "demo_t_s": 685.1537364139804,
+      "status": "slow",
+      "time_s": 8.59
+     },
+     {
+      "demo_t_s": 695.8241881260183,
+      "min_possible_s": 8.5,
+      "status": "abandoned",
+      "time_s": null
+     },
+     {
+      "demo_t_s": 705.9129092600197,
+      "status": "slow",
+      "time_s": 8.45
+     }
+    ],
+    "best_time_s": 8.45,
+    "category": "grunddrill",
+    "evidence": {
+     "at_s": 685.2,
+     "attempt": 1,
+     "demo": "t1-20260730t070755z-817849ae.mvd",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260730t070755z-817849ae.mvd&map=dm3&duration=715&from=682&track=92",
+     "status": "slow"
+    },
+    "name": "window_to_rl",
+    "passed": 0,
+    "place": "window \u2192 RL",
+    "threshold": {
+     "max_time_s": 3.49,
+     "of": 3,
+     "reference_time_s": 3.12,
+     "required": 2
+    },
+    "verdict": "FAIL"
+   }
+  ],
+  "verdict": "FAIL"
+ },
+ "provenance": "measured",
+ "run_id": "t1-20260730T070755Z-817849ae",
+ "runner_version": "0.1.0",
+ "schema": "rtx-testflow/1",
+ "started_utc": "2026-07-30T07:07:55Z",
+ "status": "complete",
+ "tier": "T1"
+}

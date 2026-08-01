@@ -1,0 +1,89 @@
+{
+ "schema": "rtx-testflow/1",
+ "run_id": "t1-20260729T110000Z-33333333",
+ "tier": "T1",
+ "status": "complete",
+ "started_utc": "2026-07-29T11:00:00Z",
+ "ended_utc": "2026-07-29T11:08:12Z",
+ "map": "dm3",
+ "build": {
+  "branch": "testsuite",
+  "commit": "3333333333333333333333333333333333333333",
+  "digest_md5": "7fc55d7e",
+  "dirty": false
+ },
+ "nav": {
+  "map": "dm3",
+  "state": "ready",
+  "cells": 4634,
+  "links": 36956,
+  "rj_links": 2021,
+  "waited_s": 0.0
+ },
+ "config_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+ "runner_version": "0.1.0",
+ "provenance": "synthetic",
+ "payload": {
+  "scenarios": [
+   {
+    "name": "ra_climb",
+    "attempts": [
+     {
+      "status": "passed",
+      "time_s": 5.37,
+      "demo_t_s": 12.5
+     },
+     {
+      "status": "slow",
+      "time_s": 8.9,
+      "demo_t_s": 41.0
+     },
+     {
+      "status": "abandoned",
+      "time_s": null,
+      "demo_t_s": 61.0,
+      "min_possible_s": 8.4
+     }
+    ],
+    "threshold": {
+     "required": 1,
+     "of": 3,
+     "reference_time_s": 5.0,
+     "max_time_s": 5.6
+    },
+    "passed": 1,
+    "verdict": "PASS",
+    "category": "grunddrill",
+    "place": "RA-ing\u00e5ngen \u2192 RA-plattan",
+    "evidence": {
+     "demo": "t1-20260729T110000Z-33333333.mvd",
+     "attempt": 2,
+     "status": "slow",
+     "at_s": 41.0,
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1-20260729T110000Z-33333333.mvd&map=dm3&duration=500&from=38.0&track=1"
+    },
+    "arrived": 2,
+    "best_time_s": 5.37
+   }
+  ],
+  "dash": {
+   "peaks": [
+    527,
+    609
+   ],
+   "peak": 609,
+   "floor": 800,
+   "informative": false,
+   "place": "100m, rak bana",
+   "verdict": "FAIL",
+   "evidence": {
+    "demo": "t1dash-20260729T110000Z-33333333.mvd",
+    "dash": 1,
+    "at_s": 7.2,
+    "link": "/demo-player/?demoUrl=%2Fdemos%2Ft1dash-20260729T110000Z-33333333.mvd&map=100m&duration=40&from=4.2&track=1"
+   }
+  },
+  "verdict": "FAIL",
+  "demo": "t1-20260729T110000Z-33333333.mvd"
+ }
+}

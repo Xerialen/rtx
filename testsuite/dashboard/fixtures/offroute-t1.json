@@ -1,0 +1,51 @@
+{
+  "schema": "rtx-testflow/1",
+  "run_id": "t1-20260729T140000Z-decaf001",
+  "tier": "T1",
+  "status": "complete",
+  "started_utc": "2026-07-29T14:00:00Z",
+  "ended_utc": "2026-07-29T14:12:00Z",
+  "map": "dm3",
+  "build": {
+    "branch": "offroute-drill",
+    "commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    "digest_md5": "decaf001",
+    "dirty": false
+  },
+  "config_digest": "sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+  "runner_version": "0.1.0",
+  "provenance": "synthetic",
+  "payload": {
+    "scenarios": [
+      {
+        "name": "spawn_lift_to_pent_to_pentmega",
+        "attempts": [
+          {"status": "passed", "time_s": 5.12, "demo_t_s": 9.0},
+          {"status": "offroute", "time_s": null, "demo_t_s": 21.4}
+        ],
+        "threshold": {
+          "required": 2,
+          "of": 2,
+          "reference_time_s": 5.05,
+          "max_time_s": 5.66
+        },
+        "passed": 1,
+        "verdict": "FAIL",
+        "category": "grunddrill",
+        "place": "spawn → pent → pentmega",
+        "evidence": null,
+        "arrived": 1,
+        "best_time_s": 5.12
+      }
+    ],
+    "dash": {
+      "peaks": [808],
+      "peak": 808,
+      "floor": 790,
+      "informative": true,
+      "place": "100m, rak bana"
+    },
+    "verdict": "FAIL",
+    "demo": "t1-20260729T140000Z-deadbeef.mvd"
+  }
+}
