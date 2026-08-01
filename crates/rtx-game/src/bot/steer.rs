@@ -346,6 +346,12 @@ fn chain_entry_hold_expired(commit: Option<Commit>, now: f32, on_ground: bool, b
     on_ground && blocked && commit.is_some_and(|c| now - c.since > CHAIN_ENTRY_GRACE)
 }
 
+/// Whether the curl too-slow abort should fire. With the grounded gate disabled, this preserves the
+/// legacy speed-only predicate; with it enabled, airborne frames cannot abort the leg.
+fn sj_abort_should_fire(on_ground: bool, gate: bool, predicted: f32, v_req: f32) -> bool {
+    (!gate || on_ground) && predicted < v_req * 0.85
+}
+
 /// How many legs ahead the winding gate looks, and the total heading change (degrees) over them that
 /// counts as "too tight to hop". A straight corridor reads ~0; a spiral staircase's curved treads
 /// read tens of degrees per leg.
@@ -1536,7 +1542,12 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             cv(c"sv_friction", 4.0),
             cv(c"sv_stopspeed", 100.0),
         );
-        if predicted < v_req * 0.85 {
+        if sj_abort_should_fire(
+            on_ground,
+            host.cvar_bool(c"rtx_bot_sj_abort_grounded"),
+            predicted,
+            v_req,
+        ) {
             note_stall(bot, &stall_frame, "prestrafe_deficit", "penalize+repath", cur_leg, kind);
             // A certified leg: strike it once so this repath prefers an alternative, but never let the
             // surcharge escalate — the build proved the jump flyable, so arriving slow is a transient
@@ -2762,5 +2773,19 @@ mod tests {
         assert!(chain_entry_hold_expired(commit, 10.4, true, true));
         // No commit at all (not on a speed-jump leg, or already diverted) → nothing to divert.
         assert!(!chain_entry_hold_expired(None, 10.4, true, true));
+    }
+
+    #[test]
+    fn sj_abort_grounded_gate_controls_airborne_abort() {
+        let v_req = 400.0;
+        let low = 300.0;
+        let high = 350.0;
+
+        assert!(!sj_abort_should_fire(false, true, low, v_req));
+        assert!(sj_abort_should_fire(false, false, low, v_req));
+        assert!(sj_abort_should_fire(true, true, low, v_req));
+        assert!(sj_abort_should_fire(true, false, low, v_req));
+        assert!(!sj_abort_should_fire(true, true, high, v_req));
+        assert!(!sj_abort_should_fire(true, false, high, v_req));
     }
 }
