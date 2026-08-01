@@ -361,6 +361,15 @@ impl Default for SpeedJumpTraversal {
 /// game engine prices a disabled-but-openable NavMesh link rather than deleting it outright.
 pub const CLOSED_GATE_PENALTY: f32 = 100_000.0;
 
+/// Fraction of a chained speed jump's `v_req` below which the entry speed isn't "carrying" this
+/// jump at all — see [`NavGraph::chain_entry_exclusions`]. Well under 1.0 (unlike [`SJ_MARGIN`]'s
+/// already-tight safety buffer): the point isn't to police the exact margin the physics need —
+/// [`NavGraph::banded_step`] still does that — it's to catch the case the banded entry floor can't
+/// see at all, a bot that hasn't started building speed toward the ledge yet. A bot already well
+/// into a run-up (real speed above half of what the leap needs) is left to the ordinary banded
+/// feasibility check.
+pub const CHAIN_ENTRY_FRAC: f32 = 0.5;
+
 /// Extra travel-time charged to every [`LinkKind::RocketJump`] link when the querying bot is unfit
 /// to fly one (no rocket launcher, no rocket, too little health, or quad running — see
 /// the game's `bot::rj::rocket_jump_extra`). Same magnitude as [`CLOSED_GATE_PENALTY`]: the planner
@@ -1160,6 +1169,57 @@ impl NavGraph {
             Some(t) if t.chained => CLOSED_GATE_PENALTY,
             _ => 0.0,
         }
+    }
+
+    /// Whether link `li` is a chained speed jump a bot with *actual* horizontal speed `speed`
+    /// cannot legally take — the shared predicate behind [`Self::chain_entry_exclusions`] (a fresh
+    /// route's first leg) and `rtx-game`'s leg-transition guard (a route's *later* leg becoming
+    /// current, e.g. an ordinary walk leg into the ledge cell followed by the chained jump as leg 1 —
+    /// invisible to the first-leg check, since at plan time the walk hadn't happened yet and the
+    /// chained link wasn't adjacent to the bot's *then*-current cell).
+    ///
+    /// A chained jump has no runway of its own — its `from` cell *is* the ledge — so it's only
+    /// traversable when the bot already carries close to `v_req` in from whatever put it here (see
+    /// [`SpeedJumpTraversal::chained`]). The banded planner's own feasibility check
+    /// ([`Self::banded_step`]) polices that correctly for a bot *mid-route*, carrying a band built up
+    /// over the legs it just flew. But every fresh search's start band floors at `BAND_FLOOR[0]` ==
+    /// [`MAX_SPEED`] regardless of the bot's *real* speed — there is no "truly stationary" band — so a
+    /// chained link whose `v_req` sits under `MAX_SPEED` (a real case: dm3 measured two, 296 and 304)
+    /// reads as already-satisfied at band 0 even when the bot backing the search is standing dead
+    /// still. Measured on those two links: 0% success flying either from a stand start, 80-100% with
+    /// any carried speed — the band model isn't wrong about carried speed, it's blind to *no* speed.
+    pub fn chain_entry_blocked(&self, li: u32, speed: f32) -> bool {
+        self.speed_jump_of_link(li)
+            .is_some_and(|t| t.chained && speed < CHAIN_ENTRY_FRAC * t.v_req)
+    }
+
+    /// Whether a route's newly-current leg `leg` may engage its committed run-up, given the bot's
+    /// real horizontal `speed` — [`Self::chain_entry_blocked`] for `Option<u32>`, `None` (no current
+    /// leg) reading as "ok". This is the second of the two chain-entry checks (see
+    /// [`Self::chain_entry_exclusions`] for the first): a route whose leg 0 is an ordinary walk into
+    /// a chained jump's ledge cell and whose leg 1 *is* the chained jump is invisible to the
+    /// first-leg check — at plan time the walk hadn't happened yet, so the chained link was never
+    /// adjacent to the bot's *then*-current cell — but becomes leg 1's own `chain_entry_blocked`
+    /// question the instant the route advances onto it. `rtx-game`'s steer loop calls this once, at
+    /// exactly that transition (not every frame of an already-engaged run, which would also catch a
+    /// leg mid-flight — the traffic this must leave alone).
+    pub fn chain_entry_leg_ok(&self, leg: Option<u32>, speed: f32) -> bool {
+        !leg.is_some_and(|l| self.chain_entry_blocked(l, speed))
+    }
+
+    /// Chained speed-jump links leaving `from` that a bot with *actual* horizontal speed `speed`
+    /// cannot legally take as the first leg of a fresh plan — see [`Self::chain_entry_blocked`] for
+    /// the predicate.
+    ///
+    /// This is the check the band abstraction can't make, run once against the bot's real speed
+    /// before a fresh search ever begins: a link this yields is one the caller should surcharge (or
+    /// exclude) for *that one search*, not sever from the graph — a bot who reaches `from` later
+    /// carrying real speed must still be able to fly it. See `rtx_bot_chain_entry_gate` in `rtx-game`.
+    pub fn chain_entry_exclusions(&self, from: CellId, speed: f32) -> impl Iterator<Item = u32> + '_ {
+        self.adjacency[from as usize]
+            .iter()
+            .copied()
+            .filter(move |&li| self.chain_entry_blocked(li, speed))
     }
 
     /// The banded transition for link `li` entered at speed band `entry`: its travel-time cost and
@@ -3823,6 +3883,119 @@ mod tests {
             g.find_path_banded(3, 4, 0.0, &LinkCosts::default()).is_none(),
             "a standing start can't satisfy a chained speed jump"
         );
+    }
+
+    /// Reproduces the dm3 bug `chain_entry_exclusions` exists to close: a chained speed jump whose
+    /// `v_req` sits *under* `MAX_SPEED` (dm3 measured two, 296 and 304) is silently satisfied by the
+    /// banded planner's band-0 floor even when the bot backing the search carries no speed at all —
+    /// `find_path_banded` alone takes it from a true stand start. Folding `chain_entry_exclusions`'
+    /// result into `LinkCosts::penalties` (the mechanism `rtx-game`'s steer loop actually uses)
+    /// diverts the same standstill search onto a cheap alternative instead — and a bot already
+    /// carrying real speed toward the ledge is left untouched.
+    #[test]
+    fn chain_entry_exclusions_catch_the_sub_max_speed_band0_hole() {
+        // L (ledge, bot stands here) --chained SJ, v_req 304--> T (speed-jump target)
+        // L --walk 1500--> W --walk ~1513--> T (a long but always-available walk-around)
+        let g = banded_graph(
+            &[
+                Vec3::ZERO,                  // 0 L
+                Vec3::new(200.0, 0.0, 0.0),  // 1 T
+                Vec3::new(0.0, 1500.0, 0.0), // 2 W
+            ],
+            &[
+                (0, 1, LinkKind::SpeedJump, 1.0),
+                (0, 2, LinkKind::Walk, 6.0),
+                (2, 1, LinkKind::Walk, 6.0),
+            ],
+            &[(0, 304.0, 0.5, true, 0.0)],
+        );
+
+        // The bug: queried at true standstill (`start_speed` 0.0), the unguarded banded search still
+        // flies the chained link — band 0's floor (`BAND_FLOOR[0]` == `MAX_SPEED`) already clears this
+        // link's sub-`MAX_SPEED` v_req regardless of the bot's real speed.
+        let unguarded = g
+            .find_path_banded(0, 1, 0.0, &LinkCosts::default())
+            .expect("a route exists");
+        assert_eq!(
+            unguarded.links,
+            vec![0],
+            "band 0's floor should silently satisfy a sub-MAX_SPEED chained link"
+        );
+
+        // `chain_entry_exclusions` flags exactly that link at true standstill…
+        let excluded: Vec<u32> = g.chain_entry_exclusions(0, 0.0).collect();
+        assert_eq!(excluded, vec![0], "the chained link should be flagged at true standstill");
+
+        // …and surcharging it (same finite-penalty mechanism the stuck-link watchdog already uses)
+        // diverts the identical standstill query onto the walk-around.
+        let penalties = vec![(0u32, CLOSED_GATE_PENALTY)];
+        let costs = LinkCosts {
+            penalties: &penalties,
+            ..LinkCosts::default()
+        };
+        let guarded = g.find_path_banded(0, 1, 0.0, &costs).expect("the walk-around still exists");
+        assert_eq!(guarded.links, vec![1, 2], "the gate should divert onto the walk-around");
+
+        // A bot already carrying (near) v_req toward the ledge is genuine pass-through traffic and
+        // must not be excluded.
+        assert!(
+            g.chain_entry_exclusions(0, 304.0).next().is_none(),
+            "a bot already carrying v_req must not be excluded"
+        );
+    }
+
+    /// Reproduces the second, Fas-C-measured shape of the same bug: a two-leg route whose leg 0 is
+    /// an ordinary walk *into* the chained jump's ledge cell and whose leg 1 *is* the chained jump —
+    /// the plan-time `chain_entry_exclusions` check is blind to leg 1 here (it was never adjacent to
+    /// the bot's cell *at plan time*, only leg 0 was), so a route shaped exactly like this sails
+    /// through the first-leg gate untouched. Live: 52 of 58 ring stalls in a T2 run landed at
+    /// `route_pos == 1` for precisely this reason — a bot that merely walked onto the ledge (~38 ups,
+    /// well under half of either link's v_req) committing to the chained leg anyway. This is the
+    /// case `chain_entry_leg_ok` exists to catch, called once by `rtx-game`'s steer loop at the exact
+    /// frame `route_pos` advances onto leg 1 — not `chain_entry_exclusions`, which only ever sees leg 0.
+    #[test]
+    fn chain_entry_leg_ok_catches_the_route_pos_1_case_exclusions_misses() {
+        // A (walk start) --walk--> L (ledge) --chained SJ, v_req 304--> T
+        let g = banded_graph(
+            &[
+                Vec3::new(-300.0, 0.0, 0.0), // 0 A
+                Vec3::ZERO,                  // 1 L (ledge)
+                Vec3::new(200.0, 0.0, 0.0),  // 2 T
+            ],
+            &[(0, 1, LinkKind::Walk, 1.0), (1, 2, LinkKind::SpeedJump, 1.0)],
+            &[(1, 304.0, 0.5, true, 0.0)],
+        );
+        let (leg0_walk, leg1_chained_sj) = (0u32, 1u32);
+
+        // `chain_entry_exclusions` from the route's start cell A only ever names leg 0 (a plain
+        // walk, never chained) — it cannot see leg 1 at all, since leg 1 isn't adjacent to A.
+        assert!(
+            g.chain_entry_exclusions(0, 0.0).next().is_none(),
+            "the first-leg check has nothing to flag from the walk's start cell"
+        );
+
+        // The moment `route_pos` would advance onto leg 1 (the bot having just walked onto the
+        // ledge at ~38 ups — dm3's measured walk-in speed, well under half of v_req 304),
+        // `chain_entry_leg_ok` catches exactly what the first-leg check missed.
+        assert!(
+            !g.chain_entry_leg_ok(Some(leg1_chained_sj), 38.0),
+            "a route_pos=1 transition onto the chained leg from a walked-in standstill must be blocked"
+        );
+
+        // A bot arriving at the same transition already carrying real speed (landed from a
+        // preceding jump, or simply ran a longer, faster approach) is genuine traffic and must
+        // engage normally.
+        assert!(
+            g.chain_entry_leg_ok(Some(leg1_chained_sj), 304.0),
+            "a leg transition carrying v_req must not be blocked"
+        );
+
+        // The walk leg itself is never blocked, at any speed — this check is chained-speed-jump
+        // specific.
+        assert!(g.chain_entry_leg_ok(Some(leg0_walk), 0.0));
+
+        // No current leg (route exhausted / off-route) reads as "ok" — nothing to divert from.
+        assert!(g.chain_entry_leg_ok(None, 0.0));
     }
 
     /// A certified curl speed jump is priced at its stored cost, so the planner takes it over a
