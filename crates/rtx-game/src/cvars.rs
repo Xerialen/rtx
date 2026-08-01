@@ -71,6 +71,9 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // 80-100% with any carried speed, and every failed attempt fired the stall watchdog into a
         // repath that chose the identical link again. On by default; `0` restores that behavior.
         ("rtx_bot_chain_entry_gate", Bool(true)),
+        // Require the curl too-slow abort to run on grounded frames only. On by default; `0` restores
+        // the legacy speed-only abort on airborne frames too.
+        ("rtx_bot_sj_abort_grounded", Bool(true)),
         // Fan a goal pick's independent navmesh floods out across a persistent worker pool (see
         // `bot::par`) — on by default; the result is bit-identical to serial. 0 → run them inline on
         // the main thread (the live A/B switch, and the fallback if the pool can't be built).
