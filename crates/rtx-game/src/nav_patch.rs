@@ -57,8 +57,8 @@ pub struct ShelfPatch {
 ///
 /// dm3 west shelf (`sng-t`/`lifts` boundary, x −920..−845, y −48): the machinery-top strip bots
 /// climb onto in pairs during normal play and then never leave — measured on upstream main
-/// (cc5fa8ea) at 0/0/13/20/94/53 stall firings per 600 s T2 across six runs, with per-bot
-/// standstill doubling in the runs where it hits. The south face is solid (drops that way fail
+/// (cc5fa8ea) at 13/0/0/20/94/53 stall firings per 600 s T2 across six runs, with per-bot
+/// standstill rising to 27-33.5 s in the big-episode runs (10.6-19 s otherwise). The south face is solid (drops that way fail
 /// `classify_grounded`); the open lip is north, so every drop lands on the y=0 floor row. Cell
 /// spacing follows the measured wander range of trapped bots (x −847..−872 around each episode's
 /// entry point) so localization never has to reach more than ~15 u.
@@ -122,10 +122,14 @@ fn apply_one(patch: &ShelfPatch, bsp: &Bsp, graph: &mut NavGraph) -> Outcome {
 
     let mut new_cells = 0;
     for &c in patch.cells {
-        let existed = graph.cell_within(v(c), ALREADY_XY, ALREADY_Z).is_some();
+        // "New" is judged by what `plant_cell` actually did (its dedup runs against the *snapped*
+        // position, which an aim point can sit further from than any pre-check here would use) —
+        // the cell count grows exactly when a cell was genuinely planted.
+        let cells_before = graph.cells.len();
         let Some((id, _)) = graph.plant_cell(bsp, v(c)) else {
             return Outcome::Failed(format!("no standable floor at {c:?}"));
         };
+        let existed = graph.cells.len() == cells_before;
         let z = graph.cell_origin(id).z;
         if (z - patch.snap_z).abs() > SNAP_TOL {
             return Outcome::Failed(format!(

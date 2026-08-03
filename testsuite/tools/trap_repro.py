@@ -14,10 +14,11 @@ control that proves the trap still exists without it. The drill never touches `r
 itself — which graph is live is the rig operator's choice, and the server log's
 ``rtx: navpatch ...`` line is the ground truth for it.
 
-Defaults target the dm3 west shelf (see `nav_patch::PATCHES` in `rtx-game`), measured on upstream
-cc5fa8ea: patch off, 4/4 trials stuck over 40 s windows with 5-8 displacement stalls each on the
-floor walk links 104 u below (769/771/1029/1032); shelf cells + north drops present, 0/8 stuck
-with a median 0.8 s escape. `--surf`/`--target` retarget any other patched surface.
+Defaults target the dm3 west shelf (see `nav_patch::PATCHES` in `rtx-game`), measured on the
+patch branch build (digest a15da5e0), same binary both arms: patch off, 4/4 trials stuck over
+40 s windows with 5-8 displacement stalls each on the floor walk links 104 u below
+(769/771/1029/1032); patch on, 0/8 stuck with a median 0.64 s escape (span 0.51-0.99).
+`--surf`/`--target` retarget any other patched surface.
 
 Rig prep mirrors `runner/t2.py`: `rtx_telemetry 1` (BotStall events), `rtx_bot_pacifist 1`,
 `rtx_bot_count 1` (one puppet, no interference), all restored on exit. Events piggyback on the
@@ -61,28 +62,31 @@ def main() -> None:
 
     ctl = Control(args.host, args.port)
 
-    saved: dict[str, str | None] = {}
-    for name, value in [("rtx_telemetry", "1"), ("rtx_bot_pacifist", "1"), ("rtx_bot_count", "1")]:
-        try:
-            saved[name] = str(ctl.request(f"get {name}")["data"].get("value"))
-        except (ControlError, AttributeError, KeyError):
-            saved[name] = None
-        ctl.request(f"set {name} {value}")
-
     surf = list(args.surf)
     target = list(args.target)
     results = []
+    saved: dict[str, str | None] = {}
     try:
+        # Rig prep inside the same try as the run: a failure on the second or third `set` must
+        # still restore the first one.
+        for name, value in [("rtx_telemetry", "1"), ("rtx_bot_pacifist", "1"),
+                            ("rtx_bot_count", "1")]:
+            try:
+                saved[name] = str(ctl.request(f"get {name}")["data"].get("value"))
+            except (ControlError, AttributeError, KeyError):
+                saved[name] = None
+            ctl.request(f"set {name} {value}")
         run_trials(ctl, args, surf, target, results)
     finally:
         # The docstring promises restoration on exit — including sys.exit mid-run, a lost
-        # control connection, or ^C. A restore attempt over a dead socket has nothing to do.
+        # control connection, or ^C. Each cvar is restored independently so one failure
+        # doesn't strand the rest.
         for name, value in saved.items():
             if value is not None:
                 try:
                     ctl.request(f"set {name} {value}")
                 except (ControlError, OSError):
-                    break
+                    continue
 
     stuck = sum(1 for r in results if not r["verdict"].startswith("escaped"))
     print(f"SUMMARY: {stuck}/{len(results)} not escaped; "
