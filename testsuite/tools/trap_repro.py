@@ -15,9 +15,9 @@ itself — which graph is live is the rig operator's choice, and the server log'
 ``rtx: navpatch ...`` line is the ground truth for it.
 
 Defaults target the dm3 west shelf (see `nav_patch::PATCHES` in `rtx-game`), measured on the
-patch branch build (digest a15da5e0), same binary both arms: patch off, 4/4 trials stuck over
-40 s windows with 5-8 displacement stalls each on the floor walk links 104 u below
-(769/771/1029/1032); patch on, 0/8 stuck with a median 0.64 s escape (span 0.51-0.99).
+patch branch's acceptance run, same binary both arms: patch off, 4/4 trials stuck over 40 s
+windows with 5-8 displacement stalls each on the floor walk links 104 u below
+(769/771/1029/1032); patch on, 0/8 stuck with a median 0.63 s escape (span 0.51-1.00).
 `--surf`/`--target` retarget any other patched surface.
 
 Rig prep mirrors `runner/t2.py`: `rtx_telemetry 1` (BotStall events), `rtx_bot_pacifist 1`,
