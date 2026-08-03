@@ -157,9 +157,7 @@ fn apply_one(patch: &ShelfPatch, bsp: &Bsp, graph: &mut NavGraph) -> Outcome {
             continue;
         }
         if graph.plant_drop(bsp, from_cell, to_cell).is_none() {
-            return Outcome::Failed(format!(
-                "drop {from:?} -> {to:?} is not one the build would emit"
-            ));
+            return Outcome::Failed(format!("drop {from:?} -> {to:?} is not one the build would emit"));
         }
         new_drops += 1;
     }
@@ -167,7 +165,10 @@ fn apply_one(patch: &ShelfPatch, bsp: &Bsp, graph: &mut NavGraph) -> Outcome {
     if new_cells == 0 && new_drops == 0 {
         return Outcome::AlreadyMeshed;
     }
-    Outcome::Applied { cells: new_cells, drops: new_drops }
+    Outcome::Applied {
+        cells: new_cells,
+        drops: new_drops,
+    }
 }
 
 #[cfg(test)]
@@ -180,7 +181,11 @@ mod tests {
         for p in PATCHES {
             assert!(!p.map.is_empty() && p.map == p.map.to_lowercase());
             assert!(!p.cells.is_empty(), "{}: a patch with no cells patches nothing", p.name);
-            assert!(!p.drops.is_empty(), "{}: a shelf with no way off is still a trap", p.name);
+            assert!(
+                !p.drops.is_empty(),
+                "{}: a shelf with no way off is still a trap",
+                p.name
+            );
             for (from, _) in p.drops {
                 assert!(
                     p.cells.iter().any(|c| {

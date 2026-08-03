@@ -242,9 +242,7 @@ impl GameState {
         // log always says which graph the bots actually played on.
         if self.rtx_cvar_bool("rtx_nav_patch") {
             if let Some(bsp) = self.nav.bsp.clone() {
-                for (name, outcome) in
-                    crate::nav_patch::apply_for_map(&self.level.mapname, &bsp, &mut graph)
-                {
+                for (name, outcome) in crate::nav_patch::apply_for_map(&self.level.mapname, &bsp, &mut graph) {
                     let line = match outcome {
                         crate::nav_patch::Outcome::Applied { cells, drops } => {
                             format!("rtx: navpatch {name}: applied ({cells} cells, {drops} drops)\n")
