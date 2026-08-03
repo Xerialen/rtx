@@ -12,18 +12,20 @@
 //! table of hand-verified plants per map, applied right after the build finishes, gated by
 //! `rtx_nav_patch` (default on).
 //!
-//! Fail-closed, in the same sense the DM3 route patch established: every mutation goes through the
-//! build's own validators (`plant_cell` refuses non-standable spots, `plant_drop` accepts only a
-//! drop `classify_grounded` would itself emit), each planted cell must land on the exact standing
-//! height measured on the shipped BSP (`snap_z` ± [`SNAP_TOL`] — a re-lit or edited map misses it
-//! and the patch reports `failed` instead of planting links into changed geometry), and the outcome
+//! Fail-closed, and transactional: every mutation goes through the build's own validators
+//! (`plant_cell` refuses non-standable spots, `plant_drop` accepts only a drop
+//! `classify_grounded` would itself emit), each planted cell must land on the standing height
+//! measured on the shipped BSP (`snap_z` ± [`SNAP_TOL`] — a *local geometry precondition*, not a
+//! whole-BSP fingerprint: it catches the floor moving, and the link validators catch the
+//! surroundings changing, but a map edit that keeps this exact floor height passes), and each
+//! patch mutates a clone that only replaces the live graph when everything validated. The outcome
 //! is one unambiguous console line per patch: `applied` / `skipped (...)` / `failed (...)`. A
-//! skipped or failed patch leaves route planning exactly as it was before this module existed.
+//! skipped or failed patch leaves the graph bit-for-bit what the build produced.
 
 use glam::Vec3;
 
 use crate::bsp::Bsp;
-use crate::navmesh::NavGraph;
+use crate::navmesh::{LinkKind, NavGraph};
 
 /// Tolerance around [`ShelfPatch::snap_z`] for the floor-snap fingerprint. Standing heights come
 /// out of the hull trace at exact model coordinates, so a correct BSP matches to well under a unit;
@@ -86,56 +88,58 @@ const REACH_Z: f32 = 48.0;
 
 /// What applying one patch did. Rendered into the console status line by the caller.
 pub enum Outcome {
-    /// Cells planted (or found already present) and every drop in place.
+    /// New topology went in (counts are the *new* cells/drops; pre-existing ones are not counted).
     Applied { cells: usize, drops: usize },
-    /// Every cell position already resolves to a cell — a future carve that sees the surface makes
-    /// the patch a no-op rather than a conflict.
+    /// Every cell **and every drop** the patch asks for is already in the graph — a future carve
+    /// that genuinely sees the whole surface makes the patch a no-op rather than a conflict. A
+    /// carve that finds the cells but still misses the way off does *not* qualify; the missing
+    /// drops get planted and the patch reports `Applied`.
     AlreadyMeshed,
-    /// A precondition or a validator said no. The graph keeps any cells planted before the failure
-    /// (they are honest standing positions and `plant_cell` is idempotent), but no drops are added
-    /// and the message says exactly what refused.
+    /// A precondition or a validator said no. The candidate graph is discarded whole, so the
+    /// published graph — derived tables included — is bit-for-bit the one the build produced.
     Failed(String),
 }
 
-/// Apply every patch pinned to `map`, in table order. The caller owns the graph (build just
-/// finished, not shared yet), runs [`NavGraph::rebuild_derived`] once if anything reports
-/// `Applied`, and prints the status lines.
+/// Apply every patch pinned to `map`, in table order — transactionally: each patch mutates a
+/// clone, which replaces `graph` (derived tables rebuilt) only when the whole patch validated.
+/// A `Failed` patch therefore cannot leave partial topology or stale reachability/LOD behind.
 pub fn apply_for_map(map: &str, bsp: &Bsp, graph: &mut NavGraph) -> Vec<(&'static str, Outcome)> {
-    PATCHES
-        .iter()
-        .filter(|p| p.map == map)
-        .map(|p| (p.name, apply_one(p, bsp, graph)))
-        .collect()
+    let mut out = Vec::new();
+    for patch in PATCHES.iter().filter(|p| p.map == map) {
+        let mut candidate = graph.clone();
+        let outcome = apply_one(patch, bsp, &mut candidate);
+        if let Outcome::Applied { .. } = outcome {
+            candidate.rebuild_derived();
+            *graph = candidate;
+        }
+        out.push((patch.name, outcome));
+    }
+    out
 }
 
 fn apply_one(patch: &ShelfPatch, bsp: &Bsp, graph: &mut NavGraph) -> Outcome {
     let v = |a: [f32; 3]| Vec3::new(a[0], a[1], a[2]);
 
-    if patch
-        .cells
-        .iter()
-        .all(|&c| graph.cell_within(v(c), ALREADY_XY, ALREADY_Z).is_some())
-    {
-        return Outcome::AlreadyMeshed;
-    }
-
-    let mut planted = Vec::with_capacity(patch.cells.len());
+    let mut new_cells = 0;
     for &c in patch.cells {
+        let existed = graph.cell_within(v(c), ALREADY_XY, ALREADY_Z).is_some();
         let Some((id, _)) = graph.plant_cell(bsp, v(c)) else {
             return Outcome::Failed(format!("no standable floor at {c:?}"));
         };
         let z = graph.cell_origin(id).z;
         if (z - patch.snap_z).abs() > SNAP_TOL {
             return Outcome::Failed(format!(
-                "cell at {c:?} snapped to z={z}, expected {} ± {SNAP_TOL} — geometry differs from \
-                 the BSP this patch was measured on",
+                "cell at {c:?} snapped to z={z}, expected {} ± {SNAP_TOL} — the floor here is not \
+                 the one this patch was measured on",
                 patch.snap_z
             ));
         }
-        planted.push(id);
+        if !existed {
+            new_cells += 1;
+        }
     }
 
-    let mut drops = 0;
+    let mut new_drops = 0;
     for &(from, to) in patch.drops {
         let Some(from_cell) = graph.cell_within(v(from), ALREADY_XY, ALREADY_Z) else {
             return Outcome::Failed(format!("drop from {from:?} resolves to no cell"));
@@ -143,15 +147,27 @@ fn apply_one(patch: &ShelfPatch, bsp: &Bsp, graph: &mut NavGraph) -> Outcome {
         let Some(to_cell) = graph.cell_within(v(to), REACH_XY, REACH_Z) else {
             return Outcome::Failed(format!("drop to {to:?} resolves to no cell"));
         };
+        // `plant_drop` does not deduplicate; an equivalent drop already in the graph (an earlier
+        // patch run, or a carve that learned the lip) is simply kept.
+        if graph
+            .links
+            .iter()
+            .any(|l| l.from == from_cell && l.to == to_cell && l.kind == LinkKind::Drop)
+        {
+            continue;
+        }
         if graph.plant_drop(bsp, from_cell, to_cell).is_none() {
             return Outcome::Failed(format!(
                 "drop {from:?} -> {to:?} is not one the build would emit"
             ));
         }
-        drops += 1;
+        new_drops += 1;
     }
 
-    Outcome::Applied { cells: planted.len(), drops }
+    if new_cells == 0 && new_drops == 0 {
+        return Outcome::AlreadyMeshed;
+    }
+    Outcome::Applied { cells: new_cells, drops: new_drops }
 }
 
 #[cfg(test)]

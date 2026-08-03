@@ -229,6 +229,12 @@ pub struct Link {
 
 /// The built navigation graph: cells, directed links, per-cell adjacency (indices into
 /// `links`), and an XY spatial index for `nearest`/neighbor queries.
+///
+/// `Clone` exists for transactional post-build mutation (`nav_patch` in `rtx-game`): mutate a
+/// clone, publish it only if every step validated — a failed patch then leaves the original graph
+/// untouched, derived tables included. The graph is a few MB of `Vec`s; cloning it once at map
+/// load is noise next to the build itself.
+#[derive(Clone)]
 pub struct NavGraph {
     pub cells: Vec<Cell>,
     pub links: Vec<Link>,

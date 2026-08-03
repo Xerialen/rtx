@@ -69,6 +69,28 @@ def main() -> None:
             saved[name] = None
         ctl.request(f"set {name} {value}")
 
+    surf = list(args.surf)
+    target = list(args.target)
+    results = []
+    try:
+        run_trials(ctl, args, surf, target, results)
+    finally:
+        # The docstring promises restoration on exit — including sys.exit mid-run, a lost
+        # control connection, or ^C. A restore attempt over a dead socket has nothing to do.
+        for name, value in saved.items():
+            if value is not None:
+                try:
+                    ctl.request(f"set {name} {value}")
+                except (ControlError, OSError):
+                    break
+
+    stuck = sum(1 for r in results if not r["verdict"].startswith("escaped"))
+    print(f"SUMMARY: {stuck}/{len(results)} not escaped; "
+          f"verdicts={[r['verdict'] for r in results]}", file=sys.stderr)
+    sys.exit(1 if stuck or not results else 0)
+
+
+def run_trials(ctl: Control, args, surf: list, target: list, results: list) -> None:
     for _ in range(120):
         status = ctl.request("status")["data"]
         if status.get("navmesh") == "ready" and status.get("bots"):
@@ -78,9 +100,6 @@ def main() -> None:
         sys.exit("navmesh/bot never ready")
     ent = status["bots"][0]["ent"]
 
-    surf = list(args.surf)
-    target = list(args.target)
-    results = []
     with open(args.out, "a") as outf:
         for i in range(args.trials):
             deadline = time.monotonic() + 20
@@ -142,15 +161,6 @@ def main() -> None:
             outf.flush()
             results.append(row)
             time.sleep(1.0)
-
-    for name, value in saved.items():
-        if value is not None:
-            ctl.request(f"set {name} {value}")
-
-    stuck = sum(1 for r in results if r["verdict"] != "escaped" and r["verdict"] != "escaped_arrived")
-    print(f"SUMMARY: {stuck}/{len(results)} not escaped; "
-          f"verdicts={[r['verdict'] for r in results]}", file=sys.stderr)
-    sys.exit(1 if stuck else 0)
 
 
 if __name__ == "__main__":
