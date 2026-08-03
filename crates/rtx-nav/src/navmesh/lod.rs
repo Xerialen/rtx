@@ -108,6 +108,7 @@ struct PortalReach {
 }
 
 /// The level-of-detail tables: cluster assignment plus the abstract portal graph over it.
+#[derive(Clone)]
 pub(super) struct Lod {
     /// Cluster id of each cell, parallel to `cells`, dense in `0..cluster_count`.
     cluster_of: Vec<u32>,
