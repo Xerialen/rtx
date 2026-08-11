@@ -188,7 +188,7 @@ pub(crate) fn frame_end(game: &mut GameState) {
     // treats that as a dead connection — so nothing new goes on the wire until the operator opts
     // this server in with `rtx_telemetry 1`.
     let telemetry = game.host.cvar(c"rtx_telemetry") > 0.0;
-    // Adaptive-surcharge decay: penalized links earn their built cost back at 0.25s per 20s of
+    // Adaptive-surcharge decay: penalized links earn their built cost back at 0.25s per 90s of
     // wall time. Without this, occasional stalls on mostly-good links accumulate into permanent
     // route damage over a long session (measured: dm3 west spiral broke after a 14-goal patrol).
     decay_stall_surcharges(game, now);
@@ -1627,7 +1627,7 @@ fn decay_stall_surcharges(game: &mut GameState, now: f32) {
     use std::sync::atomic::{AtomicU32, Ordering};
     static LAST: AtomicU32 = AtomicU32::new(0);
     let last = f32::from_bits(LAST.load(Ordering::Relaxed));
-    if now < last + 20.0 && now >= last {
+    if now < last + 90.0 && now >= last {
         return;
     }
     LAST.store(now.to_bits(), Ordering::Relaxed);
