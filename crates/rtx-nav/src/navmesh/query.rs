@@ -469,6 +469,17 @@ impl NavGraph {
         self.links[link_idx as usize].cost
     }
 
+    /// Adaptive execution-feedback pricing: raise a link's cost after the steering watchdog
+    /// aborted it in flight. Links that are broken in practice price themselves out of the
+    /// plan after a few failures instead of trapping every route that trusts their theoretical
+    /// time. Capped at +3.0s over the given built cost so a transient pilot error cannot ban a
+    /// good link outright. In-memory only, like planted links: a rebuild resets it.
+    pub fn penalize_link(&mut self, link_idx: u32, built_cost: f32, extra: f32) -> f32 {
+        let l = &mut self.links[link_idx as usize];
+        l.cost = (l.cost + extra).min(built_cost + 3.0);
+        l.cost
+    }
+
     /// The health a bot expects to lose taking this link (lava/slime contact, or the risk premium on
     /// a pool's edge); `0.0` for the overwhelming majority. Seconds only once valued against a
     /// particular bot's strength — see `hazard_cost`.

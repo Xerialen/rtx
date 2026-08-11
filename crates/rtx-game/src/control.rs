@@ -202,10 +202,24 @@ pub(crate) fn frame_end(game: &mut GameState) {
         // `mem::take` — so the deque keeps its capacity and the watchdog path never re-allocates.
         // Behind the telemetry switch like everything else; undrained records self-bound at
         // [`crate::bot::state::STALL_BUF_CAP`].
-        while telemetry {
+        loop {
             let Some(rec) = game.entities[e].bot.stall_events.pop_front() else {
                 break;
             };
+            // Execution feedback: an in-flight abort on a route leg means the leg's priced time
+            // was not its executable time from this approach. Surcharge it in the live graph so
+            // repeat offenders price themselves out and A* converges on executable routes.
+            if let Some(li) = rec.link {
+                if matches!(rec.reason, "air_commit_off" | "prestrafe_deficit") {
+                    if let Some(g) = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut) {
+                        let built = link_cost_built(g, li);
+                        g.penalize_link(li, built, 0.75);
+                    }
+                }
+            }
+            if !telemetry {
+                continue;
+            }
             send_event(
                 game,
                 Event::BotStall {
@@ -1591,6 +1605,18 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, now: f32) {
             },
         );
     }
+}
+
+
+/// Built (pre-penalty) cost lookup for the adaptive surcharge cap: the graph does not retain the
+/// original, so remember it the first time a link is penalized. Keyed per link id; stale entries
+/// from a previous mesh stamp only make the cap conservative, never unsound.
+fn link_cost_built(g: &NavGraph, li: u32) -> f32 {
+    use std::sync::{Mutex, OnceLock};
+    static BUILT: OnceLock<Mutex<std::collections::HashMap<u32, f32>>> = OnceLock::new();
+    let m = BUILT.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let mut m = m.lock().unwrap();
+    *m.entry(li).or_insert_with(|| g.link_cost(li))
 }
 
 fn goto_crossed_finish(traj: &[(f32, Vec3, Vec3, u8)], origin: Vec3, target: Vec3) -> bool {
