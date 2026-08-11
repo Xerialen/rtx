@@ -52,6 +52,11 @@ pub struct BotState {
     /// Current A* route as link indices into the navmesh, and our leg within it.
     pub route: Vec<u32>,
     pub route_pos: usize,
+    /// Seconds spent on the current route leg so far (execution-feedback pricing).
+    pub leg_age: f32,
+    /// Completed legs this frame window: `(link, actual seconds)`. Drained by `control::frame_end`
+    /// and compared against the link's priced cost; persistently slow legs surcharge their link.
+    pub leg_times: VecDeque<(u32, f32)>,
     /// Planned entry speed band per leg (parallel to `route`), from the banded planner
     /// ([`crate::navmesh::NavGraph::find_path_banded`]); all-zero when speed-band planning is off.
     /// A band ≥ 1 on the current or next leg tells the bhop controller to carry speed through the

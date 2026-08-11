@@ -206,6 +206,23 @@ pub(crate) fn frame_end(game: &mut GameState) {
         // `mem::take` — so the deque keeps its capacity and the watchdog path never re-allocates.
         // Behind the telemetry switch like everything else; undrained records self-bound at
         // [`crate::bot::state::STALL_BUF_CAP`].
+        // Execution-feedback pricing from completed legs: a leg that persistently runs slower
+        // than its priced cost surcharges its link; one that runs at or under price restores it.
+        loop {
+            let Some((li, actual)) = game.entities[e].bot.leg_times.pop_front() else {
+                break;
+            };
+            let Some(g) = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut) else {
+                break;
+            };
+            let built = link_cost_built(g, li);
+            let priced = g.link_cost(li);
+            if actual > priced * 1.5 + 0.2 {
+                g.penalize_link(li, built, ((actual - priced) * 0.5).min(1.0));
+            } else if actual <= priced {
+                g.restore_link(li, built, 0.25);
+            }
+        }
         loop {
             let Some(rec) = game.entities[e].bot.stall_events.pop_front() else {
                 break;

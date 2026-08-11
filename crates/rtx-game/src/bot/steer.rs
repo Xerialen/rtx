@@ -939,6 +939,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             LinkKind::Plat => origin.z >= target.z - PLAT_RISE_TOL,
             // Depth counts on a swim leg, for the same reason it does on a plat: the climb from the
             // pool floor up to the surface ring is the *same column*, so an XY-only test calls it
+            // arrived before the bot has risen an inch. The route then walks on along the rim bot.leg_age += frametime;
             // arrived before the bot has risen an inch. The route then walks on along the rim while the
             // bot is still on the bottom — at the wrong depth for every leg that follows, which is
             // exactly how a pillar the rim route goes cleanly around becomes something to swim into.
@@ -960,6 +961,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             }
         };
         if arrived {
+            // Execution feedback: how long the leg actually took. Ages beyond 8s are dropped —
+            // a watchdog has fired by then and the stall path already prices that failure.
+            if bot.leg_age <= 8.0 {
+                if bot.leg_times.len() >= 32 {
+                    bot.leg_times.pop_front();
+                }
+                bot.leg_times.push_back((leg, bot.leg_age));
+            }
+            bot.leg_age = 0.0;
             bot.route_pos += 1;
         } else {
             break;
