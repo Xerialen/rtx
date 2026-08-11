@@ -262,7 +262,7 @@ pub(crate) fn frame_end(game: &mut GameState) {
         }
         match game.entities[e].bot.puppet.order {
             None | Some(ControlOrder::Hold) => {}
-            Some(ControlOrder::Goto { target }) => {
+            Some(ControlOrder::Goto { target, corridor }) => {
                 let (origin, vel) = (game.entities[e].v.origin, game.entities[e].v.velocity);
                 let phase = game.entities[e].bot.bhop.phase as u8;
                 let traj = &mut game.entities[e].bot.puppet.traj;
@@ -272,7 +272,7 @@ pub(crate) fn frame_end(game: &mut GameState) {
                 if traj.len() < 1200 {
                     traj.push((now, origin, vel, phase));
                 }
-                poll_goto(game, e, i, target, now);
+                poll_goto(game, e, i, target, corridor, now);
             }
             Some(ControlOrder::RocketJump { link }) => {
                 // Trace the flight: sample this frame's post-move origin/velocity before checking for a
@@ -506,7 +506,7 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
         Cmd::Items => items_resp(game).map(Resp::Items),
         Cmd::Prep { bot, health, rockets } => do_prep(game, bot, health, rockets),
         Cmd::Teleport { bot, pos, vel } => do_teleport(game, bot, v3(pos), v3(vel)),
-        Cmd::Goto { bot, pos } => do_goto(game, bot, v3(pos)),
+        Cmd::Goto { bot, pos, corridor } => do_goto(game, bot, v3(pos), corridor),
         Cmd::Rj { bot, link } => do_rj(game, bot, link),
         Cmd::Fly { bot, link } => do_fly(game, bot, link),
         Cmd::Hold { bot } => do_order(game, bot, ControlOrder::Hold),
@@ -623,7 +623,7 @@ fn reset_nav_state(bot: &mut crate::bot::state::BotState, at: Vec3, now: f32) {
     bot.repath_time = now;
 }
 
-fn do_goto(game: &mut GameState, bot: u32, pos: Vec3) -> Result<Resp, String> {
+fn do_goto(game: &mut GameState, bot: u32, pos: Vec3, corridor: Option<f32>) -> Result<Resp, String> {
     let e = valid_bot(game, bot)?;
     let now = game.time();
     let start = game.entities[e].v.origin;
@@ -632,7 +632,7 @@ fn do_goto(game: &mut GameState, bot: u32, pos: Vec3) -> Result<Resp, String> {
     b.route.clear();
     b.repath_time = now;
     b.puppet.traj.clear();
-    b.puppet.order = Some(ControlOrder::Goto { target: pos });
+    b.puppet.order = Some(ControlOrder::Goto { target: pos, corridor: corridor.unwrap_or(0.0) });
     b.puppet.best_dist = f32::INFINITY;
     b.puppet.best_z = f32::NEG_INFINITY;
     b.puppet.best_since = now;
@@ -1562,11 +1562,12 @@ fn order_name(o: Option<ControlOrder>) -> &'static str {
 
 // --- per-frame puppet pollers (emit lifecycle events) ---
 
-fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, now: f32) {
+fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, corridor: f32, now: f32) {
     let origin = game.entities[e].v.origin;
     let dxy = (origin.xy() - target.xy()).length();
     let dz = (origin.z - target.z).abs();
-    let crossed_finish = goto_crossed_finish(&game.entities[e].bot.puppet.traj, origin, target);
+    let crossed_finish = corridor > 0.0
+        && goto_crossed_finish(&game.entities[e].bot.puppet.traj, origin, target, corridor);
     if (dxy <= GOTO_ARRIVE_XY || crossed_finish) && dz <= GOTO_ARRIVE_Z {
         let traj = traj_rows(&std::mem::take(&mut game.entities[e].bot.puppet.traj));
         // A goto commonly ends while the bot is airborne and carrying several hundred ups. Merely
@@ -1667,7 +1668,7 @@ fn built_map() -> &'static std::sync::Mutex<std::collections::HashMap<u32, f32>>
     BUILT.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
-fn goto_crossed_finish(traj: &[(f32, Vec3, Vec3, u8)], origin: Vec3, target: Vec3) -> bool {
+fn goto_crossed_finish(traj: &[(f32, Vec3, Vec3, u8)], origin: Vec3, target: Vec3, corridor: f32) -> bool {
     let Some((_, start, _, _)) = traj.first() else {
         return false;
     };
@@ -1684,7 +1685,7 @@ fn goto_crossed_finish(traj: &[(f32, Vec3, Vec3, u8)], origin: Vec3, target: Vec
     // crossing is detected within a frame or two of the plane (past_along small), while a
     // point goal approached obliquely can sit 100u+ past the plane and 90u to the side —
     // that is a miss, not an arrival (measured: dm3 RA, Hold 142u from target, 2026-08-10).
-    (past - along * past_along).length() <= (GOTO_FINISH_CORRIDOR - past_along).max(0.0)
+    (past - along * past_along).length() <= (corridor - past_along).max(0.0)
 }
 
 /// Stop a completed puppet goto without letting its route or bhop state leak into the Hold order.
@@ -1889,9 +1890,9 @@ mod tests {
     fn fast_goto_crossing_stops_inside_bounded_finish_corridor() {
         let traj = vec![(0.0f32, Vec3::new(224.0, 1440.0, 24.0), Vec3::ZERO, 0u8)];
         let target = Vec3::new(224.0, 2992.0, 24.0);
-        assert!(goto_crossed_finish(&traj, Vec3::new(280.0, 3008.0, 48.0), target));
-        assert!(!goto_crossed_finish(&traj, Vec3::new(330.0, 3008.0, 48.0), target));
-        assert!(!goto_crossed_finish(&traj, Vec3::new(224.0, 2970.0, 48.0), target));
+        assert!(goto_crossed_finish(&traj, Vec3::new(280.0, 3008.0, 48.0), target, GOTO_FINISH_CORRIDOR));
+        assert!(!goto_crossed_finish(&traj, Vec3::new(330.0, 3008.0, 48.0), target, GOTO_FINISH_CORRIDOR));
+        assert!(!goto_crossed_finish(&traj, Vec3::new(224.0, 2970.0, 48.0), target, GOTO_FINISH_CORRIDOR));
     }
 
     #[test]

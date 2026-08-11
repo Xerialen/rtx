@@ -108,7 +108,14 @@ pub enum Cmd {
     /// rather than the movement. `[0, 0, 0]` is the plain "put it here" placement.
     Teleport { bot: u32, pos: Vec3, vel: Vec3 },
     /// Order a bot to run to a world point (emits `Arrived` / `GotoStall`).
-    Goto { bot: u32, pos: Vec3 },
+    Goto {
+        bot: u32,
+        pos: Vec3,
+        /// Finish-corridor half-width for finish-line runs; absent/0 = a point goal that
+        /// requires true point arrival (no crossed-plane acceptance).
+        #[serde(default)]
+        corridor: Option<f32>,
+    },
     /// Order a bot to fly a rocket-jump link (emits `RjResult`).
     Rj { bot: u32, link: u32 },
     /// Order a bot to fly a non-RJ link (emits `FlyResult`).

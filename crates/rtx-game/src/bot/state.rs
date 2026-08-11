@@ -775,7 +775,7 @@ pub enum ControlOrder {
     /// Stand still (between tests, or after an order completes).
     Hold,
     /// Navigate to a world position (normal pathfinding, no fighting). Arrival/stall reported.
-    Goto { target: Vec3 },
+    Goto { target: Vec3, corridor: f32 },
     /// Fly a specific rocket-jump link (route pinned to it, repath suppressed). Result reported.
     RocketJump { link: u32 },
     /// Fly a specific non-RJ link (route pinned to it, repath suppressed) via the normal steer/bhop/

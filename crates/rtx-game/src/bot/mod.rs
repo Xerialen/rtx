@@ -1035,7 +1035,7 @@ fn resolve_objective(game: &mut GameState, e: EntId, now: f32, origin: Vec3) -> 
         game.entities[e].bot.goal.next_commit = GoalCommit::None;
         let (target_origin, item_cell, order_link) = match order {
             ControlOrder::Hold => (origin, None, None),
-            ControlOrder::Goto { target } => (target, None, None),
+            ControlOrder::Goto { target, .. } => (target, None, None),
             ControlOrder::RocketJump { link } | ControlOrder::FlyLink { link } => {
                 // The graph is guaranteed present (the control command validated the link before
                 // issuing the order); target the link's destination ledge. FlyLink differs only in
