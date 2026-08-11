@@ -1602,10 +1602,15 @@ fn goto_crossed_finish(traj: &[(f32, Vec3, Vec3, u8)], origin: Vec3, target: Vec
         return false;
     }
     let past = origin.xy() - target.xy();
-    if past.dot(along) < 0.0 {
+    let past_along = past.dot(along);
+    if past_along < 0.0 {
         return false;
     }
-    (past - along * past.dot(along)).length() <= GOTO_FINISH_CORRIDOR
+    // The corridor shrinks the further past the finish plane the bot is: a genuine line
+    // crossing is detected within a frame or two of the plane (past_along small), while a
+    // point goal approached obliquely can sit 100u+ past the plane and 90u to the side —
+    // that is a miss, not an arrival (measured: dm3 RA, Hold 142u from target, 2026-08-10).
+    (past - along * past_along).length() <= (GOTO_FINISH_CORRIDOR - past_along).max(0.0)
 }
 
 /// Stop a completed puppet goto without letting its route or bhop state leak into the Hold order.
