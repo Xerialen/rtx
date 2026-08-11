@@ -188,6 +188,10 @@ pub(crate) fn frame_end(game: &mut GameState) {
     // treats that as a dead connection — so nothing new goes on the wire until the operator opts
     // this server in with `rtx_telemetry 1`.
     let telemetry = game.host.cvar(c"rtx_telemetry") > 0.0;
+    // Adaptive-surcharge decay: penalized links earn their built cost back at 0.25s per 20s of
+    // wall time. Without this, occasional stalls on mostly-good links accumulate into permanent
+    // route damage over a long session (measured: dm3 west spiral broke after a 14-goal patrol).
+    decay_stall_surcharges(game, now);
     if telemetry {
         send_event(game, Event::Pmove(pmove_event(game, now, maxclients)));
     }
@@ -1612,11 +1616,38 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, now: f32) {
 /// original, so remember it the first time a link is penalized. Keyed per link id; stale entries
 /// from a previous mesh stamp only make the cap conservative, never unsound.
 fn link_cost_built(g: &NavGraph, li: u32) -> f32 {
+    let mut m = built_map().lock().unwrap();
+    *m.entry(li).or_insert_with(|| g.link_cost(li))
+}
+
+
+/// See the call site in `frame_end`: walk the remembered built costs and relax any surcharged
+/// link one step back toward its built price.
+fn decay_stall_surcharges(game: &mut GameState, now: f32) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static LAST: AtomicU32 = AtomicU32::new(0);
+    let last = f32::from_bits(LAST.load(Ordering::Relaxed));
+    if now < last + 20.0 && now >= last {
+        return;
+    }
+    LAST.store(now.to_bits(), Ordering::Relaxed);
+    let Some(g) = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut) else {
+        return;
+    };
+    for (li, built) in built_cost_entries() {
+        g.restore_link(li, built, 0.25);
+    }
+}
+
+/// Snapshot of the built-cost memory `link_cost_built` maintains.
+fn built_cost_entries() -> Vec<(u32, f32)> {
+    built_map().lock().unwrap().iter().map(|(&k, &v)| (k, v)).collect()
+}
+
+fn built_map() -> &'static std::sync::Mutex<std::collections::HashMap<u32, f32>> {
     use std::sync::{Mutex, OnceLock};
     static BUILT: OnceLock<Mutex<std::collections::HashMap<u32, f32>>> = OnceLock::new();
-    let m = BUILT.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
-    let mut m = m.lock().unwrap();
-    *m.entry(li).or_insert_with(|| g.link_cost(li))
+    BUILT.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 fn goto_crossed_finish(traj: &[(f32, Vec3, Vec3, u8)], origin: Vec3, target: Vec3) -> bool {

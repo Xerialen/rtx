@@ -480,6 +480,15 @@ impl NavGraph {
         l.cost
     }
 
+    /// Decay one step of adaptive surcharge back toward the built cost. Links earn their price
+    /// back over quiet time, so a transient bad spell (one flaky approach, one pilot bug) does
+    /// not permanently degrade a route that mostly works. Returns the cost after decay.
+    pub fn restore_link(&mut self, link_idx: u32, built_cost: f32, step: f32) -> f32 {
+        let l = &mut self.links[link_idx as usize];
+        l.cost = (l.cost - step).max(built_cost);
+        l.cost
+    }
+
     /// The health a bot expects to lose taking this link (lava/slime contact, or the risk premium on
     /// a pool's edge); `0.0` for the overwhelming majority. Seconds only once valued against a
     /// particular bot's strength — see `hazard_cost`.
