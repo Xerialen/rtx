@@ -1394,7 +1394,7 @@ fn plant_link_resp(
     // flight + a JumpGap-grade commitment (a rollout-certified envelope carries less risk than the
     // +1.0 charged to a modeled speed jump). Run-up is the `from`→lip distance at the mean build speed.
     let runup = (takeoff.xy() - g.cell_origin(from_cell).xy()).length();
-    let cost = runup / 400.0 + airtime + 0.1;
+    let cost = runup / 400.0 + airtime + 0.3;
     let tr = SpeedJumpTraversal {
         takeoff,
         v_req,

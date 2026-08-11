@@ -2091,19 +2091,15 @@ fn link_cost(kind: LinkKind, horiz: f32, dz: f32) -> f32 {
     // beat past SAFE_FALL for the hard-landing tax (the flat 5 HP + the recovery stumble) — so
     // a 2000u plunge prices its ~2.2s honestly instead of looking free.
     let fall = if -dz > SAFE_FALL {
-        (2.0 * -dz / 800.0).sqrt() + 0.15
+        (2.0 * -dz / 800.0).sqrt() + 0.4
     } else {
         0.0
     };
-    // A landing above the takeoff spends real airtime too: the ballistic rise to +dz. Without
-    // this an upward hop prices as flat ground and long climbing chains look ~2s cheaper than
-    // the clock says (measured: dm3 RA west spiral vs the planted P1-P4 line, 2026-08-11).
-    let rise = if dz > 0.0 { (2.0 * dz / 800.0).sqrt() } else { 0.0 };
     match kind {
         LinkKind::Walk => base,
         LinkKind::Step => base * 1.1,
         LinkKind::Drop => base + 0.1 + fall,
-        LinkKind::JumpGap => base + 0.3 + fall + rise,
+        LinkKind::JumpGap => base + 0.3 + fall,
         // A double jump is a touch pricier — a harder maneuver (two timed jumps) than a single hop.
         LinkKind::DoubleJump => base + 0.6,
         // Speed-jump costs (runway run-up + flight + commitment) are computed at splice time.
