@@ -242,6 +242,7 @@ pub(crate) fn frame_end(game: &mut GameState) {
                     }
                 } else if actual <= built * 1.2 {
                     game.entities[e].bot.leg_slow.remove(&li);
+                    game.entities[e].bot.stall_evidence.remove(&li);
                     g.restore_link(li, 0.25);
                 }
             }
@@ -260,8 +261,19 @@ pub(crate) fn frame_end(game: &mut GameState) {
                 if matches!(rec.reason, "air_commit_off" | "prestrafe_deficit")
                     && !game.entities[e].bot.frame_penalized.contains(&li)
                 {
-                    if let Some(g) = game.nav.graph.as_ref() {
-                        g.penalize_link(li, 0.75);
+                    // Same evidence bar as the leg-time feedback: one stall is a fluke,
+                    // not a mispricing. An immediate surcharge on a link the bot lands
+                    // 8 times out of 10 flips the route to a 2x detour for the minutes
+                    // the decay needs (measured: ring/rox medians alternate 2.6 <-> 7-9s
+                    // on the RA drops). Two stalls on the same link without a clean
+                    // completion in between is a pattern; then reprice.
+                    let n = game.entities[e].bot.stall_evidence.entry(li).or_insert(0);
+                    *n += 1;
+                    if *n >= 2 {
+                        game.entities[e].bot.stall_evidence.remove(&li);
+                        if let Some(g) = game.nav.graph.as_ref() {
+                            g.penalize_link(li, 0.75);
+                        }
                     }
                 }
             }
@@ -640,6 +652,7 @@ fn reset_nav_state(bot: &mut crate::bot::state::BotState, at: Vec3, now: f32) {
     bot.leg_age = 0.0;
     bot.leg_timed = None;
     bot.leg_slow.clear();
+    bot.stall_evidence.clear();
     bot.leg_times.clear();
     bot.route.clear();
     bot.route_bands.clear();

@@ -58,6 +58,8 @@ pub struct BotState {
     pub leg_timed: Option<u32>,
     /// Consecutive slow finishes per link; repricing needs repeated evidence.
     pub leg_slow: std::collections::HashMap<u32, u8>,
+    /// Stalls per link since its last clean completion; repricing needs two.
+    pub stall_evidence: std::collections::HashMap<u32, u8>,
     /// Completed legs this frame window: `(link, actual seconds)`. Drained by `control::frame_end`
     /// and compared against the link's priced cost; persistently slow legs surcharge their link.
     pub leg_times: VecDeque<(u32, f32)>,
