@@ -213,12 +213,11 @@ pub(crate) fn frame_end(game: &mut GameState) {
         // link is surcharged at most once per frame (a stall and a slow finish on the same event
         // must not stack into a double penalty).
         let mut hit: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        if game.nav.graph.as_mut().map_or(false, |g| std::sync::Arc::get_mut(g).is_some()) {
+        if let Some(g) = game.nav.graph.as_ref() {
             loop {
                 let Some((li, actual)) = game.entities[e].bot.leg_times.pop_front() else {
                     break;
                 };
-                let g = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut).unwrap();
                 // Stale ids from a previous mesh stamp must not index unchecked (panic risk).
                 let Some(priced) = g.link_cost_checked(li) else {
                     continue;
@@ -239,7 +238,6 @@ pub(crate) fn frame_end(game: &mut GameState) {
                     *n += 1;
                     if *n >= 3 && hit.insert(li) {
                         game.entities[e].bot.leg_slow.remove(&li);
-                        let g = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut).unwrap();
                         g.penalize_link(li, ((actual - priced) * 0.25).min(0.5));
                     }
                 } else if actual <= built * 1.2 {
@@ -262,7 +260,7 @@ pub(crate) fn frame_end(game: &mut GameState) {
                 if matches!(rec.reason, "air_commit_off" | "prestrafe_deficit")
                     && !game.entities[e].bot.frame_penalized.contains(&li)
                 {
-                    if let Some(g) = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut) {
+                    if let Some(g) = game.nav.graph.as_ref() {
                         g.penalize_link(li, 0.75);
                     }
                 }
@@ -1676,7 +1674,7 @@ fn decay_stall_surcharges(game: &mut GameState, now: f32) {
         return;
     }
     LAST.store(now.to_bits(), Ordering::Relaxed);
-    let Some(g) = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut) else {
+    let Some(g) = game.nav.graph.as_ref() else {
         return;
     };
     g.decay_surcharges(0.25);

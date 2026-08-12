@@ -53,7 +53,7 @@ use rocketjump::{
 use sidetable::SideTable;
 pub use splice::{Gate, GateInfo, Plat, PlatInfo, TeleportInfo};
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::bsp::Bsp;
 use crate::math::yaw_of;
@@ -227,6 +227,15 @@ pub struct Link {
     pub cost: f32,
 }
 
+/// Mutable execution-feedback prices kept outside the immutable navmesh topology.
+/// `built_costs` is captured lazily once graph construction is complete; `surcharges` is
+/// index-parallel to links and is shared safely by graph snapshots held by the oracle.
+#[derive(Default)]
+struct AdaptiveCosts {
+    built_costs: Vec<f32>,
+    surcharges: Vec<f32>,
+}
+
 /// The built navigation graph: cells, directed links, per-cell adjacency (indices into
 /// `links`), and an XY spatial index for `nearest`/neighbor queries.
 pub struct NavGraph {
@@ -311,8 +320,8 @@ pub struct NavGraph {
     /// [`build_lod`](Self::build_lod) at the end of the build. Coarse far-field navigation reads it;
     /// `None` on a bare (unbuilt) graph — see [`lod`].
     lod: Option<Lod>,
-    /// Pre-surcharge link costs (lazy snapshot; see `built_cost`).
-    pub(crate) built_costs: Vec<f32>,
+    /// Runtime execution-feedback prices, deliberately separate from the immutable graph snapshot.
+    adaptive_costs: Arc<Mutex<AdaptiveCosts>>,
 }
 
 /// A solved speed jump: where the takeoff ledge is and the horizontal speed needed there, so the
@@ -508,7 +517,7 @@ impl NavGraph {
             adjacency: vec![Vec::new(); cells_grid.0.len()],
             cells: cells_grid.0,
             links: Vec::new(),
-            built_costs: Vec::new(), // lazy snapshot, see built_cost()
+            adaptive_costs: Arc::new(Mutex::new(AdaptiveCosts::default())),
             water: Vec::new(),       // filled on the worker by flag_water
             breathable: Vec::new(),  // (from the render hull's liquid-carrying pointcontents)
             water_extra: Vec::new(), // (same)
@@ -547,7 +556,7 @@ impl NavGraph {
         NavGraph {
             cells,
             links,
-            built_costs: Vec::new(),
+            adaptive_costs: Arc::new(Mutex::new(AdaptiveCosts::default())),
             adjacency,
             water: Vec::new(),
             breathable: Vec::new(),

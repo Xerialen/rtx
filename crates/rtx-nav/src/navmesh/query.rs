@@ -170,7 +170,7 @@ impl NavGraph {
                 if !self.in_window(link.to, allowed) {
                     continue;
                 }
-                let ng = g_cost[cell as usize] + link.cost + self.link_extra(li, costs) + self.chained_block(li);
+                let ng = g_cost[cell as usize] + self.link_cost(li) + self.link_extra(li, costs) + self.chained_block(li);
                 if ng < g_cost[link.to as usize] {
                     g_cost[link.to as usize] = ng;
                     came_from[link.to as usize] = li;
@@ -286,7 +286,7 @@ impl NavGraph {
                 let Some((step_cost, exit)) = self.banded_step(li, entry) else {
                     continue; // infeasible at this entry speed (a chained jump we can't satisfy)
                 };
-                let ng = g_cost[state as usize] + step_cost + self.link_extra(li, costs);
+                let ng = g_cost[state as usize] + step_cost + self.adaptive_surcharge(li) + self.link_extra(li, costs);
                 let ns = self.links[li as usize].to * nb + exit as u32;
                 if ng < g_cost[ns as usize] {
                     g_cost[ns as usize] = ng;
@@ -376,7 +376,7 @@ impl NavGraph {
             }
             for &li in &self.adjacency[cell as usize] {
                 let link = self.links[li as usize];
-                let ng = g + link.cost + self.link_extra(li, costs) + self.chained_block(li);
+                let ng = g + self.link_cost(li) + self.link_extra(li, costs) + self.chained_block(li);
                 if ng < cost[link.to as usize] {
                     cost[link.to as usize] = ng;
                     heap.push(MinCost {
@@ -422,7 +422,7 @@ impl NavGraph {
             settled.push(cell);
             for &li in &self.adjacency[cell as usize] {
                 let link = self.links[li as usize];
-                let ng = g + link.cost + self.link_extra(li, costs) + self.chained_block(li);
+                let ng = g + self.link_cost(li) + self.link_extra(li, costs) + self.chained_block(li);
                 if ng < cost[link.to as usize] {
                     cost[link.to as usize] = ng;
                     heap.push(MinCost {
@@ -463,66 +463,79 @@ impl NavGraph {
         self.links[link_idx as usize].kind
     }
 
-    /// A link's static travel-time cost in seconds. Liquid risk is **not** in here — see
-    /// [`link_hazard_hp`](Self::link_hazard_hp) and [`link_water_extra`](Self::link_water_extra).
+    /// A link's current travel-time cost: immutable built cost plus any adaptive surcharge.
     pub fn link_cost(&self, link_idx: u32) -> f32 {
-        self.links[link_idx as usize].cost
+        self.links[link_idx as usize].cost + self.adaptive_surcharge(link_idx)
     }
 
-    /// Bounds-checked cost lookup for feedback paths fed by potentially stale link ids.
+    /// Bounds-checked current cost lookup for feedback paths fed by potentially stale link ids.
     pub fn link_cost_checked(&self, link_idx: u32) -> Option<f32> {
-        self.links.get(link_idx as usize).map(|l| l.cost)
+        self.links.get(link_idx as usize).map(|link| link.cost + self.adaptive_surcharge(link_idx))
     }
 
     /// Adaptive execution-feedback pricing: raise a link's cost after execution showed the
-    /// priced time was wrong. Capped at +6.0s over the link's built cost. In-memory only,
-    /// like planted links: a rebuild resets it. Out-of-range ids are a no-op (stale feedback
-    /// from a previous mesh stamp must never index or panic).
-    pub fn penalize_link(&mut self, link_idx: u32, extra: f32) -> f32 {
-        let built = self.built_cost(link_idx);
-        let Some(l) = self.links.get_mut(link_idx as usize) else {
+    /// priced time was wrong. Capped at +6.0s over the link's built cost. The mutable price table
+    /// is shared independently of `NavGraph`, so oracle snapshots never block updates.
+    pub fn penalize_link(&self, link_idx: u32, extra: f32) -> f32 {
+        let Some(link) = self.links.get(link_idx as usize) else {
             return 0.0;
         };
-        l.cost = (l.cost + extra).min(built + 6.0);
-        l.cost
+        let mut adaptive = self.adaptive_lock();
+        Self::ensure_adaptive(&mut adaptive, &self.links);
+        let i = link_idx as usize;
+        adaptive.surcharges[i] = (adaptive.surcharges[i] + extra).min(6.0);
+        link.cost + adaptive.surcharges[i]
     }
 
-    /// Decay one step of adaptive surcharge back toward the built cost. Links earn their price
-    /// back over quiet time, so a transient bad spell does not permanently degrade a route.
-    pub fn restore_link(&mut self, link_idx: u32, step: f32) -> f32 {
-        let built = self.built_cost(link_idx);
-        let Some(l) = self.links.get_mut(link_idx as usize) else {
+    /// Decay one link's adaptive surcharge toward its immutable built price.
+    pub fn restore_link(&self, link_idx: u32, step: f32) -> f32 {
+        let Some(link) = self.links.get(link_idx as usize) else {
             return 0.0;
         };
-        l.cost = (l.cost - step).max(built);
-        l.cost
+        let mut adaptive = self.adaptive_lock();
+        Self::ensure_adaptive(&mut adaptive, &self.links);
+        let i = link_idx as usize;
+        adaptive.surcharges[i] = (adaptive.surcharges[i] - step).max(0.0);
+        link.cost + adaptive.surcharges[i]
     }
 
-    /// One decay step over every surcharged link (called on a slow cadence from the game loop).
-    pub fn decay_surcharges(&mut self, step: f32) {
-        self.ensure_built();
-        for i in 0..self.links.len() {
-            let built = self.built_costs[i];
-            let l = &mut self.links[i];
-            if l.cost > built {
-                l.cost = (l.cost - step).max(built);
-            }
+    /// Decay every adaptive surcharge. This remains effective while any oracle snapshot holds
+    /// an `Arc<NavGraph>` because only the separate price table is locked.
+    pub fn decay_surcharges(&self, step: f32) {
+        let mut adaptive = self.adaptive_lock();
+        Self::ensure_adaptive(&mut adaptive, &self.links);
+        for surcharge in &mut adaptive.surcharges {
+            *surcharge = (*surcharge - step).max(0.0);
         }
     }
 
-    /// The link's cost as built (pre-surcharge). Snapshotted lazily and extended when planted
-    /// links append to the graph; a rebuild starts a fresh snapshot with the new graph.
-    pub fn built_cost(&mut self, link_idx: u32) -> f32 {
-        self.ensure_built();
-        self.built_costs
-            .get(link_idx as usize)
-            .copied()
-            .unwrap_or_else(|| self.links.get(link_idx as usize).map_or(0.0, |l| l.cost))
+    /// The link's immutable pre-surcharge cost.
+    pub fn built_cost(&self, link_idx: u32) -> f32 {
+        if self.links.get(link_idx as usize).is_none() {
+            return 0.0;
+        }
+        let mut adaptive = self.adaptive_lock();
+        Self::ensure_adaptive(&mut adaptive, &self.links);
+        adaptive.built_costs[link_idx as usize]
     }
 
-    fn ensure_built(&mut self) {
-        while self.built_costs.len() < self.links.len() {
-            self.built_costs.push(self.links[self.built_costs.len()].cost);
+    #[inline]
+    fn adaptive_surcharge(&self, link_idx: u32) -> f32 {
+        self.adaptive_lock()
+            .surcharges
+            .get(link_idx as usize)
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    fn adaptive_lock(&self) -> std::sync::MutexGuard<'_, super::AdaptiveCosts> {
+        self.adaptive_costs.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn ensure_adaptive(adaptive: &mut super::AdaptiveCosts, links: &[super::Link]) {
+        while adaptive.built_costs.len() < links.len() {
+            adaptive.built_costs.push(links[adaptive.built_costs.len()].cost);
+            adaptive.surcharges.push(0.0);
         }
     }
 
@@ -546,7 +559,7 @@ impl NavGraph {
     /// on identical terms. Comparing static `link_cost` alone would ignore the surcharges that made
     /// the planner choose differently in the first place.
     pub fn priced_link_cost(&self, link_idx: u32, costs: &LinkCosts) -> f32 {
-        self.links[link_idx as usize].cost + self.link_extra(link_idx, costs) + self.chained_block(link_idx)
+        self.link_cost(link_idx) + self.link_extra(link_idx, costs) + self.chained_block(link_idx)
     }
 
     /// The standing player-origin position of a cell (the point a bot steers toward).
