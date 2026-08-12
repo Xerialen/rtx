@@ -161,6 +161,7 @@ impl NavGraph {
             payload: start,
         });
 
+        let sur = self.surcharge_snapshot();
         while let Some(MinCost { payload: cell, .. }) = heap.pop() {
             if cell == goal {
                 return Some(self.reconstruct(&came_from, start, goal));
@@ -170,7 +171,7 @@ impl NavGraph {
                 if !self.in_window(link.to, allowed) {
                     continue;
                 }
-                let ng = g_cost[cell as usize] + self.link_cost(li) + self.link_extra(li, costs) + self.chained_block(li);
+                let ng = g_cost[cell as usize] + self.snap_cost(&sur, li) + self.link_extra(li, costs) + self.chained_block(li);
                 if ng < g_cost[link.to as usize] {
                     g_cost[link.to as usize] = ng;
                     came_from[link.to as usize] = li;
@@ -255,6 +256,7 @@ impl NavGraph {
             payload: s0,
         });
 
+        let sur = self.surcharge_snapshot();
         while let Some(MinCost { payload: state, .. }) = heap.pop() {
             let cell = state / nb;
             let band = (state % nb) as u8;
@@ -286,7 +288,7 @@ impl NavGraph {
                 let Some((step_cost, exit)) = self.banded_step(li, entry) else {
                     continue; // infeasible at this entry speed (a chained jump we can't satisfy)
                 };
-                let ng = g_cost[state as usize] + step_cost + self.adaptive_surcharge(li) + self.link_extra(li, costs);
+                let ng = g_cost[state as usize] + step_cost + sur.get(li as usize).copied().unwrap_or(0.0) + self.link_extra(li, costs);
                 let ns = self.links[li as usize].to * nb + exit as u32;
                 if ng < g_cost[ns as usize] {
                     g_cost[ns as usize] = ng;
@@ -370,13 +372,14 @@ impl NavGraph {
             key: 0.0,
             payload: start,
         });
+        let sur = self.surcharge_snapshot();
         while let Some(MinCost { key: g, payload: cell }) = heap.pop() {
             if g > cost[cell as usize] {
                 continue; // a cheaper path already settled this cell
             }
             for &li in &self.adjacency[cell as usize] {
                 let link = self.links[li as usize];
-                let ng = g + self.link_cost(li) + self.link_extra(li, costs) + self.chained_block(li);
+                let ng = g + self.snap_cost(&sur, li) + self.link_extra(li, costs) + self.chained_block(li);
                 if ng < cost[link.to as usize] {
                     cost[link.to as usize] = ng;
                     heap.push(MinCost {
@@ -412,6 +415,7 @@ impl NavGraph {
             key: 0.0,
             payload: start,
         });
+        let sur = self.surcharge_snapshot();
         while let Some(MinCost { key: g, payload: cell }) = heap.pop() {
             if g > cost[cell as usize] {
                 continue; // a cheaper path already settled this cell
@@ -422,7 +426,7 @@ impl NavGraph {
             settled.push(cell);
             for &li in &self.adjacency[cell as usize] {
                 let link = self.links[li as usize];
-                let ng = g + self.link_cost(li) + self.link_extra(li, costs) + self.chained_block(li);
+                let ng = g + self.snap_cost(&sur, li) + self.link_extra(li, costs) + self.chained_block(li);
                 if ng < cost[link.to as usize] {
                     cost[link.to as usize] = ng;
                     heap.push(MinCost {
@@ -517,6 +521,18 @@ impl NavGraph {
         let mut adaptive = self.adaptive_lock();
         Self::ensure_adaptive(&mut adaptive, &self.links);
         adaptive.built_costs[link_idx as usize]
+    }
+
+    /// One clone of the surcharge table per search instead of a mutex lock per
+    /// relaxation: ~200KB memcpy on dm3, but the hot loop stays lock-free and the
+    /// search sees a consistent price snapshot.
+    fn surcharge_snapshot(&self) -> Vec<f32> {
+        self.adaptive_lock().surcharges.clone()
+    }
+
+    #[inline]
+    fn snap_cost(&self, sur: &[f32], link_idx: u32) -> f32 {
+        self.links[link_idx as usize].cost + sur.get(link_idx as usize).copied().unwrap_or(0.0)
     }
 
     #[inline]
