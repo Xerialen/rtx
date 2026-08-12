@@ -54,6 +54,8 @@ pub struct BotState {
     pub route_pos: usize,
     /// Seconds spent on the current route leg so far (execution-feedback pricing).
     pub leg_age: f32,
+    /// Which leg `leg_age` is currently timing; a change resets the clock.
+    pub leg_timed: Option<u32>,
     /// Completed legs this frame window: `(link, actual seconds)`. Drained by `control::frame_end`
     /// and compared against the link's priced cost; persistently slow legs surcharge their link.
     pub leg_times: VecDeque<(u32, f32)>,

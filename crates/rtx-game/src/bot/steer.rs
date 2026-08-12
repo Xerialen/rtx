@@ -932,7 +932,17 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // the waypoint pinned to the jump so steering stays on the landing point and the air-jump
     // undershoot recovery keeps firing (the leg advances naturally once we land). Like Hook/RocketJump,
     // whose drivers advance on landing, not on passing the target XY.
-    bot.leg_age += frametime;
+    // The leg timer belongs to the *current leg*, not the frame loop: any route change
+    // (repath, gate errand, stall clear) swaps the leg out from under the clock, and the
+    // stale age must not be billed to whichever leg comes next.
+    let cur_leg = bot.route.get(bot.route_pos).copied();
+    if cur_leg != bot.leg_timed {
+        bot.leg_timed = cur_leg;
+        bot.leg_age = 0.0;
+    }
+    if cur_leg.is_some() {
+        bot.leg_age += frametime;
+    }
     while (on_ground || (!on_air && !on_sj)) && bot.route_pos < bot.route.len() {
         let leg = bot.route[bot.route_pos];
         let target = graph.cell_origin(graph.link_target(leg));
@@ -967,7 +977,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             }
         };
         if arrived {
-            // Execution feedback: how long the leg actually took. Ages beyond 8s are dropped —
+            // Execution feedback: how long the leg actually took. Ages beyond 30s are dropped —
             // beyond that something else owns the failure and the sample is noise.
             if bot.leg_age <= 30.0 {
                 if bot.leg_times.len() >= 32 {

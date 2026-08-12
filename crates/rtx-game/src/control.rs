@@ -212,14 +212,17 @@ pub(crate) fn frame_end(game: &mut GameState) {
         // The graph lock is taken before popping so shared-graph frames drop nothing, and each
         // link is surcharged at most once per frame (a stall and a slow finish on the same event
         // must not stack into a double penalty).
+        let mut hit: std::collections::HashSet<u32> = std::collections::HashSet::new();
         if game.nav.graph.as_mut().map_or(false, |g| std::sync::Arc::get_mut(g).is_some()) {
-            let mut hit: std::collections::HashSet<u32> = std::collections::HashSet::new();
             loop {
                 let Some((li, actual)) = game.entities[e].bot.leg_times.pop_front() else {
                     break;
                 };
                 let g = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut).unwrap();
-                let priced = g.link_cost(li);
+                // Stale ids from a previous mesh stamp must not index unchecked (panic risk).
+                let Some(priced) = g.link_cost_checked(li) else {
+                    continue;
+                };
                 let built = g.built_cost(li);
                 // 2.5x + 1.0: a successful speed jump legitimately spends setup time (runup,
                 // prestrafe) beyond its priced flight, and taxing every pass made the route
@@ -231,8 +234,10 @@ pub(crate) fn frame_end(game: &mut GameState) {
                     g.restore_link(li, 0.25);
                 }
             }
-            game.entities[e].bot.frame_penalized = hit;
         }
+        // Always replace: a stale set from an earlier frame must not suppress a fresh stall
+        // surcharge just because the graph happened to be shared this frame.
+        game.entities[e].bot.frame_penalized = hit;
         loop {
             let Some(rec) = game.entities[e].bot.stall_events.pop_front() else {
                 break;
@@ -622,6 +627,7 @@ fn reset_nav_state(bot: &mut crate::bot::state::BotState, at: Vec3, now: f32) {
     // Execution-feedback timers must not leak across route changes: an abandoned leg's age
     // would otherwise be billed to the first leg of the next route.
     bot.leg_age = 0.0;
+    bot.leg_timed = None;
     bot.leg_times.clear();
     bot.route.clear();
     bot.route_bands.clear();

@@ -469,6 +469,11 @@ impl NavGraph {
         self.links[link_idx as usize].cost
     }
 
+    /// Bounds-checked cost lookup for feedback paths fed by potentially stale link ids.
+    pub fn link_cost_checked(&self, link_idx: u32) -> Option<f32> {
+        self.links.get(link_idx as usize).map(|l| l.cost)
+    }
+
     /// Adaptive execution-feedback pricing: raise a link's cost after execution showed the
     /// priced time was wrong. Capped at +6.0s over the link's built cost. In-memory only,
     /// like planted links: a rebuild resets it. Out-of-range ids are a no-op (stale feedback
