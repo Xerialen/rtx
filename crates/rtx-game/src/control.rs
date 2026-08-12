@@ -228,9 +228,22 @@ pub(crate) fn frame_end(game: &mut GameState) {
                 // prestrafe) beyond its priced flight, and taxing every pass made the route
                 // oscillate between the fast drop and slower detours (measured: ringside median
                 // 3.7 -> 5.7-7.7 with high variance right after the feedback went live).
-                if actual > priced * 2.5 + 1.0 && hit.insert(li) {
-                    g.penalize_link(li, ((actual - priced) * 0.25).min(0.5));
+                if actual > priced * 2.5 + 1.0 {
+                    // One slow finish is not evidence: a legitimate setup (runup, prestrafe)
+                    // shows up as a slow sample too, and a single-pass surcharge flips the
+                    // route away from a good drop until decay flips it back (measured: the
+                    // corrected leg timer alone sent ring/rox medians 4.2/2.9 -> 7.7/6.6 as
+                    // every pass taxed the planted drops). Require three consecutive slow
+                    // passes before repricing the shared graph.
+                    let n = game.entities[e].bot.leg_slow.entry(li).or_insert(0);
+                    *n += 1;
+                    if *n >= 3 && hit.insert(li) {
+                        game.entities[e].bot.leg_slow.remove(&li);
+                        let g = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut).unwrap();
+                        g.penalize_link(li, ((actual - priced) * 0.25).min(0.5));
+                    }
                 } else if actual <= built * 1.2 {
+                    game.entities[e].bot.leg_slow.remove(&li);
                     g.restore_link(li, 0.25);
                 }
             }
@@ -628,6 +641,7 @@ fn reset_nav_state(bot: &mut crate::bot::state::BotState, at: Vec3, now: f32) {
     // would otherwise be billed to the first leg of the next route.
     bot.leg_age = 0.0;
     bot.leg_timed = None;
+    bot.leg_slow.clear();
     bot.leg_times.clear();
     bot.route.clear();
     bot.route_bands.clear();
