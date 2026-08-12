@@ -268,7 +268,7 @@ fn main() {
             )
             .expect("teleport");
             std::thread::sleep(Duration::from_millis(250));
-            c.req(Cmd::Goto { bot, pos: to }, &mut |_| {}).expect("goto");
+            c.req(Cmd::Goto { bot, pos: to, corridor: None }, &mut |_| {}).expect("goto");
             // The plan, read the moment the order lands: "which path does it intend" is a different
             // question from "where did it end up", and the answer is what says whether the planner or
             // the driver is at fault.
@@ -528,6 +528,7 @@ fn main() {
                     Cmd::Goto {
                         bot,
                         pos: [b.x, b.y, b.z],
+                        corridor: None,
                     },
                     &mut |_| {},
                 )

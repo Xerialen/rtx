@@ -469,24 +469,56 @@ impl NavGraph {
         self.links[link_idx as usize].cost
     }
 
-    /// Adaptive execution-feedback pricing: raise a link's cost after the steering watchdog
-    /// aborted it in flight. Links that are broken in practice price themselves out of the
-    /// plan after a few failures instead of trapping every route that trusts their theoretical
-    /// time. Capped at +6.0s over the given built cost so a transient pilot error cannot ban a
-    /// good link outright. In-memory only, like planted links: a rebuild resets it.
-    pub fn penalize_link(&mut self, link_idx: u32, built_cost: f32, extra: f32) -> f32 {
-        let l = &mut self.links[link_idx as usize];
-        l.cost = (l.cost + extra).min(built_cost + 6.0);
+    /// Adaptive execution-feedback pricing: raise a link's cost after execution showed the
+    /// priced time was wrong. Capped at +6.0s over the link's built cost. In-memory only,
+    /// like planted links: a rebuild resets it. Out-of-range ids are a no-op (stale feedback
+    /// from a previous mesh stamp must never index or panic).
+    pub fn penalize_link(&mut self, link_idx: u32, extra: f32) -> f32 {
+        let built = self.built_cost(link_idx);
+        let Some(l) = self.links.get_mut(link_idx as usize) else {
+            return 0.0;
+        };
+        l.cost = (l.cost + extra).min(built + 6.0);
         l.cost
     }
 
     /// Decay one step of adaptive surcharge back toward the built cost. Links earn their price
-    /// back over quiet time, so a transient bad spell (one flaky approach, one pilot bug) does
-    /// not permanently degrade a route that mostly works. Returns the cost after decay.
-    pub fn restore_link(&mut self, link_idx: u32, built_cost: f32, step: f32) -> f32 {
-        let l = &mut self.links[link_idx as usize];
-        l.cost = (l.cost - step).max(built_cost);
+    /// back over quiet time, so a transient bad spell does not permanently degrade a route.
+    pub fn restore_link(&mut self, link_idx: u32, step: f32) -> f32 {
+        let built = self.built_cost(link_idx);
+        let Some(l) = self.links.get_mut(link_idx as usize) else {
+            return 0.0;
+        };
+        l.cost = (l.cost - step).max(built);
         l.cost
+    }
+
+    /// One decay step over every surcharged link (called on a slow cadence from the game loop).
+    pub fn decay_surcharges(&mut self, step: f32) {
+        self.ensure_built();
+        for i in 0..self.links.len() {
+            let built = self.built_costs[i];
+            let l = &mut self.links[i];
+            if l.cost > built {
+                l.cost = (l.cost - step).max(built);
+            }
+        }
+    }
+
+    /// The link's cost as built (pre-surcharge). Snapshotted lazily and extended when planted
+    /// links append to the graph; a rebuild starts a fresh snapshot with the new graph.
+    pub fn built_cost(&mut self, link_idx: u32) -> f32 {
+        self.ensure_built();
+        self.built_costs
+            .get(link_idx as usize)
+            .copied()
+            .unwrap_or_else(|| self.links.get(link_idx as usize).map_or(0.0, |l| l.cost))
+    }
+
+    fn ensure_built(&mut self) {
+        while self.built_costs.len() < self.links.len() {
+            self.built_costs.push(self.links[self.built_costs.len()].cost);
+        }
     }
 
     /// The health a bot expects to lose taking this link (lava/slime contact, or the risk premium on

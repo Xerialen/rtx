@@ -453,7 +453,7 @@ impl RtxMcp {
                 Cmd::Goto {
                     bot,
                     pos: [src[0], src[1], src[2]],
-                },
+                corridor: None, },
                 SHORT,
             )
             .await?;
@@ -523,7 +523,7 @@ impl RtxMcp {
         if via == "goto" {
             let conn = self.conn().await?;
             let rx = conn.events.subscribe();
-            self.req(Cmd::Goto { bot, pos: from }, SHORT).await?;
+            self.req(Cmd::Goto { bot, pos: from , corridor: None }, SHORT).await?;
             let ev = conn
                 .await_event(
                     rx,
@@ -1655,7 +1655,7 @@ impl RtxMcp {
             let want_traj = a.traj.unwrap_or(false);
             let conn = self.conn().await?;
             let rx = conn.events.subscribe();
-            self.req(Cmd::Goto { bot, pos }, SHORT).await?;
+            self.req(Cmd::Goto { bot, pos , corridor: None }, SHORT).await?;
             let mut ev = conn
                 .await_event(rx, |v| is_ev(v, "arrived", bot) || is_ev(v, "goto_stall", bot), timeout)
                 .await?;
@@ -1705,7 +1705,7 @@ impl RtxMcp {
                 )
                 .await?;
                 let rx = conn.events.subscribe();
-                self.req(Cmd::Goto { bot, pos: end }, SHORT).await?;
+                self.req(Cmd::Goto { bot, pos: end , corridor: None }, SHORT).await?;
                 let ev = conn
                     .await_event(rx, |v| is_ev(v, "arrived", bot) || is_ev(v, "goto_stall", bot), timeout)
                     .await?;

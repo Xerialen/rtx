@@ -311,6 +311,8 @@ pub struct NavGraph {
     /// [`build_lod`](Self::build_lod) at the end of the build. Coarse far-field navigation reads it;
     /// `None` on a bare (unbuilt) graph — see [`lod`].
     lod: Option<Lod>,
+    /// Pre-surcharge link costs (lazy snapshot; see `built_cost`).
+    pub(crate) built_costs: Vec<f32>,
 }
 
 /// A solved speed jump: where the takeoff ledge is and the horizontal speed needed there, so the
@@ -506,6 +508,7 @@ impl NavGraph {
             adjacency: vec![Vec::new(); cells_grid.0.len()],
             cells: cells_grid.0,
             links: Vec::new(),
+            built_costs: Vec::new(), // lazy snapshot, see built_cost()
             water: Vec::new(),       // filled on the worker by flag_water
             breathable: Vec::new(),  // (from the render hull's liquid-carrying pointcontents)
             water_extra: Vec::new(), // (same)
@@ -544,6 +547,7 @@ impl NavGraph {
         NavGraph {
             cells,
             links,
+            built_costs: Vec::new(),
             adjacency,
             water: Vec::new(),
             breathable: Vec::new(),

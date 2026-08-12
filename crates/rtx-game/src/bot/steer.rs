@@ -932,6 +932,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // the waypoint pinned to the jump so steering stays on the landing point and the air-jump
     // undershoot recovery keeps firing (the leg advances naturally once we land). Like Hook/RocketJump,
     // whose drivers advance on landing, not on passing the target XY.
+    bot.leg_age += frametime;
     while (on_ground || (!on_air && !on_sj)) && bot.route_pos < bot.route.len() {
         let leg = bot.route[bot.route_pos];
         let target = graph.cell_origin(graph.link_target(leg));
@@ -939,7 +940,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             LinkKind::Plat => origin.z >= target.z - PLAT_RISE_TOL,
             // Depth counts on a swim leg, for the same reason it does on a plat: the climb from the
             // pool floor up to the surface ring is the *same column*, so an XY-only test calls it
-            // arrived before the bot has risen an inch. The route then walks on along the rim bot.leg_age += frametime;
+            // arrived before the bot has risen an inch. The route then walks on along the rim
             // arrived before the bot has risen an inch. The route then walks on along the rim while the
             // bot is still on the bottom — at the wrong depth for every leg that follows, which is
             // exactly how a pillar the rim route goes cleanly around becomes something to swim into.
@@ -950,6 +951,11 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             LinkKind::Hook => false,
             // Same for a rocket jump — its driver advances on landing, not on passing the target XY.
             LinkKind::RocketJump => false,
+            // A speed jump crossing a big height difference must not advance on XY alone: from
+            // an overhang the XY test passes while the bot is still a full storey above the
+            // target, route_pos runs ahead of physics, and the replanner oscillates forever at
+            // the lip (measured: dm3 cell 1373 -> link 48212, stuck at z=264 over a z=56 target).
+            LinkKind::SpeedJump if (target.z - origin.z).abs() > 48.0 => false,
             LinkKind::Walk | LinkKind::Step if bot.bhop.phase != bhop::Phase::Off || bot.sj.is_some() => {
                 let source = graph.cell_origin(graph.link_source(leg));
                 ground_waypoint_arrived(origin.xy(), source.xy(), target.xy(), speed, frametime)
@@ -962,8 +968,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         };
         if arrived {
             // Execution feedback: how long the leg actually took. Ages beyond 8s are dropped —
-            // a watchdog has fired by then and the stall path already prices that failure.
-            if bot.leg_age <= 8.0 {
+            // beyond that something else owns the failure and the sample is noise.
+            if bot.leg_age <= 30.0 {
                 if bot.leg_times.len() >= 32 {
                     bot.leg_times.pop_front();
                 }

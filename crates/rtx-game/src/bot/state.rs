@@ -57,6 +57,9 @@ pub struct BotState {
     /// Completed legs this frame window: `(link, actual seconds)`. Drained by `control::frame_end`
     /// and compared against the link's priced cost; persistently slow legs surcharge their link.
     pub leg_times: VecDeque<(u32, f32)>,
+    /// Links surcharged by the leg-time drain this frame window, so the stall drain does not
+    /// stack a second penalty on the same event (see `control::frame_end`).
+    pub frame_penalized: std::collections::HashSet<u32>,
     /// Planned entry speed band per leg (parallel to `route`), from the banded planner
     /// ([`crate::navmesh::NavGraph::find_path_banded`]); all-zero when speed-band planning is off.
     /// A band ≥ 1 on the current or next leg tells the bhop controller to carry speed through the

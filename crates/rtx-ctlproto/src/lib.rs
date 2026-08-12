@@ -1007,6 +1007,7 @@ mod tests {
             cmd: Cmd::Goto {
                 bot: 2,
                 pos: [1.0, 2.0, 3.0],
+                corridor: None,
             },
         };
         assert_eq!(roundtrip(&r), r);

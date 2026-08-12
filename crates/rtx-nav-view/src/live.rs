@@ -161,7 +161,7 @@ fn session(
         // reflects the new route. `Goto` returns as soon as the order is accepted; the arrival (or
         // stall) arrives later as an event, which `request` skips past on our behalf.
         if let Some(pos) = goto {
-            if request(stream, next_id, Cmd::Goto { bot: bot.unwrap(), pos })?.is_err() {
+            if request(stream, next_id, Cmd::Goto { bot: bot.unwrap(), pos, corridor: None })?.is_err() {
                 // Stale bot id — re-resolve and poll afresh; the next click will land.
                 bot = None;
                 continue;

@@ -207,21 +207,27 @@ pub(crate) fn frame_end(game: &mut GameState) {
         // Behind the telemetry switch like everything else; undrained records self-bound at
         // [`crate::bot::state::STALL_BUF_CAP`].
         // Execution-feedback pricing from completed legs: a leg that persistently runs slower
-        // than its priced cost surcharges its link; one that runs at or under price restores it.
-        loop {
-            let Some((li, actual)) = game.entities[e].bot.leg_times.pop_front() else {
-                break;
-            };
-            let Some(g) = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut) else {
-                break;
-            };
-            let built = link_cost_built(g, li);
-            let priced = g.link_cost(li);
-            if actual > priced * 1.5 + 0.2 {
-                g.penalize_link(li, built, ((actual - priced) * 0.5).min(1.0));
-            } else if actual <= priced {
-                g.restore_link(li, built, 0.25);
+        // than its priced cost surcharges its link; one that runs at its *built* pace restores it
+        // (built, not priced: a surcharged link must earn its way back against the honest clock).
+        // The graph lock is taken before popping so shared-graph frames drop nothing, and each
+        // link is surcharged at most once per frame (a stall and a slow finish on the same event
+        // must not stack into a double penalty).
+        if game.nav.graph.as_mut().map_or(false, |g| std::sync::Arc::get_mut(g).is_some()) {
+            let mut hit: std::collections::HashSet<u32> = std::collections::HashSet::new();
+            loop {
+                let Some((li, actual)) = game.entities[e].bot.leg_times.pop_front() else {
+                    break;
+                };
+                let g = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut).unwrap();
+                let priced = g.link_cost(li);
+                let built = g.built_cost(li);
+                if actual > priced * 1.5 + 0.2 && hit.insert(li) {
+                    g.penalize_link(li, ((actual - priced) * 0.5).min(1.0));
+                } else if actual <= built * 1.2 {
+                    g.restore_link(li, 0.25);
+                }
             }
+            game.entities[e].bot.frame_penalized = hit;
         }
         loop {
             let Some(rec) = game.entities[e].bot.stall_events.pop_front() else {
@@ -231,10 +237,11 @@ pub(crate) fn frame_end(game: &mut GameState) {
             // was not its executable time from this approach. Surcharge it in the live graph so
             // repeat offenders price themselves out and A* converges on executable routes.
             if let Some(li) = rec.link {
-                if matches!(rec.reason, "air_commit_off" | "prestrafe_deficit") {
+                if matches!(rec.reason, "air_commit_off" | "prestrafe_deficit")
+                    && !game.entities[e].bot.frame_penalized.contains(&li)
+                {
                     if let Some(g) = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut) {
-                        let built = link_cost_built(g, li);
-                        g.penalize_link(li, built, 0.75);
+                        g.penalize_link(li, 0.75);
                     }
                 }
             }
@@ -608,6 +615,10 @@ fn do_teleport(game: &mut GameState, bot: u32, pos: Vec3, vel: Vec3) -> Result<R
 /// Clear every route/traversal commitment and seed the watchdogs at `at` (so the 200u teleport
 /// detector doesn't trip on the jump). Shared by teleport and the goto/rj order setup.
 fn reset_nav_state(bot: &mut crate::bot::state::BotState, at: Vec3, now: f32) {
+    // Execution-feedback timers must not leak across route changes: an abandoned leg's age
+    // would otherwise be billed to the first leg of the next route.
+    bot.leg_age = 0.0;
+    bot.leg_times.clear();
     bot.route.clear();
     bot.route_bands.clear();
     bot.route_pos = 0;
@@ -1630,14 +1641,6 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, corridor: f
 }
 
 
-/// Built (pre-penalty) cost lookup for the adaptive surcharge cap: the graph does not retain the
-/// original, so remember it the first time a link is penalized. Keyed per link id; stale entries
-/// from a previous mesh stamp only make the cap conservative, never unsound.
-fn link_cost_built(g: &NavGraph, li: u32) -> f32 {
-    let mut m = built_map().lock().unwrap();
-    *m.entry(li).or_insert_with(|| g.link_cost(li))
-}
-
 
 /// See the call site in `frame_end`: walk the remembered built costs and relax any surcharged
 /// link one step back toward its built price.
@@ -1652,20 +1655,7 @@ fn decay_stall_surcharges(game: &mut GameState, now: f32) {
     let Some(g) = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut) else {
         return;
     };
-    for (li, built) in built_cost_entries() {
-        g.restore_link(li, built, 0.25);
-    }
-}
-
-/// Snapshot of the built-cost memory `link_cost_built` maintains.
-fn built_cost_entries() -> Vec<(u32, f32)> {
-    built_map().lock().unwrap().iter().map(|(&k, &v)| (k, v)).collect()
-}
-
-fn built_map() -> &'static std::sync::Mutex<std::collections::HashMap<u32, f32>> {
-    use std::sync::{Mutex, OnceLock};
-    static BUILT: OnceLock<Mutex<std::collections::HashMap<u32, f32>>> = OnceLock::new();
-    BUILT.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+    g.decay_surcharges(0.25);
 }
 
 fn goto_crossed_finish(traj: &[(f32, Vec3, Vec3, u8)], origin: Vec3, target: Vec3, corridor: f32) -> bool {
