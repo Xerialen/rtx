@@ -65,6 +65,9 @@ pub struct BotState {
     pub goto_t0: f32,
     pub goto_predicted: f32,
     pub goto_links: Vec<u32>,
+    /// A stall happened during this goto: the overrun is execution noise, not a
+    /// pricing lie, so the settlement must not surcharge the traversed legs.
+    pub goto_stalled: bool,
     /// Completed legs this frame window: `(link, actual seconds)`. Drained by `control::frame_end`
     /// and compared against the link's priced cost; persistently slow legs surcharge their link.
     pub leg_times: VecDeque<(u32, f32)>,
