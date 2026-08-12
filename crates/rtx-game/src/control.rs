@@ -653,6 +653,8 @@ fn reset_nav_state(bot: &mut crate::bot::state::BotState, at: Vec3, now: f32) {
     bot.leg_timed = None;
     bot.leg_slow.clear();
     bot.stall_evidence.clear();
+    bot.goto_predicted = 0.0;
+    bot.goto_links.clear();
     bot.leg_times.clear();
     bot.route.clear();
     bot.route_bands.clear();
@@ -678,6 +680,9 @@ fn do_goto(game: &mut GameState, bot: u32, pos: Vec3, corridor: Option<f32>) -> 
     b.route.clear();
     b.repath_time = now;
     b.puppet.traj.clear();
+    b.goto_t0 = now;
+    b.goto_predicted = 0.0;
+    b.goto_links.clear();
     b.puppet.order = Some(ControlOrder::Goto { target: pos, corridor: corridor.unwrap_or(0.0) });
     b.puppet.best_dist = f32::INFINITY;
     b.puppet.best_z = f32::NEG_INFINITY;
@@ -1615,6 +1620,29 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, corridor: f
     let crossed_finish = corridor > 0.0
         && goto_crossed_finish(&game.entities[e].bot.puppet.traj, origin, target, corridor);
     if (dxy <= GOTO_ARRIVE_XY || crossed_finish) && dz <= GOTO_ARRIVE_Z {
+        // Route-level execution feedback: per-leg pricing cannot see a detour whose
+        // underpricing is spread thin across many short walk links (measured: the dm3
+        // tunnel detour, 7-9s real vs a prediction near the 3.1s direct drop, flips
+        // route choice on start-position noise). Settle the whole order instead: an
+        // arrival far beyond the promised total surcharges every traversed leg its
+        // share; an arrival on promise restores them.
+        let actual = now - game.entities[e].bot.goto_t0;
+        let predicted = game.entities[e].bot.goto_predicted;
+        if predicted > 0.0 && !game.entities[e].bot.goto_links.is_empty() {
+            let links = std::mem::take(&mut game.entities[e].bot.goto_links);
+            if let Some(g) = game.nav.graph.as_ref() {
+                if actual > predicted * 1.3 + 1.0 {
+                    let per = ((actual - predicted) / links.len() as f32).min(0.3);
+                    for li in links {
+                        g.penalize_link(li, per);
+                    }
+                } else if actual <= predicted * 1.1 {
+                    for li in links {
+                        g.restore_link(li, 0.1);
+                    }
+                }
+            }
+        }
         let traj = traj_rows(&std::mem::take(&mut game.entities[e].bot.puppet.traj));
         // A goto commonly ends while the bot is airborne and carrying several hundred ups. Merely
         // swapping the order to Hold leaves the active hop controller, route, and momentum intact for

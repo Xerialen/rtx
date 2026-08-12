@@ -60,6 +60,11 @@ pub struct BotState {
     pub leg_slow: std::collections::HashMap<u32, u8>,
     /// Stalls per link since its last clean completion; repricing needs two.
     pub stall_evidence: std::collections::HashMap<u32, u8>,
+    /// Route-level feedback ledger for the active goto: order start time,
+    /// the first route's priced total (0 = unset), and the legs traversed.
+    pub goto_t0: f32,
+    pub goto_predicted: f32,
+    pub goto_links: Vec<u32>,
     /// Completed legs this frame window: `(link, actual seconds)`. Drained by `control::frame_end`
     /// and compared against the link's priced cost; persistently slow legs surcharge their link.
     pub leg_times: VecDeque<(u32, f32)>,

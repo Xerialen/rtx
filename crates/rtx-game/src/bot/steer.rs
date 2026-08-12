@@ -840,6 +840,9 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 target == goal
             )));
         }
+        if bot.goto_predicted == 0.0 && !route.is_empty() {
+            bot.goto_predicted = route.iter().map(|&li| graph.link_cost(li)).sum();
+        }
         bot.route = route;
         bot.route_bands = bands;
         bot.route_pos = 0;
@@ -986,6 +989,9 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 bot.leg_times.push_back((leg, bot.leg_age));
             }
             bot.leg_age = 0.0;
+            if bot.goto_links.len() < 96 {
+                bot.goto_links.push(leg);
+            }
             bot.route_pos += 1;
         } else {
             break;
