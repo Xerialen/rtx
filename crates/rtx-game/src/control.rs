@@ -221,8 +221,12 @@ pub(crate) fn frame_end(game: &mut GameState) {
                 let g = game.nav.graph.as_mut().and_then(std::sync::Arc::get_mut).unwrap();
                 let priced = g.link_cost(li);
                 let built = g.built_cost(li);
-                if actual > priced * 1.5 + 0.2 && hit.insert(li) {
-                    g.penalize_link(li, ((actual - priced) * 0.5).min(1.0));
+                // 2.5x + 1.0: a successful speed jump legitimately spends setup time (runup,
+                // prestrafe) beyond its priced flight, and taxing every pass made the route
+                // oscillate between the fast drop and slower detours (measured: ringside median
+                // 3.7 -> 5.7-7.7 with high variance right after the feedback went live).
+                if actual > priced * 2.5 + 1.0 && hit.insert(li) {
+                    g.penalize_link(li, ((actual - priced) * 0.25).min(0.5));
                 } else if actual <= built * 1.2 {
                     g.restore_link(li, 0.25);
                 }
