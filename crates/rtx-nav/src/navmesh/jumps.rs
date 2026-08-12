@@ -379,6 +379,17 @@ impl NavGraph {
                 if start == to || self.has_direct_link(start, to) {
                     continue;
                 }
+                // A same-plane curl whose lip already reaches the target through a short
+                // grounded chain adds nothing but a stall-prone sprint (dm3 link 35363:
+                // v_req 428 down a 64u corridor Walk already covers — 18/24 patrol runs
+                // stalled there, and goto never picks the curl). Refuse the mint.
+                if (takeoff.z - self.cells[to as usize].origin.z).abs() <= STEP_HEIGHT {
+                    if let Some(lip) = self.nearest_within(takeoff, GRID * 1.5, STEP_HEIGHT) {
+                        if self.grounded_reaches(lip, to, 8) {
+                            continue;
+                        }
+                    }
+                }
                 let link = Link {
                     from: start,
                     to,

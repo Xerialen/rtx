@@ -774,6 +774,23 @@ impl NavGraph {
                 // Look across the gap, not along it.
                 let across = if dx > 0.0 { Vec3::Y } else { Vec3::X };
                 if let Some(p) = opening_centre(&|q| bsp.is_solid(q), mid, across, SEARCH, PITCH) {
+                    // The centre cell alone is reachable, but A* still shortcuts along the
+                    // lattice line into the wall beside the opening (dm3 YA doorway, cell
+                    // 3295: 10/10 displacement stalls). Plant approach cells on both
+                    // neighbours' columns at the opening's cross line, so the walk chain
+                    // turns onto the doorway's centreline before crossing. Only when the
+                    // opening is actually off the lattice line — on-line openings already
+                    // have their approaches.
+                    let off = if dx > 0.0 { (p.y - mid.y).abs() } else { (p.x - mid.x).abs() };
+                    if off > 4.0 {
+                        if dx > 0.0 {
+                            plant.push(Vec3::new(ao.x, p.y, ao.z));
+                            plant.push(Vec3::new(bo.x, p.y, bo.z));
+                        } else {
+                            plant.push(Vec3::new(p.x, ao.y, ao.z));
+                            plant.push(Vec3::new(p.x, bo.y, bo.z));
+                        }
+                    }
                     plant.push(p);
                 }
             }
@@ -1672,6 +1689,38 @@ impl NavGraph {
     }
 
     /// Whether `from` already has a direct (non-hook) link to `to` — such a target needs no hook.
+    /// Breadth-first over grounded links (Walk/Step) only: does `from` reach `to`
+    /// within `max_hops`? Used to refuse redundant same-plane speed-jump mints.
+    fn grounded_reaches(&self, from: CellId, to: CellId, max_hops: u32) -> bool {
+        if from == to {
+            return true;
+        }
+        let mut seen = std::collections::HashSet::from([from]);
+        let mut frontier = vec![from];
+        for _ in 0..max_hops {
+            let mut next = Vec::new();
+            for &c in &frontier {
+                for &li in &self.adjacency[c as usize] {
+                    let l = &self.links[li as usize];
+                    if !matches!(l.kind, LinkKind::Walk | LinkKind::Step) {
+                        continue;
+                    }
+                    if l.to == to {
+                        return true;
+                    }
+                    if seen.insert(l.to) {
+                        next.push(l.to);
+                    }
+                }
+            }
+            if next.is_empty() {
+                return false;
+            }
+            frontier = next;
+        }
+        false
+    }
+
     fn has_direct_link(&self, from: CellId, to: CellId) -> bool {
         self.adjacency[from as usize]
             .iter()
