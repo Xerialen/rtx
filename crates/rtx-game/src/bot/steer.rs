@@ -841,7 +841,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             )));
         }
         if bot.goto_predicted == 0.0 && !route.is_empty() {
-            bot.goto_predicted = route.iter().map(|&li| graph.link_cost(li)).sum();
+            // Promise the price A* actually minimised: static cost alone omits gate/liquid/rj
+            // surcharges and the chained-jump block, so any route crossing one reads as overdrawn
+            // on arrival and its clean legs get taxed for a toll the planner knowingly paid.
+            bot.goto_predicted = route.iter().map(|&li| graph.priced_link_cost(li, &costs)).sum();
         }
         bot.route = route;
         bot.route_bands = bands;

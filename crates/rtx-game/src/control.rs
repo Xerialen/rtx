@@ -1371,6 +1371,10 @@ fn plant_cell_resp(game: &mut GameState, pos: Vec3) -> Result<proto::PlanCellRes
     let (cell, links_created) = g
         .plant_cell(&bsp, pos)
         .ok_or("cell position is not standable dry floor")?;
+    // Live plants share doorway semantics with the carve-time bridge: a door cell planted in
+    // drift (the YA door line) must veto bhop the same way a bridged one does, or steering
+    // bhops straight through the 32u mouth the plant exists to thread.
+    g.plant_mark_if_doorway(&bsp, cell);
     // Refresh reachability + LOD for the same reason `PlanLink` does: without it the O(1) `reachable`
     // gate and the coarse router keep answering for the pre-plant graph.
     g.rebuild_derived();
@@ -1636,8 +1640,11 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, corridor: f
         if predicted > 0.0 && !game.entities[e].bot.goto_links.is_empty() {
             let links = std::mem::take(&mut game.entities[e].bot.goto_links);
             if let Some(g) = game.nav.graph.as_ref() {
-                if actual > predicted * 1.3 + 1.0 {
-                    let stalled = std::mem::take(&mut game.entities[e].bot.goto_stalled_links);
+                // The absolute slack is a *floor* (order start-up + arrival detection, ~0.5s),
+                // not an additive term: at 3.5s predicted, +1.0 lifted the threshold to 1.59x and
+                // parked a measured 48% overdraw in the dead zone between restore and tax.
+                let stalled = std::mem::take(&mut game.entities[e].bot.goto_stalled_links);
+                if actual > (predicted * 1.3).max(predicted + 0.5) {
                     let clean: Vec<u32> = links.iter().copied().filter(|li| !stalled.contains(li)).collect();
                     if !clean.is_empty() {
                         let per = ((actual - predicted) / clean.len() as f32).min(0.3);
@@ -1646,7 +1653,9 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, corridor: f
                         }
                     }
                 } else if actual <= predicted * 1.1 {
-                    for li in links {
+                    // A leg that stalled inside an on-promise route still stalled: restoring it
+                    // would drain the stall evidence the per-leg arm just paid for.
+                    for li in links.iter().copied().filter(|li| !stalled.contains(li)) {
                         g.restore_link(li, 0.1);
                     }
                 }

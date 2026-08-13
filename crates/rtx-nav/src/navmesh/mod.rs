@@ -813,6 +813,37 @@ impl NavGraph {
         self.doorway_cells.contains(&cell)
     }
 
+    /// Mark a hand-planted cell as a doorway when it sits in a narrow opening: solid within
+    /// 48u across either axis at origin height (the YA door is 46u). `bridge_grid_phase_gaps`
+    /// marks its plants unconditionally because it only fires inside phase-missed passages; a
+    /// live [`plant_cell`](Self::plant_cell) can land anywhere, so it must earn the mark
+    /// geometrically. Under-marking is the safe direction — an unmarked door merely keeps the
+    /// old overshoot, while over-marking walk-forces open floor.
+    pub fn plant_mark_if_doorway(&mut self, bsp: &Bsp, cell: CellId) -> bool {
+        const PITCH: f32 = 2.0;
+        const REACH: f32 = 24.0;
+        let o = self.cells[cell as usize].origin;
+        let span = |dir: Vec3| -> f32 {
+            let mut clear = REACH;
+            let mut d = PITCH;
+            while d <= REACH {
+                if bsp.is_solid(o + dir * d) {
+                    clear = d - PITCH;
+                    break;
+                }
+                d += PITCH;
+            }
+            clear
+        };
+        let across_x = span(Vec3::X) + span(Vec3::NEG_X);
+        let across_y = span(Vec3::Y) + span(Vec3::NEG_Y);
+        let narrow = across_x.min(across_y) < 48.0;
+        if narrow {
+            self.doorway_cells.insert(cell);
+        }
+        narrow
+    }
+
     /// Classify the moves out of every cell into directed links: grounded moves to the 8
     /// grid-adjacent columns, then jumps across gaps / up to ledges (windowed and deduped).
     fn link_cells(&mut self, bsp: &Bsp) {
