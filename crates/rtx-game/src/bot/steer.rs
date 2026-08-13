@@ -1373,7 +1373,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // measured case: entry admitted on the deviation measure alone hops the crest and corner-cuts
     // the notch beyond it.
     let winding_entry = winding_ahead || route_turn_sum(graph, &bot.route, bot.route_pos, origin) > WINDING_LIMIT;
+    // A bridged doorway within the next few legs: 32u mouths and 300+ ups do not mix —
+    // the overshoot costs a 180 and an orbit of the room (measured: the dm3 west-wall
+    // door, 4-6s of wandering per miss). Walk through doorways; hop everywhere else.
+    let door_ahead = bot.route[bot.route_pos.min(bot.route.len())..]
+        .iter()
+        .take(3)
+        .any(|&li| graph.is_doorway(graph.link_target(li)));
     let bhop_entry = !final_leg
+        && !door_ahead
         && matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
         && (goal_dist > 300.0 || planned_band >= 1)
         && runway_dist >= bhop::RUNWAY_ENGAGE
@@ -1386,7 +1394,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // But never sustain the chain up an ascending stair run — `runway`'s climb stop keeps *entry* off
     // stairs, yet a chain carried onto a stairway (a wall-hugging spiral, say) would otherwise keep
     // hopping and weave off the treads. Drop to the walk, whose near-field glide tracks the steps.
-    let bhop_sustain = matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
+    let bhop_sustain = !door_ahead
+        && matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
         && (goal_dist > 150.0 || planned_band >= 1)
         && !ascent_ahead
         && !winding_ahead;

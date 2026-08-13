@@ -322,6 +322,9 @@ pub struct NavGraph {
     lod: Option<Lod>,
     /// Runtime execution-feedback prices, deliberately separate from the immutable graph snapshot.
     adaptive_costs: Arc<Mutex<AdaptiveCosts>>,
+    /// Cells minted by the phase-gap doorway bridging (centres and approaches). Narrow
+    /// openings: steering must not bhop through them at speed.
+    doorway_cells: std::collections::HashSet<CellId>,
 }
 
 /// A solved speed jump: where the takeoff ledge is and the horizontal speed needed there, so the
@@ -518,6 +521,7 @@ impl NavGraph {
             cells: cells_grid.0,
             links: Vec::new(),
             adaptive_costs: Arc::new(Mutex::new(AdaptiveCosts::default())),
+            doorway_cells: std::collections::HashSet::new(),
             water: Vec::new(),       // filled on the worker by flag_water
             breathable: Vec::new(),  // (from the render hull's liquid-carrying pointcontents)
             water_extra: Vec::new(), // (same)
@@ -557,6 +561,7 @@ impl NavGraph {
             cells,
             links,
             adaptive_costs: Arc::new(Mutex::new(AdaptiveCosts::default())),
+            doorway_cells: std::collections::HashSet::new(),
             adjacency,
             water: Vec::new(),
             breathable: Vec::new(),
@@ -796,8 +801,16 @@ impl NavGraph {
             }
         }
         for p in plant {
-            self.plant_cell(bsp, p);
+            if let Some((cid, _)) = self.plant_cell(bsp, p) {
+                self.doorway_cells.insert(cid);
+            }
         }
+    }
+
+    /// Is this cell part of a bridged doorway (centre or approach)? Narrow openings the
+    /// carve missed: a bot in bhop flight overshoots their 32u mouth, so steering walks them.
+    pub fn is_doorway(&self, cell: CellId) -> bool {
+        self.doorway_cells.contains(&cell)
     }
 
     /// Classify the moves out of every cell into directed links: grounded moves to the 8

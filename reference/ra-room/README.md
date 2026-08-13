@@ -9,7 +9,7 @@ telemetri (labctl tail, Pmove ent 2). Alla tider mätta från platån/golvet.
 
 ## Ner
 - `xerial-ra-down-20260811.jsonl.gz` — tre nedhopp från platån:
-  RA->rox/RL-paden ~2,4 s, RA->tunneln ~2,1 s, RA->väst [-616,-251] ~3,4 s.
+  RA->rox/RL-paden ~2,4 s, RA->tunneloppningen: rent hopp-facit ~1,2 s FRAN KANTEN (klippet borjar mitt i fallet); harness-jamforbart facit fran RA-startcellerna ~2,2 s (kantlopning + fall 0,95 + golvbit). Mal [4,-451,-17], fore nedforslutet; agarkorrigerat 2026-08-13, RA->väst [-616,-251] ~3,4 s.
 - `xerial-ra-ring-20260811.jsonl.gz` — RA->entrén mot ringsidan [288,-160,56]:
   direktdrop östkanten ~3,5 s, samt varianten via 264-ledgen [337,-531,264].
 
