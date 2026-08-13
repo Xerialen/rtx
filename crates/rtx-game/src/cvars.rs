@@ -75,6 +75,11 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // must not be routed via a leap off it (measured on dm3 RA edge-stress: the planted tunnel
         // drop lured mid-crossing bots off the plateau, 6 of 9 falls). On by default; `0` restores.
         ("rtx_bot_drop_gate", Bool(true)),
+        // Price turns in the banded planner (turn_time: 0/0.08/0.18/0.30s per turn class): walk
+        // legs execute at 150-190 ups through corners against the straight-line 320 they are
+        // priced at, which is how a 50-leg spiral underbids a 4-jump chain. On by default; 0
+        // restores turn-blind pricing.
+        ("rtx_bot_turn_cost", Bool(true)),
         // Require the curl too-slow abort to run on grounded frames only. On by default; `0` restores
         // the legacy speed-only abort on airborne frames too.
         ("rtx_bot_sj_abort_grounded", Bool(true)),

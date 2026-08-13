@@ -273,22 +273,27 @@ impl NavGraph {
                 if !self.in_window(self.links[li as usize].to, allowed) {
                     continue;
                 }
-                // Carried speed only counts if the corridor continues within the cone.
-                let entry = match in_dir {
+                // Carried speed only counts if the corridor continues within the cone — and the
+                // same angle prices the turn itself (`turn_time`, scaled by `costs.turn_scale`).
+                let (entry, turn) = match in_dir {
                     Some(d) if d.length_squared() > 0.01 => {
                         let cos = d.dot(self.link_dir(li)).clamp(-1.0, 1.0);
-                        if cos.acos().to_degrees() > SPEED_CONE_DEG {
-                            0
-                        } else {
-                            band
-                        }
+                        let deg = cos.acos().to_degrees();
+                        (
+                            if deg > SPEED_CONE_DEG { 0 } else { band },
+                            costs.turn_scale * turn_time(deg),
+                        )
                     }
-                    _ => band,
+                    _ => (band, 0.0),
                 };
                 let Some((step_cost, exit)) = self.banded_step(li, entry) else {
                     continue; // infeasible at this entry speed (a chained jump we can't satisfy)
                 };
-                let ng = g_cost[state as usize] + step_cost + sur.get(li as usize).copied().unwrap_or(0.0) + self.link_extra(li, costs);
+                let ng = g_cost[state as usize]
+                    + step_cost
+                    + turn
+                    + sur.get(li as usize).copied().unwrap_or(0.0)
+                    + self.link_extra(li, costs);
                 let ns = self.links[li as usize].to * nb + exit as u32;
                 if ng < g_cost[ns as usize] {
                     g_cost[ns as usize] = ng;
@@ -637,5 +642,24 @@ impl NavGraph {
             }
         }
         c
+    }
+}
+
+/// Extra seconds a turn of `deg` between consecutive route legs costs to *execute*. Walk links are
+/// priced as straight-line 320 ups travel, but measured execution (dm3 cycle-15 traces) runs 400+
+/// ups on straight bhop stretches and 150-190 ups through turn-dense ones — every real turn is a
+/// brake-and-reaccelerate the static price never sees, which is exactly how a 50-leg spiral with 14
+/// turns underbids the 4-jump chain a human takes up the same wall. Magnitudes calibrated against
+/// the traces (a 90 degree corner measured ~120 ups on the turn cell against ~400 straight).
+/// Charged only by the banded search, scaled by `LinkCosts::turn_scale`.
+fn turn_time(deg: f32) -> f32 {
+    if deg < 25.0 {
+        0.0
+    } else if deg < 65.0 {
+        0.08
+    } else if deg < 115.0 {
+        0.18
+    } else {
+        0.30
     }
 }

@@ -2074,6 +2074,7 @@ pub(crate) struct LinkPricing {
     penalties: Vec<(u32, f32)>,
     rj_extra: f32,
     hazard: Option<HazardPrice>,
+    turn_scale: f32,
 }
 
 impl LinkPricing {
@@ -2085,6 +2086,7 @@ impl LinkPricing {
             jitter_seed,
             rocket_jump_extra: self.rj_extra,
             hazard: self.hazard,
+            turn_scale: self.turn_scale,
             // Path planning always pays the full route-around penalty for a shut gate; only goal
             // valuation (see `best_item_plan`) overrides these to price openable gates as errands.
             ..Default::default()
@@ -2100,6 +2102,7 @@ impl LinkPricing {
             penalties: self.penalties.clone(),
             rj_extra: self.rj_extra,
             hazard: self.hazard.map(|h| HazardPrice { strength, ..h }),
+            turn_scale: self.turn_scale,
         }
     }
 }
@@ -2171,6 +2174,7 @@ impl GameState {
                 strength: self.bot_hazard_strength(e, now),
                 k: self.host().cvar(c"rtx_bot_hazard_k").max(0.0),
             }),
+            turn_scale: if self.host().cvar_bool(c"rtx_bot_turn_cost") { 1.0 } else { 0.0 },
         }
     }
 

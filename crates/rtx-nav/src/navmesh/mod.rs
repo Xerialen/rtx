@@ -438,6 +438,11 @@ pub struct LinkCosts<'a> {
     /// estimates are compared against a timeout. Deliberately not `0.0`-means-inert like the terms
     /// above: strength zero means *dead*, which has to mean maximum avoidance, not none.
     pub hazard: Option<HazardPrice>,
+    /// Scale on the per-turn execution price the *banded* search charges between consecutive legs
+    /// (see `turn_time` in `query`) — `1.0` prices turns, `0.0` (the default) keeps the legacy
+    /// turn-blind pricing. Only [`Self::find_path_banded`] reads it: the plain `find_path` has no
+    /// predecessor direction in its state, so item scoring and oracle floods stay untouched.
+    pub turn_scale: f32,
 }
 
 /// What a hazard is worth to the bot asking — the whole per-bot half of [`hazard_cost`].
@@ -4010,6 +4015,43 @@ mod tests {
         assert!(
             g.find_path_banded(3, 4, 0.0, &LinkCosts::default()).is_none(),
             "a standing start can't satisfy a chained speed jump"
+        );
+    }
+
+    /// The banded search charges `turn_time` between consecutive legs, scaled by
+    /// `LinkCosts::turn_scale`: a forced L-corridor (one 90-degree corner) costs exactly the
+    /// corner class (+0.18s) more with pricing on than off, and the first leg — which has no
+    /// incoming heading — is never charged.
+    #[test]
+    fn banded_turn_cost_charges_the_corner() {
+        let g = banded_graph(
+            &[
+                Vec3::ZERO,                   // 0 S
+                Vec3::new(100.0, 0.0, 0.0),   // 1 corner
+                Vec3::new(100.0, 100.0, 0.0), // 2 G
+            ],
+            &[(0, 1, LinkKind::Walk, 0.3), (1, 2, LinkKind::Walk, 0.3)],
+            &[],
+        );
+        let blind = g
+            .find_path_banded(0, 2, 0.0, &LinkCosts::default())
+            .expect("a route exists");
+        let priced = g
+            .find_path_banded(
+                0,
+                2,
+                0.0,
+                &LinkCosts {
+                    turn_scale: 1.0,
+                    ..LinkCosts::default()
+                },
+            )
+            .expect("a route exists");
+        assert_eq!(priced.links, blind.links, "one corridor — pricing must not change the route");
+        let delta = priced.cost - blind.cost;
+        assert!(
+            (delta - 0.18).abs() < 1e-4,
+            "a single 90-degree corner should cost exactly its class: got +{delta}"
         );
     }
 
