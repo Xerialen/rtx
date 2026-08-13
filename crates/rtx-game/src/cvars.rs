@@ -80,6 +80,10 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // priced at, which is how a 50-leg spiral underbids a 4-jump chain. On by default; 0
         // restores turn-blind pricing.
         ("rtx_bot_turn_cost", Bool(true)),
+        // Edge brake: on landings and grounded travel next to an unauthorized storey drop, kill
+        // the hop chain and steer along the safest walk heading for 28u/0.2s — momentum falls
+        // (spiral landings 27u from the dm3 RA shaft) that the plan-level drop gate cannot see.
+        ("rtx_bot_edge_brake", Bool(true)),
         // Require the curl too-slow abort to run on grounded frames only. On by default; `0` restores
         // the legacy speed-only abort on airborne frames too.
         ("rtx_bot_sj_abort_grounded", Bool(true)),

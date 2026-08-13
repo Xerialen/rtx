@@ -69,6 +69,10 @@ pub struct BotState {
     /// execution noise, not a pricing lie, so the settlement skips exactly them
     /// (and only them) when surcharging the traversed legs.
     pub goto_stalled_links: std::collections::HashSet<u32>,
+    /// A live edge-brake window (see `steer::deep_lip_ahead`): armed on landing next to an
+    /// unauthorized deep drop, it suppresses the hop chain and owns the wish until the bot has
+    /// moved a lip-reach away or a fifth of a second has passed, whichever first.
+    pub edge_brake: Option<EdgeBrake>,
     /// Completed legs this frame window: `(link, actual seconds)`. Drained by `control::frame_end`
     /// and compared against the link's priced cost; persistently slow legs surcharge their link.
     pub leg_times: VecDeque<(u32, f32)>,
@@ -915,4 +919,13 @@ mod tests {
         assert_eq!(bot.goal.next_pick, 5.0);
         assert!(!bot.is_avoided(10, 5.0));
     }
+}
+
+/// The edge-brake hold: where it was armed, the unit XY direction toward the offending lip,
+/// and when — see `steer.rs` (grok-kantbroms-spec) for the trigger and release rules.
+#[derive(Clone, Copy)]
+pub struct EdgeBrake {
+    pub origin_xy: glam::Vec2,
+    pub lip: glam::Vec2,
+    pub since: f32,
 }

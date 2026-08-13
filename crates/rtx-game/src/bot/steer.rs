@@ -466,6 +466,78 @@ fn note_stall(
     });
 }
 
+/// Stricter than `LEDGE_ALIGN_COS` (0.5): at 0.5 the cone caught Walk legs running parallel to
+/// a shaft edge and the storey drop that shares a heading with an authorized 64u shelf jump.
+const EDGE_BRAKE_CONE: f32 = 0.7;
+/// Shaft-mouth drops measure 40-54u horizontally on dm3; longer means a leap, not a lip.
+const EDGE_BRAKE_HORIZ: f32 = 64.0;
+/// Below this the bot is creeping and cannot carry itself over a lip in one stride.
+const EDGE_BRAKE_MIN_SPEED: f32 = 150.0;
+/// Hold until the bot has moved a lip-reach (`bhop::LIP_REACH`) from the arm point...
+const EDGE_BRAKE_HOLD_U: f32 = 28.0;
+/// ...or this long, whichever first. No velocity-based release: at a shaft-side landing the
+/// arrival velocity already points away from the lip and would kill the hold the same frame.
+const EDGE_BRAKE_HOLD_T: f32 = 0.20;
+
+/// A deep lip the bot's travel is about to carry it over (grok-kantbroms-spec): a `Drop` from
+/// `cell` — the current cell only, never the near-field column — whose landing is a storey below
+/// the goal (`NavGraph::DEEP_DROP`, the drop gate's own predicate), within a shaft-mouth's
+/// horizontal reach, inside the 45° travel cone (skipped in `presence_only` mode, which instead
+/// returns the *deepest* such drop — the landing-arm case where the arrival heading says nothing
+/// about where the next hop would go). A route leg from the same cell landing at goal level in
+/// the same cone is an *authorized sibling* — the planned 64u shelf jump or edge walk — and
+/// silences the candidate: that is the difference between catching all seven measured falls and
+/// braking every clean north/south crossing.
+#[allow(clippy::too_many_arguments)]
+fn deep_lip_ahead(
+    graph: &NavGraph,
+    cell: CellId,
+    origin: Vec3,
+    v_xy: Vec2,
+    goal_z: f32,
+    cur_leg: Option<u32>,
+    next_leg: Option<u32>,
+    presence_only: bool,
+) -> Option<Vec2> {
+    let co = graph.cell_origin(cell);
+    let vdir = v_xy.normalize_or_zero();
+    let deep = |z: f32| z < goal_z - NavGraph::DEEP_DROP;
+    let authorized = |lip: Vec2| {
+        [cur_leg, next_leg].into_iter().flatten().any(|l| {
+            graph.link_source(l) == cell && {
+                let t = graph.cell_origin(graph.link_target(l));
+                !deep(t.z) && (t.xy() - co.xy()).normalize_or_zero().dot(lip) >= EDGE_BRAKE_CONE
+            }
+        })
+    };
+    let mut best: Option<(f32, Vec2)> = None;
+    for &li in &graph.adjacency[cell as usize] {
+        if Some(li) == cur_leg || Some(li) == next_leg {
+            continue; // an authorized descent the route itself planned
+        }
+        if graph.link_kind(li) != LinkKind::Drop {
+            continue; // JumpGap/SJ here are the planned shelf hops the gate already prices
+        }
+        let tgt = graph.cell_origin(graph.link_target(li));
+        if !deep(tgt.z) || (tgt.xy() - co.xy()).length() > EDGE_BRAKE_HORIZ {
+            continue;
+        }
+        let cand = (tgt.xy() - origin.xy()).normalize_or_zero();
+        if cand == Vec2::ZERO || authorized(cand) {
+            continue;
+        }
+        if presence_only {
+            let depth = goal_z - tgt.z;
+            if best.is_none_or(|(d, _)| depth > d) {
+                best = Some((depth, cand));
+            }
+        } else if vdir == Vec2::ZERO || cand.dot(vdir) >= EDGE_BRAKE_CONE {
+            return Some(cand);
+        }
+    }
+    best.map(|(_, lip)| lip)
+}
+
 pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> SteerOut {
     let SteerCtx {
         s,
@@ -1390,6 +1462,23 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // measured case: entry admitted on the deviation measure alone hops the crest and corner-cuts
     // the notch beyond it.
     let winding_entry = winding_ahead || route_turn_sum(graph, &bot.route, bot.route_pos, origin) > WINDING_LIMIT;
+    // Edge brake (grok-kantbroms-spec, cvar `rtx_bot_edge_brake`): momentum falls the drop gate
+    // cannot touch — no deep link is ever *taken*; the body is carried over the lip by a hop
+    // chain or an air-commit landing 27u from a shaft mouth. Expire the hold window first, then
+    // gate the hop chain on both the live hold and the forward cone.
+    let edge_brake_on = host.cvar_bool(c"rtx_bot_edge_brake");
+    if let Some(b) = bot.edge_brake {
+        if (origin.xy() - b.origin_xy).length() >= EDGE_BRAKE_HOLD_U || now - b.since >= EDGE_BRAKE_HOLD_T {
+            bot.edge_brake = None;
+        }
+    }
+    let brake_goal_z = graph.cell_origin(goal_cell).z;
+    let next_route_leg = bot.route.get(bot.route_pos + 1).copied();
+    let lip_ahead = edge_brake_on
+        && on_ground
+        && speed >= EDGE_BRAKE_MIN_SPEED
+        && deep_lip_ahead(graph, bot_cell, origin, v_xy, brake_goal_z, cur_leg, next_route_leg, false).is_some();
+    let brake_live = edge_brake_on && on_ground && bot.edge_brake.is_some();
     // A bridged doorway within the next few legs: 32u mouths and 300+ ups do not mix —
     // the overshoot costs a 180 and an orbit of the room (measured: the dm3 west-wall
     // door, 4-6s of wandering per miss). Walk through doorways; hop everywhere else.
@@ -1399,6 +1488,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         .any(|&li| graph.is_doorway(graph.link_target(li)));
     let bhop_entry = !final_leg
         && !door_ahead
+        && !lip_ahead
+        && !brake_live
         && matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
         && (goal_dist > 300.0 || planned_band >= 1)
         && runway_dist >= bhop::RUNWAY_ENGAGE
@@ -1412,6 +1503,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // stairs, yet a chain carried onto a stairway (a wall-hugging spiral, say) would otherwise keep
     // hopping and weave off the treads. Drop to the walk, whose near-field glide tracks the steps.
     let bhop_sustain = !door_ahead
+        && !lip_ahead
+        && !brake_live
         && matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
         && (goal_dist > 150.0 || planned_band >= 1)
         && !ascent_ahead
@@ -1421,6 +1514,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // hands off to the hop cycle if `bhop_entry` opens up mid-run, and `bhop_veto` (which includes
     // `!rtx_bot_bhop`) still gates it, so this is purely a sub-toggle on the same controller.
     let zigzag_ok = host.cvar_bool(c"rtx_bot_zigzag")
+        && !lip_ahead
+        && !brake_live
         && matches!(kind, Some(LinkKind::Walk | LinkKind::Step))
         && !final_leg
         && goal_dist > 150.0
@@ -1516,7 +1611,19 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         });
     }
     if let Some(committed) = bot.air {
-        match air_commit_decision(on_ground, committed.airborne, now - committed.since) {
+        let mut release = air_commit_decision(on_ground, committed.airborne, now - committed.since);
+        // grok-kantbroms-spec hook 1: the grace window (0.2s of wish locked toward the landing
+        // cell) is 64u at hop speed — past both the shaft mouth 27u away and the south rim. A
+        // grounded Keep whose landing cell has an unauthorized deep drop ends NOW; overshoot
+        // within 2×ARRIVE still counts on-target, beyond it the off-repath just runs earlier.
+        if edge_brake_on
+            && on_ground
+            && matches!(release, AirRelease::Keep)
+            && deep_lip_ahead(graph, committed.target, origin, v_xy, brake_goal_z, cur_leg, next_route_leg, true).is_some()
+        {
+            release = AirRelease::Land;
+        }
+        match release {
             AirRelease::Keep => {}
             AirRelease::Land => {
                 let leg_kind = graph.link_kind(committed.leg);
@@ -1536,6 +1643,21 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                     bot.repath_time = now;
                 }
                 bot.air = None;
+                // grok-kantbroms-spec hook 2 (presence arm, no cone): the spiral up-jumps land
+                // 27u from the shaft with arrival velocity pointing *away* from it — a cone test
+                // would stay silent, and the next hop dies 44u into the south rim instead. Arm
+                // the hold so the chain cannot restart until the bot has walked clear.
+                if edge_brake_on {
+                    if let Some(lip) =
+                        deep_lip_ahead(graph, bot_cell, origin, Vec2::ZERO, brake_goal_z, cur_leg, next_route_leg, true)
+                    {
+                        bot.edge_brake = Some(crate::bot::state::EdgeBrake {
+                            origin_xy: origin.xy(),
+                            lip,
+                            since: now,
+                        });
+                    }
+                }
             }
             AirRelease::Timeout => {
                 let leg_kind = graph.link_kind(committed.leg);
@@ -2496,6 +2618,41 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 move_world = -dir3 * MOVE_SPEED;
                 bhop_cmd = None;
             }
+        }
+    }
+
+    // Live edge-brake hold (grok-kantbroms-spec b): the hold owns the wish. Not `-v` — at a
+    // south-overshoot the return wish points north straight into the shaft; instead take the
+    // safest Walk/Step off the current cell (the route's own leg first, else the one most toward
+    // the goal) that does not head at the lip, and walk it. No heading found ⇒ back straight off
+    // the lip. `bhop_cmd = None` every held frame: a one-frame clear after `bhop.step` lets the
+    // chain re-enter the very next frame, which was the measured failure.
+    if brake_live {
+        if let Some(b) = bot.edge_brake {
+            let goal_dir = (graph.cell_origin(goal_cell).xy() - origin.xy()).normalize_or_zero();
+            let mut wish: Option<Vec2> = None;
+            let mut best = f32::NEG_INFINITY;
+            for &li in &graph.adjacency[bot_cell as usize] {
+                if !matches!(graph.link_kind(li), LinkKind::Walk | LinkKind::Step) {
+                    continue;
+                }
+                let d = (graph.cell_origin(graph.link_target(li)).xy() - origin.xy()).normalize_or_zero();
+                if d == Vec2::ZERO || d.dot(b.lip) >= EDGE_BRAKE_CONE {
+                    continue;
+                }
+                let score = if Some(li) == cur_leg || Some(li) == next_route_leg {
+                    f32::INFINITY
+                } else {
+                    d.dot(goal_dir)
+                };
+                if score > best {
+                    best = score;
+                    wish = Some(d);
+                }
+            }
+            let w = wish.unwrap_or(-b.lip);
+            move_world = Vec3::new(w.x, w.y, 0.0) * MOVE_SPEED;
+            bhop_cmd = None;
         }
     }
 
