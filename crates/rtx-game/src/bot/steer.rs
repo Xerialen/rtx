@@ -1647,7 +1647,11 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 // 27u from the shaft with arrival velocity pointing *away* from it — a cone test
                 // would stay silent, and the next hop dies 44u into the south rim instead. Arm
                 // the hold so the chain cannot restart until the bot has walked clear.
-                if edge_brake_on {
+                if edge_brake_on && goal_dist > 150.0 {
+                    // goal_dist-grinden (granskning e): pa ring/rox ar malet sjalvt pa 56-planet,
+                    // sa schaktgolvet ar "djupt" och varje avsiktlig slutlandning skulle annars
+                    // arma bromsen och slapa 0,2s pa vara basta rutter. Mitt-rutt-landningar
+                    // (spiralhoppen, 27u fran schaktet) har alltid malet langre bort.
                     if let Some(lip) =
                         deep_lip_ahead(graph, bot_cell, origin, Vec2::ZERO, brake_goal_z, cur_leg, next_route_leg, true)
                     {
@@ -1676,6 +1680,13 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             }
         }
     }
+    // The block above is what arms the brake, and the gates were bound before it — refresh them
+    // so the arming frame itself suppresses the chain (review a: the one-frame gap let a hop
+    // fire from a landing 27u off the shaft before the hold took effect next frame).
+    let brake_live = brake_live || (edge_brake_on && on_ground && bot.edge_brake.is_some());
+    let bhop_entry = bhop_entry && !brake_live;
+    let bhop_sustain = bhop_sustain && !brake_live;
+    let zigzag_ok = zigzag_ok && !brake_live;
     // "Don't leap to your death": if we somehow reach the takeoff edge too slow to clear the gap,
     // hold the jump (keep accelerating) rather than launching short into it.
     let sj_takeoff = cur_leg
@@ -2627,9 +2638,24 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // the goal) that does not head at the lip, and walk it. No heading found ⇒ back straight off
     // the lip. `bhop_cmd = None` every held frame: a one-frame clear after `bhop.step` lets the
     // chain re-enter the very next frame, which was the measured failure.
-    if brake_live {
+    // Never under a certified run (review d): a live speed-jump run-up or walk plan owns its
+    // wish; the brake delaying a chain start is fine, the brake killing a certified L10 is not.
+    if brake_live && !sj_active && !walk_live {
         if let Some(b) = bot.edge_brake {
             let goal_dir = (graph.cell_origin(goal_cell).xy() - origin.xy()).normalize_or_zero();
+            // Every deep lip off this cell, not just the armed one (review c): the safe heading
+            // must clear them all, or the escape from one shaft walks into the next.
+            let deep_lips: Vec<Vec2> = graph.adjacency[bot_cell as usize]
+                .iter()
+                .filter(|&&li| graph.link_kind(li) == LinkKind::Drop)
+                .filter_map(|&li| {
+                    let tgt = graph.cell_origin(graph.link_target(li));
+                    (tgt.z < brake_goal_z - NavGraph::DEEP_DROP
+                        && (tgt.xy() - graph.cell_origin(bot_cell).xy()).length() <= EDGE_BRAKE_HORIZ)
+                        .then(|| (tgt.xy() - origin.xy()).normalize_or_zero())
+                })
+                .chain(std::iter::once(b.lip))
+                .collect();
             let mut wish: Option<Vec2> = None;
             let mut best = f32::NEG_INFINITY;
             for &li in &graph.adjacency[bot_cell as usize] {
@@ -2637,7 +2663,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                     continue;
                 }
                 let d = (graph.cell_origin(graph.link_target(li)).xy() - origin.xy()).normalize_or_zero();
-                if d == Vec2::ZERO || d.dot(b.lip) >= EDGE_BRAKE_CONE {
+                if d == Vec2::ZERO || deep_lips.iter().any(|lip| d.dot(*lip) >= EDGE_BRAKE_CONE) {
                     continue;
                 }
                 let score = if Some(li) == cur_leg || Some(li) == next_route_leg {
