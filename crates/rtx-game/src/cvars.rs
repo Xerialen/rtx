@@ -71,6 +71,10 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // 80-100% with any carried speed, and every failed attempt fired the stall watchdog into a
         // repath that chose the identical link again. On by default; `0` restores that behavior.
         ("rtx_bot_chain_entry_gate", Bool(true)),
+        // Surcharge, per search, airborne links landing >48u below the goal: a goal on a platform
+        // must not be routed via a leap off it (measured on dm3 RA edge-stress: the planted tunnel
+        // drop lured mid-crossing bots off the plateau, 6 of 9 falls). On by default; `0` restores.
+        ("rtx_bot_drop_gate", Bool(true)),
         // Require the curl too-slow abort to run on grounded frames only. On by default; `0` restores
         // the legacy speed-only abort on airborne frames too.
         ("rtx_bot_sj_abort_grounded", Bool(true)),

@@ -1296,6 +1296,28 @@ impl NavGraph {
             .filter(move |&li| self.chain_entry_blocked(li, speed))
     }
 
+    /// Airborne links that land far below `goal_z` — a Drop/JumpGap/DoubleJump/SpeedJump whose
+    /// target cell sits more than `DEEP_DROP` under the goal. A search toward a goal *on* a
+    /// platform has no business pricing a leap *off* it: a cheap planted descent (dm3 RA
+    /// edge-stress, measured: the tunnel drop, cost 1.7, target 344u below the plateau) beats
+    /// local edge walks whenever the bot drifts near its runway, and the "shortcut" ends a
+    /// 10s climb below the goal — 6 of 9 stress falls clustered within 86u of its takeoff.
+    /// Yielded links are for the caller to surcharge per search, never sever: the same link
+    /// queried with the goal *on* the tunnel floor prices at par. The predicate is geometry
+    /// (target z against goal z), not link identity, so it survives replants.
+    pub fn deep_drop_exclusions(&self, goal_z: f32) -> impl Iterator<Item = u32> + '_ {
+        /// Deeper than any rim hop on a plateau edge (dz -34..-64 measured on dm3 RA),
+        /// shallower than any storey drop.
+        const DEEP_DROP: f32 = 48.0;
+        self.links.iter().enumerate().filter_map(move |(i, l)| {
+            (matches!(
+                l.kind,
+                LinkKind::Drop | LinkKind::JumpGap | LinkKind::DoubleJump | LinkKind::SpeedJump
+            ) && self.cells[l.to as usize].origin.z < goal_z - DEEP_DROP)
+                .then_some(i as u32)
+        })
+    }
+
     /// The banded transition for link `li` entered at speed band `entry`: its travel-time cost and
     /// the band the bot arrives in, or `None` if the leg is infeasible at this entry speed (a
     /// chained speed jump the carried speed can't satisfy). Conservative by construction — speeds
@@ -3988,6 +4010,30 @@ mod tests {
         assert!(
             g.find_path_banded(3, 4, 0.0, &LinkCosts::default()).is_none(),
             "a standing start can't satisfy a chained speed jump"
+        );
+    }
+
+    /// The goal-aware drop gate's predicate: an airborne link landing a storey below the goal
+    /// is flagged for a plateau goal and passed for a floor goal — and a shallow rim hop is
+    /// never flagged. Geometry against the goal, not link identity.
+    #[test]
+    fn deep_drop_exclusions_flag_by_goal_height() {
+        let g = banded_graph(
+            &[
+                Vec3::new(0.0, 0.0, 328.0),   // 0 plateau
+                Vec3::new(50.0, 0.0, -16.0),  // 1 tunnel floor (a storey below)
+                Vec3::new(100.0, 0.0, 296.0), // 2 rim step (dz -32, inside DEEP_DROP)
+            ],
+            &[(0, 1, LinkKind::Drop, 1.7), (0, 2, LinkKind::Drop, 0.4)],
+            &[],
+        );
+        // Goal on the plateau: the storey drop is flagged, the rim hop is not.
+        let flagged: Vec<u32> = g.deep_drop_exclusions(328.0).collect();
+        assert_eq!(flagged, vec![0], "only the storey drop should be flagged for a plateau goal");
+        // The same graph asked for the tunnel floor: nothing is flagged.
+        assert!(
+            g.deep_drop_exclusions(-16.0).next().is_none(),
+            "a goal on the floor must price the descent at par"
         );
     }
 
