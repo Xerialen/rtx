@@ -81,9 +81,11 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // restores turn-blind pricing.
         ("rtx_bot_turn_cost", Bool(true)),
         // Edge brake: on landings and grounded travel next to an unauthorized storey drop, kill
-        // the hop chain and steer along the safest walk heading for 28u/0.2s — momentum falls
-        // (spiral landings 27u from the dm3 RA shaft) that the plan-level drop gate cannot see.
-        ("rtx_bot_edge_brake", Bool(true)),
+        // the hop chain and steer along the safest walk heading for 28u/0.2s. OFF by default:
+        // measured A/B on dm3 edge-stress (add86be) — taxed variant 12 falls/155 stalls, soft
+        // variant 68 falls vs 11 with the brake off. Ending the air commit early strips the
+        // landing wish lock at exactly the moment it stabilizes; kept opt-in for redesign.
+        ("rtx_bot_edge_brake", Bool(false)),
         // Require the curl too-slow abort to run on grounded frames only. On by default; `0` restores
         // the legacy speed-only abort on airborne frames too.
         ("rtx_bot_sj_abort_grounded", Bool(true)),
