@@ -1480,7 +1480,10 @@ fn plant_link_resp(
     // very links the plant exists for (dm3's climb: 5.24s booked against 2.72s flown, so the
     // planner held a 13s spiral over a 4s chain).
     let cost = if carried {
-        runup / 450.0 + airtime + 0.1
+        // No commitment tax either: commitment prices execution risk, and a carried leg only
+        // exists as part of a 10/10-certified chain — taxing it 0.1/leg (0.4 over dm3s climb)
+        // was exactly the margin that kept A* on the 8.9s spiral over the 8.8s chain.
+        runup / 450.0 + airtime
     } else {
         runup / 400.0 + airtime + 0.3
     };
