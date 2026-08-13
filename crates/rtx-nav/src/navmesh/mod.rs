@@ -828,21 +828,25 @@ impl NavGraph {
         const PITCH: f32 = 2.0;
         const REACH: f32 = 24.0;
         let o = self.cells[cell as usize].origin;
-        let span = |dir: Vec3| -> f32 {
-            let mut clear = REACH;
+        // Distance to solid along dir, or None when the reach is open. A doorway has walls on
+        // BOTH sides of an axis — one-sided solidity is a runway edge or a wall-hugging plant
+        // (measured: the 56-plane speed-run plants sit against a single wall; marking them
+        // walk-forced the run and every cert flight fell 240u short), and must not mark.
+        let span = |dir: Vec3| -> Option<f32> {
             let mut d = PITCH;
             while d <= REACH {
                 if bsp.is_solid(o + dir * d) {
-                    clear = d - PITCH;
-                    break;
+                    return Some(d - PITCH);
                 }
                 d += PITCH;
             }
-            clear
+            None
         };
-        let across_x = span(Vec3::X) + span(Vec3::NEG_X);
-        let across_y = span(Vec3::Y) + span(Vec3::NEG_Y);
-        let narrow = across_x.min(across_y) < 48.0;
+        let narrow_across = |a: Vec3, b: Vec3| match (span(a), span(b)) {
+            (Some(x), Some(y)) => x + y < 48.0,
+            _ => false,
+        };
+        let narrow = narrow_across(Vec3::X, Vec3::NEG_X) || narrow_across(Vec3::Y, Vec3::NEG_Y);
         if narrow {
             self.doorway_cells.insert(cell);
         }
