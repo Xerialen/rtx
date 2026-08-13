@@ -257,7 +257,9 @@ pub(crate) fn frame_end(game: &mut GameState) {
             // Execution feedback: an in-flight abort on a route leg means the leg's priced time
             // was not its executable time from this approach. Surcharge it in the live graph so
             // repeat offenders price themselves out and A* converges on executable routes.
-            game.entities[e].bot.goto_stalled = true;
+            if let Some(li) = rec.link {
+                game.entities[e].bot.goto_stalled_links.insert(li);
+            }
             if let Some(li) = rec.link {
                 if matches!(rec.reason, "air_commit_off" | "prestrafe_deficit")
                     && !game.entities[e].bot.frame_penalized.contains(&li)
@@ -656,7 +658,7 @@ fn reset_nav_state(bot: &mut crate::bot::state::BotState, at: Vec3, now: f32) {
     bot.stall_evidence.clear();
     bot.goto_predicted = 0.0;
     bot.goto_links.clear();
-    bot.goto_stalled = false;
+    bot.goto_stalled_links.clear();
     bot.leg_times.clear();
     bot.route.clear();
     bot.route_bands.clear();
@@ -685,7 +687,7 @@ fn do_goto(game: &mut GameState, bot: u32, pos: Vec3, corridor: Option<f32>) -> 
     b.goto_t0 = now;
     b.goto_predicted = 0.0;
     b.goto_links.clear();
-    b.goto_stalled = false;
+    b.goto_stalled_links.clear();
     b.puppet.order = Some(ControlOrder::Goto { target: pos, corridor: corridor.unwrap_or(0.0) });
     b.puppet.best_dist = f32::INFINITY;
     b.puppet.best_z = f32::NEG_INFINITY;
@@ -1634,10 +1636,14 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, corridor: f
         if predicted > 0.0 && !game.entities[e].bot.goto_links.is_empty() {
             let links = std::mem::take(&mut game.entities[e].bot.goto_links);
             if let Some(g) = game.nav.graph.as_ref() {
-                if actual > predicted * 1.3 + 1.0 && !game.entities[e].bot.goto_stalled {
-                    let per = ((actual - predicted) / links.len() as f32).min(0.3);
-                    for li in links {
-                        g.penalize_link(li, per);
+                if actual > predicted * 1.3 + 1.0 {
+                    let stalled = std::mem::take(&mut game.entities[e].bot.goto_stalled_links);
+                    let clean: Vec<u32> = links.iter().copied().filter(|li| !stalled.contains(li)).collect();
+                    if !clean.is_empty() {
+                        let per = ((actual - predicted) / clean.len() as f32).min(0.3);
+                        for li in clean {
+                            g.penalize_link(li, per);
+                        }
                     }
                 } else if actual <= predicted * 1.1 {
                     for li in links {
