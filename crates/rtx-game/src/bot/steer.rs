@@ -698,29 +698,16 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         } else {
             graph.nearest_reachable_to(bot_cell, goal).unwrap_or(goal)
         };
-        // Goal-aware drop gate (`rtx_bot_drop_gate`, on by default): surcharge, for *this search
-        // only*, any airborne link landing more than 48u below the resolved target — see
-        // `NavGraph::deep_drop_exclusions` for the measured dm3 failure (a planted storey drop
-        // outpricing local edge walks for goals *on* the plateau). A surcharge and not an
-        // exclusion for the same reason as the chain gate above: a goal genuinely below keeps
-        // the link at par, and a goal only reachable through a deep descent can still pay.
-        let drop_gate_penalties: Vec<(u32, f32)>;
+        // Goal-aware drop gate (`rtx_bot_drop_gate`, on by default): wall off, for *this search
+        // only*, any airborne link landing more than `DEEP_DROP` below the resolved target — see
+        // `LinkCosts::deep_drop_goal_z` for the measured dm3 failure (a planted storey drop
+        // outpricing local edge walks for goals *on* the plateau) and why it is a predicate, not
+        // a penalty vector. A surcharge and not an exclusion for the same reason as the chain
+        // gate above: a goal only reachable through a deep descent can still pay the toll.
         let costs = if host.cvar_bool(c"rtx_bot_drop_gate") {
-            let excluded: Vec<u32> =
-                graph.deep_drop_exclusions(graph.cell_origin(target).z).collect();
-            if excluded.is_empty() {
-                costs
-            } else {
-                drop_gate_penalties = costs
-                    .penalties
-                    .iter()
-                    .copied()
-                    .chain(excluded.into_iter().map(|li| (li, CLOSED_GATE_PENALTY)))
-                    .collect();
-                LinkCosts {
-                    penalties: &drop_gate_penalties,
-                    ..costs
-                }
+            LinkCosts {
+                deep_drop_goal_z: Some(graph.cell_origin(target).z),
+                ..costs
             }
         } else {
             costs

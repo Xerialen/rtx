@@ -443,6 +443,14 @@ pub struct LinkCosts<'a> {
     /// turn-blind pricing. Only [`Self::find_path_banded`] reads it: the plain `find_path` has no
     /// predecessor direction in its state, so item scoring and oracle floods stay untouched.
     pub turn_scale: f32,
+    /// `Some(goal_z)` ⇒ charge [`CLOSED_GATE_PENALTY`] to every airborne link
+    /// (Drop/JumpGap/DoubleJump/SpeedJump) landing more than `DEEP_DROP` below it — the goal-aware
+    /// drop gate (see [`NavGraph::deep_drop_exclusions`] for the measured dm3 failure). Priced
+    /// inline in [`NavGraph::link_extra`] as an O(1) predicate rather than materialized into
+    /// `penalties`: dm3 gates ~6k links for a plateau goal, which as vector entries would turn
+    /// every expansion into a linear scan — and would sit behind any small failed-link surcharge
+    /// the first-match lookup found first. `None` (the default) prices no gate.
+    pub deep_drop_goal_z: Option<f32>,
 }
 
 /// What a hazard is worth to the bot asking — the whole per-bot half of [`hazard_cost`].
@@ -1216,10 +1224,22 @@ impl NavGraph {
             }
             _ => 0.0,
         };
+        // Sum every match: the chain gate *appends* its wall after the caller's failed-link
+        // surcharges, and first-match-wins let a small prior surcharge on the same link mask the
+        // 100k wall entirely (found in review: a just-missed link re-chosen through the gate).
         for &(l, sec) in costs.penalties {
             if l == li {
                 extra += sec;
-                break;
+            }
+        }
+        if let Some(gz) = costs.deep_drop_goal_z {
+            let l = self.links[li as usize];
+            if matches!(
+                l.kind,
+                LinkKind::Drop | LinkKind::JumpGap | LinkKind::DoubleJump | LinkKind::SpeedJump
+            ) && self.cells[l.to as usize].origin.z < gz - Self::DEEP_DROP
+            {
+                extra += CLOSED_GATE_PENALTY;
             }
         }
         if costs.jitter_seed != 0 {
@@ -1305,6 +1325,10 @@ impl NavGraph {
             .filter(move |&li| self.chain_entry_blocked(li, speed))
     }
 
+    /// Deeper than any rim hop on a plateau edge (dz -34..-64 measured on dm3 RA), shallower
+    /// than any storey drop — the depth past which [`LinkCosts::deep_drop_goal_z`] walls a link.
+    pub const DEEP_DROP: f32 = 48.0;
+
     /// Airborne links that land far below `goal_z` — a Drop/JumpGap/DoubleJump/SpeedJump whose
     /// target cell sits more than `DEEP_DROP` under the goal. A search toward a goal *on* a
     /// platform has no business pricing a leap *off* it: a cheap planted descent (dm3 RA
@@ -1315,14 +1339,11 @@ impl NavGraph {
     /// queried with the goal *on* the tunnel floor prices at par. The predicate is geometry
     /// (target z against goal z), not link identity, so it survives replants.
     pub fn deep_drop_exclusions(&self, goal_z: f32) -> impl Iterator<Item = u32> + '_ {
-        /// Deeper than any rim hop on a plateau edge (dz -34..-64 measured on dm3 RA),
-        /// shallower than any storey drop.
-        const DEEP_DROP: f32 = 48.0;
         self.links.iter().enumerate().filter_map(move |(i, l)| {
             (matches!(
                 l.kind,
                 LinkKind::Drop | LinkKind::JumpGap | LinkKind::DoubleJump | LinkKind::SpeedJump
-            ) && self.cells[l.to as usize].origin.z < goal_z - DEEP_DROP)
+            ) && self.cells[l.to as usize].origin.z < goal_z - Self::DEEP_DROP)
                 .then_some(i as u32)
         })
     }

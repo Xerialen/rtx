@@ -1,0 +1,1 @@
+- [plant] geometrisk dorrdetektering kraver vagg pa BADA sidor av axeln — ensidig vagg = startbana/kantcell; felmarkering walk-forcar fartlopningar (L3/L7 240u korta certflygningar)
