@@ -820,6 +820,9 @@ pub struct Watchdog {
     /// Origin on the previous bot frame, to detect a teleport (a large instant jump) and re-path
     /// from the landing spot.
     pub last_origin: Vec3,
+    /// Until when the bot is executing a straight-back unwedge step (no yaw change):
+    /// the recovery for being wedged on a thin lip with the leg target a storey below.
+    pub backstep_until: f32,
 }
 
 /// Which ballistic leg driver a failure belongs to — selects the per-driver consecutive-failure

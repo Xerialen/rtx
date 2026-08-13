@@ -1197,6 +1197,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         bot.watchdog.stuck_origin = origin;
         bot.watchdog.stuck_since = now;
     } else if now - bot.watchdog.stuck_since > STUCK_TIME {
+        // Wedged with the leg target a storey below — the thin frame lip above the
+        // dm3 rox doorway is the archetype. The cheapest recovery (Xerial's):
+        // one step straight back, no yaw change, and gravity finishes the leg.
+        // No penalty — this is execution recovery, not a pricing signal.
+        if waypoint.z < origin.z - 100.0 && now - bot.watchdog.backstep_until > 1.0 {
+            bot.watchdog.backstep_until = now + 0.35;
+            note_stall(bot, &stall_frame, "displacement", "backstep", cur_leg, kind);
+            bot.watchdog.stuck_since = now;
+        } else {
         // Force a jump to unwedge — but NOT toward a fatal edge. A bot stuck at a lava/pit lip (e.g.
         // wedged against a surcharged jump the router refuses to take) would otherwise force-jump
         // straight off it and burn. When the near-field sees a drop/hazard within a hop toward the
@@ -1216,6 +1225,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         penalize_leg(bot, cur_leg, kind, now);
         bot.repath_time = now; // re-path next frame
         bot.watchdog.stuck_since = now;
+        }
     }
 
     // Path-progress watchdog: catches a bot that *is* moving (so the displacement detector above
@@ -2253,7 +2263,12 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     };
 
     let close_enough = final_leg && polite && dist <= POLITE_DIST;
-    if !close_enough {
+    if now < bot.watchdog.backstep_until {
+        // Unwedge in progress: straight back relative to the current view, no yaw
+        // change, no strafe — the point is to fall off the lip we are wedged on.
+        forward = -MOVE_SPEED as i32;
+        side = 0;
+    } else if !close_enough {
         let (fwd, right, _) = angle_vectors(angles);
         let dir = (Vec3::new(heading.x, heading.y, 0.0).normalize_or_zero() + edge_push * EDGE_BIAS_WEIGHT)
             .normalize_or_zero();
