@@ -166,6 +166,12 @@ pub enum Cmd {
         v_req: f32,
         #[serde(default)]
         gain: Option<f32>,
+        /// The link is one leg of a certified chain the bot enters *carrying* speed (the previous
+        /// leg's landing), so its price must not bill a standstill run-up acceleration nor a full
+        /// per-leg commitment — see `plant_link_resp`. Defaults off: an isolated plant keeps the
+        /// conservative standstill price.
+        #[serde(default)]
+        carried: bool,
     },
     /// Hand-plant a standing cell at `pos` — a walkable surface the column carve's XY pitch cannot
     /// sample (see `NavGraph::plant_cell`). Inert on its own: nothing routes into it.

@@ -641,6 +641,7 @@ impl RtxMcp {
                     tgt: target,
                     v_req,
                     gain: Some(gain),
+                    carried: false,
                 },
                 SHORT,
             )

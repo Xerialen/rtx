@@ -579,7 +579,9 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
             tgt,
             v_req,
             gain,
-        } => plant_link_resp(game, v3(from), v3(takeoff), v3(tgt), v_req, gain).map(Resp::PlanLink),
+            carried,
+        } => plant_link_resp(game, v3(from), v3(takeoff), v3(tgt), v_req, gain, carried)
+            .map(Resp::PlanLink),
         Cmd::PlanCell { pos } => plant_cell_resp(game, v3(pos)).map(Resp::PlanCell),
         Cmd::PlanDrop { from, to } => plant_drop_resp(game, v3(from), v3(to)).map(Resp::PlanDrop),
     };
@@ -1433,6 +1435,7 @@ fn plant_link_resp(
     tgt: Vec3,
     v_req: f32,
     gain: Option<f32>,
+    carried: bool,
 ) -> Result<proto::PlanLinkResp, String> {
     use crate::navmesh::SpeedJumpTraversal;
     let gravity = {
@@ -1471,7 +1474,16 @@ fn plant_link_resp(
     // flight + a JumpGap-grade commitment (a rollout-certified envelope carries less risk than the
     // +1.0 charged to a modeled speed jump). Run-up is the `from`→lip distance at the mean build speed.
     let runup = (takeoff.xy() - g.cell_origin(from_cell).xy()).length();
-    let cost = runup / 400.0 + airtime + 0.3;
+    // A carried leg is entered at the previous leg's landing speed, so its run-up is flown, not
+    // accelerated from rest, and the chain's commitment risk was paid once at entry — billing
+    // every leg the standstill price double-taxes a certified chain until A* routes around the
+    // very links the plant exists for (dm3's climb: 5.24s booked against 2.72s flown, so the
+    // planner held a 13s spiral over a 4s chain).
+    let cost = if carried {
+        runup / 450.0 + airtime + 0.1
+    } else {
+        runup / 400.0 + airtime + 0.3
+    };
     let tr = SpeedJumpTraversal {
         takeoff,
         v_req,
