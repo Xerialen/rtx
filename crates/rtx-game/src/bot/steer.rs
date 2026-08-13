@@ -1611,19 +1611,33 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         });
     }
     if let Some(committed) = bot.air {
-        let mut release = air_commit_decision(on_ground, committed.airborne, now - committed.since);
-        // grok-kantbroms-spec hook 1: the grace window (0.2s of wish locked toward the landing
-        // cell) is 64u at hop speed — past both the shaft mouth 27u away and the south rim. A
-        // grounded Keep whose landing cell has an unauthorized deep drop ends NOW; overshoot
-        // within 2×ARRIVE still counts on-target, beyond it the off-repath just runs earlier.
-        if edge_brake_on
+        let release = air_commit_decision(on_ground, committed.airborne, now - committed.since);
+        // grok-kantbroms-spec hook 1, SOFT variant: the grace window (0.2s of wish locked toward
+        // the landing cell) is 64u at hop speed — past the shaft mouth 27u away. A grounded Keep
+        // whose landing cell has an unauthorized deep drop ends NOW — but *quietly*: the first
+        // grounded frame is routinely 30u short of the leg target mid-walkoff, and routing that
+        // through the Land arms off-target tax turned one kantstress run into 148 air_commit_off
+        // stalls and doubled the falls. End the commit, arm the hold, tax nothing.
+        let soft_land = edge_brake_on
             && on_ground
             && matches!(release, AirRelease::Keep)
-            && deep_lip_ahead(graph, committed.target, origin, v_xy, brake_goal_z, cur_leg, next_route_leg, true).is_some()
-        {
-            release = AirRelease::Land;
+            && deep_lip_ahead(graph, committed.target, origin, v_xy, brake_goal_z, cur_leg, next_route_leg, true)
+                .is_some();
+        if soft_land {
+            bot.air = None;
+            if goal_dist > 150.0 {
+                if let Some(lip) =
+                    deep_lip_ahead(graph, bot_cell, origin, Vec2::ZERO, brake_goal_z, cur_leg, next_route_leg, true)
+                {
+                    bot.edge_brake = Some(crate::bot::state::EdgeBrake {
+                        origin_xy: origin.xy(),
+                        lip,
+                        since: now,
+                    });
+                }
+            }
         }
-        match release {
+        match if soft_land { AirRelease::Keep } else { release } {
             AirRelease::Keep => {}
             AirRelease::Land => {
                 let leg_kind = graph.link_kind(committed.leg);
