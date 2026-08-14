@@ -1,2 +1,3 @@
 - [plant] geometrisk dorrdetektering kraver vagg pa BADA sidor av axeln — ensidig vagg = startbana/kantcell; felmarkering walk-forcar fartlopningar (L3/L7 240u korta certflygningar)
 - [plant] uppfors-speedjump: verifiera ballistiken FORE svep — +64u kraver carried fart (max ren hopphojd ~45u), och en smal hylla (<50u) ger ingen startbana; alla v_req ger da identiska missar
+- [skript] labctl-request-svar ar HELA resp-dicten — plocka ["link"] fore fly(); dict-till-fly har krashat tva svepkedjor (p1, l10)

@@ -325,6 +325,13 @@ pub struct NavGraph {
     /// Cells minted by the phase-gap doorway bridging (centres and approaches). Narrow
     /// openings: steering must not bhop through them at speed.
     doorway_cells: std::collections::HashSet<CellId>,
+    /// Links hand-planted at runtime (`plant_speed_jump`/`plant_drop`): certified, deliberate
+    /// traversals that the shaft-landing toll must never tax — measured (flip calc): taxing the
+    /// climb chain's own shelf landings out-tolled the spiral it was meant to divert.
+    planted_links: std::collections::HashSet<u32>,
+    /// Per cell: the lowest z any shaft-width `Drop` off it lands at (`INFINITY` = none). Rebuilt
+    /// by [`Self::rebuild_derived`]; read by the shaft-landing toll in [`Self::link_extra`].
+    cell_min_drop_z: Vec<f32>,
 }
 
 /// A solved speed jump: where the takeoff ledge is and the horizontal speed needed there, so the
@@ -374,6 +381,12 @@ impl Default for SpeedJumpTraversal {
 /// crosses (and the bot then detours to the button) when there's no alternative — matching how a
 /// game engine prices a disabled-but-openable NavMesh link rather than deleting it outright.
 pub const CLOSED_GATE_PENALTY: f32 = 100_000.0;
+
+/// Seconds added, per search, to a carved airborne link landing on a shaft-edge cell (a cell
+/// whose own shaft-width Drop falls more than [`NavGraph::DEEP_DROP`] below the goal) — enough
+/// to prefer an equal jump onto a clear cell one grid over, far too small to wall a route.
+/// Planted links are exempt; see the toll block in `link_extra`.
+pub const SHAFT_LANDING_TOLL: f32 = 0.5;
 
 /// Fraction of a chained speed jump's `v_req` below which the entry speed isn't "carrying" this
 /// jump at all — see [`NavGraph::chain_entry_exclusions`]. Well under 1.0 (unlike [`SJ_MARGIN`]'s
@@ -535,6 +548,8 @@ impl NavGraph {
             links: Vec::new(),
             adaptive_costs: Arc::new(Mutex::new(AdaptiveCosts::default())),
             doorway_cells: std::collections::HashSet::new(),
+            planted_links: std::collections::HashSet::new(),
+            cell_min_drop_z: Vec::new(),
             water: Vec::new(),       // filled on the worker by flag_water
             breathable: Vec::new(),  // (from the render hull's liquid-carrying pointcontents)
             water_extra: Vec::new(), // (same)
@@ -575,6 +590,8 @@ impl NavGraph {
             links,
             adaptive_costs: Arc::new(Mutex::new(AdaptiveCosts::default())),
             doorway_cells: std::collections::HashSet::new(),
+            planted_links: std::collections::HashSet::new(),
+            cell_min_drop_z: Vec::new(),
             adjacency,
             water: Vec::new(),
             breathable: Vec::new(),
@@ -1237,9 +1254,23 @@ impl NavGraph {
             if matches!(
                 l.kind,
                 LinkKind::Drop | LinkKind::JumpGap | LinkKind::DoubleJump | LinkKind::SpeedJump
-            ) && self.cells[l.to as usize].origin.z < gz - Self::DEEP_DROP
-            {
-                extra += CLOSED_GATE_PENALTY;
+            ) {
+                if self.cells[l.to as usize].origin.z < gz - Self::DEEP_DROP {
+                    extra += CLOSED_GATE_PENALTY;
+                } else if !self.planted_links.contains(&li)
+                    && self.cell_min_drop_z.get(l.to as usize).copied().unwrap_or(f32::INFINITY)
+                        < gz - Self::DEEP_DROP
+                {
+                    // Shaft-landing toll: a *carved* airborne link delivering the bot onto a cell
+                    // whose own shaft-width Drop falls a storey below the goal. Measured (dm3
+                    // spiral): three carved up-jumps land on the shaft row while an equal jump
+                    // one grid south lands clear — the toll makes A* prefer the clear landing
+                    // without severing anything. Planted links are exempt: they are certified,
+                    // deliberate shelf landings, and tolling them out-priced the very climb
+                    // chain the pricing work exists to favour (flip calc: +1.0 on the chain
+                    // against +0.5 on the spiral).
+                    extra += SHAFT_LANDING_TOLL;
+                }
             }
         }
         if costs.jitter_seed != 0 {
@@ -1854,7 +1885,9 @@ impl NavGraph {
             },
             traversal,
         );
-        (self.links.len() - 1) as u32
+        let li = (self.links.len() - 1) as u32;
+        self.planted_links.insert(li);
+        li
     }
 
     /// Bounded [`nearest`](Self::nearest): the closest cell within `horiz` XY and `vert` Z of `p`, or
@@ -1948,7 +1981,9 @@ impl NavGraph {
             return None;
         }
         self.push_link(link);
-        Some((self.links.len() - 1) as u32)
+        let li = (self.links.len() - 1) as u32;
+        self.planted_links.insert(li);
+        Some(li)
     }
 
     /// Rebuild the derived tables — the reachability closure and the LOD hierarchy — after a post-build
@@ -1962,6 +1997,26 @@ impl NavGraph {
     pub fn rebuild_derived(&mut self) {
         self.build_reachability();
         self.build_lod();
+        self.build_cell_drop_floor();
+    }
+
+    /// Per cell, the lowest landing z of any shaft-width Drop off it — the "is this a shaft
+    /// edge?" table the landing toll reads. Shaft mouths measure 40-54u horizontally on dm3;
+    /// longer drops are ledge descents, not shafts. O(links); rebuilt with the other derived
+    /// tables so runtime plants (a sensor Drop on a lip) show up immediately.
+    fn build_cell_drop_floor(&mut self) {
+        const SHAFT_MOUTH_HORIZ: f32 = 64.0;
+        let mut v = vec![f32::INFINITY; self.cells.len()];
+        for l in &self.links {
+            if l.kind == LinkKind::Drop {
+                let fo = self.cells[l.from as usize].origin;
+                let to = self.cells[l.to as usize].origin;
+                if (to.xy() - fo.xy()).length() <= SHAFT_MOUTH_HORIZ && to.z < v[l.from as usize] {
+                    v[l.from as usize] = to.z;
+                }
+            }
+        }
+        self.cell_min_drop_z = v;
     }
 
     /// Push a speed-jump link with its traversal, tagging the new link in the side table.
@@ -2378,6 +2433,7 @@ pub fn build_navmesh(
         // Now that every link is in place and priced, precompute static reachability and the LOD hierarchy.
         graph.build_reachability();
         graph.build_lod();
+        graph.build_cell_drop_floor();
         graph
     };
     // Run the (rayon-parallel) build on a transient pool sized to leave one core for the caller.
@@ -4077,6 +4133,58 @@ mod tests {
         assert!(
             (delta - 0.18).abs() < 1e-4,
             "a single 90-degree corner should cost exactly its class: got +{delta}"
+        );
+    }
+
+    /// The shaft-landing toll: a carved jump onto a cell with a deep shaft Drop pays 0.5s for a
+    /// plateau goal; the planted twin onto the same cell pays nothing; a floor goal tolls
+    /// neither.
+    #[test]
+    fn shaft_landing_toll_taxes_carved_not_planted() {
+        let mut g = banded_graph(
+            &[
+                Vec3::new(0.0, 0.0, 296.0),    // 0 spiral from
+                Vec3::new(120.0, 0.0, 328.0),  // 1 shaft-edge landing
+                Vec3::new(150.0, 40.0, -16.0), // 2 shaft floor (Drop target off 1)
+            ],
+            &[
+                (0, 1, LinkKind::JumpGap, 0.7), // 0: carved up-jump onto the shaft row
+                (1, 2, LinkKind::Drop, 1.7),    // 1: the shaft drop that marks cell 1
+            ],
+            &[],
+        );
+        g.build_cell_drop_floor();
+        let plateau = LinkCosts {
+            deep_drop_goal_z: Some(328.0),
+            ..LinkCosts::default()
+        };
+        let base = g.link_extra(0, &LinkCosts::default());
+        assert!(
+            (g.link_extra(0, &plateau) - base - SHAFT_LANDING_TOLL).abs() < 1e-4,
+            "a carved jump onto a shaft-edge cell should pay the toll for a plateau goal"
+        );
+        let planted = g.plant_speed_jump(
+            0,
+            1,
+            0.7,
+            SpeedJumpTraversal {
+                takeoff: Vec3::new(0.0, 0.0, 296.0),
+                v_req: 300.0,
+                airtime: 0.5,
+                ..Default::default()
+            },
+        );
+        assert!(
+            g.link_extra(planted, &plateau) - g.link_extra(planted, &LinkCosts::default()) < 1e-4,
+            "the planted twin onto the same cell must be exempt"
+        );
+        let floor = LinkCosts {
+            deep_drop_goal_z: Some(-16.0),
+            ..LinkCosts::default()
+        };
+        assert!(
+            (g.link_extra(0, &floor) - base).abs() < 1e-4,
+            "a goal on the shaft floor tolls nothing"
         );
     }
 
