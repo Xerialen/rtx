@@ -94,7 +94,11 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // SJ rail: on a curl runway flanked by a storey pit, cap the takeoff weave at 14 degrees
         // and pull a drifted weave centre back onto the axis — the two P3 climb failures left the
         // shelf 48u before the lip inside the legal ±24-degree band. On by default.
-        ("rtx_bot_sj_rail", Bool(true)),
+        // OFF by default: the side-force variant livelocked runways (measured: two goto
+        // timeouts stuck at the P3/P1 shelf, up-falls 3->7, edge falls 3->6 — the shove spoils
+        // the run-up, the too-slow abort repaths, the next attempt gets shoved again). Kept
+        // opt-in for redesign against the sidekraft traces.
+        ("rtx_bot_sj_rail", Bool(false)),
         // Require the curl too-slow abort to run on grounded frames only. On by default; `0` restores
         // the legacy speed-only abort on airborne frames too.
         ("rtx_bot_sj_abort_grounded", Bool(true)),

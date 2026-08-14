@@ -2,3 +2,4 @@
 - [plant] uppfors-speedjump: verifiera ballistiken FORE svep — +64u kraver carried fart (max ren hopphojd ~45u), och en smal hylla (<50u) ger ingen startbana; alla v_req ger da identiska missar
 - [skript] labctl-request-svar ar HELA resp-dicten — plocka ["link"] fore fly(); dict-till-fly har krashat tva svepkedjor (p1, l10)
 - [pris] carried-flaggan pa plantlank KRAVER att infarten verkligen bar farten — goto i gangfart genom +77z gor priset till en logn som A* vinner och boten faller pa (13 uppvagsfall 14/8); standstill tills chain_entry-per-ben finns
+- [skript] f-strang {x:.1fs} ar OGILTIG (ska vara {x:.1f}s) — har krashat TRE uptrace-korningar; grep -c 1fs fore varje korning
