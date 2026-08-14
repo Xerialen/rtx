@@ -2083,15 +2083,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                     // ...and keep aiming there while the leap is held for its envelope: the aim is what
                     // the speed-building weave centres on, so switching to the landing bearing mid-hold
                     // would turn the bot off the run-up axis — the very thing the hold is waiting for.
-                    // Drifted past the rail's soft band toward a flanking pit: centre the weave on a
-                    // point pulled back onto the safe side of the axis instead of the raw takeoff —
-                    // the failing passes sat +24u toward the groove with the aim still legal.
-                    (Some((takeoff, _)), Some(p)) if p > bhop::LIP_REACH || sj_hold => {
-                        match sj_rail {
-                            Some((lat, vd)) if lat > 16.0 => takeoff - (vd * 24.0).extend(0.0),
-                            _ => takeoff,
-                        }
-                    }
+                    (Some((takeoff, _)), Some(p)) if p > bhop::LIP_REACH || sj_hold => takeoff,
                     // Straight speed jump on the ground: aim at the takeoff (collinear → no-op vs landing).
                     (Some((takeoff, _)), None) if on_ground => takeoff,
                     _ => waypoint,
@@ -2850,6 +2842,22 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             if !aligned && crate::hazard::ledge_ahead(&|p| bsp.is_solid(p), feet, vdir3) {
                 move_world = -vdir3 * MOVE_SPEED;
             }
+        }
+    }
+
+    // SJ-rail side force (grok-head022-dom, spec 1.3 in full): the weave-centre correction was
+    // measured too weak — aim-24 left the body at +32u lateral, locked into the groove at x=304
+    // in all three deaths. Past the soft band, or moving voidward on the void side of the axis,
+    // shove the body back onto the shelf for the frame: kill the hop command and wish straight
+    // away from the pit. The run-up loses a beat of acceleration; the too-slow abort is the
+    // designed fallback if that spoils the leap — a repath beats the pit. Grounded only; the
+    // certified arc owns the air.
+    if let Some((lat, vd)) = sj_rail {
+        let voidward = v_xy.normalize_or_zero().dot(vd) > 0.0;
+        if on_ground && (lat > 16.0 || (voidward && lat > 0.0)) {
+            let w = -vd;
+            move_world = Vec3::new(w.x, w.y, 0.0) * MOVE_SPEED;
+            bhop_cmd = None;
         }
     }
 
