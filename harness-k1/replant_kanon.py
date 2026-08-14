@@ -14,6 +14,7 @@ FILES = {
     "climb": os.path.expanduser("~/lab/ra_climb_planted.json"),
     "mesh": os.path.expanduser("~/lab/ra_mesh_planted.json"),
     "p156": os.path.expanduser("~/lab/p1_56_planted.json"),
+    "v296": os.path.expanduser("~/lab/vast_296_planted.json"),
 }
 
 def sha_full(p):
@@ -53,6 +54,11 @@ for name, f in mesh.items():
 p156 = json.load(open(FILES["p156"]))
 f = p156[next(iter(p156))]
 plan("p156", f["from"], f["takeoff"], f["tgt"], f["v_req"], f["gain"], carried=True)
+
+# västhyllans hopplänk (K2-receptet; ruttcertifierad 6/6 0 fall 2026-08-15)
+v296 = json.load(open(FILES["v296"]))
+f = v296[next(iter(v296))]
+plan("v296", f["from"], f["takeoff"], f["tgt"], f["v_req"], f["gain"], carried=True)
 
 frag = {"plant_files": {k: {"path": v, "sha256": sha_full(v)} for k, v in FILES.items()},
         "planted": planted, "refused": refused}
