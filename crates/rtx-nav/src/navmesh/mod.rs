@@ -837,6 +837,11 @@ impl NavGraph {
         }
     }
 
+    /// Was this link hand-planted at runtime (a certified traversal), as opposed to carved?
+    pub fn is_planted(&self, li: u32) -> bool {
+        self.planted_links.contains(&li)
+    }
+
     /// Is this cell part of a bridged doorway (centre or approach)? Narrow openings the
     /// carve missed: a bot in bhop flight overshoots their 32u mouth, so steering walks them.
     pub fn is_doorway(&self, cell: CellId) -> bool {

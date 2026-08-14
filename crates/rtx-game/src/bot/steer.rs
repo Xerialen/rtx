@@ -1483,9 +1483,17 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     let next_route_leg = bot.route.get(bot.route_pos + 1).copied();
     // A walk frame in the spec's sense: on the floor, no committed jump, on a Walk/Step leg or
     // between legs. The air machinery (sj run-ups, air commits) owns every other frame.
+    // Never on the approach to a planted link: the climb chains shelf edges all carry deep
+    // drops, so the cone reads every certified run-up as a lip and kills the hop mid-approach
+    // (measured: ring-up 7.3s/0 falls became 7.9s/5 falls the cycle this brake shipped unguarded).
+    let planted_ahead = bot.route[bot.route_pos.min(bot.route.len())..]
+        .iter()
+        .take(3)
+        .any(|&li| graph.is_planted(li));
     let walk_frame = on_ground
         && !on_air
         && bot.sj.is_none()
+        && !planted_ahead
         && matches!(kind, Some(LinkKind::Walk | LinkKind::Step) | None);
     let lip_dir = (brake_any && walk_frame && speed >= EDGE_BRAKE_MIN_SPEED)
         .then(|| deep_lip_ahead(graph, bot_cell, origin, v_xy, brake_goal_z, cur_leg, next_route_leg, false))
