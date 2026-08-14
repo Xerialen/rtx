@@ -1483,13 +1483,20 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     let next_route_leg = bot.route.get(bot.route_pos + 1).copied();
     // A walk frame in the spec's sense: on the floor, no committed jump, on a Walk/Step leg or
     // between legs. The air machinery (sj run-ups, air commits) owns every other frame.
-    // Never on the approach to a planted link: the climb chains shelf edges all carry deep
-    // drops, so the cone reads every certified run-up as a lip and kills the hop mid-approach
-    // (measured: ring-up 7.3s/0 falls became 7.9s/5 falls the cycle this brake shipped unguarded).
+    // Never on the approach to a planted HIGH-SPEED link: the climb chains certified run-ups
+    // (v_req 449-504) die when the cone reads their shelf edge as a lip and kills the hop
+    // (measured: ring-up 7.3s/0 falls became 7.9s/5 falls unguarded). But disarming for EVERY
+    // planted link re-opened the L11 shaft — the 0.55s spiral hops (v_req 262) sit three legs
+    // out on every N/S return and switched the brake off exactly over the hole (measured: 4
+    // edge falls became 12). Only a planted speed-jump that needs real speed disarms.
     let planted_ahead = bot.route[bot.route_pos.min(bot.route.len())..]
         .iter()
         .take(3)
-        .any(|&li| graph.is_planted(li));
+        .any(|&li| {
+            graph.is_planted(li)
+                && graph.link_kind(li) == LinkKind::SpeedJump
+                && graph.speed_jump_of_link(li).is_some_and(|t| t.v_req >= 400.0)
+        });
     let walk_frame = on_ground
         && !on_air
         && bot.sj.is_none()
