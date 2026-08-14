@@ -91,6 +91,10 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // the hop chain and steers along the lip. Never touches the air commit (the A/B-measured
         // failure mode of the full brake). Targets dm3s SE west lip (25s pit recoveries).
         ("rtx_bot_walk_lip", Bool(true)),
+        // SJ rail: on a curl runway flanked by a storey pit, cap the takeoff weave at 14 degrees
+        // and pull a drifted weave centre back onto the axis — the two P3 climb failures left the
+        // shelf 48u before the lip inside the legal ±24-degree band. On by default.
+        ("rtx_bot_sj_rail", Bool(true)),
         // Require the curl too-slow abort to run on grounded frames only. On by default; `0` restores
         // the legacy speed-only abort on airborne frames too.
         ("rtx_bot_sj_abort_grounded", Bool(true)),

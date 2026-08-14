@@ -500,6 +500,7 @@ fn deep_lip_ahead(
     cur_leg: Option<u32>,
     next_leg: Option<u32>,
     presence_only: bool,
+    runway_dir: Option<Vec2>,
 ) -> Option<Vec2> {
     let co = graph.cell_origin(cell);
     let vdir = v_xy.normalize_or_zero();
@@ -526,6 +527,13 @@ fn deep_lip_ahead(
         }
         let cand = (tgt.xy() - origin.xy()).normalize_or_zero();
         if cand == Vec2::ZERO || authorized(cand) {
+            continue;
+        }
+        // A certified run-up's own forward edge (grok-p3-runway-spec Hook 2): a planted
+        // speed jump three legs out used to disarm this brake entirely, which let the
+        // arrival weave carry the bot over the runway's SIDE pit. Only a lip along the
+        // runway axis is the run's own business; a flanking one still fires.
+        if runway_dir.is_some_and(|rd| cand.dot(rd) >= 0.7) {
             continue;
         }
         if presence_only {
@@ -1483,27 +1491,42 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     let next_route_leg = bot.route.get(bot.route_pos + 1).copied();
     // A walk frame in the spec's sense: on the floor, no committed jump, on a Walk/Step leg or
     // between legs. The air machinery (sj run-ups, air commits) owns every other frame.
-    // Never on the approach to a planted HIGH-SPEED link: the climb chains certified run-ups
-    // (v_req 449-504) die when the cone reads their shelf edge as a lip and kills the hop
-    // (measured: ring-up 7.3s/0 falls became 7.9s/5 falls unguarded). But disarming for EVERY
-    // planted link re-opened the L11 shaft — the 0.55s spiral hops (v_req 262) sit three legs
-    // out on every N/S return and switched the brake off exactly over the hole (measured: 4
-    // edge falls became 12). Only a planted speed-jump that needs real speed disarms.
-    let planted_ahead = bot.route[bot.route_pos.min(bot.route.len())..]
+    // A certified high-speed run-up within three legs no longer DISARMS the walk-lip brake —
+    // it hands the brake its runway axis instead (grok-p3-runway-spec Hook 2): the full disarm
+    // let the arrival weave onto P3s shelf carry the bot straight over the runway's side pit
+    // (uptrace: arrival heading -70 degrees at y=-880, then the north groove). A lip ALONG the
+    // axis is the run's own edge and stays silent; a flanking one still brakes.
+    let planted_runway_dir: Option<Vec2> = bot.route[bot.route_pos.min(bot.route.len())..]
         .iter()
         .take(3)
-        .any(|&li| {
+        .find(|&&li| {
             graph.is_planted(li)
                 && graph.link_kind(li) == LinkKind::SpeedJump
                 && graph.speed_jump_of_link(li).is_some_and(|t| t.v_req >= 400.0)
+        })
+        .and_then(|&li| {
+            graph.speed_jump_of_link(li).map(|t| {
+                (t.takeoff.xy() - graph.cell_origin(graph.link_source(li)).xy()).normalize_or_zero()
+            })
         });
     let walk_frame = on_ground
         && !on_air
         && bot.sj.is_none()
-        && !planted_ahead
         && matches!(kind, Some(LinkKind::Walk | LinkKind::Step) | None);
     let lip_dir = (brake_any && walk_frame && speed >= EDGE_BRAKE_MIN_SPEED)
-        .then(|| deep_lip_ahead(graph, bot_cell, origin, v_xy, brake_goal_z, cur_leg, next_route_leg, false))
+        .then(|| {
+            deep_lip_ahead(
+                graph,
+                bot_cell,
+                origin,
+                v_xy,
+                brake_goal_z,
+                cur_leg,
+                next_route_leg,
+                false,
+                planted_runway_dir,
+            )
+        })
         .flatten();
     let lip_ahead = lip_dir.is_some();
     // Arm on the cone hit itself (the SE lip is walked/bhopped off — there is no Land event to
@@ -1661,13 +1684,13 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         let soft_land = edge_brake_on
             && on_ground
             && matches!(release, AirRelease::Keep)
-            && deep_lip_ahead(graph, committed.target, origin, v_xy, brake_goal_z, cur_leg, next_route_leg, true)
+            && deep_lip_ahead(graph, committed.target, origin, v_xy, brake_goal_z, cur_leg, next_route_leg, true, None)
                 .is_some();
         if soft_land {
             bot.air = None;
             if goal_dist > 150.0 {
                 if let Some(lip) =
-                    deep_lip_ahead(graph, bot_cell, origin, Vec2::ZERO, brake_goal_z, cur_leg, next_route_leg, true)
+                    deep_lip_ahead(graph, bot_cell, origin, Vec2::ZERO, brake_goal_z, cur_leg, next_route_leg, true, None)
                 {
                     bot.edge_brake = Some(crate::bot::state::EdgeBrake {
                         origin_xy: origin.xy(),
@@ -1706,9 +1729,17 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                     // sa schaktgolvet ar "djupt" och varje avsiktlig slutlandning skulle annars
                     // arma bromsen och slapa 0,2s pa vara basta rutter. Mitt-rutt-landningar
                     // (spiralhoppen, 27u fran schaktet) har alltid malet langre bort.
-                    if let Some(lip) =
-                        deep_lip_ahead(graph, bot_cell, origin, Vec2::ZERO, brake_goal_z, cur_leg, next_route_leg, true)
-                    {
+                    if let Some(lip) = deep_lip_ahead(
+                        graph,
+                        bot_cell,
+                        origin,
+                        Vec2::ZERO,
+                        brake_goal_z,
+                        cur_leg,
+                        next_route_leg,
+                        true,
+                        None,
+                    ) {
                         bot.edge_brake = Some(crate::bot::state::EdgeBrake {
                             origin_xy: origin.xy(),
                             lip,
@@ -1774,6 +1805,43 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         None
     };
     let sj_progress: Option<f32> = sj_run_up.map(|(p, _)| p);
+    // SJ rail (grok-p3-runway-spec Hook 1, cvar rtx_bot_sj_rail): a curl runway flanked by a
+    // storey pit must not let the takeoff weave point into it. Measured (uptrace, P3): the two
+    // failing climbs left the shelf 48u before the lip at heading 53-60 degrees — the weave band
+    // (±24 degrees on a 27-degree axis) pointed square into the north groove 9u past the takeoff
+    // line; the eight clean passes stayed within ±14u lateral and never exceeded 32 degrees.
+    // `(lat_toward_void, void_dir)`, None when no flanking pit or the rail is off.
+    let sj_rail: Option<(f32, Vec2)> = if sj_curl && host.cvar_bool(c"rtx_bot_sj_rail") {
+        if let (Some((takeoff, _)), Some(leg)) = (sj_takeoff, cur_leg) {
+            let fromo = graph.cell_origin(graph.link_source(leg));
+            let dir = (takeoff.xy() - fromo.xy()).normalize_or_zero();
+            let perp = Vec2::new(-dir.y, dir.x);
+            let gz = graph.cell_origin(goal_cell).z;
+            let mut void: Option<Vec2> = None;
+            for &li in &graph.adjacency[bot_cell as usize] {
+                if graph.link_kind(li) != LinkKind::Drop {
+                    continue;
+                }
+                let t = graph.cell_origin(graph.link_target(li));
+                if t.z >= gz - NavGraph::DEEP_DROP
+                    || (t.xy() - graph.cell_origin(bot_cell).xy()).length() > EDGE_BRAKE_HORIZ
+                {
+                    continue;
+                }
+                let d = (t.xy() - origin.xy()).normalize_or_zero();
+                let side = d.dot(perp);
+                if side.abs() > 0.5 {
+                    void = Some(if side > 0.0 { perp } else { -perp });
+                    break;
+                }
+            }
+            void.map(|vd| ((origin.xy() - fromo.xy()).dot(vd), vd))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     // Curl too-slow abort: the bhop takeoff regime leaps a curl *unconditionally* at the lip, so if the
     // bot won't build `v_req` by the lip from where it is now (shoved, blocked, or dropped onto the leg
     // slow by a repath), bail the leg here rather than leap short into the pit. Predict the lip speed
@@ -2015,7 +2083,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                     // ...and keep aiming there while the leap is held for its envelope: the aim is what
                     // the speed-building weave centres on, so switching to the landing bearing mid-hold
                     // would turn the bot off the run-up axis — the very thing the hold is waiting for.
-                    (Some((takeoff, _)), Some(p)) if p > bhop::LIP_REACH || sj_hold => takeoff,
+                    // Drifted past the rail's soft band toward a flanking pit: centre the weave on a
+                    // point pulled back onto the safe side of the axis instead of the raw takeoff —
+                    // the failing passes sat +24u toward the groove with the aim still legal.
+                    (Some((takeoff, _)), Some(p)) if p > bhop::LIP_REACH || sj_hold => {
+                        match sj_rail {
+                            Some((lat, vd)) if lat > 16.0 => takeoff - (vd * 24.0).extend(0.0),
+                            _ => takeoff,
+                        }
+                    }
                     // Straight speed jump on the ground: aim at the takeoff (collinear → no-op vs landing).
                     (Some((takeoff, _)), None) if on_ground => takeoff,
                     _ => waypoint,
@@ -2142,7 +2218,17 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 },
                 // Only a committed jump leg carries a weave cap: off a jump leg the reactive edge
                 // guards are live and own the bot's footing, so the weave stays uncapped there.
-                weave_cap: if sj_active { sj_weave_cap } else { f32::INFINITY },
+                // The rail tightens the takeoff weave beside a flanking pit: the clean passes
+                // fly the axis at <=32 degrees; +/-24 was exactly wide enough to leave the shelf.
+                weave_cap: if sj_active {
+                    if sj_rail.is_some() {
+                        sj_weave_cap.min(14.0)
+                    } else {
+                        sj_weave_cap
+                    }
+                } else {
+                    f32::INFINITY
+                },
                 guide_gain: hop_guide, // the live predictive hop plan's pursuit gain (0 = no plan)
                 clear,
                 now,
