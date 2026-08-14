@@ -468,7 +468,9 @@ fn note_stall(
 
 /// Stricter than `LEDGE_ALIGN_COS` (0.5): at 0.5 the cone caught Walk legs running parallel to
 /// a shaft edge and the storey drop that shares a heading with an authorized 64u shelf jump.
-const EDGE_BRAKE_CONE: f32 = 0.7;
+/// 0.75, not 0.70: the NW walk off dm3s SE lip measures dot 0.707 against the west drop — at
+/// 0.70 it authorizes as a sibling and blinds the brake to the exact lip that kills.
+const EDGE_BRAKE_CONE: f32 = 0.75;
 /// Shaft-mouth drops measure 40-54u horizontally on dm3; longer means a leap, not a lip.
 const EDGE_BRAKE_HORIZ: f32 = 64.0;
 /// Below this the bot is creeping and cannot carry itself over a lip in one stride.
@@ -1467,6 +1469,11 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // chain or an air-commit landing 27u from a shaft mouth. Expire the hold window first, then
     // gate the hop chain on both the live hold and the forward cone.
     let edge_brake_on = host.cvar_bool(c"rtx_bot_edge_brake");
+    // Walk-lip brake (grok-se-lapp-spec, own cvar): hook 3 only — the grounded Walk/bhop weave
+    // off a lip the A/B-measured air hooks could never touch without breaking landings. It never
+    // reads or writes `bot.air`; it arms the same hold the cone gate reads.
+    let walk_lip_on = host.cvar_bool(c"rtx_bot_walk_lip");
+    let brake_any = edge_brake_on || walk_lip_on;
     if let Some(b) = bot.edge_brake {
         if (origin.xy() - b.origin_xy).length() >= EDGE_BRAKE_HOLD_U || now - b.since >= EDGE_BRAKE_HOLD_T {
             bot.edge_brake = None;
@@ -1474,11 +1481,29 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     }
     let brake_goal_z = graph.cell_origin(goal_cell).z;
     let next_route_leg = bot.route.get(bot.route_pos + 1).copied();
-    let lip_ahead = edge_brake_on
-        && on_ground
-        && speed >= EDGE_BRAKE_MIN_SPEED
-        && deep_lip_ahead(graph, bot_cell, origin, v_xy, brake_goal_z, cur_leg, next_route_leg, false).is_some();
-    let brake_live = edge_brake_on && on_ground && bot.edge_brake.is_some();
+    // A walk frame in the spec's sense: on the floor, no committed jump, on a Walk/Step leg or
+    // between legs. The air machinery (sj run-ups, air commits) owns every other frame.
+    let walk_frame = on_ground
+        && !on_air
+        && bot.sj.is_none()
+        && matches!(kind, Some(LinkKind::Walk | LinkKind::Step) | None);
+    let lip_dir = (brake_any && walk_frame && speed >= EDGE_BRAKE_MIN_SPEED)
+        .then(|| deep_lip_ahead(graph, bot_cell, origin, v_xy, brake_goal_z, cur_leg, next_route_leg, false))
+        .flatten();
+    let lip_ahead = lip_dir.is_some();
+    // Arm on the cone hit itself (the SE lip is walked/bhopped off — there is no Land event to
+    // arm from), mid-route only: on ring/rox the goal sits at z=56 and the shaft floor reads
+    // deep, so every intended final landing would drag a hold.
+    if walk_lip_on && bot.edge_brake.is_none() && goal_dist > 150.0 {
+        if let Some(lip) = lip_dir {
+            bot.edge_brake = Some(crate::bot::state::EdgeBrake {
+                origin_xy: origin.xy(),
+                lip,
+                since: now,
+            });
+        }
+    }
+    let brake_live = brake_any && on_ground && bot.edge_brake.is_some();
     // A bridged doorway within the next few legs: 32u mouths and 300+ ups do not mix —
     // the overshoot costs a 180 and an orbit of the room (measured: the dm3 west-wall
     // door, 4-6s of wandering per miss). Walk through doorways; hop everywhere else.
@@ -1697,7 +1722,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // The block above is what arms the brake, and the gates were bound before it — refresh them
     // so the arming frame itself suppresses the chain (review a: the one-frame gap let a hop
     // fire from a landing 27u off the shaft before the hold took effect next frame).
-    let brake_live = brake_live || (edge_brake_on && on_ground && bot.edge_brake.is_some());
+    let brake_live = brake_live || (brake_any && on_ground && bot.edge_brake.is_some());
     let bhop_entry = bhop_entry && !brake_live;
     let bhop_sustain = bhop_sustain && !brake_live;
     let zigzag_ok = zigzag_ok && !brake_live;

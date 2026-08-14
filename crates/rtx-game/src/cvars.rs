@@ -86,6 +86,11 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // variant 68 falls vs 11 with the brake off. Ending the air commit early strips the
         // landing wish lock at exactly the moment it stabilizes; kept opt-in for redesign.
         ("rtx_bot_edge_brake", Bool(false)),
+        // Walk-lip brake: the hook-3-only sibling of the (parked) edge brake — on grounded walk
+        // frames heading into an unauthorized shaft-width drop, arm the 28u/0.2s hold that kills
+        // the hop chain and steers along the lip. Never touches the air commit (the A/B-measured
+        // failure mode of the full brake). Targets dm3s SE west lip (25s pit recoveries).
+        ("rtx_bot_walk_lip", Bool(true)),
         // Require the curl too-slow abort to run on grounded frames only. On by default; `0` restores
         // the legacy speed-only abort on airborne frames too.
         ("rtx_bot_sj_abort_grounded", Bool(true)),
