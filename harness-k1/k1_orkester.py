@@ -127,7 +127,8 @@ def main():
                   HEM + "/rtx-cost-exp/reference/ra-room/granskriterier.py",
                   os.path.expanduser("~/lab/ra_climb_planted.json"),
                   os.path.expanduser("~/lab/ra_mesh_planted.json"),
-                  os.path.expanduser("~/lab/p1_56_planted.json")]:
+                  os.path.expanduser("~/lab/p1_56_planted.json"),
+                  os.path.expanduser("~/lab/vast_296_planted.json")]:
             shutil.copy2(p, ark)
         stamp = sh("TZ=Europe/Stockholm date '+%Y-%m-%d %H:%M:%S %Z'").stdout.strip()
         stamp_utc = sh("date -u '+%Y-%m-%dT%H:%M:%SZ'").stdout.strip()
@@ -176,7 +177,8 @@ def main():
                    "plant_files": ({k: fil(os.path.expanduser(v)) for k, v in
                                     {"climb": "~/lab/ra_climb_planted.json",
                                      "mesh": "~/lab/ra_mesh_planted.json",
-                                     "p156": "~/lab/p1_56_planted.json"}.items()}
+                                     "p156": "~/lab/p1_56_planted.json",
+                                     "v296": "~/lab/vast_296_planted.json"}.items()}
                                    if a["replant"] else "inga"),
                    "state_bevis": "per fas: fas_state_<fas>.json (restart-tid, PID, "
                                   "navmesh-stämpel, plantfrag, barriärtider)"}
