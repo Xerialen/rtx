@@ -937,10 +937,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             )));
         }
         if bot.goto_predicted == 0.0 && !route.is_empty() {
-            // Promise the price A* actually minimised: static cost alone omits gate/liquid/rj
-            // surcharges and the chained-jump block, so any route crossing one reads as overdrawn
-            // on arrival and its clean legs get taxed for a toll the planner knowingly paid.
-            bot.goto_predicted = route.iter().map(|&li| graph.priced_link_cost(li, &costs)).sum();
+            // Promise the *time* price, not the *choice* price (deepseek-toppris, grok-granskad):
+            // gate/liquid/rj surcharges and the chained-jump block stay in (the planner knowingly
+            // paid them and the bot really does detour/burn), but the two pure steering terms do
+            // not — turn_time lives only in banded_step and was never summed here (keep it that
+            // way), and the shaft toll is an A*-preference the bot never pays in flight, so
+            // charging it in the promise made every tolled route read as overdrawn on arrival.
+            let time_costs = LinkCosts { no_shaft_toll: true, ..costs };
+            bot.goto_predicted =
+                route.iter().map(|&li| graph.priced_link_cost(li, &time_costs)).sum();
         }
         bot.route = route;
         bot.route_bands = bands;

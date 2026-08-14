@@ -1424,6 +1424,29 @@ fn plant_drop_resp(game: &mut GameState, from: Vec3, to: Vec3) -> Result<proto::
 }
 
 /// Hand-plant a self-contained `SpeedJump` link into the live graph for takeoff-regime bring-up: the
+/// What a hand-planted speed-jump leg promises A*. A carried leg is entered at the previous
+/// leg's landing speed, so its run-up is flown, not accelerated from rest, and the chain's
+/// commitment risk was paid once at entry — billing every leg the standstill price double-taxes
+/// a certified chain until A* routes around the very links the plant exists for (dm3's climb:
+/// 5.24s booked against 2.72s flown, so the planner held a 13s spiral over a 4s chain). No
+/// commitment tax on carried either: 0.1/leg (0.4 over dm3's climb) was exactly the margin that
+/// kept A* on the 8.9s spiral over the 8.8s chain. A *flat* carried hop (`0 <= dz < 8` — every
+/// current planted P-hop: takeoff already sits on the landing storey, dz +3..+6) never does its
+/// booked run-up at all, so it prices as pure airtime (measured: P3 flown 0.45s against 0.98
+/// booked — deepseek-toppris, grok-granskad; the lower bound keeps a future carried *drop* on
+/// the full formula).
+fn planted_link_cost(carried: bool, runup: f32, airtime: f32, dz: f32) -> f32 {
+    if carried {
+        if (0.0..8.0).contains(&dz) {
+            airtime
+        } else {
+            runup / 450.0 + airtime
+        }
+    } else {
+        runup / 400.0 + airtime + 0.3
+    }
+}
+
 /// run-up starts at the cell nearest `from`, the leap is at `takeoff` (the lip), and it lands on the
 /// cell nearest `tgt`, requiring `v_req` ups at the lip. The runtime flies a planted link exactly like
 /// a generated one, so a subsequent `goto <tgt>` exercises the committed-prestrafe takeoff on the real
@@ -1474,19 +1497,7 @@ fn plant_link_resp(
     // flight + a JumpGap-grade commitment (a rollout-certified envelope carries less risk than the
     // +1.0 charged to a modeled speed jump). Run-up is the `from`→lip distance at the mean build speed.
     let runup = (takeoff.xy() - g.cell_origin(from_cell).xy()).length();
-    // A carried leg is entered at the previous leg's landing speed, so its run-up is flown, not
-    // accelerated from rest, and the chain's commitment risk was paid once at entry — billing
-    // every leg the standstill price double-taxes a certified chain until A* routes around the
-    // very links the plant exists for (dm3's climb: 5.24s booked against 2.72s flown, so the
-    // planner held a 13s spiral over a 4s chain).
-    let cost = if carried {
-        // No commitment tax either: commitment prices execution risk, and a carried leg only
-        // exists as part of a 10/10-certified chain — taxing it 0.1/leg (0.4 over dm3s climb)
-        // was exactly the margin that kept A* on the 8.9s spiral over the 8.8s chain.
-        runup / 450.0 + airtime
-    } else {
-        runup / 400.0 + airtime + 0.3
-    };
+    let cost = planted_link_cost(carried, runup, airtime, dz);
     let tr = SpeedJumpTraversal {
         takeoff,
         v_req,
@@ -1965,6 +1976,32 @@ fn rj_result(
         fire,
         land,
         traj: traj_rows(traj),
+    }
+}
+
+#[cfg(test)]
+mod planted_cost_tests {
+    use super::planted_link_cost;
+
+    #[test]
+    fn flat_carried_hop_prices_airtime_only() {
+        // P3-profilen: dz +6, runway 139 — flygs pa ren airtime.
+        assert!((planted_link_cost(true, 139.0, 0.68, 6.0) - 0.68).abs() < 1e-6);
+        // P4 v380: dz +3,4 — samma gren.
+        assert!((planted_link_cost(true, 76.0, 0.62, 3.4) - 0.62).abs() < 1e-6);
+    }
+
+    #[test]
+    fn real_climb_keeps_runup_term() {
+        // dz 32 (spiralklassen): full carried-formel.
+        assert!((planted_link_cost(true, 139.0, 0.68, 32.0) - (139.0 / 450.0 + 0.68)).abs() < 1e-6);
+        // Carried drop (dz < 0): undre gransen haller den pa full formel.
+        assert!((planted_link_cost(true, 139.0, 0.68, -20.0) - (139.0 / 450.0 + 0.68)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn standstill_keeps_commitment_tax() {
+        assert!((planted_link_cost(false, 120.0, 0.7, 3.0) - (120.0 / 400.0 + 0.7 + 0.3)).abs() < 1e-6);
     }
 }
 

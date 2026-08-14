@@ -456,6 +456,12 @@ pub struct LinkCosts<'a> {
     /// turn-blind pricing. Only [`Self::find_path_banded`] reads it: the plain `find_path` has no
     /// predecessor direction in its state, so item scoring and oracle floods stay untouched.
     pub turn_scale: f32,
+    /// `true` ⇒ skip [`SHAFT_LANDING_TOLL`] — for callers pricing *time*, not *choice*: the toll
+    /// steers A* toward a clear twin (and keeps the planted chain ahead of carved climbs — the
+    /// spiral flip), but the bot doesn't pay it in flight, so `goto_predicted` charging it makes
+    /// every tolled route read as overdrawn on arrival (grok-topprisdiff: strip it from the
+    /// promise, never from the search). `false` (the default) prices the toll.
+    pub no_shaft_toll: bool,
     /// `Some(goal_z)` ⇒ charge [`CLOSED_GATE_PENALTY`] to every airborne link
     /// (Drop/JumpGap/DoubleJump/SpeedJump) landing more than `DEEP_DROP` below it — the goal-aware
     /// drop gate (see [`NavGraph::deep_drop_exclusions`] for the measured dm3 failure). Priced
@@ -1262,7 +1268,8 @@ impl NavGraph {
             ) {
                 if self.cells[l.to as usize].origin.z < gz - Self::DEEP_DROP {
                     extra += CLOSED_GATE_PENALTY;
-                } else if !self.planted_links.contains(&li)
+                } else if !costs.no_shaft_toll
+                    && !self.planted_links.contains(&li)
                     && self.cell_min_drop_z.get(l.to as usize).copied().unwrap_or(f32::INFINITY)
                         < gz - Self::DEEP_DROP
                 {
@@ -4144,6 +4151,38 @@ mod tests {
     /// The shaft-landing toll: a carved jump onto a cell with a deep shaft Drop pays 0.5s for a
     /// plateau goal; the planted twin onto the same cell pays nothing; a floor goal tolls
     /// neither.
+    #[test]
+    fn shaft_landing_toll_skipped_for_time_pricing() {
+        // no_shaft_toll ar prediktionens flagga (goto_predicted): valpriset behaller
+        // tollen i A*, tidpriset gor det inte — skillnaden ska vara exakt tollen.
+        let mut g = banded_graph(
+            &[
+                Vec3::new(0.0, 0.0, 296.0),
+                Vec3::new(120.0, 0.0, 328.0),
+                Vec3::new(150.0, 40.0, -16.0),
+            ],
+            &[
+                (0, 1, LinkKind::JumpGap, 0.7),
+                (1, 2, LinkKind::Drop, 1.7),
+            ],
+            &[],
+        );
+        g.build_cell_drop_floor();
+        let plateau = LinkCosts {
+            deep_drop_goal_z: Some(328.0),
+            ..LinkCosts::default()
+        };
+        let choice = g.link_extra(0, &plateau);
+        let time = g.link_extra(
+            0,
+            &LinkCosts {
+                no_shaft_toll: true,
+                ..plateau
+            },
+        );
+        assert!((choice - time - SHAFT_LANDING_TOLL).abs() < 1e-4);
+    }
+
     #[test]
     fn shaft_landing_toll_taxes_carved_not_planted() {
         let mut g = banded_graph(
