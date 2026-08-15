@@ -772,6 +772,13 @@ pub struct PmovePlayer {
 /// The contract name and version every [`PlanTick`] is written against.
 pub const PLAN_SCHEMA: &str = "qw-nav-graph/1";
 
+/// "No content hash computed" in a [`PlanTick`] or [`PlanContract`].
+///
+/// A real FNV-1a-64 could in principle land on zero; at 2^-64 that is not a risk worth a companion
+/// flag, and the failure direction is the safe one — a graph that hashed to zero would have its
+/// structural verdicts *withheld*, never asserted on wrong evidence.
+pub const PLAN_NO_CONTENT_HASH: u64 = 0;
+
 /// Sentinel for "no cell / no link" in a [`PlanTick`].
 ///
 /// Plan telemetry is the *row* layer, and rows carry sentinels, never the string `unknown` — that
@@ -805,7 +812,19 @@ pub struct PlanTick {
     pub schema: String,
     /// Which navmesh instance these numbers mean anything against; expanded by [`PlanContract`].
     /// Two rows with different stamps must never be compared.
+    ///
+    /// **Level 1 — the row pin.** Over the map name and the shape counts: enough to keep two maps
+    /// apart, and cheap enough to carry on every row.
     pub graph_stamp: u64,
+    /// **Level 2 — the inventory.** A hash of what the graph actually contains: every link's directed
+    /// endpoints, kind and traversability, in index order.
+    ///
+    /// Level 1 cannot tell two carves of the same map apart when their counts happen to match, which
+    /// is fine for pinning a row to a map and not fine for a claim *about the graph's topology*. So
+    /// any structural verdict is bound to this, not to the stamp: see [`Cause::StructuralNoPath`].
+    ///
+    /// [`PLAN_NO_CONTENT_HASH`] when the engine did not compute one.
+    pub graph_content_hash: u64,
     /// Engine client number (`1..=maxclients`), the same index the rest of the harness stamps.
     pub bot: u32,
     /// Server time. The join key against the harness row, alongside `bot`: both are read from the
@@ -986,32 +1005,95 @@ pub enum TakeoffOutcome {
     Launched,
 }
 
-/// Why a proposed causal label is not supported by a row.
+/// Why a proposed causal label is not supported.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CauseRejected {
-    /// The label that was refused.
+    /// The label that was refused, as written.
     pub label: String,
     /// Why, in one line, for the verdict record.
     pub reason: &'static str,
 }
 
-/// Causal labels that may never be concluded from speed alone, whatever the row says.
+/// Labels that were tested and refuted, and so may never be written again.
 ///
-/// `v_req_deficit` is the falsified V296 hypothesis. It is not merely unsupported — it was tested
-/// and refuted: C1 and C2 both run `v_req = 320` and reach speeds above *and* below it, so the label
-/// cannot separate the two cases it was invented to explain. A consumer that re-derives it from
-/// `v_req` and `speed` would be reintroducing a known-wrong conclusion.
-pub const FORBIDDEN_CAUSES: &[&str] = &["v_req_deficit"];
+/// `v_req_deficit` is the falsified V296 hypothesis: C1 and C2 both run `v_req = 320` and reach
+/// speeds above *and* below it, so the label cannot separate the two cases it was invented to
+/// explain. It has no [`Cause`] variant — it is not representable, not merely discouraged — and
+/// [`Cause::from_label`] refuses it by name so a consumer parsing strings gets a reason rather than
+/// silence.
+pub const REFUTED_LABELS: &[(&str, &str)] = &[(
+    "v_req_deficit",
+    "falsified hypothesis: v_req and speed are logged, never a cause",
+)];
 
-/// Causal labels about a takeoff, which may only be drawn with controller evidence in hand.
-pub const TAKEOFF_CAUSES: &[&str] = &["virtual_runway_ground_race", "takeoff_failed", "jump_not_commanded"];
+/// The causal labels plan telemetry can attest, as a closed set.
+///
+/// Closed on purpose. A free-string label is a place where a refuted conclusion can grow back, and
+/// the sealed facit exists because one already did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cause {
+    /// V296's belayed mechanism: the hop cycle engaged in the virtual lip zone, yet the jump never
+    /// reached the engine and the bot left the ground with no upward impulse.
+    VirtualRunwayGroundRace,
+    /// A jump was commanded and produced real vertical speed — the positive control (V296-C2).
+    TakeoffLaunched,
+    /// The graph offers no traversable chain to the goal at all. The **engine half** of
+    /// `structural_missing_link`; the harness still owns the goal predicate.
+    StructuralNoPath,
+}
+
+impl Cause {
+    /// The wire/verdict spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Cause::VirtualRunwayGroundRace => "virtual_runway_ground_race",
+            Cause::TakeoffLaunched => "takeoff_launched",
+            Cause::StructuralNoPath => "structural_no_path",
+        }
+    }
+
+    /// Parse a label, refusing refuted and unknown ones.
+    pub fn from_label(label: &str) -> Result<Cause, CauseRejected> {
+        for (name, reason) in REFUTED_LABELS {
+            if *name == label {
+                return Err(CauseRejected { label: label.to_string(), reason });
+            }
+        }
+        for c in [Cause::VirtualRunwayGroundRace, Cause::TakeoffLaunched, Cause::StructuralNoPath] {
+            if c.as_str() == label {
+                return Ok(c);
+            }
+        }
+        Err(CauseRejected {
+            label: label.to_string(),
+            reason: "not a cause this telemetry can attest",
+        })
+    }
+}
+
+/// A cause that has been checked against the row it is claimed for.
+///
+/// The inner value is private, so this cannot be built outside this module — the only way to obtain
+/// one is [`PlanTick::attest`]. A verdict layer that must hold an `AttestedCause` to write a label
+/// therefore *cannot* write an unchecked one. That is the difference between a rule and a helper
+/// somebody may forget to call, which is exactly the gap this closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttestedCause(Cause);
+
+impl AttestedCause {
+    pub const fn cause(self) -> Cause {
+        self.0
+    }
+    pub const fn as_str(self) -> &'static str {
+        self.0.as_str()
+    }
+}
 
 impl PlanTick {
     /// What this row can attest about the current hop's takeoff.
     ///
     /// Zero is a real first-air reading, so the flag — not the number — decides whether anything was
-    /// observed at all. This is the discriminator the sealed V296 facit names: C1 is
-    /// [`TakeoffOutcome::NoImpulse`], C2 is [`TakeoffOutcome::Launched`].
+    /// observed at all. C1 is [`TakeoffOutcome::NoImpulse`], C2 is [`TakeoffOutcome::Launched`].
     pub fn takeoff_outcome(&self) -> TakeoffOutcome {
         if !self.first_air_vz_measured {
             TakeoffOutcome::NotObserved
@@ -1022,37 +1104,63 @@ impl PlanTick {
         }
     }
 
-    /// Whether this row carries the controller evidence a takeoff verdict must rest on: both ends of
-    /// the phase transition, and an observed takeoff.
-    ///
-    /// Ground state and the jump command are always present as booleans, so they cannot be *missing*
-    /// — what can be missing is the transition and the leap, and those are what this checks.
-    pub fn has_takeoff_evidence(&self) -> bool {
-        !self.phase.is_empty()
-            && !self.phase_prev.is_empty()
-            && self.first_air_vz_measured
+    /// Whether this row shows the run-up-to-hop handover the ground race is made of.
+    fn prestrafe_to_hop(&self) -> bool {
+        self.phase_prev == "Prestrafe" && self.phase == "Hop"
     }
 
-    /// Refuse a causal label this row cannot carry.
+    /// Check a cause against this row, and hand back the only token a verdict can be written from.
     ///
-    /// The sealed facit's rule — *`v_req` and speed are logged but are never a cause* — stated as
-    /// something a test can run rather than a sentence a reader may skip. Two ways to fail: a label
-    /// that is forbidden outright, and a takeoff label drawn without the controller state that would
-    /// justify it.
-    pub fn validate_cause(&self, label: &str) -> Result<(), CauseRejected> {
-        if FORBIDDEN_CAUSES.contains(&label) {
-            return Err(CauseRejected {
-                label: label.to_string(),
-                reason: "falsified hypothesis: v_req and speed are logged, never a cause",
-            });
+    /// Each variant is tested against the state that actually defines it, not against a generic
+    /// "some controller fields are populated". `VirtualRunwayGroundRace` in particular is the
+    /// conjunction the facit describes: the Prestrafe→Hop handover, a measured run-up position, a
+    /// takeoff that produced no impulse, and a jump command that never went out. A row where the
+    /// jump *was* commanded and the bot *did* rise is C2 — the control case — and must not be
+    /// labelled a race.
+    pub fn attest(&self, cause: Cause) -> Result<AttestedCause, CauseRejected> {
+        let reason: Option<&'static str> = match cause {
+            Cause::VirtualRunwayGroundRace => {
+                if !self.prestrafe_to_hop() {
+                    Some("not the Prestrafe->Hop handover this label describes")
+                } else if !self.sj_progress_measured {
+                    // The "virtual runway" is a position along the corridor. Without it there is no
+                    // evidence the handover happened in the lip zone at all — which is why the facit
+                    // leaves old replays `unknown` rather than guessing.
+                    Some("no run-up position measured: cannot place the handover at the lip")
+                } else if self.takeoff_outcome() != TakeoffOutcome::NoImpulse {
+                    Some("takeoff was not impulse-free: not a ground race")
+                } else if self.jump_cmd {
+                    Some("jump was commanded: the race is that it never went out")
+                } else {
+                    None
+                }
+            }
+            Cause::TakeoffLaunched => {
+                if self.takeoff_outcome() != TakeoffOutcome::Launched {
+                    Some("no launched takeoff observed")
+                } else if !self.jump_cmd {
+                    Some("rose without a jump command: not a launch")
+                } else {
+                    None
+                }
+            }
+            Cause::StructuralNoPath => {
+                if self.goal_reachable {
+                    Some("the goal is reachable: no structural claim to make")
+                } else if self.graph_content_hash == PLAN_NO_CONTENT_HASH {
+                    // A claim about topology has to name the topology it was read from. The shape
+                    // stamp cannot: two carves of one map can share every count and differ in what is
+                    // traversable, which is the whole question here.
+                    Some("no graph inventory hash: the structural claim cannot be bound to a graph")
+                } else {
+                    None
+                }
+            }
+        };
+        match reason {
+            Some(r) => Err(CauseRejected { label: cause.as_str().to_string(), reason: r }),
+            None => Ok(AttestedCause(cause)),
         }
-        if TAKEOFF_CAUSES.contains(&label) && !self.has_takeoff_evidence() {
-            return Err(CauseRejected {
-                label: label.to_string(),
-                reason: "no controller evidence: needs phase_prev/phase and an observed takeoff",
-            });
-        }
-        Ok(())
     }
 }
 
@@ -1064,8 +1172,11 @@ impl PlanTick {
 pub struct PlanContract {
     /// [`PLAN_SCHEMA`].
     pub schema: String,
-    /// The stamp every [`PlanTick`] in this run carries.
+    /// The stamp every [`PlanTick`] in this run carries (level 1), and the inventory hash that
+    /// identifies the graph's contents (level 2). Both, so a capture can be checked at either level:
+    /// the stamp says which map and shape, the content hash says which carve.
     pub graph_stamp: u64,
+    pub graph_content_hash: u64,
     pub map: String,
     /// The graph's shape — the same counts the harness records, so engine and harness can be checked
     /// against each other on the same graph.
@@ -1413,6 +1524,7 @@ mod tests {
         let tick = PlanTick {
             schema: PLAN_SCHEMA.to_string(),
             graph_stamp: 0xdead_beef_1234_5678,
+            graph_content_hash: 0x0bad_c0de_5678_1234,
             bot: 3,
             t: 12.345,
             seq: 918,
@@ -1498,6 +1610,7 @@ mod tests {
         let c = PlanContract {
             schema: PLAN_SCHEMA.to_string(),
             graph_stamp: 0xdead_beef_1234_5678,
+            graph_content_hash: 0x0bad_c0de_5678_1234,
             map: "dm3".to_string(),
             cells: 4581,
             links: 19822,
@@ -1519,6 +1632,7 @@ mod tests {
         PlanTick {
             schema: PLAN_SCHEMA.to_string(),
             graph_stamp: 13_090_435_456_435_551_592,
+            graph_content_hash: 0x51de_0000_0001,
             bot: 1,
             t: 474.842,
             seq: 1,
@@ -1596,40 +1710,86 @@ mod tests {
         assert_eq!(c2.takeoff_cell, 1167, "C2's physical source cell");
     }
 
-    /// `v_req_deficit` is refused on every row, including the ones that would seem to support it.
+    /// `v_req_deficit` is not refused — it is *unrepresentable*.
+    ///
+    /// There is no `Cause` variant for it, so no verdict can carry it however the consumer is
+    /// written; parsing the string back gives an explicit refusal with the reason rather than a
+    /// silent miss. This is the difference terra asked for: a rule the type system enforces, not a
+    /// helper somebody may forget to call.
     #[test]
-    fn v_req_deficit_is_refused_outright() {
-        // A row whose speed sits well under v_req — the shape the falsified hypothesis was built on.
-        let slow = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
-        assert!(slow.speed < slow.v_req, "fixture is the tempting case");
-        let err = slow.validate_cause("v_req_deficit").expect_err("must be refused");
+    fn refuted_labels_cannot_be_written_at_all() {
+        let err = Cause::from_label("v_req_deficit").expect_err("must be refused");
         assert_eq!(err.label, "v_req_deficit");
         assert!(err.reason.contains("never a cause"));
-        // And it stays refused even with full controller evidence in hand.
-        assert!(slow.has_takeoff_evidence());
-        assert!(slow.validate_cause("v_req_deficit").is_err());
+        // No variant spells it, so there is nothing to attest even with a row in hand.
+        for c in [Cause::VirtualRunwayGroundRace, Cause::TakeoffLaunched, Cause::StructuralNoPath] {
+            assert_ne!(c.as_str(), "v_req_deficit");
+        }
+        // An invented label is refused too — the set is closed, not merely filtered.
+        assert!(Cause::from_label("carve_invisible_surface").is_err());
+        // And every variant round-trips through its own spelling.
+        for c in [Cause::VirtualRunwayGroundRace, Cause::TakeoffLaunched, Cause::StructuralNoPath] {
+            assert_eq!(Cause::from_label(c.as_str()).unwrap(), c);
+        }
     }
 
-    /// A takeoff verdict needs controller evidence; without it the label is refused, with it allowed.
+    /// The ground-race label is checked against the state that defines it, not against "some
+    /// controller fields are populated".
     #[test]
-    fn takeoff_causes_require_controller_evidence() {
-        let good = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
-        assert!(good.validate_cause("virtual_runway_ground_race").is_ok());
+    fn ground_race_is_attested_only_on_its_own_predicate() {
+        // C1: the Prestrafe->Hop handover, run-up measured, no impulse, jump never commanded.
+        let c1 = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        assert_eq!(
+            c1.attest(Cause::VirtualRunwayGroundRace).unwrap().as_str(),
+            "virtual_runway_ground_race",
+        );
 
-        // No observed takeoff: nothing to conclude about a leap.
+        // C2 is the control case: the jump went out and the bot rose. Labelling it a race would
+        // erase the very contrast the facit is built on.
+        let c2 = v296_row(1167, "Prestrafe", "Hop", false, true, 260.4, true);
+        let err = c2.attest(Cause::VirtualRunwayGroundRace).expect_err("C2 is not a race");
+        assert!(err.reason.contains("not impulse-free") || err.reason.contains("jump was commanded"));
+        assert_eq!(c2.attest(Cause::TakeoffLaunched).unwrap().cause(), Cause::TakeoffLaunched);
+
+        // Wrong handover: two non-empty phase strings are not evidence of *this* transition.
+        let wrong_phase = v296_row(1139, "Off", "Zigzag", false, false, -9.6, true);
+        let err = wrong_phase.attest(Cause::VirtualRunwayGroundRace).expect_err("wrong transition");
+        assert!(err.reason.contains("Prestrafe->Hop"));
+
+        // No run-up position: the handover cannot be placed at the lip, so the label is withheld —
+        // which is what the facit means by leaving old replays unknown.
+        let mut no_runup = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        no_runup.sj_progress_measured = false;
+        assert!(no_runup.attest(Cause::VirtualRunwayGroundRace).is_err());
+
+        // No observed takeoff at all.
         let unobserved = v296_row(1139, "Prestrafe", "Hop", false, false, 0.0, false);
-        assert_eq!(unobserved.takeoff_outcome(), TakeoffOutcome::NotObserved);
-        let err = unobserved
-            .validate_cause("virtual_runway_ground_race")
-            .expect_err("no leap observed");
-        assert!(err.reason.contains("no controller evidence"));
+        assert!(unobserved.attest(Cause::VirtualRunwayGroundRace).is_err());
+        assert!(unobserved.attest(Cause::TakeoffLaunched).is_err());
+    }
 
-        // Half a transition is not a transition.
-        let no_prev = v296_row(1139, "", "Hop", false, false, -9.6, true);
-        assert!(no_prev.validate_cause("virtual_runway_ground_race").is_err());
+    /// The structural claim is only attestable when the graph actually says so.
+    #[test]
+    fn structural_claim_needs_an_unreachable_goal() {
+        let reachable = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        assert!(reachable.goal_reachable);
+        let err = reachable.attest(Cause::StructuralNoPath).expect_err("goal is reachable");
+        assert!(err.reason.contains("no structural claim"));
 
-        // An unrelated label is not policed by this rule.
-        assert!(unobserved.validate_cause("carve_invisible_surface").is_ok());
+        let mut severed = reachable.clone();
+        severed.goal_reachable = false;
+        assert_eq!(severed.attest(Cause::StructuralNoPath).unwrap().cause(), Cause::StructuralNoPath);
+
+        // Bound to level 2, not to the row pin: a claim about topology has to name the topology it
+        // was read from, and the shape stamp cannot — two carves of one map can share every count
+        // and differ in exactly what this claim is about.
+        let mut no_inventory = severed.clone();
+        no_inventory.graph_content_hash = PLAN_NO_CONTENT_HASH;
+        assert_ne!(no_inventory.graph_stamp, 0, "the row pin is still present...");
+        let err = no_inventory
+            .attest(Cause::StructuralNoPath)
+            .expect_err("...but the row pin is not what this claim rests on");
+        assert!(err.reason.contains("inventory hash"));
     }
 
     /// Zero is a real first-air reading, so only the flag can mean "not observed".

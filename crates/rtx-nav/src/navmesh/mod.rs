@@ -1167,6 +1167,9 @@ impl NavGraph {
     ///
     /// Off the hot path by construction: A\* calls `link_extra`, which inlines this and sums it, so a
     /// build with telemetry compiled in pays nothing for it until a caller asks for the breakdown.
+    /// Marked `#[inline]` explicitly rather than trusting LTO to collapse the one-line caller —
+    /// A\*'s innermost relaxation should not depend on the optimiser's mood.
+    #[inline]
     pub fn link_extra_breakdown(&self, li: u32, costs: &LinkCosts) -> LinkExtra {
         let mut e = LinkExtra {
             gate: match self.gate_of_link(li) {
@@ -4830,5 +4833,153 @@ mod tests {
                 "link {li}: breakdown does not reconstruct priced_link_cost",
             );
         }
+    }
+
+    /// A graph broad enough that the bit-identity sweep means something: many links, every kind,
+    /// and every price term live across a spread of magnitudes.
+    ///
+    /// Not dm3 — a unit test has no BSP to build from — but the property under test is arithmetic,
+    /// not topology, and what it needs is *variety in the operands*: costs spanning several orders of
+    /// magnitude, hazards from a scratch to lethal, water charges that do and do not round cleanly.
+    /// Four links of one kind could not catch a term that only misbehaves when two large addends meet
+    /// a small one.
+    fn wide_priced_graph() -> NavGraph {
+        const KINDS: [LinkKind; 11] = [
+            LinkKind::Walk, LinkKind::Step, LinkKind::Drop, LinkKind::JumpGap,
+            LinkKind::DoubleJump, LinkKind::SpeedJump, LinkKind::Plat, LinkKind::Teleport,
+            LinkKind::Hook, LinkKind::RocketJump, LinkKind::Swim,
+        ];
+        const N: usize = 240;
+        let cells: Vec<Cell> = (0..=N)
+            .map(|i| Cell {
+                origin: Vec3::new(i as f32 * 37.0, (i % 13) as f32 * 51.0, (i % 7) as f32 * 24.0),
+                gx: 0,
+                gy: 0,
+            })
+            .collect();
+        // Costs deliberately span 0.03 .. ~30s: the addition order only shows itself when the terms
+        // differ enough in magnitude for the low bits to fall off.
+        let links: Vec<Link> = (0..N)
+            .map(|i| Link {
+                from: i as CellId,
+                to: (i + 1) as CellId,
+                kind: KINDS[i % KINDS.len()],
+                cost: 0.03 + (i % 97) as f32 * 0.31,
+            })
+            .collect();
+        let mut g = NavGraph::test_graph(cells, links);
+        g.water_extra = (0..N)
+            .map(|i| if i % 5 == 0 { 0.0 } else { (i % 23) as f32 * 0.017 })
+            .collect();
+        g.hazard_hp = (0..N)
+            .map(|i| if i % 3 == 0 { 0.0 } else { (i % 71) as f32 * 1.9 })
+            .collect();
+        // Every eleventh link sits behind a gate, so the closed/openable branches are exercised
+        // across the sweep rather than on a single link.
+        for i in (0..N).step_by(11) {
+            let gate = g.gates.push(Gate {
+                obstruction: 0,
+                closed_origin: g.cells[i].origin,
+                closed_min: Vec3::ZERO,
+                closed_max: Vec3::ZERO,
+                activator: 0,
+                button_cell: 0,
+                aim: g.cells[0].origin,
+                shoot: false,
+            });
+            g.gates.tag(i, gate);
+        }
+        g
+    }
+
+    /// The bit-identity property holds across a wide graph, not just the four-link diamond.
+    ///
+    /// The narrow sweep proves the transcription matches on the shapes it covers; this one covers
+    /// every link kind, gated and ungated links, hazards and water at many magnitudes, and costs
+    /// spanning three orders. Still an oracle test against the pre-split arithmetic — the dm3 sweep
+    /// belongs to the rig grind, where a real graph exists.
+    #[test]
+    fn link_extra_split_is_bit_identical_on_a_wide_graph() {
+        let g = wide_priced_graph();
+        let closed: Vec<bool> = (0..g.gate_count()).map(|i| i % 2 == 0).collect();
+        let openable: Vec<bool> = (0..g.gate_count()).map(|i| i % 3 == 0).collect();
+        let penalties: Vec<(u32, f32)> =
+            (0..g.links.len() as u32).step_by(7).map(|li| (li, 0.25 + li as f32 * 0.013)).collect();
+        let mut checked = 0usize;
+        for jitter_seed in [0u32, 1, 0x9e37_79b1, u32::MAX] {
+            for rocket_jump_extra in [0.0f32, RJ_UNFIT_PENALTY] {
+                for hazard in [None, Some(HazardPrice::new(1.0)), Some(HazardPrice::new(250.0))] {
+                    for open_gate_cost in [0.0f32, 3.75] {
+                        let costs = LinkCosts {
+                            gate_closed: &closed,
+                            openable_gates: &openable,
+                            open_gate_cost,
+                            penalties: &penalties,
+                            jitter_seed,
+                            rocket_jump_extra,
+                            hazard,
+                        };
+                        for li in 0..g.links.len() as u32 {
+                            let want = link_extra_pre_split(&g, li, &costs);
+                            let got = g.link_extra_breakdown(li, &costs).total();
+                            assert_eq!(
+                                want.to_bits(),
+                                got.to_bits(),
+                                "link {li} re-priced: {want} vs {got} (seed {jitter_seed}, \
+                                 rj {rocket_jump_extra}, gate_cost {open_gate_cost})",
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 4 * 2 * 3 * 2 * 240, "the whole sweep ran");
+    }
+
+    /// The content hash sees what the shape counts cannot.
+    ///
+    /// Two carves of one map can hold the same number of cells and links and still offer different
+    /// ways through. The row pin is deliberately blind to that — it is a cheap per-row map tag — so
+    /// any claim *about* the topology has to be bound to something that is not. This is that thing,
+    /// and these are the differences it must not miss.
+    #[test]
+    fn content_hash_distinguishes_equal_shaped_graphs() {
+        let base = diamond();
+        let h = base.content_hash();
+        assert_eq!(h, diamond().content_hash(), "stable for one graph");
+
+        // Same counts, one link re-pointed: a different graph to walk.
+        let mut rerouted = diamond();
+        rerouted.links[1].to = 2;
+        assert_eq!(rerouted.links.len(), base.links.len(), "identical shape...");
+        assert_eq!(rerouted.cells.len(), base.cells.len());
+        assert_ne!(rerouted.content_hash(), h, "...but not an identical graph");
+
+        // Same counts, one link's kind changed: a Drop is not a Walk to a planner.
+        let mut recast = diamond();
+        recast.links[2].kind = LinkKind::Drop;
+        assert_ne!(recast.content_hash(), h, "link kind is part of the inventory");
+
+        // Direction matters: a reversed link is a different traversal.
+        let mut reversed = diamond();
+        let (f, t) = (reversed.links[0].from, reversed.links[0].to);
+        reversed.links[0].from = t;
+        reversed.links[0].to = f;
+        assert_ne!(reversed.content_hash(), h, "endpoints are directed");
+    }
+
+    /// Cost is priced per query, not carved into the graph, so it is deliberately outside the hash.
+    ///
+    /// The inventory answers "what can be traversed", not "what does it cost right now" — the latter
+    /// changes with gates, hazards and per-bot jitter on every tick, and folding it in would make the
+    /// identity useless for the one job it has.
+    #[test]
+    fn content_hash_ignores_per_query_pricing() {
+        let base = diamond();
+        let mut pricier = diamond();
+        pricier.links[0].cost += 5.0;
+        assert_eq!(pricier.content_hash(), base.content_hash(),
+                   "static cost is not part of what the graph *contains*");
     }
 }

@@ -104,11 +104,9 @@ pub(crate) struct ControlState {
     threads: Vec<std::thread::JoinHandle<()>>,
     /// One clone per live reader thread; [`shutdown`] waits for the count to fall back to its own.
     readers: Option<Arc<()>>,
-    /// The navmesh identity plan telemetry is currently stamping rows with, as
-    /// `(stamp, cells, links, rj_links)`. Cached because deriving it walks every link and this sits on
-    /// the per-frame path; the cell and link counts are O(1) and cannot change without a rebuild, so
-    /// they serve as the invalidation key.
-    plan_graph: Option<(u64, u32, u32, u32)>,
+    /// The navmesh identity plan telemetry is currently stamping rows with. Cached because deriving
+    /// it counts every link and this sits on the per-frame path — see [`PlanGraphId`].
+    plan_graph: Option<PlanGraphId>,
     /// The graph stamp whose [`proto::PlanContract`] has already been announced, so the expansion is
     /// sent once per graph rather than once per frame. `0` = nothing announced yet.
     plan_contract: u64,
@@ -201,12 +199,13 @@ pub(crate) fn frame_end(game: &mut GameState) {
     }
     // Plan telemetry rides *inside* the telemetry switch: it adds further variants of its own, and
     // the rule that nothing new goes on the wire without the operator's opt-in applies to them too.
-    let plan_tel = telemetry && game.host.cvar(c"rtx_plan_telemetry") > 0.0;
-    // Emit one row per bot per this many frames. Clamped at 1 so a nonsense value thins nothing
-    // rather than dividing by zero.
-    let plan_div = (game.host.cvar(c"rtx_plan_telemetry_div") as u32).max(1);
-    let plan_stamp = if plan_tel { plan_graph_identity(game) } else { None };
-    if let Some((stamp, cells, links, rj_links)) = plan_stamp {
+    let gate = plan_gate(
+        telemetry,
+        game.host.cvar(c"rtx_plan_telemetry"),
+        game.host.cvar(c"rtx_plan_telemetry_div"),
+    );
+    let plan_stamp = if gate.on { plan_graph_identity(game) } else { None };
+    if let Some(PlanGraphId { stamp, content_hash, cells, links, rj_links, .. }) = plan_stamp.clone() {
         // Announce the graph once per graph, not once per frame: the rows carry a bare integer, and
         // this is the only thing that says what it means. Re-sent after a rebuild, since the same
         // cell index then names a different place.
@@ -217,6 +216,7 @@ pub(crate) fn frame_end(game: &mut GameState) {
                 Event::PlanContract(proto::PlanContract {
                     schema: proto::PLAN_SCHEMA.to_string(),
                     graph_stamp: stamp,
+                    graph_content_hash: content_hash,
                     map: game.level.mapname.clone(),
                     cells,
                     links,
@@ -263,10 +263,10 @@ pub(crate) fn frame_end(game: &mut GameState) {
         // One plan row per steering pass. Gated on the frame stamp, not just the cvar: a bot that
         // did not steer this frame (dead, not in play) has nothing to report, and a stale row would
         // read as a decision it never made.
-        if let Some((stamp, ..)) = plan_stamp {
+        if let Some(id) = plan_stamp.as_ref() {
             let p = &game.entities[e].bot.plan;
-            if p.stamped == now && p.seq % plan_div == 0 {
-                let row = plan_tick(game, i, e, stamp);
+            if plan_row_due(gate, p.stamped, now, p.seq) {
+                let row = plan_tick(game, i, e, id.stamp, id.content_hash);
                 send_event(game, Event::PlanTick(Box::new(row)));
             }
         }
@@ -884,20 +884,91 @@ fn graph_stamp(map: &str, cells: u32, links: u32, rj_links: u32) -> u64 {
     fnv1a(h, &rj_links.to_le_bytes())
 }
 
-/// The live graph's identity, `(stamp, cells, links, rj_links)`, or `None` with no graph loaded.
-/// Recomputed only when the shape changes — see [`ControlState::plan_graph`].
-fn plan_graph_identity(game: &mut GameState) -> Option<(u64, u32, u32, u32)> {
+/// The graph identity plan rows are stamped with, cached against the build it was derived from.
+#[derive(Clone, Debug)]
+pub(crate) struct PlanGraphId {
+    /// The address of the `Arc<NavGraph>` this was derived from — the build's identity.
+    ///
+    /// A rebuild allocates its replacement while the outgoing graph is still held, so the two can
+    /// never share an address. That makes this exact where the shape counts are only suggestive: a
+    /// re-carve that swapped a link's *kind* without changing any count would keep the same
+    /// `(map, cells, links)` and a different `rj_links`, and stamping those rows with the old graph's
+    /// identity is precisely the silent comparability the stamp exists to prevent.
+    token: usize,
+    /// Checked alongside the token, because a map change is the case that matters most and is free
+    /// to verify. Two maps of identical shape must never share a stamp.
+    map: String,
+    cells: u32,
+    links: u32,
+    rj_links: u32,
+    /// Level 1: the row pin, over map name and shape counts.
+    stamp: u64,
+    /// Level 2: a hash of the graph's actual inventory. Derived once per build — the token above is
+    /// what notices a build change, which is both cheaper and stricter than re-reading the counts.
+    content_hash: u64,
+}
+
+/// The live graph's identity, or `None` with no graph loaded.
+///
+/// Recomputed only when the build changes — counting link kinds is O(links) and this sits on the
+/// per-frame path, while the validity check is O(1).
+fn plan_graph_identity(game: &mut GameState) -> Option<PlanGraphId> {
     let g = game.nav.graph.as_ref()?;
+    let token = Arc::as_ptr(g) as usize;
     let (cells, links) = (g.cells.len() as u32, g.links.len() as u32);
-    if let Some(cached @ (_, c, l, _)) = game.control.plan_graph {
-        if (c, l) == (cells, links) {
-            return Some(cached);
+    if let Some(cached) = game.control.plan_graph.as_ref() {
+        if cached.token == token
+            && cached.cells == cells
+            && cached.links == links
+            && cached.map == game.level.mapname
+        {
+            return Some(cached.clone());
         }
     }
     let rj_links = g.summary().rocket_jump as u32;
-    let id = (graph_stamp(&game.level.mapname, cells, links, rj_links), cells, links, rj_links);
-    game.control.plan_graph = Some(id);
-    id.into()
+    let content_hash = g.content_hash();
+    let id = PlanGraphId {
+        token,
+        map: game.level.mapname.clone(),
+        cells,
+        links,
+        rj_links,
+        stamp: graph_stamp(&game.level.mapname, cells, links, rj_links),
+        content_hash,
+    };
+    game.control.plan_graph = Some(id.clone());
+    Some(id)
+}
+
+/// Whether plan telemetry may go on the wire this frame, and how thinly.
+///
+/// Lifted out of [`frame_end`] so it can be tested without an engine. This is the only thing standing
+/// between a pre-branch typed consumer — the deployed nav viewer — and a variant it cannot decode, and
+/// "we read the cvars in the right order" is not a claim that should rest on inspection alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PlanGate {
+    pub on: bool,
+    pub div: u32,
+}
+
+/// The gate for one frame, from the two cvars that govern it.
+///
+/// `rtx_plan_telemetry` alone is never enough: the whole new-variant surface is subordinate to
+/// `rtx_telemetry`, so an operator who set only the fine switch still gets nothing on the wire.
+pub(crate) fn plan_gate(telemetry: bool, plan_cvar: f32, div_cvar: f32) -> PlanGate {
+    PlanGate {
+        on: telemetry && plan_cvar > 0.0,
+        // Clamped so a nonsense value thins nothing rather than dividing by zero.
+        div: (div_cvar as u32).max(1),
+    }
+}
+
+/// Whether this bot's row goes out this frame.
+///
+/// `stamped` must be *this* frame's time: a bot that did not steer (dead, not in play) carries an old
+/// stamp, and emitting it would report a decision it never made.
+pub(crate) fn plan_row_due(gate: PlanGate, stamped: f32, now: f32, seq: u32) -> bool {
+    gate.on && stamped == now && seq % gate.div == 0
 }
 
 /// One bot's plan row for this frame — see [`proto::PlanTick`].
@@ -905,7 +976,7 @@ fn plan_graph_identity(game: &mut GameState) -> Option<(u64, u32, u32, u32)> {
 /// Every value is read from what steering already stamped on the bot (`bot.plan`, `bot.takeoff`,
 /// `bot.bhop`); nothing is re-derived here, because a re-derivation in `frame_end` would be a
 /// different frame's answer to the same question.
-fn plan_tick(game: &GameState, bot_num: u32, e: EntId, stamp: u64) -> proto::PlanTick {
+fn plan_tick(game: &GameState, bot_num: u32, e: EntId, stamp: u64, content_hash: u64) -> proto::PlanTick {
     let b = &game.entities[e].bot;
     let p = &b.plan;
     let none = proto::PLAN_NONE;
@@ -914,6 +985,7 @@ fn plan_tick(game: &GameState, bot_num: u32, e: EntId, stamp: u64) -> proto::Pla
     proto::PlanTick {
         schema: proto::PLAN_SCHEMA.to_string(),
         graph_stamp: stamp,
+        graph_content_hash: content_hash,
         bot: bot_num,
         t: p.stamped,
         seq: p.seq,
@@ -2028,5 +2100,46 @@ mod tests {
             "swapping cell and link counts must not collide",
         );
         assert_ne!(graph_stamp("a", 0, 0, 0), graph_stamp("", 0, 0, 0), "an empty map name is its own graph");
+    }
+
+    /// The emit gate refuses every configuration but the one the operator explicitly opted into.
+    ///
+    /// This is the only thing between a pre-branch typed consumer and a variant it cannot decode —
+    /// the deployed nav viewer reads an unknown `Event` as a dead connection. The truth table is
+    /// small enough to state in full, and too important to leave to inspection.
+    #[test]
+    fn plan_gate_needs_both_cvars() {
+        // The fine switch alone is not enough: the whole new-variant surface is subordinate to
+        // `rtx_telemetry`, which is what an operator opts in with.
+        assert!(!plan_gate(false, 1.0, 1.0).on, "plan on, telemetry off: nothing on the wire");
+        assert!(!plan_gate(false, 0.0, 1.0).on, "both off");
+        assert!(!plan_gate(true, 0.0, 1.0).on, "telemetry on, plan off: today's stream, unchanged");
+        assert!(plan_gate(true, 1.0, 1.0).on, "both on: the opted-in case");
+        // Defaults are both zero, so a server nobody configured stays silent.
+        assert!(!plan_gate(false, 0.0, 0.0).on, "stock server emits nothing");
+    }
+
+    /// A nonsense divisor thins nothing instead of dividing by zero.
+    #[test]
+    fn plan_gate_divisor_is_clamped() {
+        assert_eq!(plan_gate(true, 1.0, 0.0).div, 1, "zero would panic the modulo");
+        assert_eq!(plan_gate(true, 1.0, -5.0).div, 1, "negative is meaningless, not thinning");
+        assert_eq!(plan_gate(true, 1.0, 1.0).div, 1);
+        assert_eq!(plan_gate(true, 1.0, 4.0).div, 4);
+    }
+
+    /// A row goes out only for a bot that actually steered this frame, and only on its turn.
+    #[test]
+    fn plan_row_due_requires_a_fresh_stamp() {
+        let on = plan_gate(true, 1.0, 1.0);
+        let off = plan_gate(true, 0.0, 1.0);
+        assert!(plan_row_due(on, 12.5, 12.5, 0), "steered this frame");
+        assert!(!plan_row_due(on, 12.0, 12.5, 0), "stale stamp: the bot did not steer");
+        assert!(!plan_row_due(on, 0.0, 12.5, 0), "never steered");
+        assert!(!plan_row_due(off, 12.5, 12.5, 0), "gate shut beats a fresh stamp");
+        // Decimation picks every div-th row per bot, and never starves a bot entirely.
+        let thin = plan_gate(true, 1.0, 3.0);
+        let due: Vec<u32> = (0..9).filter(|&s| plan_row_due(thin, 1.0, 1.0, s)).collect();
+        assert_eq!(due, vec![0, 3, 6], "every third row, deterministically");
     }
 }

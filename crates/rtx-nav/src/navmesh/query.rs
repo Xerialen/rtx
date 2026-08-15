@@ -532,6 +532,38 @@ impl NavGraph {
         self.under_plat.get(cell as usize).copied().flatten().map(usize::from)
     }
 
+    /// A deterministic hash of the graph's actual inventory — what it *contains*, not how much.
+    ///
+    /// The shape counts (`map, cells, links, rj_links`) identify a build well enough to pin a row to
+    /// a map, but two different carves of the same map can share every count while offering different
+    /// traversable chains. A verdict that says "the graph has no way there" has to be bound to the
+    /// graph it was read from, and counts cannot do that.
+    ///
+    /// Over each link in index order — the serial splice order, which is structural rather than
+    /// hashed, so it is stable across runs — as directed endpoints, kind, and the one traversability
+    /// bit that changes whether a link can be taken at all (a chained speed jump needs carried entry
+    /// speed and is severed for speed-unaware queries). Cell count closes the message.
+    ///
+    /// FNV-1a-64, the same construction as the harness's graph stamp.
+    pub fn content_hash(&self) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |bytes: &[u8]| {
+            for &b in bytes {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        for (li, l) in self.links.iter().enumerate() {
+            eat(&l.from.to_le_bytes());
+            eat(&l.to.to_le_bytes());
+            eat(&[l.kind as u8]);
+            let chained = matches!(self.speed_jump_of_link(li as u32), Some(t) if t.chained);
+            eat(&[chained as u8]);
+        }
+        eat(&(self.cells.len() as u32).to_le_bytes());
+        h
+    }
+
     /// Counts per link kind, for the load-time debug line.
     pub fn summary(&self) -> LinkCounts {
         let mut c = LinkCounts::default();
