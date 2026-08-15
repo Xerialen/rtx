@@ -4968,6 +4968,13 @@ mod tests {
         let h = base.content_hash();
         assert_eq!(h, diamond().content_hash(), "stable for one graph");
 
+        // A severed link is a different graph even though nothing else moved: same links, same
+        // counts, different answer to "is there a way there". This is the axis the counts cannot see.
+        let mut severed = diamond();
+        severed.adjacency[0].retain(|&li| li != 0);
+        assert_eq!(severed.links.len(), base.links.len(), "the array is untouched...");
+        assert_ne!(severed.content_hash(), h, "...but the graph is not the same to walk");
+
         // Same counts, one link re-pointed: a different graph to walk.
         let mut rerouted = diamond();
         rerouted.links[1].to = 2;
@@ -5028,12 +5035,13 @@ mod tests {
         assert_eq!(lines.len(), 8);
         assert_eq!(lines[0], "C\t0\t0\t0\t0");
         assert_eq!(lines[1], "C\t1\t100\t50\t0");
-        // Links sorted by (source, target, kind) — not by the order they were built in.
-        assert_eq!(lines[4], "L\t0\t1\twalk");
-        assert_eq!(lines[5], "L\t0\t2\twalk");
-        assert_eq!(lines[6], "L\t1\t3\twalk");
-        assert_eq!(lines[7], "L\t2\t3\twalk");
-        assert!(!text.contains("\nR\t"), "no rocket-jump section on this fixture");
+        // Links sorted by (source, target, kind, T) — not by the order they were built in — and
+        // every one carries its traversability flag.
+        assert_eq!(lines[4], "L\t0\t1\twalk\t1");
+        assert_eq!(lines[5], "L\t0\t2\twalk\t1");
+        assert_eq!(lines[6], "L\t1\t3\twalk\t1");
+        assert_eq!(lines[7], "L\t2\t3\twalk\t1");
+        assert!(!text.contains("\nR\t"), "rocket jumps are L records, not a separate section");
     }
 
     /// A link pruned from the adjacency is still in the array, and is reported as such.

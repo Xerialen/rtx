@@ -534,9 +534,18 @@ impl NavGraph {
 
     /// The canonical inventory of this graph, as bytes — see `WORK_LOGS/graphstamp-kontrakt.md` §8.2.
     ///
-    /// Three sections, each sorted so the bytes depend on what the graph *is* and not on the order it
-    /// was built in: cells by id, links by `(source, target, kind)`, rocket-jump links by
-    /// `(source, target)`. Tab between fields, LF between records, no trailing LF.
+    /// Two sections, each sorted so the bytes depend on what the graph *is* and not on the order it
+    /// was built in: cells by id, then every link by `(source, target, kind, T)`. Tab between fields,
+    /// LF between records, no trailing LF.
+    ///
+    /// `T` is adjacency membership — `1` traversable, `0` severed by the teleport carve. It is the
+    /// axis the counts cannot see and the one a structural verdict rests on: two graphs differing
+    /// only in a pruned walk-out of a trigger cell answer "is there a way there" differently, and
+    /// without `T` they would hash the same.
+    ///
+    /// Side-table parameters (a speed jump's `chained`, and so on) are a defined extension that both
+    /// sides take up together once the harness dump carries them; emitting them here first would
+    /// simply break parity with the dump the contract is measured against.
     ///
     /// The harness builds the same bytes from its dump document. That is the whole point of a written
     /// contract rather than a shared function: two independent implementations that must agree, and a
@@ -563,24 +572,22 @@ impl NavGraph {
                 fmt_num(c.origin.z)
             ));
         }
-        let mut links: Vec<(u32, u32, &'static str)> = self
+        // Every link in the array, including the ones the carve severed — with `T` saying which is
+        // which. Omitting the severed ones would hide the difference a structural verdict turns on;
+        // including them unmarked would promote them to walkable. Rocket jumps are ordinary L records
+        // with `kind = rocketjump`; there is no separate section.
+        let mut links: Vec<(u32, u32, &'static str, u8)> = self
             .links
             .iter()
-            .map(|l| (l.from, l.to, super::kind_token(l.kind)))
+            .enumerate()
+            .map(|(li, l)| {
+                let traversable = self.adjacency[l.from as usize].contains(&(li as u32));
+                (l.from, l.to, super::kind_token(l.kind), traversable as u8)
+            })
             .collect();
         links.sort_unstable();
-        for (src, dst, kind) in &links {
-            lines.push(format!("L\t{src}\t{dst}\t{kind}"));
-        }
-        let mut rj: Vec<(u32, u32)> = self
-            .links
-            .iter()
-            .filter(|l| l.kind == LinkKind::RocketJump)
-            .map(|l| (l.from, l.to))
-            .collect();
-        rj.sort_unstable();
-        for (src, dst) in &rj {
-            lines.push(format!("R\t{src}\t{dst}"));
+        for (src, dst, kind, t) in &links {
+            lines.push(format!("L\t{src}\t{dst}\t{kind}\t{t}"));
         }
         lines.join("\n").into_bytes()
     }
