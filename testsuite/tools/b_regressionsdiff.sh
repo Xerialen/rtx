@@ -30,11 +30,16 @@
 #    var giltig (status-rundresa + en bot som bevisligen rör sig, via en
 #    Goto och positionsändring mellan två status-anrop), och skriver sedan
 #    signaturfilen som en TOM kanonisk fil. Två tomma signaturfiler är
-#    byte-identiska, och det är grunden i av-läget.
+#    byte-identiska, och det är grunden i av-läget. Om event MOTTAS trots
+#    cvarerna av (t.ex. Arrived/GotoStall, som ligger utanför rtx_telemetry)
+#    är regressionen ett faktum: exit 1 med arterna utskrivna, ingen
+#    signaturfil.
 #
 # --legacy: rtx_telemetry=1, rtx_plan_telemetry=0. Den jämförbara
 #    fältnivåsignaturen (arter + sorterade fältnamn per art) för den
 #    legacy-eventyta som fortfarande flödar med rtx_telemetry på.
+#
+# FLAGGOR: --port, --out, --secs, --bot, --av, --legacy, -h/--help.
 #
 # ANVÄNDNING
 #   ./b_regressionsdiff.sh --port 27995 --out ~/lab/b-regress/tbx
@@ -45,6 +50,13 @@
 # Vägrar hellre än gissar: avbryter om servern inte är redo, om cvarerna inte
 # går att läsa tillbaka som väntat, om boten inte finns i status, eller om
 # positionen inte ändras efter Goto (då mätte vi inget).
+
+usage() {
+  # Hjälp = de inledande kommentarssraderna, inget annat. Klipp vid den
+  # första raden som inte är en kommentar, sa ingen skalkod läcker ut.
+  sed -n '1,/^#\s*$/p' "$0" | head -n -1 | sed 's/^# \{0,1\}//'
+  exit 0
+}
 set -euo pipefail
 
 PORT=27995
@@ -193,8 +205,13 @@ lackage = {k: hist[k] for k in NYA if hist.get(k)}
 sig_p = out + ".signatur"
 if mode == "av":
     if n != 0:
-        print(f"# OBS: {n} event trots cvarerna av: "
+        # Tom signatur skrivs ENDAST vid n==0: event trots cvarerna av är
+        # regressionen ett faktum (t.ex. Arrived/GotoStall ligger utanför
+        # rtx_telemetry), inte en OBS.
+        print(f"REGRESSION: {n} event med cvarerna AV: "
               + ", ".join(f"{k}={v}" for k, v in sorted(hist.items())), file=sys.stderr)
+        print(f"# rå ström  : {raw_p}", file=sys.stderr)
+        sys.exit(1)
     with open(sig_p, "w", encoding="utf-8") as sig:
         sig.write("")
     print(f"# {n} event i {secs:.0f}s (av-läge: tom ström är facit)")
