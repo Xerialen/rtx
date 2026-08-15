@@ -85,6 +85,8 @@ for namn in ("rtx_telemetry", "rtx_plan_telemetry"):
         back = lab.get(namn)
     except Exception as e:
         dö(f"kan inte sätta/läsa {namn}: {e}")
+    if isinstance(back, dict):
+        back = back.get("Get", back)  # Fable-fix: Lab.request returnerar {"Get": {...}}
     val = back.get("value") if isinstance(back, dict) else back
     try:
         if float(str(val)) != 0.0:

@@ -65,6 +65,8 @@ def satt(namn, v):
         lab.set(namn, str(v)); back = lab.get(namn)
     except Exception as e:
         dö(f"kan inte sätta/läsa {namn}: {e}")
+    if isinstance(back, dict):
+        back = back.get("Get", back)  # Fable-fix: Lab.request returnerar {"Get": {...}}
     val = back.get("value") if isinstance(back, dict) else back
     try:
         if abs(float(str(val)) - float(v)) > 1e-6:
