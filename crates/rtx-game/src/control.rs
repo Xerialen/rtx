@@ -933,6 +933,8 @@ fn plan_tick(game: &GameState, bot_num: u32, e: EntId, stamp: u64) -> proto::Pla
         plan_cost: p.plan_cost,
         remaining_cost: p.remaining_cost,
         plan_fail: p.plan_fail.to_string(),
+        goal_reachable: p.goal_reachable,
+        goal_redirected: p.goal_redirected,
 
         p_base: p.p_base,
         p_gate: p.extra.gate,
@@ -970,6 +972,7 @@ fn plan_tick(game: &GameState, bot_num: u32, e: EntId, stamp: u64) -> proto::Pla
         hold_jump: p.hold_jump,
         jump_cmd: p.jump_cmd,
         first_air_vz: p.first_air_vz,
+        first_air_vz_measured: p.first_air_vz_measured,
         hops: b.bhop.hops,
         off_reason: b.bhop.off_reason.to_string(),
     }

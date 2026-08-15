@@ -846,6 +846,20 @@ pub struct PlanTick {
     /// What finishing the current plan costs from where the bot actually is, in the seconds A\*
     /// minimises.
     pub remaining_cost: f32,
+    /// Whether the goal cell was reachable **as pure topology** in this graph, and whether the
+    /// search target was consequently redirected away from it.
+    ///
+    /// `plan_fail` alone cannot decide `structural_missing_link`: `unreachable` may be an ordinary
+    /// reachability redirection, and `no_path` can also come from a priced-out window. This pair is
+    /// the topological half of the question, pinned to `graph_stamp` — "no traversable chain from
+    /// where the bot stood to the goal cell exists in *this* graph" is then a machine fact rather
+    /// than an inference.
+    ///
+    /// The other half — whether the trace stopped outside the goal predicate (the IN-ring 70u top
+    /// disk) — is the harness's to supply, because the predicate is a property of the scenario and
+    /// not of the graph. Until both halves are present, older data classes as `unknown`.
+    pub goal_reachable: bool,
+    pub goal_redirected: bool,
     /// Why the last repath produced nothing: empty when it succeeded, else `no_path`, `priced_out`
     /// or `unreachable`.
     ///
@@ -922,6 +936,11 @@ pub struct PlanTick {
     /// The active speed jump's source cell and the takeoff point itself ([`PLAN_NONE`] when the leg
     /// is not a speed jump; `takeoff_xyz` is meaningful only then, since the origin is a legitimate
     /// coordinate and cannot double as a sentinel).
+    ///
+    /// `takeoff_cell` is the **link's source cell** — read it as `source_cell_for_takeoff`. It is not
+    /// "the cell nearest the takeoff point", and the two can differ: V296-C1's physical cell is 1139
+    /// while the link's configured `from` sits at z=296. Comparing the wrong one against a facit is
+    /// the mistake this note exists to prevent.
     pub takeoff_cell: u32,
     pub takeoff_xyz: Vec3,
     /// Speed carried toward the steering waypoint, and the distance to it.
@@ -941,13 +960,100 @@ pub struct PlanTick {
     /// reached the engine is exactly the jump-cmd-on-ground race this telemetry exists to catch, so
     /// recording the wish instead of the command would hide the bug it is here to expose.
     pub jump_cmd: bool,
-    /// Vertical speed on the first airborne tick of the current hop (`0` before any takeoff). The
-    /// leap's actual outcome, as opposed to the gate's prediction of it.
+    /// Vertical speed on the first airborne tick of the current hop — the leap's actual outcome, as
+    /// against the takeoff gate's prediction of it. Valid only when `first_air_vz_measured`.
+    ///
+    /// Signed, and **zero is a real reading**: a bot that left the ground with no upward impulse
+    /// measures exactly that. So absence rides on the flag, like `runway` and `sj_progress`, and for
+    /// the same reason — there is no out-of-domain number to spare.
     pub first_air_vz: f32,
+    /// Whether a takeoff has been observed in the current hop. Set on ground→air, cleared on landing.
+    pub first_air_vz_measured: bool,
     /// Hops taken in this engagement, and why the last one ended (`veto`, `runway`, `leg`; empty if
     /// still engaged or never engaged).
     pub hops: u32,
     pub off_reason: String,
+}
+
+/// The outcome of a takeoff, as the row can actually attest it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TakeoffOutcome {
+    /// No takeoff observed in the current hop — nothing to conclude either way.
+    NotObserved,
+    /// The bot left the ground with no upward impulse (first air `vz <= 0`). The V296-C1 shape.
+    NoImpulse,
+    /// The bot left the ground under a real jump (first air `vz > 0`). The V296-C2 shape.
+    Launched,
+}
+
+/// Why a proposed causal label is not supported by a row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CauseRejected {
+    /// The label that was refused.
+    pub label: String,
+    /// Why, in one line, for the verdict record.
+    pub reason: &'static str,
+}
+
+/// Causal labels that may never be concluded from speed alone, whatever the row says.
+///
+/// `v_req_deficit` is the falsified V296 hypothesis. It is not merely unsupported — it was tested
+/// and refuted: C1 and C2 both run `v_req = 320` and reach speeds above *and* below it, so the label
+/// cannot separate the two cases it was invented to explain. A consumer that re-derives it from
+/// `v_req` and `speed` would be reintroducing a known-wrong conclusion.
+pub const FORBIDDEN_CAUSES: &[&str] = &["v_req_deficit"];
+
+/// Causal labels about a takeoff, which may only be drawn with controller evidence in hand.
+pub const TAKEOFF_CAUSES: &[&str] = &["virtual_runway_ground_race", "takeoff_failed", "jump_not_commanded"];
+
+impl PlanTick {
+    /// What this row can attest about the current hop's takeoff.
+    ///
+    /// Zero is a real first-air reading, so the flag — not the number — decides whether anything was
+    /// observed at all. This is the discriminator the sealed V296 facit names: C1 is
+    /// [`TakeoffOutcome::NoImpulse`], C2 is [`TakeoffOutcome::Launched`].
+    pub fn takeoff_outcome(&self) -> TakeoffOutcome {
+        if !self.first_air_vz_measured {
+            TakeoffOutcome::NotObserved
+        } else if self.first_air_vz > 0.0 {
+            TakeoffOutcome::Launched
+        } else {
+            TakeoffOutcome::NoImpulse
+        }
+    }
+
+    /// Whether this row carries the controller evidence a takeoff verdict must rest on: both ends of
+    /// the phase transition, and an observed takeoff.
+    ///
+    /// Ground state and the jump command are always present as booleans, so they cannot be *missing*
+    /// — what can be missing is the transition and the leap, and those are what this checks.
+    pub fn has_takeoff_evidence(&self) -> bool {
+        !self.phase.is_empty()
+            && !self.phase_prev.is_empty()
+            && self.first_air_vz_measured
+    }
+
+    /// Refuse a causal label this row cannot carry.
+    ///
+    /// The sealed facit's rule — *`v_req` and speed are logged but are never a cause* — stated as
+    /// something a test can run rather than a sentence a reader may skip. Two ways to fail: a label
+    /// that is forbidden outright, and a takeoff label drawn without the controller state that would
+    /// justify it.
+    pub fn validate_cause(&self, label: &str) -> Result<(), CauseRejected> {
+        if FORBIDDEN_CAUSES.contains(&label) {
+            return Err(CauseRejected {
+                label: label.to_string(),
+                reason: "falsified hypothesis: v_req and speed are logged, never a cause",
+            });
+        }
+        if TAKEOFF_CAUSES.contains(&label) && !self.has_takeoff_evidence() {
+            return Err(CauseRejected {
+                label: label.to_string(),
+                reason: "no controller evidence: needs phase_prev/phase and an observed takeoff",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Which graph a run of [`PlanTick`]s was measured against.
@@ -1325,6 +1431,8 @@ mod tests {
             plan_cost: 4.25,
             remaining_cost: 3.5,
             plan_fail: String::new(),
+            goal_reachable: true,
+            goal_redirected: false,
             p_base: 1.5,
             p_gate: 0.0,
             p_penalty: 2.5,
@@ -1358,6 +1466,7 @@ mod tests {
             hold_jump: false,
             jump_cmd: true,
             first_air_vz: 270.0,
+            first_air_vz_measured: true,
             hops: 4,
             off_reason: String::new(),
         };
@@ -1402,5 +1511,155 @@ mod tests {
             Msg::Event(Event::PlanContract(got)) => assert_eq!(got, c),
             other => panic!("wrong message back: {other:?}"),
         }
+    }
+
+    /// A row shaped like the sealed facit's V296 cases, so the two can be told apart in a test.
+    fn v296_row(source_cell: u32, phase_prev: &str, phase: &str, on_ground: bool,
+                jump_cmd: bool, first_air_vz: f32, measured: bool) -> PlanTick {
+        PlanTick {
+            schema: PLAN_SCHEMA.to_string(),
+            graph_stamp: 13_090_435_456_435_551_592,
+            bot: 1,
+            t: 474.842,
+            seq: 1,
+            cell: source_cell,
+            goal_cell: 700,
+            route_len: 5,
+            route_pos: 1,
+            link: 4242,
+            kind: "SpeedJump".to_string(),
+            link_from: source_cell,
+            link_to: 701,
+            band: 2,
+            replanned: false,
+            route_goal: 700,
+            route_target: 700,
+            plan_cost: 3.0,
+            remaining_cost: 2.0,
+            plan_fail: String::new(),
+            goal_reachable: true,
+            goal_redirected: false,
+            p_base: 1.0,
+            p_gate: 0.0,
+            p_penalty: 0.0,
+            p_jitter: 0.0,
+            p_rj: 0.0,
+            p_water: 0.0,
+            p_hazard: 0.0,
+            p_chained: 0.0,
+            p_total: 1.0,
+            // Both facit cases run the *same* v_req. That is the whole reason speed cannot separate
+            // them, and why the label built on it is refused.
+            v_req: 320.0,
+            origin: [81.1, -553.3, 312.0],
+            vel: [200.0, -200.0, first_air_vz],
+            speed: 282.8,
+            chained: true,
+            curl_gain: 5.5,
+            weave_cap: -1.0,
+            on_ground,
+            phase: phase.to_string(),
+            phase_prev: phase_prev.to_string(),
+            runway: -4.5,
+            sj_progress: -4.5,
+            runway_measured: true,
+            sj_progress_measured: true,
+            takeoff_cell: source_cell,
+            takeoff_xyz: [93.1, -587.8, 296.0],
+            runup: 300.0,
+            wp: 40.0,
+            lip: -1.0,
+            takeoff_ok: true,
+            sj_held: true,
+            hold_jump: false,
+            jump_cmd,
+            first_air_vz,
+            first_air_vz_measured: measured,
+            hops: 1,
+            off_reason: String::new(),
+        }
+    }
+
+    /// The facit's two V296 cases separate on controller state — and never on speed.
+    ///
+    /// C1 (false jump at the 312 edge) and C2 (grounded jump) share `v_req = 320`. Any rule that
+    /// reads the deficit therefore cannot tell them apart, which is exactly why the sealed facit
+    /// falsified it. `takeoff_outcome` reads the leap instead, and does separate them.
+    #[test]
+    fn v296_cases_separate_on_controller_state_not_speed() {
+        let c1 = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        let c2 = v296_row(1167, "Prestrafe", "Hop", false, true, 260.4, true);
+        assert_eq!(c1.v_req, c2.v_req, "the facit's premise: same v_req in both cases");
+        assert_eq!(c1.takeoff_outcome(), TakeoffOutcome::NoImpulse);
+        assert_eq!(c2.takeoff_outcome(), TakeoffOutcome::Launched);
+        assert_eq!(c1.takeoff_cell, 1139, "C1's physical source cell");
+        assert_eq!(c2.takeoff_cell, 1167, "C2's physical source cell");
+    }
+
+    /// `v_req_deficit` is refused on every row, including the ones that would seem to support it.
+    #[test]
+    fn v_req_deficit_is_refused_outright() {
+        // A row whose speed sits well under v_req — the shape the falsified hypothesis was built on.
+        let slow = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        assert!(slow.speed < slow.v_req, "fixture is the tempting case");
+        let err = slow.validate_cause("v_req_deficit").expect_err("must be refused");
+        assert_eq!(err.label, "v_req_deficit");
+        assert!(err.reason.contains("never a cause"));
+        // And it stays refused even with full controller evidence in hand.
+        assert!(slow.has_takeoff_evidence());
+        assert!(slow.validate_cause("v_req_deficit").is_err());
+    }
+
+    /// A takeoff verdict needs controller evidence; without it the label is refused, with it allowed.
+    #[test]
+    fn takeoff_causes_require_controller_evidence() {
+        let good = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        assert!(good.validate_cause("virtual_runway_ground_race").is_ok());
+
+        // No observed takeoff: nothing to conclude about a leap.
+        let unobserved = v296_row(1139, "Prestrafe", "Hop", false, false, 0.0, false);
+        assert_eq!(unobserved.takeoff_outcome(), TakeoffOutcome::NotObserved);
+        let err = unobserved
+            .validate_cause("virtual_runway_ground_race")
+            .expect_err("no leap observed");
+        assert!(err.reason.contains("no controller evidence"));
+
+        // Half a transition is not a transition.
+        let no_prev = v296_row(1139, "", "Hop", false, false, -9.6, true);
+        assert!(no_prev.validate_cause("virtual_runway_ground_race").is_err());
+
+        // An unrelated label is not policed by this rule.
+        assert!(unobserved.validate_cause("carve_invisible_surface").is_ok());
+    }
+
+    /// Zero is a real first-air reading, so only the flag can mean "not observed".
+    ///
+    /// This is the last signed field to get the treatment `runway` and `sj_progress` already had —
+    /// a leap that left the ground with no upward impulse measures exactly `0.0`, and a sentinel
+    /// there would erase the very case the facit is about.
+    #[test]
+    fn zero_first_air_vz_is_a_reading_not_an_absence() {
+        let flat = v296_row(1139, "Prestrafe", "Hop", false, false, 0.0, true);
+        assert_eq!(flat.takeoff_outcome(), TakeoffOutcome::NoImpulse,
+                   "a measured 0.0 is a failed leap, not a missing one");
+        let none = v296_row(1139, "Prestrafe", "Hop", false, false, 0.0, false);
+        assert_eq!(none.takeoff_outcome(), TakeoffOutcome::NotObserved);
+        assert_eq!(flat.first_air_vz, none.first_air_vz, "same number, different meaning");
+    }
+
+    /// The topological half of `structural_missing_link` is carried explicitly.
+    ///
+    /// `plan_fail` alone cannot decide it: `unreachable` may be an ordinary redirection. The flags
+    /// say what the graph itself allows, and are pinned to `graph_stamp`.
+    #[test]
+    fn goal_reachability_is_carried_separately_from_plan_fail() {
+        let mut row = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        assert!(row.goal_reachable && !row.goal_redirected);
+        row.goal_reachable = false;
+        row.goal_redirected = true;
+        row.plan_fail = "unreachable".to_string();
+        // A redirection and a severed graph are different facts, and both are on the row.
+        assert!(!row.goal_reachable, "topology says there is no chain at all");
+        assert!(row.goal_redirected, "and the search was aimed elsewhere as a result");
     }
 }

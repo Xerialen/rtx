@@ -312,11 +312,17 @@ pub struct PlanDiag {
     /// `unreachable`. Separates a missing link from a botched execution — the one distinction the
     /// route record cannot otherwise make.
     pub plan_fail: &'static str,
+    /// Whether the goal was reachable as pure topology, and whether the search target was redirected
+    /// away from it as a result. The topological half of `structural_missing_link`.
+    pub goal_reachable: bool,
+    pub goal_redirected: bool,
 
     // --- hop-scoped -------------------------------------------------------------------------
-    /// Vertical speed on the first airborne frame of the current hop; `0` until one happens. The
-    /// leap's outcome as against the takeoff gate's prediction of it.
+    /// Vertical speed on the first airborne frame of the current hop, and whether one has been
+    /// observed at all. Zero is a real reading — a leap with no upward impulse — so the flag carries
+    /// the absence rather than the number.
     pub first_air_vz: f32,
+    pub first_air_vz_measured: bool,
 }
 
 impl PlanDiag {
@@ -330,7 +336,10 @@ impl PlanDiag {
             seq,
             plan_cost,
             plan_fail,
+            goal_reachable,
+            goal_redirected,
             first_air_vz,
+            first_air_vz_measured,
             ..
         } = *self;
         *self = PlanDiag {
@@ -338,7 +347,10 @@ impl PlanDiag {
             seq,
             plan_cost,
             plan_fail,
+            goal_reachable,
+            goal_redirected,
             first_air_vz,
+            first_air_vz_measured,
             // Not measured until something stamps it. `weave_cap` is a half-angle and never
             // negative, so -1 is safely out of band; `runway` and `sj_progress` are *signed* and have
             // no such value, which is why their absence is carried by a flag instead.

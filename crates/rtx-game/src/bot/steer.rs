@@ -535,8 +535,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // it — the pair that separates a jump never attempted from one attempted and short.
         if bot.plan.stamped > 0.0 && bot.plan.on_ground && !on_ground {
             bot.plan.first_air_vz = vz;
+            bot.plan.first_air_vz_measured = true;
         } else if on_ground {
             bot.plan.first_air_vz = 0.0;
+            bot.plan.first_air_vz_measured = false;
         }
         bot.plan.begin_frame(now);
         // Before the controller steps: the other end of any phase transition this frame.
@@ -710,7 +712,13 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // disconnected pocket, redirects to the reachable cell nearest it — the bot heads as far
         // toward the target as the graph allows (often enough for line of sight) rather than homing
         // into a wall.
-        let target = if graph.reachable(bot_cell, goal) {
+        let goal_reachable = graph.reachable(bot_cell, goal);
+        if plan_tel {
+            // Pure topology, decided here anyway — and the only half of
+            // `structural_missing_link` the engine can answer. Route-scoped like `plan_fail`.
+            bot.plan.goal_reachable = goal_reachable;
+        }
+        let target = if goal_reachable {
             goal
         } else {
             graph.nearest_reachable_to(bot_cell, goal).unwrap_or(goal)
@@ -873,6 +881,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             // and "the way was there and the bot failed it", which the route record alone cannot
             // make. Most-specific first: a priced-out plan and an unreachable goal each *also* leave
             // the route empty, and reporting emptiness would name the symptom over the cause.
+            bot.plan.goal_redirected = target != goal;
             bot.plan.plan_fail = if was_priced_out {
                 "priced_out"
             } else if target != goal {
