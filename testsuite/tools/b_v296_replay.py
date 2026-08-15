@@ -112,6 +112,8 @@ def satt_cvar(lab, namn, varde):
         back = lab.get(namn)
     except Exception as e:
         dö(f"kan inte läsa tillbaka {namn}: {e}")
+    if isinstance(back, dict):
+        back = back.get("Get", back)  # Fable-fix: Lab.request returnerar {"Get": {...}}
     val = back.get("value") if isinstance(back, dict) else back
     try:
         ok = abs(float(str(val)) - float(varde)) < 1e-6
