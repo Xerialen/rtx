@@ -1975,4 +1975,31 @@ mod tests {
         assert!(!valid_cvar_name(""));
         assert!(!valid_cvar_name("foo bar"));
     }
+
+    /// The graph stamp separates graphs and is stable within one.
+    ///
+    /// A link index is only a name for a link *within one build*. Rows from two graphs that shared a
+    /// stamp would silently be comparable, and the comparison would attribute one map's failures to
+    /// another's cells — so every part of the graph's identity has to move the stamp.
+    #[test]
+    fn graph_stamp_separates_graphs() {
+        let base = graph_stamp("dm3", 4581, 19822, 311);
+        assert_eq!(base, graph_stamp("dm3", 4581, 19822, 311), "stable for one graph");
+        assert_ne!(base, graph_stamp("dm2", 4581, 19822, 311), "map matters");
+        assert_ne!(base, graph_stamp("dm3", 4582, 19822, 311), "cell count matters");
+        assert_ne!(base, graph_stamp("dm3", 4581, 19823, 311), "link count matters");
+        assert_ne!(base, graph_stamp("dm3", 4581, 19822, 312), "rocket-jump link count matters");
+    }
+
+    /// The counts are hashed as distinct fields, not run together — otherwise a graph that traded
+    /// cells for links would collide with one that did not.
+    #[test]
+    fn graph_stamp_does_not_confuse_field_boundaries() {
+        assert_ne!(
+            graph_stamp("dm3", 1, 2, 3),
+            graph_stamp("dm3", 2, 1, 3),
+            "swapping cell and link counts must not collide",
+        );
+        assert_ne!(graph_stamp("a", 0, 0, 0), graph_stamp("", 0, 0, 0), "an empty map name is its own graph");
+    }
 }

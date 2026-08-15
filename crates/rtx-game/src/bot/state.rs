@@ -991,4 +991,68 @@ mod tests {
         assert_eq!(bot.goal.next_pick, 5.0);
         assert!(!bot.is_avoided(10, 5.0));
     }
+
+    /// `begin_frame` clears what is measured per frame and keeps what outlives one.
+    ///
+    /// The whole point of the split: a frame-scoped field carried over reads as a measurement and is
+    /// silently one tick stale, which nothing downstream can falsify. A route-scoped one cleared too
+    /// eagerly would blank the plan's cost on every frame between repaths, which is most of them.
+    #[test]
+    fn plan_diag_begin_frame_respects_field_lifetimes() {
+        let mut p = PlanDiag {
+            stamped: 1.0,
+            seq: 42,
+            link: Some(7),
+            kind: None,
+            band: Some(2),
+            p_base: 1.5,
+            p_total: 4.0,
+            v_req: 320.0,
+            chained: true,
+            runway: 96.0,
+            hold_jump: true,
+            on_ground: true,
+            speed: 280.0,
+            jump_cmd: true,
+            plan_cost: 4.25,
+            plan_fail: "no_path",
+            first_air_vz: 270.0,
+            ..PlanDiag::default()
+        };
+        p.begin_frame(2.0);
+
+        // Frame-scoped: gone, and reading as "not measured" rather than as a measured zero where a
+        // zero would be a real value.
+        assert_eq!(p.link, None);
+        assert_eq!(p.band, None);
+        assert_eq!(p.p_base, 0.0);
+        assert_eq!(p.p_total, 0.0);
+        assert_eq!(p.v_req, 0.0);
+        assert!(!p.chained);
+        assert!(!p.hold_jump);
+        assert!(!p.on_ground);
+        assert_eq!(p.speed, 0.0);
+        assert!(!p.jump_cmd);
+        assert_eq!(p.runway, -1.0, "an unmeasured run-up is not a run-up of zero");
+        assert_eq!(p.weave_cap, -1.0, "an unmeasured weave cap is not a cap of zero");
+
+        // Route-scoped: still describing the plan in force.
+        assert_eq!(p.plan_cost, 4.25);
+        assert_eq!(p.plan_fail, "no_path");
+        // Hop-scoped and stream-scoped: their own clocks.
+        assert_eq!(p.first_air_vz, 270.0);
+        assert_eq!(p.seq, 42);
+        // And the frame it now describes.
+        assert_eq!(p.stamped, 2.0);
+    }
+
+    /// A default `PlanDiag` is never mistaken for a stamped one: `control` gates emission on
+    /// `stamped` matching the frame, and a bot that never steered must not produce a row.
+    #[test]
+    fn plan_diag_default_is_not_a_fresh_stamp() {
+        let p = PlanDiag::default();
+        assert_eq!(p.stamped, 0.0);
+        assert_eq!(p.seq, 0);
+        assert_eq!(p.link, None);
+    }
 }

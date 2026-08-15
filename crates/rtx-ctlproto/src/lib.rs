@@ -1273,4 +1273,105 @@ mod tests {
         assert_eq!(decode::<Request>(&f1).unwrap().id, 1);
         assert_eq!(decode::<Request>(&f2).unwrap().cmd, Cmd::Audit { bot: 2, lines: 50 });
     }
+
+    /// A `PlanTick` survives the wire exactly as sent.
+    ///
+    /// Plan rows are the record later analysis reasons from, and they go out as msgpack behind a
+    /// length prefix like everything else. A field that silently failed to round-trip would not show
+    /// up as an error anywhere — it would show up as a wrong conclusion about a bot, months later.
+    #[test]
+    fn plan_tick_round_trips() {
+        let tick = PlanTick {
+            schema: PLAN_SCHEMA.to_string(),
+            graph_stamp: 0xdead_beef_1234_5678,
+            bot: 3,
+            t: 12.345,
+            seq: 918,
+            cell: 503,
+            goal_cell: 194,
+            route_len: 9,
+            route_pos: 2,
+            link: 1373,
+            kind: "SpeedJump".to_string(),
+            link_from: 56,
+            link_to: 99,
+            band: 2,
+            replanned: true,
+            route_goal: 194,
+            route_target: 188,
+            plan_cost: 4.25,
+            remaining_cost: 3.5,
+            plan_fail: String::new(),
+            p_base: 1.5,
+            p_gate: 0.0,
+            p_penalty: 2.5,
+            p_jitter: 0.125,
+            p_rj: 0.0,
+            p_water: 0.37,
+            p_hazard: 0.0,
+            p_chained: 0.0,
+            p_total: 4.495,
+            v_req: 320.0,
+            speed: 287.5,
+            vz: -12.0,
+            chained: true,
+            curl_gain: 0.35,
+            weave_cap: -1.0,
+            on_ground: false,
+            phase: "Hop".to_string(),
+            runway: 96.0,
+            takeoff_cell: 56,
+            runup: 301.0,
+            wp: 48.0,
+            lip: -1.0,
+            takeoff_ok: true,
+            sj_held: true,
+            hold_jump: false,
+            jump_cmd: true,
+            first_air_vz: 270.0,
+            hops: 4,
+            off_reason: String::new(),
+        };
+        let frame = to_frame(&Msg::Event(Event::PlanTick(Box::new(tick.clone()))));
+        let mut cursor = &frame[..];
+        let body = read_frame(&mut cursor).expect("frame reads back").expect("a whole frame was there");
+        match decode::<Msg>(&body).expect("decodes") {
+            Msg::Event(Event::PlanTick(got)) => assert_eq!(*got, tick),
+            other => panic!("wrong message back: {other:?}"),
+        }
+    }
+
+    /// The sentinels are the row layer's only way of saying "nothing here", so they must survive the
+    /// wire as themselves — and stay distinct from the zeros that mean a real measured zero.
+    #[test]
+    fn plan_sentinels_are_distinct_from_zero() {
+        assert_eq!(PLAN_NONE, u32::MAX);
+        assert_eq!(PLAN_NO_BAND, u8::MAX);
+        assert_eq!(PLAN_UNSET, -1.0);
+        assert_ne!(PLAN_NONE, 0, "a missing link must not read as link 0");
+        assert_ne!(PLAN_NO_BAND, 0, "a missing band must not read as band 0");
+        assert!(PLAN_UNSET < 0.0, "an unprobed float must not read as a measured 0.0");
+    }
+
+    /// The contract round-trips too — a capture whose stamp cannot be expanded is a capture nobody
+    /// can safely compare against another.
+    #[test]
+    fn plan_contract_round_trips() {
+        let c = PlanContract {
+            schema: PLAN_SCHEMA.to_string(),
+            graph_stamp: 0xdead_beef_1234_5678,
+            map: "dm3".to_string(),
+            cells: 4581,
+            links: 19822,
+            rj_links: 311,
+            build: "0.1.0".to_string(),
+        };
+        let frame = to_frame(&Msg::Event(Event::PlanContract(c.clone())));
+        let mut cursor = &frame[..];
+        let body = read_frame(&mut cursor).expect("frame reads back").expect("a whole frame was there");
+        match decode::<Msg>(&body).expect("decodes") {
+            Msg::Event(Event::PlanContract(got)) => assert_eq!(got, c),
+            other => panic!("wrong message back: {other:?}"),
+        }
+    }
 }
