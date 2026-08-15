@@ -20,6 +20,11 @@
     --r-airoff: #b07fe0;
     --r-airtime:#5d9bd6;
     --r-sj:     #ffd166;
+    --r-fall:   #e85d4c;
+    --r-fastnad:#c4a35a;
+    --r-timeout:#8a90a0;
+    --r-stall:  #b07a4a;
+    --r-avsett: #6d8b5e;
     --arc:      #45b8a0;
   }
   @media (prefers-color-scheme: light) {
@@ -28,7 +33,7 @@
       --ink: #221e18; --ink-2: #4d463c; --muted: #746b5e;
       --rule: #cec4b3; --rule-2: #ddd4c4; --accent: #a75a12;
       --good: #217a44; --bad: #b8291c; --mesh-mid: #9c9078; --halo: #fcf9f4;
-      --r-disp: #b8291c; --r-pre: #a75a12; --r-airoff: #7c3fa8; --r-airtime: #2f5f9e; --r-sj: #8f6b00; --arc: #1c7a66;
+      --r-disp: #b8291c; --r-pre: #a75a12; --r-airoff: #7c3fa8; --r-airtime: #2f5f9e; --r-sj: #8f6b00; --r-fall: #a32d22; --r-fastnad: #8a6a28; --r-timeout: #4e5560; --r-stall: #7a4e28; --r-avsett: #3f5a36; --arc: #1c7a66;
     }
   }
   :root[data-theme="light"] {
@@ -36,14 +41,14 @@
     --ink: #221e18; --ink-2: #4d463c; --muted: #746b5e;
     --rule: #cec4b3; --rule-2: #ddd4c4; --accent: #a75a12;
     --good: #217a44; --bad: #b8291c; --mesh-mid: #9c9078; --halo: #fcf9f4;
-    --r-disp: #b8291c; --r-pre: #a75a12; --r-airoff: #7c3fa8; --r-airtime: #2f5f9e; --r-sj: #8f6b00; --arc: #1c7a66;
+    --r-disp: #b8291c; --r-pre: #a75a12; --r-airoff: #7c3fa8; --r-airtime: #2f5f9e; --r-sj: #8f6b00; --r-fall: #a32d22; --r-fastnad: #8a6a28; --r-timeout: #4e5560; --r-stall: #7a4e28; --r-avsett: #3f5a36; --arc: #1c7a66;
   }
   :root[data-theme="dark"] {
     --ground: #0c0b0a; --panel: rgba(20, 18, 15, 0.9); --panel-2: rgba(30, 27, 22, 0.72);
     --ink: #ece7dd; --ink-2: #b3aa9c; --muted: #857c6f;
     --rule: #322d25; --rule-2: #201d18; --accent: #e0842f;
     --good: #58c07a; --bad: #e4483a; --mesh-mid: #453d33; --halo: #0c0b0a;
-    --r-disp: #e4483a; --r-pre: #e0842f; --r-airoff: #b07fe0; --r-airtime: #5d9bd6; --r-sj: #ffd166; --arc: #45b8a0;
+    --r-disp: #e4483a; --r-pre: #e0842f; --r-airoff: #b07fe0; --r-airtime: #5d9bd6; --r-sj: #ffd166; --r-fall: #e85d4c; --r-fastnad: #c4a35a; --r-timeout: #8a90a0; --r-stall: #b07a4a; --r-avsett: #6d8b5e; --arc: #45b8a0;
   }
   :root {
     --mono: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
@@ -350,6 +355,17 @@ const REASONS = [
     tip: "Botten tog ett kliv genom luften men registrerade aldrig någon landning i tid — den blev hängande, föll långt eller fastnade i luften. Klivet straffas och rutten görs om." },
   { key: "speedjump_stall",    cssvar: "r-sj",      label: "speedjump_stall",
     tip: "Ansatsen till ett fartkliv har stått still i över 4 sekunder — botten är blockerad, knuffad eller fick aldrig upp farten. Den överger ansatsen, straffar klivet och väljer om väg." },
+  { key: "fall",               cssvar: "r-fall",    label: "fall",
+    tip: "peak_drop_150 på IN — botten föll. Stapeln står vid landningen (eller senaste kända cell om den aldrig landade)." },
+  { key: "fastnad",            cssvar: "r-fastnad", label: "fastnad",
+    tip: "Försöket nådde inte målet inom cap — botten stod kvar. Inte samma sak som displacement-vakthunden." },
+  { key: "timeout",            cssvar: "r-timeout", label: "timeout",
+    tip: "Försöks-meta utfall=timeout (K-serien). Skilt från fall." },
+  { key: "stall",              cssvar: "r-stall",   label: "stall",
+    tip: "BotStall-händelse i obduktionen, med origin." },
+  { key: "avsett_drop",        cssvar: "r-avsett",  label: "avsett_drop",
+    tip: "UT-bens avsedda nedhopp — inte en åtgärdsklass. Avstängd som default; klicka för att visa.",
+    off: true },
 ];
 const REASON_VAR = Object.fromEntries(REASONS.map(r => [r.key, r.cssvar]));
 
@@ -455,9 +471,8 @@ let RC = {};
 function applyTheme() {
   PAL = PALETTES[currentTheme()];
   buildRamp();
-  RC = { "r-disp": cssColor("r-disp"), "r-pre": cssColor("r-pre"), "r-airoff": cssColor("r-airoff"),
-         "r-airtime": cssColor("r-airtime"), "r-sj": cssColor("r-sj"), arc: cssColor("arc"),
-         accent: cssColor("accent") };
+  RC = { arc: cssColor("arc"), accent: cssColor("accent") };
+  for (const r of REASONS) RC[r.cssvar] = cssColor(r.cssvar);
   dirty = true;
 }
 window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", applyTheme);
@@ -503,7 +518,7 @@ function project(x, y, z) {
 }
 
 /* ------------------------------------------------------------------ state */
-const reasonsOn = new Set(REASONS.map(r => r.key));
+const reasonsOn = new Set(REASONS.filter(r => !r.off).map(r => r.key));
 let arcsOn = true, zonesOn = true, meshOn = true, itemsOn = true, spawnsOn = true;
 let focusIdx = SNAPSHOTS.length - 1;
 let refIdx = null;            // null = single mode
