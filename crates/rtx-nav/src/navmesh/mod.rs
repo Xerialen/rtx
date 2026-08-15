@@ -438,6 +438,43 @@ pub struct HazardPrice {
     pub k: f32,
 }
 
+/// What a link's dynamic surcharge is *made of* — [`NavGraph::link_extra`] split term by term.
+///
+/// A\* only ever needs the sum, and that is all `link_extra` returns. Planner telemetry needs to say
+/// *why* a leg was priced as it was, which the sum cannot answer: a leg at 100000.4s is a shut gate
+/// plus jitter, or an unfit rocket jump plus a failed-link strike, and those call for opposite fixes.
+/// Rather than keep a second copy of the arithmetic beside the first — two truths that drift apart on
+/// the first term anyone adds — `link_extra` is *defined* as this breakdown's [`Self::total`]. One
+/// place computes the terms, one place sums them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LinkExtra {
+    /// A shut gate on this link: [`LinkCosts::open_gate_cost`] for a caller that flagged it openable,
+    /// else [`CLOSED_GATE_PENALTY`].
+    pub gate: f32,
+    /// This caller's per-link surcharge — failed legs, teleport re-use, team occupancy.
+    pub penalty: f32,
+    /// Per-bot route-variety jitter, a fraction of the link's own cost.
+    pub jitter: f32,
+    /// The [`RJ_UNFIT_PENALTY`] block on a rocket jump this bot can't fly.
+    pub rj: f32,
+    /// Swimming/wading surcharge baked into the graph.
+    pub water: f32,
+    /// Health spent crossing lava or slime, converted to seconds against this bot's strength.
+    pub hazard: f32,
+}
+
+impl LinkExtra {
+    /// The surcharge A\* actually pays.
+    ///
+    /// The summation order is load-bearing: it reproduces the sequential `extra += …` this replaced,
+    /// term for term, so every route is priced to the same bit as before the split. Float addition is
+    /// not associative — reordering these six would silently re-price the whole graph.
+    #[inline]
+    pub fn total(&self) -> f32 {
+        self.gate + self.penalty + self.jitter + self.rj + self.water + self.hazard
+    }
+}
+
 impl HazardPrice {
     /// Price hazards for a bot of effective `strength` at the stock timidity.
     pub fn new(strength: f32) -> Self {
@@ -1118,45 +1155,59 @@ impl NavGraph {
     /// [`find_path_banded`](Self::find_path_banded) and [`costs_from`](Self::costs_from) all route
     /// through here — which is why the liquid prices live here rather than baked into `link.cost`,
     /// where the banded planner never saw them.
+    ///
+    /// Defined as [`LinkExtra::total`] so the per-term breakdown the telemetry reads and the sum A\*
+    /// pays can never disagree — see [`LinkExtra`].
     #[inline]
     fn link_extra(&self, li: u32, costs: &LinkCosts) -> f32 {
-        let mut extra = match self.gate_of_link(li) {
-            Some(g) if costs.gate_closed.get(g).copied().unwrap_or(false) => {
-                // A closed gate this caller flagged openable (its button is reachable on our side) is
-                // an errand, not a wall — price it so, but only for the query that asked. Every other
-                // caller leaves `openable_gates` empty and pays the full route-around penalty.
-                if costs.openable_gates.get(g).copied().unwrap_or(false) {
-                    costs.open_gate_cost
-                } else {
-                    CLOSED_GATE_PENALTY
+        self.link_extra_breakdown(li, costs).total()
+    }
+
+    /// [`Self::link_extra`] split into its terms, for planner telemetry — see [`LinkExtra`].
+    ///
+    /// Off the hot path by construction: A\* calls `link_extra`, which inlines this and sums it, so a
+    /// build with telemetry compiled in pays nothing for it until a caller asks for the breakdown.
+    pub fn link_extra_breakdown(&self, li: u32, costs: &LinkCosts) -> LinkExtra {
+        let mut e = LinkExtra {
+            gate: match self.gate_of_link(li) {
+                Some(g) if costs.gate_closed.get(g).copied().unwrap_or(false) => {
+                    // A closed gate this caller flagged openable (its button is reachable on our side) is
+                    // an errand, not a wall — price it so, but only for the query that asked. Every other
+                    // caller leaves `openable_gates` empty and pays the full route-around penalty.
+                    if costs.openable_gates.get(g).copied().unwrap_or(false) {
+                        costs.open_gate_cost
+                    } else {
+                        CLOSED_GATE_PENALTY
+                    }
                 }
-            }
-            _ => 0.0,
+                _ => 0.0,
+            },
+            ..LinkExtra::default()
         };
         for &(l, sec) in costs.penalties {
             if l == li {
-                extra += sec;
+                e.penalty = sec;
                 break;
             }
         }
         if costs.jitter_seed != 0 {
             let h = hash32(costs.jitter_seed ^ li.wrapping_mul(0x9e37_79b1));
-            extra += (h as f32 / u32::MAX as f32) * JITTER_FRAC * self.links[li as usize].cost;
+            e.jitter = (h as f32 / u32::MAX as f32) * JITTER_FRAC * self.links[li as usize].cost;
         }
         if costs.rocket_jump_extra > 0.0 && self.links[li as usize].kind == LinkKind::RocketJump {
-            extra += costs.rocket_jump_extra;
+            e.rj = costs.rocket_jump_extra;
         }
-        extra += self.water_extra.get(li as usize).copied().unwrap_or(0.0);
+        e.water = self.water_extra.get(li as usize).copied().unwrap_or(0.0);
         // Health is only convertible to seconds against a particular bot's health, so an unpriced
-        // query (`hazard_strength: None`) skips it — and the vast majority of links cost no health at
-        // all, so check that first.
+        // query (`hazard: None`) skips it — and the vast majority of links cost no health at all, so
+        // check that first.
         if let Some(price) = costs.hazard {
             let hp = self.hazard_hp.get(li as usize).copied().unwrap_or(0.0);
             if hp > 0.0 {
-                extra += hazard_cost(hp, price);
+                e.hazard = hazard_cost(hp, price);
             }
         }
-        extra
+        e
     }
 
     /// The block a *speed-unaware* query (`find_path`, `costs_from`) must add to a chained speed
@@ -4631,5 +4682,153 @@ mod tests {
         };
         let hurt = g.coarse_costs(0, &hazcosts, false).cost_to(12);
         assert!(hurt > wet, "hazard pricing should add cost: hurt {hurt} !> wet {wet}");
+    }
+
+    /// A graph that charges all six of [`LinkExtra`]'s terms at once: lava on the cheap branch, a gate
+    /// on link 0, a water surcharge on link 2, and link 3 turned into a rocket jump.
+    fn diamond_priced_every_way() -> NavGraph {
+        let mut g = diamond_with_lava_on_branch_1();
+        let gate = g.gates.push(Gate {
+            obstruction: 0,
+            closed_origin: g.cells[1].origin,
+            closed_min: Vec3::ZERO,
+            closed_max: Vec3::ZERO,
+            activator: 0,
+            button_cell: 0,
+            aim: g.cells[0].origin,
+            shoot: false,
+        });
+        g.gates.tag(0, gate);
+        g.water_extra = vec![0.0, 0.0, 0.37, 0.0];
+        g.links[3].kind = LinkKind::RocketJump;
+        g
+    }
+
+    /// The pre-split `link_extra`, transcribed verbatim from before [`LinkExtra`] existed: one
+    /// accumulator, `+=` per term, in this order. The oracle the split is measured against.
+    fn link_extra_pre_split(g: &NavGraph, li: u32, costs: &LinkCosts) -> f32 {
+        let mut extra = match g.gate_of_link(li) {
+            Some(gi) if costs.gate_closed.get(gi).copied().unwrap_or(false) => {
+                if costs.openable_gates.get(gi).copied().unwrap_or(false) {
+                    costs.open_gate_cost
+                } else {
+                    CLOSED_GATE_PENALTY
+                }
+            }
+            _ => 0.0,
+        };
+        for &(l, sec) in costs.penalties {
+            if l == li {
+                extra += sec;
+                break;
+            }
+        }
+        if costs.jitter_seed != 0 {
+            let h = hash32(costs.jitter_seed ^ li.wrapping_mul(0x9e37_79b1));
+            extra += (h as f32 / u32::MAX as f32) * JITTER_FRAC * g.links[li as usize].cost;
+        }
+        if costs.rocket_jump_extra > 0.0 && g.links[li as usize].kind == LinkKind::RocketJump {
+            extra += costs.rocket_jump_extra;
+        }
+        extra += g.water_extra.get(li as usize).copied().unwrap_or(0.0);
+        if let Some(price) = costs.hazard {
+            let hp = g.hazard_hp.get(li as usize).copied().unwrap_or(0.0);
+            if hp > 0.0 {
+                extra += hazard_cost(hp, price);
+            }
+        }
+        extra
+    }
+
+    /// Splitting `link_extra` into [`LinkExtra`] re-prices nothing — to the bit.
+    ///
+    /// This is the guard the whole telemetry branch rests on: `link_extra` sits in A\*'s innermost
+    /// relaxation, so a single ulp of drift here silently reorders routes across every map, and no
+    /// movement test would name the cause. Float addition is not associative, so the property being
+    /// asserted is not "close enough" but *identical summation order* — hence `to_bits`, not an
+    /// epsilon. Swept over every link under the cost shapes the six terms actually appear in.
+    #[test]
+    fn link_extra_split_is_bit_identical() {
+        let g = diamond_priced_every_way();
+        let closed = [true];
+        let openable = [true];
+        let penalties = [(0u32, 2.5f32), (3u32, 0.75f32)];
+        let mut checked = 0usize;
+        // Every combination that turns a term on or off: gate shut/open/openable, penalties, jitter
+        // (seed 0 = off, and two live seeds), the rocket-jump block, and hazard priced/unpriced.
+        for gate_closed in [&[][..], &closed[..]] {
+            for openable_gates in [&[][..], &openable[..]] {
+                for pens in [&[][..], &penalties[..]] {
+                    for jitter_seed in [0u32, 1, 7] {
+                        for rocket_jump_extra in [0.0f32, RJ_UNFIT_PENALTY] {
+                            for hazard in [None, Some(HazardPrice::new(100.0)), Some(HazardPrice::new(25.0))] {
+                                let costs = LinkCosts {
+                                    gate_closed,
+                                    openable_gates,
+                                    open_gate_cost: 4.0,
+                                    penalties: pens,
+                                    jitter_seed,
+                                    rocket_jump_extra,
+                                    hazard,
+                                };
+                                for li in 0..g.links.len() as u32 {
+                                    let want = link_extra_pre_split(&g, li, &costs);
+                                    let got = g.link_extra_breakdown(li, &costs).total();
+                                    assert_eq!(
+                                        want.to_bits(),
+                                        got.to_bits(),
+                                        "link {li} re-priced: pre-split {want} vs breakdown {got} \
+                                         (gate_closed {:?}, openable {:?}, penalties {:?}, jitter {jitter_seed}, \
+                                         rj {rocket_jump_extra}, hazard {:?})",
+                                        gate_closed,
+                                        openable_gates,
+                                        pens,
+                                        hazard.map(|h| h.strength),
+                                    );
+                                    checked += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 2 * 2 * 2 * 3 * 2 * 3 * 4, "sweep covered every combination");
+    }
+
+    /// Every term the breakdown reports is separately non-zero on the fixture that charges all six —
+    /// otherwise the bit-identity sweep above could pass while quietly testing nothing but zeros.
+    #[test]
+    fn link_extra_breakdown_attributes_each_term() {
+        let g = diamond_priced_every_way();
+        let closed = [true];
+        let penalties = [(0u32, 2.5f32)];
+        let costs = LinkCosts {
+            gate_closed: &closed,
+            penalties: &penalties,
+            jitter_seed: 7,
+            rocket_jump_extra: RJ_UNFIT_PENALTY,
+            hazard: Some(HazardPrice::new(50.0)),
+            ..Default::default()
+        };
+        // Link 0: gated, penalised, jittered. Link 2: water. Link 3: the rocket-jump block.
+        let gated = g.link_extra_breakdown(0, &costs);
+        assert_eq!(gated.gate, CLOSED_GATE_PENALTY, "shut gate priced");
+        assert_eq!(gated.penalty, 2.5, "this caller's link penalty priced");
+        assert!(gated.jitter > 0.0, "jitter priced: {}", gated.jitter);
+        assert_eq!(g.link_extra_breakdown(2, &costs).water, 0.37, "water priced");
+        assert_eq!(g.link_extra_breakdown(3, &costs).rj, RJ_UNFIT_PENALTY, "rocket-jump block priced");
+        // The lava fixture sits on the 0→1 branch, so some link carries a hazard price.
+        let hazard_total: f32 = (0..g.links.len() as u32).map(|li| g.link_extra_breakdown(li, &costs).hazard).sum();
+        assert!(hazard_total > 0.0, "hazard priced somewhere: {hazard_total}");
+        // And the parts still add up to what A* pays.
+        for li in 0..g.links.len() as u32 {
+            let e = g.link_extra_breakdown(li, &costs);
+            assert_eq!(
+                g.priced_link_cost(li, &costs).to_bits(),
+                (g.links[li as usize].cost + e.total() + g.chained_block(li)).to_bits(),
+                "link {li}: breakdown does not reconstruct priced_link_cost",
+            );
+        }
     }
 }
