@@ -22,6 +22,20 @@
 #
 # Råströmmen sparas också, för den som vill titta för hand.
 #
+# LÄGEN
+# ----
+# --av (default): båda cvarerna 0. Med dagens koda är HELA eventytan
+#    telemetri-grindad, så tom ström är FACIT, inte ett fel — men bara
+#    om mätningen var giltig. Därför: skriptet bevisar själv att mätningen
+#    var giltig (status-rundresa + en bot som bevisligen rör sig, via en
+#    Goto och positionsändring mellan två status-anrop), och skriver sedan
+#    signaturfilen som en TOM kanonisk fil. Två tomma signaturfiler är
+#    byte-identiska, och det är grunden i av-läget.
+#
+# --legacy: rtx_telemetry=1, rtx_plan_telemetry=0. Den jämförbara
+#    fältnivåsignaturen (arter + sorterade fältnamn per art) för den
+#    legacy-eventyta som fortfarande flödar med rtx_telemetry på.
+#
 # ANVÄNDNING
 #   ./b_regressionsdiff.sh --port 27995 --out ~/lab/b-regress/tbx
 #   # ...sedan samma sak mot ett main-bygge (runtime3-kopia, egen port):
@@ -29,15 +43,17 @@
 #   diff ~/lab/b-regress/tbx.signatur ~/lab/b-regress/main.signatur && echo LIKA
 #
 # Vägrar hellre än gissar: avbryter om servern inte är redo, om cvarerna inte
-# går att läsa tillbaka som 0, eller om strömmen är helt tom (då mätte vi inget).
+# går att läsa tillbaka som väntat, om boten inte finns i status, eller om
+# positionen inte ändras efter Goto (då mätte vi inget).
 set -euo pipefail
 
 PORT=27995
 OUT="$HOME/lab/b-regress/kor"
 SECS=25
 BOT=1
+MODE=av
 
-usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -45,6 +61,8 @@ while [ $# -gt 0 ]; do
     --out)  OUT="$2";  shift 2 ;;
     --secs) SECS="$2"; shift 2 ;;
     --bot)  BOT="$2";  shift 2 ;;
+    --av)   MODE=av; shift ;;
+    --legacy) MODE=legacy; shift ;;
     -h|--help) usage ;;
     *) echo "okänd flagga: $1 (--help)" >&2; exit 2 ;;
   esac
@@ -52,7 +70,7 @@ done
 
 mkdir -p "$(dirname "$OUT")"
 
-PORT="$PORT" OUT="$OUT" SECS="$SECS" BOT="$BOT" python3 - <<'PYEOF'
+PORT="$PORT" OUT="$OUT" SECS="$SECS" BOT="$BOT" MODE="$MODE" python3 - <<'PYEOF'
 import collections, json, os, sys, time
 sys.path.insert(0, "/home/xerial/rtx-tools")
 try:
@@ -61,6 +79,7 @@ except ImportError:
     sys.exit("kan inte importera labctl från ~/rtx-tools — kör på lanister")
 
 port, out, secs, bot = int(os.environ["PORT"]), os.environ["OUT"], float(os.environ["SECS"]), int(os.environ["BOT"])
+mode = os.environ["MODE"]
 NYA = ("PlanTick", "PlanContract")
 
 def dö(m):
@@ -76,12 +95,15 @@ if st.get("navmesh") != "ready":
     dö(f"navmesh är {st.get('navmesh')!r}, inte 'ready'")
 print(f"# server: map={st.get('map')} celler={st.get('cells')} lankar={st.get('links')}")
 
-# Slå AV båda, och läs tillbaka. En cvar som inte finns svarar 0 i mvdsv, vilket
-# är oskiljbart från "registrerad och avstängd" — men här är 0 det vi vill ha
-# oavsett vilket, så avläsningen räcker som grind.
-for namn in ("rtx_telemetry", "rtx_plan_telemetry"):
+# Slå av/på cvarerna enligt läget, och läs tillbaka. En cvar som inte finns
+# svarar 0 i mvdsv, vilket är oskiljbart från "registrerad och avstängd" —
+# men i av-läge är 0 det vi vill ha oavsett, och i legacy-läge kräver vi
+# explicit 1.0, så avläsningen är grunden i båda fallen.
+expected = {"rtx_telemetry": "0", "rtx_plan_telemetry": "0"} if mode == "av" \
+    else {"rtx_telemetry": "1", "rtx_plan_telemetry": "0"}
+for namn, want in sorted(expected.items()):
     try:
-        lab.set(namn, "0")
+        lab.set(namn, want)
         back = lab.get(namn)
     except Exception as e:
         dö(f"kan inte sätta/läsa {namn}: {e}")
@@ -89,14 +111,57 @@ for namn in ("rtx_telemetry", "rtx_plan_telemetry"):
         back = back.get("Get", back)  # Fable-fix: Lab.request returnerar {"Get": {...}}
     val = back.get("value") if isinstance(back, dict) else back
     try:
-        if float(str(val)) != 0.0:
-            dö(f"{namn} läste tillbaka {val!r}, inte 0 — mätningen vore meningslös")
+        if float(str(val)) != float(want):
+            dö(f"{namn} läste tillbaka {val!r}, inte {want} — mätningen vore meningslös")
     except (TypeError, ValueError):
         dö(f"{namn} läste tillbaka {val!r}, går inte att tolka som tal")
     print(f"# cvar {namn} = {val}")
 
-# Kör boten en stund så strömmen får innehåll. Ingen puppet-order: autonom drift
-# är det som producerar den bredaste eventfloran.
+def bot_origin():
+    for b in lab.status().get("bots", []):
+        if b.get("ent") == bot:
+            return b
+    return None
+
+b0 = bot_origin()
+if b0 is None:
+    dö(f"bot {bot} finns inte i status — kan inte bevisa att mätningen var giltig")
+print(f"# bot {bot}: name={b0.get('name')!r} origin={b0.get('origin')}")
+
+# Bevisa att boten är aktiv: ge en Goto till en annan punkt i planen och
+# verifiera att positionen faktiskt ändras mellan två status-anrop. Utan
+# detta kan en tom ström betyda "servern stod stilla" istället för
+# "telemetrin var av".
+def dist(a, b):
+    return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+o0 = b0.get("origin")
+if not o0:
+    dö("boten bär ingen origin i status")
+# Mål: 160 unit i +y, samma x/z (planpunkt, ingen teleport).
+target = [o0[0], o0[1] + 160.0, o0[2]]
+try:
+    lab.goto(bot, target)
+except Exception as e:
+    dö(f"Goto till {target} misslyckades: {e}")
+moved = None
+for _ in range(20):  # upp till ~10 s
+    time.sleep(0.5)
+    try:
+        o1 = bot_origin().get("origin")
+    except Exception:
+        continue
+    if o1 and dist(o0, o1) > 8.0:
+        moved = o1
+        break
+if moved is None:
+    try:
+        lab.stop(bot)
+    except Exception:
+        pass
+    dö(f"boten {bot} rörde sig inte efter Goto (o0={o0}, target={target}) — "
+       "mätningen vore meningslös. Kontrollera att matchen/boten är i drift.")
+print(f"# bot {bot} verifierad aktiv: {o0} -> {moved} (dist={dist(o0, moved):.1f})")
 try:
     lab.stop(bot)
 except Exception:
@@ -118,20 +183,30 @@ with open(raw_p, "w", encoding="utf-8") as raw:
     while time.time() - t0 < secs:
         lab.drain(0.25, on_event=sink)
 
-if n == 0:
-    dö("noll event under hela fönstret — servern producerade ingenting att jämföra. "
-       "Kör med en aktiv bot, eller höj --secs.")
-
-# Grind 1: inget nytt på tråden.
+# Grind 1 (båda lägen): inget nytt på tråden.
 lackage = {k: hist[k] for k in NYA if hist.get(k)}
 
-# Grind 2: den tidsoberoende signaturen.
+# Signatur. I av-läge är tom ström FACIT (hela eventytan är telemetri-
+# grindad) — och ovan bevisades att mätningen var giltig — så signaturfilen
+# skrivs som en TOM kanonisk fil. I legacy-läge är den fältnivåsignaturen
+# (arter + sorterade fältnamn per art).
 sig_p = out + ".signatur"
-with open(sig_p, "w", encoding="utf-8") as sig:
-    for kind in sorted(falt):
-        sig.write(f"{kind}\t{','.join(sorted(falt[kind]))}\n")
+if mode == "av":
+    if n != 0:
+        print(f"# OBS: {n} event trots cvarerna av: "
+              + ", ".join(f"{k}={v}" for k, v in sorted(hist.items())), file=sys.stderr)
+    with open(sig_p, "w", encoding="utf-8") as sig:
+        sig.write("")
+    print(f"# {n} event i {secs:.0f}s (av-läge: tom ström är facit)")
+else:
+    if n == 0:
+        dö("noll event i legacy-läget (rtx_telemetry=1) — servern producerade "
+           "ingenting att jämföra. Kör med en aktiv bot, eller höj --secs.")
+    with open(sig_p, "w", encoding="utf-8") as sig:
+        for kind in sorted(falt):
+            sig.write(f"{kind}\t{','.join(sorted(falt[kind]))}\n")
+    print(f"# {n} event i {secs:.0f}s: " + ", ".join(f"{k}={v}" for k, v in sorted(hist.items())))
 
-print(f"# {n} event i {secs:.0f}s: " + ", ".join(f"{k}={v}" for k, v in sorted(hist.items())))
 print(f"# rå ström  : {raw_p}")
 print(f"# signatur  : {sig_p}   <-- den här ska vara byte-identisk mot mains")
 
@@ -139,5 +214,5 @@ if lackage:
     print(f"REGRESSION: nya varianter på tråden med cvarerna AV: {lackage}. "
           f"En pre-branch nav-viewer hade tolkat dem som död koppling.", file=sys.stderr)
     sys.exit(1)
-print("OK: noll PlanTick och noll PlanContract med cvarerna av.")
+print(f"OK: noll PlanTick och noll PlanContract (läge: {mode}).")
 PYEOF
