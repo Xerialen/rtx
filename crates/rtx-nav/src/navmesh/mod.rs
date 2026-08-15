@@ -227,6 +227,25 @@ pub struct Link {
     pub cost: f32,
 }
 
+/// The canonical spelling of a link kind in the graph inventory contract (`graphstamp-kontrakt.md`
+/// §8.2). Lowercase, and deliberately *not* `Debug`: `JumpGap` is written `jump` there, and a
+/// derived name would silently drift the moment a variant is renamed.
+pub fn kind_token(kind: LinkKind) -> &'static str {
+    match kind {
+        LinkKind::Walk => "walk",
+        LinkKind::Step => "step",
+        LinkKind::Drop => "drop",
+        LinkKind::JumpGap => "jump",
+        LinkKind::DoubleJump => "doublejump",
+        LinkKind::SpeedJump => "speedjump",
+        LinkKind::Plat => "plat",
+        LinkKind::Teleport => "teleport",
+        LinkKind::Hook => "hook",
+        LinkKind::RocketJump => "rocketjump",
+        LinkKind::Swim => "swim",
+    }
+}
+
 /// The built navigation graph: cells, directed links, per-cell adjacency (indices into
 /// `links`), and an XY spatial index for `nearest`/neighbor queries.
 pub struct NavGraph {
@@ -4981,5 +5000,57 @@ mod tests {
         pricier.links[0].cost += 5.0;
         assert_eq!(pricier.content_hash(), base.content_hash(),
                    "static cost is not part of what the graph *contains*");
+    }
+
+    /// SHA-256 and the hex encoding match the contract's own vector.
+    ///
+    /// The engine and the harness build these bytes independently — that is what a written contract
+    /// is for — so the digest path has to be pinned to a value neither side chose. Taken verbatim
+    /// from `WORK_LOGS/graphstamp-kontrakt.md` §8.4.
+    #[test]
+    fn content_hash_matches_the_contract_vector() {
+        use sha2::{Digest, Sha256};
+        let msg = "C\t10\t0\t0\t0\nC\t11\t32\t0\t0\nL\t10\t11\twalk\nL\t11\t10\twalk";
+        let hex: String = Sha256::digest(msg.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, "1dbb72548adce39a7f54a0b2e91261c9275fdc13f40037148e8c9c04f2816f9b");
+    }
+
+    /// The canonical inventory has the shape the contract describes: C then L then R, sorted, tabs
+    /// between fields, LF between records, and no trailing LF.
+    #[test]
+    fn canonical_inventory_has_the_contract_shape() {
+        let g = diamond();
+        let bytes = g.canonical_inventory();
+        let text = String::from_utf8(bytes).expect("utf-8");
+        assert!(!text.ends_with('\n'), "no trailing LF");
+        let lines: Vec<&str> = text.split('\n').collect();
+        // Four cells, four links, no rocket jumps.
+        assert_eq!(lines.len(), 8);
+        assert_eq!(lines[0], "C\t0\t0\t0\t0");
+        assert_eq!(lines[1], "C\t1\t100\t50\t0");
+        // Links sorted by (source, target, kind) — not by the order they were built in.
+        assert_eq!(lines[4], "L\t0\t1\twalk");
+        assert_eq!(lines[5], "L\t0\t2\twalk");
+        assert_eq!(lines[6], "L\t1\t3\twalk");
+        assert_eq!(lines[7], "L\t2\t3\twalk");
+        assert!(!text.contains("\nR\t"), "no rocket-jump section on this fixture");
+    }
+
+    /// A link pruned from the adjacency is still in the array, and is reported as such.
+    ///
+    /// This is the 48208-vs-48193 gap: two carve passes drop links from the adjacency while keeping
+    /// them in the array so ids stay stable. A dump built from the adjacency alone silently omits
+    /// them; one built from the array alone silently promotes them to walkable. Both are wrong for a
+    /// structural verdict, so the engine reports the difference rather than hiding it.
+    #[test]
+    fn pruned_links_are_reported_not_hidden() {
+        let mut g = diamond();
+        assert!(g.pruned_out_links(0).is_empty(), "nothing pruned to begin with");
+        // Drop link 0 (0->1) from cell 0's adjacency, as the teleport carve does.
+        g.adjacency[0].retain(|&li| li != 0);
+        assert_eq!(g.pruned_out_links(0), vec![0], "the array still holds it, the planner cannot take it");
+        assert_eq!(g.links.len(), 4, "and the id space is untouched");
+        // The other cells are unaffected.
+        assert!(g.pruned_out_links(1).is_empty());
     }
 }

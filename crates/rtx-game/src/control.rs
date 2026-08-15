@@ -205,7 +205,7 @@ pub(crate) fn frame_end(game: &mut GameState) {
         game.host.cvar(c"rtx_plan_telemetry_div"),
     );
     let plan_stamp = if gate.on { plan_graph_identity(game) } else { None };
-    if let Some(PlanGraphId { stamp, content_hash, cells, links, rj_links, .. }) = plan_stamp.clone() {
+    if let Some(PlanGraphId { stamp, ref content_hash, cells, links, rj_links, .. }) = plan_stamp {
         // Announce the graph once per graph, not once per frame: the rows carry a bare integer, and
         // this is the only thing that says what it means. Re-sent after a rebuild, since the same
         // cell index then names a different place.
@@ -216,7 +216,7 @@ pub(crate) fn frame_end(game: &mut GameState) {
                 Event::PlanContract(proto::PlanContract {
                     schema: proto::PLAN_SCHEMA.to_string(),
                     graph_stamp: stamp,
-                    graph_content_hash: content_hash,
+                    graph_content_hash: content_hash.clone(),
                     map: game.level.mapname.clone(),
                     cells,
                     links,
@@ -266,7 +266,7 @@ pub(crate) fn frame_end(game: &mut GameState) {
         if let Some(id) = plan_stamp.as_ref() {
             let p = &game.entities[e].bot.plan;
             if plan_row_due(gate, p.stamped, now, p.seq) {
-                let row = plan_tick(game, i, e, id.stamp, id.content_hash);
+                let row = plan_tick(game, i, e, id.stamp);
                 send_event(game, Event::PlanTick(Box::new(row)));
             }
         }
@@ -903,9 +903,10 @@ pub(crate) struct PlanGraphId {
     rj_links: u32,
     /// Level 1: the row pin, over map name and shape counts.
     stamp: u64,
-    /// Level 2: a hash of the graph's actual inventory. Derived once per build — the token above is
-    /// what notices a build change, which is both cheaper and stricter than re-reading the counts.
-    content_hash: u64,
+    /// Level 2: SHA-256 hex of the graph's canonical inventory. Derived once per build — the token
+    /// above is what notices a build change, which is both cheaper and stricter than re-reading the
+    /// counts, and satisfies the contract's rule that invalidation must not key on counts alone.
+    content_hash: String,
 }
 
 /// The live graph's identity, or `None` with no graph loaded.
@@ -976,7 +977,7 @@ pub(crate) fn plan_row_due(gate: PlanGate, stamped: f32, now: f32, seq: u32) -> 
 /// Every value is read from what steering already stamped on the bot (`bot.plan`, `bot.takeoff`,
 /// `bot.bhop`); nothing is re-derived here, because a re-derivation in `frame_end` would be a
 /// different frame's answer to the same question.
-fn plan_tick(game: &GameState, bot_num: u32, e: EntId, stamp: u64, content_hash: u64) -> proto::PlanTick {
+fn plan_tick(game: &GameState, bot_num: u32, e: EntId, stamp: u64) -> proto::PlanTick {
     let b = &game.entities[e].bot;
     let p = &b.plan;
     let none = proto::PLAN_NONE;
@@ -985,7 +986,6 @@ fn plan_tick(game: &GameState, bot_num: u32, e: EntId, stamp: u64, content_hash:
     proto::PlanTick {
         schema: proto::PLAN_SCHEMA.to_string(),
         graph_stamp: stamp,
-        graph_content_hash: content_hash,
         bot: bot_num,
         t: p.stamped,
         seq: p.seq,
@@ -1313,6 +1313,23 @@ fn describe_cell(g: &NavGraph, cell: u32) -> proto::CellResp {
             water_extra: g.link_water_extra(li),
         });
     }
+    // The links leaving this cell that the carve severed: present in the array, absent from the
+    // adjacency, and untraversable. Same shape as `out` so a consumer can merge the two into a
+    // complete inventory and keep the distinction.
+    let out_pruned = g
+        .pruned_out_links(cell)
+        .into_iter()
+        .map(|li| proto::CellLinkOut {
+            link: li,
+            kind: kind_name(g.link_kind(li)).to_string(),
+            to_cell: g.link_target(li),
+            to: a3(g.cell_origin(g.link_target(li))),
+            cost: g.link_cost(li),
+            tgt_hazard: format!("{:?}", g.cell_hazard(g.link_target(li))),
+            hazard_hp: g.link_hazard_hp(li),
+            water_extra: g.link_water_extra(li),
+        })
+        .collect();
     for li in 0..g.links.len() as u32 {
         if g.link_target(li) == cell {
             incoming.push(proto::CellLinkIn {
@@ -1330,6 +1347,7 @@ fn describe_cell(g: &NavGraph, cell: u32) -> proto::CellResp {
         ledge: g.is_ledge(cell),
         out,
         incoming,
+        out_pruned,
     }
 }
 

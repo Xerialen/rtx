@@ -540,6 +540,14 @@ pub struct CellResp {
     pub ledge: bool,
     pub out: Vec<CellLinkOut>,
     pub incoming: Vec<CellLinkIn>,
+    /// Links this cell is the source of that **nothing can traverse** — pruned from the adjacency by
+    /// the teleport carve, but still in the link array so ids stay stable.
+    ///
+    /// Without this a dump has to choose between two wrong answers: walk the adjacency and silently
+    /// omit them, or walk the array and silently present them as walkable. The first is what produced
+    /// the 48208-vs-48193 gap in the dm3 dump. Reported separately so an inventory can be complete
+    /// *and* honest about what is actually traversable.
+    pub out_pruned: Vec<CellLinkOut>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -772,13 +780,6 @@ pub struct PmovePlayer {
 /// The contract name and version every [`PlanTick`] is written against.
 pub const PLAN_SCHEMA: &str = "qw-nav-graph/1";
 
-/// "No content hash computed" in a [`PlanTick`] or [`PlanContract`].
-///
-/// A real FNV-1a-64 could in principle land on zero; at 2^-64 that is not a risk worth a companion
-/// flag, and the failure direction is the safe one — a graph that hashed to zero would have its
-/// structural verdicts *withheld*, never asserted on wrong evidence.
-pub const PLAN_NO_CONTENT_HASH: u64 = 0;
-
 /// Sentinel for "no cell / no link" in a [`PlanTick`].
 ///
 /// Plan telemetry is the *row* layer, and rows carry sentinels, never the string `unknown` — that
@@ -815,16 +816,10 @@ pub struct PlanTick {
     ///
     /// **Level 1 — the row pin.** Over the map name and the shape counts: enough to keep two maps
     /// apart, and cheap enough to carry on every row.
+    /// The row's **only** graph pin. Level 2 — the inventory hash — rides on [`PlanContract`] and
+    /// the attribution sidecar, never on a row: it is 32 bytes against the pin's 8, it does not vary
+    /// within a capture, and a structural verdict has to consult the contract anyway.
     pub graph_stamp: u64,
-    /// **Level 2 — the inventory.** A hash of what the graph actually contains: every link's directed
-    /// endpoints, kind and traversability, in index order.
-    ///
-    /// Level 1 cannot tell two carves of the same map apart when their counts happen to match, which
-    /// is fine for pinning a row to a map and not fine for a claim *about the graph's topology*. So
-    /// any structural verdict is bound to this, not to the stamp: see [`Cause::StructuralNoPath`].
-    ///
-    /// [`PLAN_NO_CONTENT_HASH`] when the engine did not compute one.
-    pub graph_content_hash: u64,
     /// Engine client number (`1..=maxclients`), the same index the rest of the harness stamps.
     pub bot: u32,
     /// Server time. The join key against the harness row, alongside `bot`: both are read from the
@@ -1117,7 +1112,8 @@ impl PlanTick {
     /// takeoff that produced no impulse, and a jump command that never went out. A row where the
     /// jump *was* commanded and the bot *did* rise is C2 — the control case — and must not be
     /// labelled a race.
-    pub fn attest(&self, cause: Cause) -> Result<AttestedCause, CauseRejected> {
+    pub fn attest(&self, cause: Cause, contract: Option<&PlanContract>)
+        -> Result<AttestedCause, CauseRejected> {
         let reason: Option<&'static str> = match cause {
             Cause::VirtualRunwayGroundRace => {
                 if !self.prestrafe_to_hop() {
@@ -1145,15 +1141,22 @@ impl PlanTick {
                 }
             }
             Cause::StructuralNoPath => {
-                if self.goal_reachable {
-                    Some("the goal is reachable: no structural claim to make")
-                } else if self.graph_content_hash == PLAN_NO_CONTENT_HASH {
-                    // A claim about topology has to name the topology it was read from. The shape
-                    // stamp cannot: two carves of one map can share every count and differ in what is
-                    // traversable, which is the whole question here.
-                    Some("no graph inventory hash: the structural claim cannot be bound to a graph")
-                } else {
-                    None
+                // A claim about topology has to name the topology it was read from, and the row pin
+                // cannot: two carves of one map can share every count while differing in exactly what
+                // this claim is about. So the contract must be present, carry a level-2 hash, and be
+                // the contract *this row belongs to*.
+                match contract {
+                    None => Some("no graph contract: the structural claim cannot be bound to a graph"),
+                    Some(c) if c.graph_content_hash.is_empty() => {
+                        Some("contract carries no inventory hash")
+                    }
+                    Some(c) if c.graph_stamp != self.graph_stamp => {
+                        Some("contract is for a different graph than this row")
+                    }
+                    Some(_) if self.goal_reachable => {
+                        Some("the goal is reachable: no structural claim to make")
+                    }
+                    Some(_) => None,
                 }
             }
         };
@@ -1175,8 +1178,11 @@ pub struct PlanContract {
     /// The stamp every [`PlanTick`] in this run carries (level 1), and the inventory hash that
     /// identifies the graph's contents (level 2). Both, so a capture can be checked at either level:
     /// the stamp says which map and shape, the content hash says which carve.
+    ///
+    /// The content hash is lowercase hex of SHA-256 over the canonical inventory — see
+    /// `WORK_LOGS/graphstamp-kontrakt.md` §8. Empty when the engine did not compute one.
     pub graph_stamp: u64,
-    pub graph_content_hash: u64,
+    pub graph_content_hash: String,
     pub map: String,
     /// The graph's shape — the same counts the harness records, so engine and harness can be checked
     /// against each other on the same graph.
@@ -1524,7 +1530,6 @@ mod tests {
         let tick = PlanTick {
             schema: PLAN_SCHEMA.to_string(),
             graph_stamp: 0xdead_beef_1234_5678,
-            graph_content_hash: 0x0bad_c0de_5678_1234,
             bot: 3,
             t: 12.345,
             seq: 918,
@@ -1610,7 +1615,7 @@ mod tests {
         let c = PlanContract {
             schema: PLAN_SCHEMA.to_string(),
             graph_stamp: 0xdead_beef_1234_5678,
-            graph_content_hash: 0x0bad_c0de_5678_1234,
+            graph_content_hash: "680b540a642e90cdd9eac76debd35af687ff918e7b1b5f6583e5cf34f4759ec0".to_string(),
             map: "dm3".to_string(),
             cells: 4581,
             links: 19822,
@@ -1632,7 +1637,6 @@ mod tests {
         PlanTick {
             schema: PLAN_SCHEMA.to_string(),
             graph_stamp: 13_090_435_456_435_551_592,
-            graph_content_hash: 0x51de_0000_0001,
             bot: 1,
             t: 474.842,
             seq: 1,
@@ -1740,56 +1744,80 @@ mod tests {
         // C1: the Prestrafe->Hop handover, run-up measured, no impulse, jump never commanded.
         let c1 = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
         assert_eq!(
-            c1.attest(Cause::VirtualRunwayGroundRace).unwrap().as_str(),
+            c1.attest(Cause::VirtualRunwayGroundRace, None).unwrap().as_str(),
             "virtual_runway_ground_race",
         );
 
         // C2 is the control case: the jump went out and the bot rose. Labelling it a race would
         // erase the very contrast the facit is built on.
         let c2 = v296_row(1167, "Prestrafe", "Hop", false, true, 260.4, true);
-        let err = c2.attest(Cause::VirtualRunwayGroundRace).expect_err("C2 is not a race");
+        let err = c2.attest(Cause::VirtualRunwayGroundRace, None).expect_err("C2 is not a race");
         assert!(err.reason.contains("not impulse-free") || err.reason.contains("jump was commanded"));
-        assert_eq!(c2.attest(Cause::TakeoffLaunched).unwrap().cause(), Cause::TakeoffLaunched);
+        assert_eq!(c2.attest(Cause::TakeoffLaunched, None).unwrap().cause(), Cause::TakeoffLaunched);
 
         // Wrong handover: two non-empty phase strings are not evidence of *this* transition.
         let wrong_phase = v296_row(1139, "Off", "Zigzag", false, false, -9.6, true);
-        let err = wrong_phase.attest(Cause::VirtualRunwayGroundRace).expect_err("wrong transition");
+        let err = wrong_phase.attest(Cause::VirtualRunwayGroundRace, None).expect_err("wrong transition");
         assert!(err.reason.contains("Prestrafe->Hop"));
 
         // No run-up position: the handover cannot be placed at the lip, so the label is withheld —
         // which is what the facit means by leaving old replays unknown.
         let mut no_runup = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
         no_runup.sj_progress_measured = false;
-        assert!(no_runup.attest(Cause::VirtualRunwayGroundRace).is_err());
+        assert!(no_runup.attest(Cause::VirtualRunwayGroundRace, None).is_err());
 
         // No observed takeoff at all.
         let unobserved = v296_row(1139, "Prestrafe", "Hop", false, false, 0.0, false);
-        assert!(unobserved.attest(Cause::VirtualRunwayGroundRace).is_err());
-        assert!(unobserved.attest(Cause::TakeoffLaunched).is_err());
+        assert!(unobserved.attest(Cause::VirtualRunwayGroundRace, None).is_err());
+        assert!(unobserved.attest(Cause::TakeoffLaunched, None).is_err());
     }
 
-    /// The structural claim is only attestable when the graph actually says so.
+    /// A contract for the graph a row was measured against.
+    fn contract_for(stamp: u64, content: &str) -> PlanContract {
+        PlanContract {
+            schema: PLAN_SCHEMA.to_string(),
+            graph_stamp: stamp,
+            graph_content_hash: content.to_string(),
+            map: "dm3".to_string(),
+            cells: 5978,
+            links: 48208,
+            rj_links: 0,
+            build: "0.1.0".to_string(),
+        }
+    }
+
+    /// The structural claim needs an unreachable goal *and* a contract that binds it to a graph.
+    ///
+    /// The row's own pin is not enough and is not consulted for this: level 1 is a map-and-shape tag,
+    /// and two carves of one map can share it while differing in precisely what "no way there" means.
     #[test]
-    fn structural_claim_needs_an_unreachable_goal() {
+    fn structural_claim_needs_an_unreachable_goal_and_a_bound_contract() {
+        let good = contract_for(13_090_435_456_435_551_592, "680b540a642e90cd");
+
         let reachable = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
         assert!(reachable.goal_reachable);
-        let err = reachable.attest(Cause::StructuralNoPath).expect_err("goal is reachable");
+        let err = reachable.attest(Cause::StructuralNoPath, Some(&good)).expect_err("reachable");
         assert!(err.reason.contains("no structural claim"));
 
         let mut severed = reachable.clone();
         severed.goal_reachable = false;
-        assert_eq!(severed.attest(Cause::StructuralNoPath).unwrap().cause(), Cause::StructuralNoPath);
+        assert_eq!(
+            severed.attest(Cause::StructuralNoPath, Some(&good)).unwrap().cause(),
+            Cause::StructuralNoPath,
+        );
 
-        // Bound to level 2, not to the row pin: a claim about topology has to name the topology it
-        // was read from, and the shape stamp cannot — two carves of one map can share every count
-        // and differ in exactly what this claim is about.
-        let mut no_inventory = severed.clone();
-        no_inventory.graph_content_hash = PLAN_NO_CONTENT_HASH;
-        assert_ne!(no_inventory.graph_stamp, 0, "the row pin is still present...");
-        let err = no_inventory
-            .attest(Cause::StructuralNoPath)
-            .expect_err("...but the row pin is not what this claim rests on");
-        assert!(err.reason.contains("inventory hash"));
+        // No contract at all: nothing to bind the claim to.
+        let err = severed.attest(Cause::StructuralNoPath, None).expect_err("unbound");
+        assert!(err.reason.contains("no graph contract"));
+
+        // A contract without level 2 is not a binding either.
+        let empty = contract_for(severed.graph_stamp, "");
+        assert!(severed.attest(Cause::StructuralNoPath, Some(&empty)).is_err());
+
+        // A contract for a *different* graph is the dangerous case: it looks like evidence.
+        let other = contract_for(severed.graph_stamp ^ 1, "680b540a642e90cd");
+        let err = severed.attest(Cause::StructuralNoPath, Some(&other)).expect_err("wrong graph");
+        assert!(err.reason.contains("different graph"));
     }
 
     /// Zero is a real first-air reading, so only the flag can mean "not observed".
