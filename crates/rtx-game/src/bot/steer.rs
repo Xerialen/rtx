@@ -526,7 +526,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     let gate_closed = costs.gate_closed;
     bot.replanned = false; // per-frame; the repath block below stamps it if one runs
     // Plan telemetry. One cvar read per bot per frame and nothing else unless it is on: every stamp
-    // below sits behind this flag, and `plan.stamped` is left stale when it is off, which is how
+    // below sits behind this flag, and `plan.fresh` is left false when it is off, which is how
     // `control` knows there is no row to send. See [`crate::bot::state::PlanDiag`].
     let plan_tel = host.cvar_bool(c"rtx_plan_telemetry");
     if plan_tel {

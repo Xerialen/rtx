@@ -255,10 +255,12 @@ pub struct TakeoffDiag {
 /// (`first_air_vz`) follow their own clocks.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PlanDiag {
-    /// Game time this diagnostic describes. [`crate::control`] emits a row only when this equals the
-    /// frame's `now` — a bot that did not steer this frame (dead, not in play) produces no row rather
-    /// than a stale one.
+    /// Game time this diagnostic describes (think-time `game.time()`). Payload on the row, not the
+    /// emit key — see [`Self::fresh`].
     pub stamped: f32,
+    /// Frame identity. Set by [`Self::begin_frame`], consumed by [`crate::control::frame_end`].
+    /// A bot that did not steer this frame stays false and produces no row rather than a stale one.
+    pub fresh: bool,
     /// Per-bot row counter. Events are droppable under backlog, so this is what lets a consumer tell
     /// a gap in the record from an absence of decisions.
     pub seq: u32,
@@ -344,6 +346,7 @@ impl PlanDiag {
         } = *self;
         *self = PlanDiag {
             stamped: now,
+            fresh: true,
             seq,
             plan_cost,
             plan_fail,
@@ -1074,14 +1077,16 @@ mod tests {
         assert_eq!(p.seq, 42);
         // And the frame it now describes.
         assert_eq!(p.stamped, 2.0);
+        assert!(p.fresh, "begin_frame marks the frame, independent of the clock");
     }
 
     /// A default `PlanDiag` is never mistaken for a stamped one: `control` gates emission on
-    /// `stamped` matching the frame, and a bot that never steered must not produce a row.
+    /// `fresh`, and a bot that never steered must not produce a row.
     #[test]
     fn plan_diag_default_is_not_a_fresh_stamp() {
         let p = PlanDiag::default();
         assert_eq!(p.stamped, 0.0);
+        assert!(!p.fresh, "never steered");
         assert_eq!(p.seq, 0);
         assert_eq!(p.link, None);
     }

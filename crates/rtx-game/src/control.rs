@@ -260,16 +260,20 @@ pub(crate) fn frame_end(game: &mut GameState) {
                 },
             );
         }
-        // One plan row per steering pass. Gated on the frame stamp, not just the cvar: a bot that
-        // did not steer this frame (dead, not in play) has nothing to report, and a stale row would
-        // read as a decision it never made.
+        // One plan row per steering pass. Gated on frame identity (`plan.fresh`), not f32 time:
+        // steer stamps at think-time `game.time()`, this function reads `now` later, and those
+        // two f32s are never bit-identical live. A bot that did not steer this frame (dead, not
+        // in play) has `fresh == false` and must not emit a stale row.
         if let Some(id) = plan_stamp.as_ref() {
             let p = &game.entities[e].bot.plan;
-            if plan_row_due(gate, p.stamped, now, p.seq) {
+            if plan_row_due(gate, p.fresh, p.seq) {
                 let row = plan_tick(game, i, e, id.stamp);
                 send_event(game, Event::PlanTick(Box::new(row)));
             }
         }
+        // Consume the frame mark even when the gate is shut or this seq is decimated: otherwise a
+        // later frame that does not steer would still look fresh.
+        game.entities[e].bot.plan.fresh = false;
         match game.entities[e].bot.puppet.order {
             None | Some(ControlOrder::Hold) => {}
             Some(ControlOrder::Goto { target }) => {
@@ -966,10 +970,15 @@ pub(crate) fn plan_gate(telemetry: bool, plan_cvar: f32, div_cvar: f32) -> PlanG
 
 /// Whether this bot's row goes out this frame.
 ///
-/// `stamped` must be *this* frame's time: a bot that did not steer (dead, not in play) carries an old
-/// stamp, and emitting it would report a decision it never made.
-pub(crate) fn plan_row_due(gate: PlanGate, stamped: f32, now: f32, seq: u32) -> bool {
-    gate.on && stamped == now && seq % gate.div == 0
+/// `fresh` is the frame identity: [`crate::bot::state::PlanDiag::begin_frame`] sets it, and
+/// [`frame_end`] clears it after the check. A bot that did not steer (dead, not in play) is not
+/// fresh, and emitting it would report a decision it never made.
+///
+/// Do **not** key this on `stamped == now`. Those are two `game.time()` readings — think vs
+/// `frame_end` — and live they are never bit-identical (think ~77 Hz, frame_end ~50 Hz). The
+/// times travel on the row as payload; they are not the emit key.
+pub(crate) fn plan_row_due(gate: PlanGate, fresh: bool, seq: u32) -> bool {
+    gate.on && fresh && seq % gate.div == 0
 }
 
 /// One bot's plan row for this frame — see [`proto::PlanTick`].
@@ -2151,13 +2160,40 @@ mod tests {
     fn plan_row_due_requires_a_fresh_stamp() {
         let on = plan_gate(true, 1.0, 1.0);
         let off = plan_gate(true, 0.0, 1.0);
-        assert!(plan_row_due(on, 12.5, 12.5, 0), "steered this frame");
-        assert!(!plan_row_due(on, 12.0, 12.5, 0), "stale stamp: the bot did not steer");
-        assert!(!plan_row_due(on, 0.0, 12.5, 0), "never steered");
-        assert!(!plan_row_due(off, 12.5, 12.5, 0), "gate shut beats a fresh stamp");
+        assert!(plan_row_due(on, true, 0), "steered this frame");
+        assert!(!plan_row_due(on, false, 0), "stale: the bot did not steer");
+        assert!(!plan_row_due(off, true, 0), "gate shut beats a fresh stamp");
         // Decimation picks every div-th row per bot, and never starves a bot entirely.
         let thin = plan_gate(true, 1.0, 3.0);
-        let due: Vec<u32> = (0..9).filter(|&s| plan_row_due(thin, 1.0, 1.0, s)).collect();
+        let due: Vec<u32> = (0..9).filter(|&s| plan_row_due(thin, true, s)).collect();
         assert_eq!(due, vec![0, 3, 6], "every third row, deterministically");
+    }
+
+    /// Regression: think and frame_end read `game.time()` at different instants.
+    /// The old `stamped == now` predicate dropped every live row; this test feeds
+    /// two unequal f32 times and still requires emit when the frame is fresh.
+    #[test]
+    fn plan_row_due_emits_when_think_and_frame_end_times_differ() {
+        let on = plan_gate(true, 1.0, 1.0);
+        let think_t = 12.0_f32;
+        let frame_end_t = 12.5_f32;
+        assert_ne!(
+            think_t.to_bits(),
+            frame_end_t.to_bits(),
+            "the live clocks disagree"
+        );
+        assert_ne!(think_t, frame_end_t);
+        assert!(
+            think_t != frame_end_t,
+            "the old f32-bit-equality predicate would drop this row"
+        );
+        assert!(
+            plan_row_due(on, true, 0),
+            "fresh this frame must emit even when the two game.time() readings differ"
+        );
+        assert!(
+            !plan_row_due(on, false, 0),
+            "without freshness a time match is not an emit"
+        );
     }
 }
