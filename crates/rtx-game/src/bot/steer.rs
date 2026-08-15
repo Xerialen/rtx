@@ -539,6 +539,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             bot.plan.first_air_vz = 0.0;
         }
         bot.plan.begin_frame(now);
+        // Before the controller steps: the other end of any phase transition this frame.
+        bot.plan.phase_prev = bot.bhop.phase;
     }
 
     // Plain-jump commitment is normally pre-armed before objective resolution. Remember the first
@@ -1045,6 +1047,7 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 bot.plan.v_req = sj.v_req;
                 bot.plan.chained = sj.chained;
                 bot.plan.curl_gain = sj.curl_gain;
+                bot.plan.takeoff_xyz = sj.takeoff;
                 // An uncapped weave is `INFINITY`, which has no place in a log line.
                 bot.plan.weave_cap = if sj.weave_cap.is_finite() { sj.weave_cap } else { -1.0 };
             }
@@ -1913,6 +1916,11 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         };
         if plan_tel {
             bot.plan.runway = bhop_runway;
+            bot.plan.runway_measured = true;
+            // The signed along-corridor progress in its own right, not just the value that survived
+            // the fallback into `bhop_runway` — the two differ precisely at the lip.
+            bot.plan.sj_progress = sj_progress.unwrap_or(0.0);
+            bot.plan.sj_progress_measured = sj_progress.is_some();
             bot.plan.hold_jump = sj_hold;
         }
         let cmd = bot.bhop.step(
@@ -2757,8 +2765,9 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     let overlays_ok = !hook_engaged && !rj_engaged && !bhop_active && !traversal_lock;
     if plan_tel {
         bot.plan.on_ground = on_ground;
+        bot.plan.origin = origin;
+        bot.plan.vel = v_xy.extend(vz);
         bot.plan.speed = speed;
-        bot.plan.vz = vz;
         bot.plan.seq = bot.plan.seq.wrapping_add(1);
     }
     SteerOut {

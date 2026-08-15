@@ -289,9 +289,20 @@ pub struct PlanDiag {
     /// sent. The command, not the intention: a press cleared later in the chain never reached the
     /// engine, and that gap is exactly what this telemetry is for.
     pub on_ground: bool,
+    pub origin: Vec3,
+    pub vel: Vec3,
     pub speed: f32,
-    pub vz: f32,
     pub jump_cmd: bool,
+    /// The hop phase as it stood at the top of this frame, before the controller stepped — the other
+    /// half of a transition, which a single phase reading cannot show.
+    pub phase_prev: crate::bot::bhop::Phase,
+    /// The takeoff point of the active speed jump; meaningful only alongside a speed-jump leg.
+    pub takeoff_xyz: Vec3,
+    /// Signed along-corridor distance to the takeoff line, and whether it was measured at all. Both
+    /// this and `runway` are signed, so absence needs a flag rather than an out-of-band value.
+    pub sj_progress: f32,
+    pub sj_progress_measured: bool,
+    pub runway_measured: bool,
 
     // --- route-scoped: survive between repaths ----------------------------------------------
     /// The banded planner's total cost for the route in force, or `-1` when it came from an unbanded
@@ -328,9 +339,10 @@ impl PlanDiag {
             plan_cost,
             plan_fail,
             first_air_vz,
-            // Not measured until something stamps it.
+            // Not measured until something stamps it. `weave_cap` is a half-angle and never
+            // negative, so -1 is safely out of band; `runway` and `sj_progress` are *signed* and have
+            // no such value, which is why their absence is carried by a flag instead.
             weave_cap: -1.0,
-            runway: -1.0,
             ..PlanDiag::default()
         };
         let _ = stamped;
@@ -1009,7 +1021,10 @@ mod tests {
             p_total: 4.0,
             v_req: 320.0,
             chained: true,
-            runway: 96.0,
+            runway: -4.5,
+            runway_measured: true,
+            sj_progress: -4.5,
+            sj_progress_measured: true,
             hold_jump: true,
             on_ground: true,
             speed: 280.0,
@@ -1033,8 +1048,11 @@ mod tests {
         assert!(!p.on_ground);
         assert_eq!(p.speed, 0.0);
         assert!(!p.jump_cmd);
-        assert_eq!(p.runway, -1.0, "an unmeasured run-up is not a run-up of zero");
         assert_eq!(p.weave_cap, -1.0, "an unmeasured weave cap is not a cap of zero");
+        // `runway` and `sj_progress` are signed — a bot past the lip reads negative — so no in-band
+        // value can mean "not measured". Their absence rides on the flags, and the flags must clear.
+        assert!(!p.runway_measured, "last frame's run-up must not be presented as this frame's");
+        assert!(!p.sj_progress_measured);
 
         // Route-scoped: still describing the plan in force.
         assert_eq!(p.plan_cost, 4.25);

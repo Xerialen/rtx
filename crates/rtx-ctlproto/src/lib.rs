@@ -881,9 +881,12 @@ pub struct PlanTick {
     /// falsified; these fields exist so that hypothesis can be re-tested and re-refuted, not so a
     /// consumer can classify a failure from them. Cause comes from the controller state below.
     pub v_req: f32,
-    /// Horizontal speed.
+    /// Where the bot was and how it was moving. Carried in full rather than as a magnitude: the
+    /// V296 record turns on reading a takeoff's actual arc, which a scalar speed cannot express.
+    pub origin: Vec3,
+    pub vel: Vec3,
+    /// Horizontal speed — `vel`'s xy magnitude, which is the quantity every run-up gate reads.
     pub speed: f32,
-    pub vz: f32,
     /// This speed jump has no run-up of its own and depends on carried entry speed.
     pub chained: bool,
     /// Air-curl gain (`0` = a straight speed jump) and the run-up weave half-angle in degrees
@@ -894,13 +897,33 @@ pub struct PlanTick {
     // --- controller state: the V296 oracle ----------------------------------------------------
     /// `FL_ONGROUND` this tick.
     pub on_ground: bool,
-    /// The hop controller's phase: `Off`, `Prestrafe`, `Hop` or `Zigzag`.
+    /// The hop controller's phase after this frame's step, and what it was before it.
+    ///
+    /// The pair is the point: V296's belayed mechanism is a *transition* — `Prestrafe` to `Hop` in
+    /// the virtual lip zone — and a single after-the-fact phase cannot show a transition at all.
     pub phase: String,
-    /// Straight corridor remaining — on a speed jump, the run-up left to the takeoff.
+    pub phase_prev: String,
+    /// Straight corridor remaining — on a speed jump, the run-up left to the takeoff — as handed to
+    /// the hop controller. Valid only when `runway_measured`.
     pub runway: f32,
-    /// The active speed jump's source cell — where the takeoff is measured from ([`PLAN_NONE`] when
-    /// the leg is not a speed jump).
+    /// Signed along-corridor distance to the takeoff line: **negative past the lip**. Valid only when
+    /// `sj_progress_measured`.
+    ///
+    /// Distinct from `runway`, which falls back to a radial distance when this is unavailable. The
+    /// facit names both, and they disagree exactly where it matters.
+    pub sj_progress: f32,
+    /// Whether `runway` / `sj_progress` were measured this tick.
+    ///
+    /// Both quantities are *signed*, so no in-band value can mean "not measured" — a `-1` would be a
+    /// perfectly good reading of a bot one unit past the lip. Hence an explicit flag rather than a
+    /// sentinel: the one place in this row where absence cannot be encoded in the number itself.
+    pub runway_measured: bool,
+    pub sj_progress_measured: bool,
+    /// The active speed jump's source cell and the takeoff point itself ([`PLAN_NONE`] when the leg
+    /// is not a speed jump; `takeoff_xyz` is meaningful only then, since the origin is a legitimate
+    /// coordinate and cannot double as a sentinel).
     pub takeoff_cell: u32,
+    pub takeoff_xyz: Vec3,
     /// Speed carried toward the steering waypoint, and the distance to it.
     pub runup: f32,
     pub wp: f32,
@@ -1312,15 +1335,21 @@ mod tests {
             p_chained: 0.0,
             p_total: 4.495,
             v_req: 320.0,
+            origin: [81.1, -553.3, 312.0],
+            vel: [201.4, -205.1, -12.0],
             speed: 287.5,
-            vz: -12.0,
             chained: true,
             curl_gain: 0.35,
             weave_cap: -1.0,
             on_ground: false,
             phase: "Hop".to_string(),
-            runway: 96.0,
+            phase_prev: "Prestrafe".to_string(),
+            runway: -4.5,
+            sj_progress: -4.5,
+            runway_measured: true,
+            sj_progress_measured: true,
             takeoff_cell: 56,
+            takeoff_xyz: [93.1, -587.8, 296.0],
             runup: 301.0,
             wp: 48.0,
             lip: -1.0,

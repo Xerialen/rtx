@@ -945,17 +945,23 @@ fn plan_tick(game: &GameState, bot_num: u32, e: EntId, stamp: u64) -> proto::Pla
         p_total: p.p_total,
 
         v_req: p.v_req,
+        origin: a3(p.origin),
+        vel: a3(p.vel),
         speed: p.speed,
-        vz: p.vz,
         chained: p.chained,
         curl_gain: p.curl_gain,
         weave_cap: p.weave_cap,
 
         on_ground: p.on_ground,
         phase: format!("{:?}", b.bhop.phase),
+        phase_prev: format!("{:?}", p.phase_prev),
         runway: p.runway,
+        sj_progress: p.sj_progress,
+        runway_measured: p.runway_measured,
+        sj_progress_measured: p.sj_progress_measured,
         // The takeoff is measured from the jump leg's source cell — meaningless off a speed jump.
         takeoff_cell: if p.v_req > 0.0 { link_from } else { none },
+        takeoff_xyz: a3(p.takeoff_xyz),
         runup: b.takeoff.runup,
         wp: b.takeoff.wp,
         lip: b.takeoff.lip.unwrap_or(proto::PLAN_UNSET),
@@ -1989,6 +1995,24 @@ mod tests {
         assert_ne!(base, graph_stamp("dm3", 4582, 19822, 311), "cell count matters");
         assert_ne!(base, graph_stamp("dm3", 4581, 19823, 311), "link count matters");
         assert_ne!(base, graph_stamp("dm3", 4581, 19822, 312), "rocket-jump link count matters");
+    }
+
+    /// The stamp matches the harness's, byte for byte, on the graph they will actually be compared on.
+    ///
+    /// The engine and the harness each compute this independently — that is the point of a contract
+    /// rather than a shared function — so the only thing that keeps them honest is both being checked
+    /// against the same fixed answers. The golden value is dm3 as T1h measured it; the three FNV
+    /// vectors catch a wrong basis or a multiply-before-XOR, which the dm3 value alone would not
+    /// localise. See WORK_LOGS/graphstamp-kontrakt.md (track A owns the definition).
+    #[test]
+    fn graph_stamp_matches_the_harness_contract() {
+        // Standard FNV-1a-64 vectors, over the message alone.
+        assert_eq!(fnv1a(0xcbf2_9ce4_8422_2325, b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a(0xcbf2_9ce4_8422_2325, b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a(0xcbf2_9ce4_8422_2325, b"foobar"), 0x8594_4171_f739_67e8);
+        // The graph T1h was measured against.
+        assert_eq!(graph_stamp("dm3", 5978, 48208, 0), 13_090_435_456_435_551_592);
+        assert_eq!(graph_stamp("dm3", 5978, 48208, 0), 0xb5aa_91b1_0804_fd68);
     }
 
     /// The counts are hashed as distinct fields, not run together — otherwise a graph that traded
