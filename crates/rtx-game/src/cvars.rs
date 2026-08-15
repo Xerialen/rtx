@@ -256,6 +256,15 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // Off by default: it is pure observability, and a server nobody is measuring
         // should not pay for a per-frame event.
         ("rtx_telemetry", Float(0.0)),
+        // Per-tick planner telemetry (`PlanTick`): which link the bot chose, what that link cost term
+        // by term, and the controller state it was steering in. Off by default, and subordinate to
+        // `rtx_telemetry` — it puts further new variants on the wire, which a pre-branch typed
+        // consumer cannot decode (see [`crate::control::frame_end`]). Both must be set.
+        ("rtx_plan_telemetry", Float(0.0)),
+        // Emit one plan row per this many frames per bot (`1` = every frame). A full row per bot per
+        // frame is the honest default, but events are droppable under backlog, and a long capture is
+        // better decimated deliberately than thinned by silent drops.
+        ("rtx_plan_telemetry_div", Float(1.0)),
         // Rocket-jump driver knobs, read live each frame and threaded into the driver so the harness
         // can tune them without a rebuild. Each default mirrors the constant it replaces, so live
         // behaviour is unchanged until a knob is set. See [`crate::bot::rj`] / [`crate::bot`].

@@ -215,6 +215,9 @@ pub struct BotState {
     /// route cursor alone (the leg's kind lives in the graph, and the gate is a velocity test against
     /// a waypoint that moves). See [`crate::bot::steer`]'s run-up gate.
     pub takeoff: TakeoffDiag,
+    /// What the planner decided this frame, for the plan-telemetry event. Diagnostic only; see
+    /// [`PlanDiag`].
+    pub plan: PlanDiag,
 }
 
 /// One frame's view of the leg being flown and its takeoff gate. Diagnostic only.
@@ -233,6 +236,105 @@ pub struct TakeoffDiag {
     pub ok: bool,
     /// A speed jump's leap is held for its certified envelope this frame.
     pub sj_held: bool,
+}
+
+/// What the planner chose this frame and what it cost — the engine half of the plan-telemetry row.
+///
+/// Everything here is either unavailable to [`crate::control`] at drain time or would be *wrong* by
+/// then. The active leg is the clear case: `route_pos` is read after steering, but `hook`/`rj` advance
+/// it on landing, so recomputing `route[route_pos]` in `frame_end` would sometimes name the next leg
+/// rather than the one just flown. The price terms need the frame's `LinkCosts`, which lives only
+/// inside `steer`. So steering stamps, and the control channel drains — the same split
+/// [`StallRecord`] uses, and for the same reason: `steer` has no `&GameState`.
+///
+/// Fields fall into three lifetimes, which is why there is no blanket per-frame reset:
+/// **frame-scoped** (the leg, its price, the controller's state) are cleared by
+/// [`Self::begin_frame`] so a frame that never reaches a stamp reads as "not measured" instead of
+/// repeating last frame's answer; **route-scoped** (`plan_cost`, `plan_fail`) describe the plan in
+/// force and must survive the frames between repaths; **stream-scoped** (`seq`) and **hop-scoped**
+/// (`first_air_vz`) follow their own clocks.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlanDiag {
+    /// Game time this diagnostic describes. [`crate::control`] emits a row only when this equals the
+    /// frame's `now` — a bot that did not steer this frame (dead, not in play) produces no row rather
+    /// than a stale one.
+    pub stamped: f32,
+    /// Per-bot row counter. Events are droppable under backlog, so this is what lets a consumer tell
+    /// a gap in the record from an absence of decisions.
+    pub seq: u32,
+
+    // --- frame-scoped: cleared by `begin_frame` ---------------------------------------------
+    /// The leg being steered along, its kind, and its planned entry speed band.
+    pub link: Option<u32>,
+    pub kind: Option<rtx_nav::navmesh::LinkKind>,
+    pub band: Option<u8>,
+    /// The dynamic surcharge A\* charged this leg, term by term, plus the static and chained parts
+    /// and the total. Split because a sum cannot be acted on — see [`rtx_nav::navmesh::LinkExtra`].
+    pub extra: rtx_nav::navmesh::LinkExtra,
+    pub p_base: f32,
+    pub p_chained: f32,
+    pub p_total: f32,
+    /// The speed jump on this leg, if it is one: required takeoff speed, whether it depends on
+    /// carried entry speed, its air-curl gain and its run-up weave cap.
+    pub v_req: f32,
+    pub chained: bool,
+    pub curl_gain: f32,
+    pub weave_cap: f32,
+    /// What finishing the current plan costs from where the bot actually is.
+    pub remaining_cost: f32,
+    /// The hop controller's run-up measurement and its too-slow-to-leap verdict.
+    pub runway: f32,
+    pub hold_jump: bool,
+    /// Physical state as steering saw it, and whether `+jump` survived into the command actually
+    /// sent. The command, not the intention: a press cleared later in the chain never reached the
+    /// engine, and that gap is exactly what this telemetry is for.
+    pub on_ground: bool,
+    pub speed: f32,
+    pub vz: f32,
+    pub jump_cmd: bool,
+
+    // --- route-scoped: survive between repaths ----------------------------------------------
+    /// The banded planner's total cost for the route in force, or `-1` when it came from an unbanded
+    /// search.
+    pub plan_cost: f32,
+    /// Why the last repath produced nothing: `""` on success, else `no_path`, `priced_out` or
+    /// `unreachable`. Separates a missing link from a botched execution — the one distinction the
+    /// route record cannot otherwise make.
+    pub plan_fail: &'static str,
+
+    // --- hop-scoped -------------------------------------------------------------------------
+    /// Vertical speed on the first airborne frame of the current hop; `0` until one happens. The
+    /// leap's outcome as against the takeoff gate's prediction of it.
+    pub first_air_vz: f32,
+}
+
+impl PlanDiag {
+    /// Start a frame: clear what is measured per frame, keep what outlives one.
+    ///
+    /// A frame-scoped field left over from last frame is worse than no field at all — it reads as a
+    /// measurement and is silently one tick stale, which is unfalsifiable in the log.
+    pub fn begin_frame(&mut self, now: f32) {
+        let PlanDiag {
+            stamped,
+            seq,
+            plan_cost,
+            plan_fail,
+            first_air_vz,
+            ..
+        } = *self;
+        *self = PlanDiag {
+            stamped: now,
+            seq,
+            plan_cost,
+            plan_fail,
+            first_air_vz,
+            // Not measured until something stamps it.
+            weave_cap: -1.0,
+            runway: -1.0,
+            ..PlanDiag::default()
+        };
+        let _ = stamped;
+    }
 }
 
 impl BotState {

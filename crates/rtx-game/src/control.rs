@@ -104,6 +104,14 @@ pub(crate) struct ControlState {
     threads: Vec<std::thread::JoinHandle<()>>,
     /// One clone per live reader thread; [`shutdown`] waits for the count to fall back to its own.
     readers: Option<Arc<()>>,
+    /// The navmesh identity plan telemetry is currently stamping rows with, as
+    /// `(stamp, cells, links, rj_links)`. Cached because deriving it walks every link and this sits on
+    /// the per-frame path; the cell and link counts are O(1) and cannot change without a rebuild, so
+    /// they serve as the invalidation key.
+    plan_graph: Option<(u64, u32, u32, u32)>,
+    /// The graph stamp whose [`proto::PlanContract`] has already been announced, so the expansion is
+    /// sent once per graph rather than once per frame. `0` = nothing announced yet.
+    plan_contract: u64,
 }
 
 /// Take the control channel down and wait for its threads to leave our code — called from
@@ -191,6 +199,33 @@ pub(crate) fn frame_end(game: &mut GameState) {
     if telemetry {
         send_event(game, Event::Pmove(pmove_event(game, now, maxclients)));
     }
+    // Plan telemetry rides *inside* the telemetry switch: it adds further variants of its own, and
+    // the rule that nothing new goes on the wire without the operator's opt-in applies to them too.
+    let plan_tel = telemetry && game.host.cvar(c"rtx_plan_telemetry") > 0.0;
+    // Emit one row per bot per this many frames. Clamped at 1 so a nonsense value thins nothing
+    // rather than dividing by zero.
+    let plan_div = (game.host.cvar(c"rtx_plan_telemetry_div") as u32).max(1);
+    let plan_stamp = if plan_tel { plan_graph_identity(game) } else { None };
+    if let Some((stamp, cells, links, rj_links)) = plan_stamp {
+        // Announce the graph once per graph, not once per frame: the rows carry a bare integer, and
+        // this is the only thing that says what it means. Re-sent after a rebuild, since the same
+        // cell index then names a different place.
+        if game.control.plan_contract != stamp {
+            game.control.plan_contract = stamp;
+            send_event(
+                game,
+                Event::PlanContract(proto::PlanContract {
+                    schema: proto::PLAN_SCHEMA.to_string(),
+                    graph_stamp: stamp,
+                    map: game.level.mapname.clone(),
+                    cells,
+                    links,
+                    rj_links,
+                    build: env!("CARGO_PKG_VERSION").to_string(),
+                }),
+            );
+        }
+    }
     for i in 1..=maxclients {
         let e = EntId(i);
         if !game.entities[e].bot.is_bot || !game.entities[e].in_use {
@@ -224,6 +259,16 @@ pub(crate) fn frame_end(game: &mut GameState) {
                     action: rec.action.to_string(),
                 },
             );
+        }
+        // One plan row per steering pass. Gated on the frame stamp, not just the cvar: a bot that
+        // did not steer this frame (dead, not in play) has nothing to report, and a stale row would
+        // read as a decision it never made.
+        if let Some((stamp, ..)) = plan_stamp {
+            let p = &game.entities[e].bot.plan;
+            if p.stamped == now && p.seq % plan_div == 0 {
+                let row = plan_tick(game, i, e, stamp);
+                send_event(game, Event::PlanTick(Box::new(row)));
+            }
         }
         match game.entities[e].bot.puppet.order {
             None | Some(ControlOrder::Hold) => {}
@@ -814,6 +859,114 @@ fn pmove_event(game: &GameState, now: f32, maxclients: u32) -> proto::PmoveEvent
         });
     }
     proto::PmoveEvent { t: now, players }
+}
+
+/// FNV-1a, one byte at a time.
+fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Which navmesh a plan row's cell and link indices mean anything against.
+///
+/// Over exactly the four facts the harness's own `nav_stamp` records (map name and the three shape
+/// counts), in that order, so the engine's stamp and the harness's can be compared directly on the
+/// same graph. The harness owns this definition; this is the mirror of it. Two rows with different
+/// stamps describe different graphs and must never be compared — a link index is only a name for a
+/// link within one build.
+fn graph_stamp(map: &str, cells: u32, links: u32, rj_links: u32) -> u64 {
+    let h = fnv1a(0xcbf2_9ce4_8422_2325, map.as_bytes());
+    let h = fnv1a(h, &cells.to_le_bytes());
+    let h = fnv1a(h, &links.to_le_bytes());
+    fnv1a(h, &rj_links.to_le_bytes())
+}
+
+/// The live graph's identity, `(stamp, cells, links, rj_links)`, or `None` with no graph loaded.
+/// Recomputed only when the shape changes — see [`ControlState::plan_graph`].
+fn plan_graph_identity(game: &mut GameState) -> Option<(u64, u32, u32, u32)> {
+    let g = game.nav.graph.as_ref()?;
+    let (cells, links) = (g.cells.len() as u32, g.links.len() as u32);
+    if let Some(cached @ (_, c, l, _)) = game.control.plan_graph {
+        if (c, l) == (cells, links) {
+            return Some(cached);
+        }
+    }
+    let rj_links = g.summary().rocket_jump as u32;
+    let id = (graph_stamp(&game.level.mapname, cells, links, rj_links), cells, links, rj_links);
+    game.control.plan_graph = Some(id);
+    id.into()
+}
+
+/// One bot's plan row for this frame — see [`proto::PlanTick`].
+///
+/// Every value is read from what steering already stamped on the bot (`bot.plan`, `bot.takeoff`,
+/// `bot.bhop`); nothing is re-derived here, because a re-derivation in `frame_end` would be a
+/// different frame's answer to the same question.
+fn plan_tick(game: &GameState, bot_num: u32, e: EntId, stamp: u64) -> proto::PlanTick {
+    let b = &game.entities[e].bot;
+    let p = &b.plan;
+    let none = proto::PLAN_NONE;
+    let link_from = p.link.map_or(none, |l| game.nav.graph.as_ref().map_or(none, |g| g.link_source(l)));
+    let link_to = p.link.map_or(none, |l| game.nav.graph.as_ref().map_or(none, |g| g.link_target(l)));
+    proto::PlanTick {
+        schema: proto::PLAN_SCHEMA.to_string(),
+        graph_stamp: stamp,
+        bot: bot_num,
+        t: p.stamped,
+        seq: p.seq,
+
+        cell: b.cell.unwrap_or(none),
+        goal_cell: b.goal_cell.unwrap_or(none),
+        route_len: b.route.len() as u32,
+        route_pos: b.route_pos as u32,
+        link: p.link.unwrap_or(none),
+        kind: p.kind.map(|k| format!("{k:?}")).unwrap_or_default(),
+        link_from,
+        link_to,
+        band: p.band.unwrap_or(proto::PLAN_NO_BAND),
+        replanned: b.replanned,
+        route_goal: b.route_goal.unwrap_or(none),
+        route_target: b.route_target.unwrap_or(none),
+        plan_cost: p.plan_cost,
+        remaining_cost: p.remaining_cost,
+        plan_fail: p.plan_fail.to_string(),
+
+        p_base: p.p_base,
+        p_gate: p.extra.gate,
+        p_penalty: p.extra.penalty,
+        p_jitter: p.extra.jitter,
+        p_rj: p.extra.rj,
+        p_water: p.extra.water,
+        p_hazard: p.extra.hazard,
+        p_chained: p.p_chained,
+        p_total: p.p_total,
+
+        v_req: p.v_req,
+        speed: p.speed,
+        vz: p.vz,
+        chained: p.chained,
+        curl_gain: p.curl_gain,
+        weave_cap: p.weave_cap,
+
+        on_ground: p.on_ground,
+        phase: format!("{:?}", b.bhop.phase),
+        runway: p.runway,
+        // The takeoff is measured from the jump leg's source cell — meaningless off a speed jump.
+        takeoff_cell: if p.v_req > 0.0 { link_from } else { none },
+        runup: b.takeoff.runup,
+        wp: b.takeoff.wp,
+        lip: b.takeoff.lip.unwrap_or(proto::PLAN_UNSET),
+        takeoff_ok: b.takeoff.ok,
+        sj_held: b.takeoff.sj_held,
+        hold_jump: p.hold_jump,
+        jump_cmd: p.jump_cmd,
+        first_air_vz: p.first_air_vz,
+        hops: b.bhop.hops,
+        off_reason: b.bhop.off_reason.to_string(),
+    }
 }
 
 fn status_resp(game: &GameState) -> proto::StatusResp {

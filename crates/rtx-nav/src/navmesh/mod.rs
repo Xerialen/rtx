@@ -1215,7 +1215,7 @@ impl NavGraph {
     /// never take one. Large enough to sever it in practice, finite so it never poisons `g` beyond
     /// the existing [`CLOSED_GATE_PENALTY`] scale. The banded planner ([`Self::find_path_banded`])
     /// bypasses this and gates chained jumps on the entry band instead.
-    pub(super) fn chained_block(&self, li: u32) -> f32 {
+    pub fn chained_block(&self, li: u32) -> f32 {
         match self.speed_jump_of_link(li) {
             Some(t) if t.chained => CLOSED_GATE_PENALTY,
             _ => 0.0,

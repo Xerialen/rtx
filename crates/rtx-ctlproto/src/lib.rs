@@ -744,6 +744,13 @@ pub enum Event {
         nav_ready: bool,
         alive: bool,
     },
+    /// One bot's planning decision for one tick — see [`PlanTick`].
+    ///
+    /// Boxed because it is by far the largest payload here and every other variant would otherwise
+    /// pay its size on the stack.
+    PlanTick(Box<PlanTick>),
+    /// Which graph the `PlanTick` stream is measured against — see [`PlanContract`].
+    PlanContract(PlanContract),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -760,6 +767,185 @@ pub struct PmovePlayer {
     pub on_ground: bool,
     /// The entity being stood on, or -1 for none/invalid.
     pub ground_ent: i32,
+}
+
+/// The contract name and version every [`PlanTick`] is written against.
+pub const PLAN_SCHEMA: &str = "qw-nav-graph/1";
+
+/// Sentinel for "no cell / no link" in a [`PlanTick`].
+///
+/// Plan telemetry is the *row* layer, and rows carry sentinels, never the string `unknown` — that
+/// belongs to the verdict layer downstream (attribution, clustering, action classes). The two mean
+/// different things and merging them loses a fact: `link == PLAN_NONE` says the bot was demonstrably
+/// off-route, where `unknown` in a verdict says nobody could tell.
+pub const PLAN_NONE: u32 = u32::MAX;
+
+/// Sentinel for "no planned speed band" in [`PlanTick::band`].
+pub const PLAN_NO_BAND: u8 = u8::MAX;
+
+/// Sentinel for a float the engine did not measure this tick (an unprobed lip, an uncapped weave).
+pub const PLAN_UNSET: f32 = -1.0;
+
+/// What the planner decided for one bot on one tick, and the controller state it decided it in.
+///
+/// The stall stream ([`Event::BotStall`]) says a bot noticed it was going nowhere; this says what it
+/// was *trying* to do every tick, whether or not anything went wrong. That difference is the point:
+/// a failure that never trips a watchdog — a route silently re-priced onto a longer way, a jump the
+/// bot declined to attempt — leaves no trace at all in the stall stream.
+///
+/// Emitted only with both `rtx_telemetry` and `rtx_plan_telemetry` set; see `rtx-game`'s `control`.
+///
+/// **No field is ever absent or null.** Missing values are the sentinels above, so a consumer never
+/// has to distinguish "key not present" from "value not known", and an old dataset run through an
+/// adapter stays byte-comparable with a fresh one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlanTick {
+    // --- identity and joining ---------------------------------------------------------------
+    /// [`PLAN_SCHEMA`] — pinned on every row so a line is self-describing without a side channel.
+    pub schema: String,
+    /// Which navmesh instance these numbers mean anything against; expanded by [`PlanContract`].
+    /// Two rows with different stamps must never be compared.
+    pub graph_stamp: u64,
+    /// Engine client number (`1..=maxclients`), the same index the rest of the harness stamps.
+    pub bot: u32,
+    /// Server time. The join key against the harness row, alongside `bot`: both are read from the
+    /// same `game.time()` in the same `frame_end`, so they match exactly rather than approximately.
+    pub t: f32,
+    /// Per-bot monotone counter. Events are droppable under backlog (by design — replies are not),
+    /// so a gap here is the only way a consumer can tell "the planner did nothing" from "the row
+    /// never made it". A run with gaps must be reported as such, not read as an absence of events.
+    pub seq: u32,
+
+    // --- the planner's decision -------------------------------------------------------------
+    /// The cell the bot resolved itself to this planning frame ([`PLAN_NONE`] if none).
+    pub cell: u32,
+    /// The cell it is routing toward ([`PLAN_NONE`] if none).
+    pub goal_cell: u32,
+    pub route_len: u32,
+    pub route_pos: u32,
+    /// **The active leg** — the link index the bot is steering along right now ([`PLAN_NONE`] when
+    /// off-route or arrived). This is the decision the whole event exists to record.
+    pub link: u32,
+    /// That leg's `LinkKind` as its `Debug` name; empty when off-route.
+    pub kind: String,
+    /// The active leg's source and target cells ([`PLAN_NONE`] when off-route). Carried so an
+    /// attribution pass never has to re-open the graph to resolve a link index.
+    pub link_from: u32,
+    pub link_to: u32,
+    /// The banded planner's planned *entry* speed band for this leg ([`PLAN_NO_BAND`] if none).
+    pub band: u8,
+    /// A repath ran this tick.
+    pub replanned: bool,
+    /// The goal the last repath was handed, and the cell A\* actually searched to after
+    /// reachability redirection and LOD truncation ([`PLAN_NONE`] if none).
+    pub route_goal: u32,
+    pub route_target: u32,
+    /// The banded planner's total cost for the committed route, in seconds ([`PLAN_UNSET`] when the
+    /// route came from an unbanded search or none was committed).
+    pub plan_cost: f32,
+    /// What finishing the current plan costs from where the bot actually is, in the seconds A\*
+    /// minimises.
+    pub remaining_cost: f32,
+    /// Why the last repath produced nothing: empty when it succeeded, else `no_path`, `priced_out`
+    /// or `unreachable`.
+    ///
+    /// This is the field that separates a *structurally missing link* from an *execution failure* —
+    /// the distinction the IN-ring oracle turns on. A bot failing repeatedly with `plan_fail` empty
+    /// had a route and could not fly it; one with `no_path` was never offered a way at all, and no
+    /// amount of steering work would have helped.
+    pub plan_fail: String,
+
+    // --- what the active leg cost, term by term ---------------------------------------------
+    /// The leg's static cost, and each dynamic term A\* charged on top of it this tick, in seconds.
+    ///
+    /// A sum cannot be acted on: 100000.4s is a shut gate plus jitter, or an unfit rocket jump plus
+    /// a failed-link strike, and those want opposite fixes. Split, the reason is readable directly.
+    /// New terms may be added as further `p_*` fields — a consumer that meets one it does not know
+    /// must ignore it, so instrumenting a fork's extra pricing is an extension, not a break.
+    pub p_base: f32,
+    pub p_gate: f32,
+    pub p_penalty: f32,
+    pub p_jitter: f32,
+    pub p_rj: f32,
+    pub p_water: f32,
+    pub p_hazard: f32,
+    pub p_chained: f32,
+    /// What A\* actually paid: the sum of the `p_*` terms present on this row.
+    pub p_total: f32,
+
+    // --- speed, recorded but never a cause ---------------------------------------------------
+    /// Required takeoff speed for a committed speed jump (`0` = not a speed jump), and the speed
+    /// actually carried.
+    ///
+    /// **Logged, never a causal label.** The v_req-gap reading of V296 was investigated and
+    /// falsified; these fields exist so that hypothesis can be re-tested and re-refuted, not so a
+    /// consumer can classify a failure from them. Cause comes from the controller state below.
+    pub v_req: f32,
+    /// Horizontal speed.
+    pub speed: f32,
+    pub vz: f32,
+    /// This speed jump has no run-up of its own and depends on carried entry speed.
+    pub chained: bool,
+    /// Air-curl gain (`0` = a straight speed jump) and the run-up weave half-angle in degrees
+    /// ([`PLAN_UNSET`] when uncapped).
+    pub curl_gain: f32,
+    pub weave_cap: f32,
+
+    // --- controller state: the V296 oracle ----------------------------------------------------
+    /// `FL_ONGROUND` this tick.
+    pub on_ground: bool,
+    /// The hop controller's phase: `Off`, `Prestrafe`, `Hop` or `Zigzag`.
+    pub phase: String,
+    /// Straight corridor remaining — on a speed jump, the run-up left to the takeoff.
+    pub runway: f32,
+    /// The active speed jump's source cell — where the takeoff is measured from ([`PLAN_NONE`] when
+    /// the leg is not a speed jump).
+    pub takeoff_cell: u32,
+    /// Speed carried toward the steering waypoint, and the distance to it.
+    pub runup: f32,
+    pub wp: f32,
+    /// Floor left ahead before it falls away ([`PLAN_UNSET`] when not probed). What the takeoff is
+    /// really racing.
+    pub lip: f32,
+    /// The run-up gate's verdict, and whether a speed jump's leap is held for its envelope.
+    pub takeoff_ok: bool,
+    pub sj_held: bool,
+    /// At the edge but too slow to clear the gap: keep building, do not leap.
+    pub hold_jump: bool,
+    /// Whether `+jump` is set in the usercmd **actually sent** this tick.
+    ///
+    /// Read after the whole button chain, including the late clears — an intention that never
+    /// reached the engine is exactly the jump-cmd-on-ground race this telemetry exists to catch, so
+    /// recording the wish instead of the command would hide the bug it is here to expose.
+    pub jump_cmd: bool,
+    /// Vertical speed on the first airborne tick of the current hop (`0` before any takeoff). The
+    /// leap's actual outcome, as opposed to the gate's prediction of it.
+    pub first_air_vz: f32,
+    /// Hops taken in this engagement, and why the last one ended (`veto`, `runway`, `leg`; empty if
+    /// still engaged or never engaged).
+    pub hops: u32,
+    pub off_reason: String,
+}
+
+/// Which graph a run of [`PlanTick`]s was measured against.
+///
+/// Sent once when plan telemetry is switched on and again whenever the navmesh is rebuilt, so a
+/// capture stands on its own: [`PlanTick::graph_stamp`] is a bare integer, and this is what it means.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlanContract {
+    /// [`PLAN_SCHEMA`].
+    pub schema: String,
+    /// The stamp every [`PlanTick`] in this run carries.
+    pub graph_stamp: u64,
+    pub map: String,
+    /// The graph's shape — the same counts the harness records, so engine and harness can be checked
+    /// against each other on the same graph.
+    pub cells: u32,
+    pub links: u32,
+    pub rj_links: u32,
+    /// The engine build the numbers came from (its package version — the engine carries no git
+    /// commit; run identity is the harness's to record).
+    pub build: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

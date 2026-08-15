@@ -1630,6 +1630,18 @@ fn emit(
         game.entities[e].bot.audit.push(frame, audit_cap(&host));
     }
 
+    // Plan telemetry: the jump button as *sent*, stamped at the one instant it is final — the hook
+    // and rocket-jump gates above may still have set it after steering had its say, and the swim and
+    // nav-jump branches may still have cleared it. Logging steering's intention instead would show a
+    // jump the physics never saw, which is exactly the on-ground jump race this is here to expose.
+    // Gated on the frame stamp rather than a second cvar read: only a steering pass with telemetry on
+    // leaves it fresh.
+    {
+        let b = &mut game.entities[e].bot;
+        if b.plan.stamped == now {
+            b.plan.jump_cmd = buttons & BUTTON_JUMP != 0;
+        }
+    }
     host.set_bot_cmd(client, msec, view, forward, side, up, buttons, impulse);
 }
 

@@ -525,6 +525,21 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     } = o;
     let gate_closed = costs.gate_closed;
     bot.replanned = false; // per-frame; the repath block below stamps it if one runs
+    // Plan telemetry. One cvar read per bot per frame and nothing else unless it is on: every stamp
+    // below sits behind this flag, and `plan.stamped` is left stale when it is off, which is how
+    // `control` knows there is no row to send. See [`crate::bot::state::PlanDiag`].
+    let plan_tel = host.cvar_bool(c"rtx_plan_telemetry");
+    if plan_tel {
+        // The first airborne frame of a hop, latched *before* `begin_frame` clears last frame's
+        // grounding. This is the leap's actual outcome as against the takeoff gate's prediction of
+        // it — the pair that separates a jump never attempted from one attempted and short.
+        if bot.plan.stamped > 0.0 && bot.plan.on_ground && !on_ground {
+            bot.plan.first_air_vz = vz;
+        } else if on_ground {
+            bot.plan.first_air_vz = 0.0;
+        }
+        bot.plan.begin_frame(now);
+    }
 
     // Plain-jump commitment is normally pre-armed before objective resolution. Remember the first
     // physical airborne frame here; route kind/position is intentionally irrelevant to release.
@@ -775,6 +790,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 None => graph.find_path_banded(bot_cell, search_target, speed, &costs),
             })
             .flatten();
+        // The banded planner's own verdict on what it returned. Read before the match consumes it:
+        // this is the only point the total is ever known, and it is what a later "was the plan
+        // expensive, or just badly flown?" turns on.
+        let banded_cost = banded.as_ref().map_or(-1.0, |r| r.cost);
         let (mut route, mut bands) = match banded {
             Some(r) => (r.links, r.bands),
             // Banded came back empty ⇒ band-infeasible (a route that only exists through a speed-jump
@@ -790,7 +809,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // corridor's interim, since the interim is the choice the bad window made and reusing it walks
         // straight back into the trap. The banded search needs the same guard as the plain one: it is
         // the arm that actually runs, and it has no idea the driver will refuse what it planned.
-        if priced_out(graph, &route, &costs) {
+        let was_priced_out = priced_out(graph, &route, &costs);
+        if was_priced_out {
             route = graph.find_path(bot_cell, target, &costs).unwrap_or_default();
             bands = Vec::new();
         }
@@ -844,6 +864,23 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         bot.route_bands = bands;
         bot.route_pos = 0;
         bot.goal_cell = Some(goal);
+        if plan_tel {
+            // Route-scoped: stamped here and carried through the frames until the next repath.
+            bot.plan.plan_cost = if bot.route.is_empty() { -1.0 } else { banded_cost };
+            // Why the search had nothing to fly — the difference between "the graph offers no way"
+            // and "the way was there and the bot failed it", which the route record alone cannot
+            // make. Most-specific first: a priced-out plan and an unreachable goal each *also* leave
+            // the route empty, and reporting emptiness would name the symptom over the cause.
+            bot.plan.plan_fail = if was_priced_out {
+                "priced_out"
+            } else if target != goal {
+                "unreachable"
+            } else if bot.route.is_empty() {
+                "no_path"
+            } else {
+                ""
+            };
+        }
         // Remember the gates the corridor crosses beyond the interim window (nearest first), so the
         // gate-errand block can pre-arm for a far shut door the truncated route won't reveal (see
         // [`GateState`]). Empty when there's no corridor, which also clears any previous list.
@@ -990,6 +1027,31 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     } else {
         (target_origin, None, true, None)
     };
+    if plan_tel {
+        // The decision this whole event exists to record, stamped where it is made rather than
+        // recomputed in `frame_end`: `hook` and `rj` advance `route_pos` on landing, so a later read
+        // of `route[route_pos]` would sometimes name the next leg instead of the one just flown.
+        bot.plan.link = cur_leg;
+        bot.plan.kind = kind;
+        bot.plan.band = cur_leg.and(bot.route_bands.get(bot.route_pos).copied());
+        if let Some(leg) = cur_leg {
+            // Priced under *this* frame's costs, including the per-bot jitter seed — the price A\*
+            // actually saw, not a re-derivation that might disagree with it.
+            bot.plan.extra = graph.link_extra_breakdown(leg, &costs);
+            bot.plan.p_base = graph.links[leg as usize].cost;
+            bot.plan.p_chained = graph.chained_block(leg);
+            bot.plan.p_total = graph.priced_link_cost(leg, &costs);
+            if let Some(sj) = graph.speed_jump_of_link(leg) {
+                bot.plan.v_req = sj.v_req;
+                bot.plan.chained = sj.chained;
+                bot.plan.curl_gain = sj.curl_gain;
+                // An uncapped weave is `INFINITY`, which has no place in a log line.
+                bot.plan.weave_cap = if sj.weave_cap.is_finite() { sj.weave_cap } else { -1.0 };
+            }
+        }
+        let rem = remaining_cost(graph, origin, bot.route.get(bot.route_pos..).unwrap_or(&[]), &costs);
+        bot.plan.remaining_cost = rem;
+    }
 
     // Plat standoff. If an upcoming leg boards/rides a func_plat that isn't at its bottom, and we're
     // not already aboard it, walking to the board point would put us inside the lift's inner trigger
@@ -1849,6 +1911,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             }
             _ => f32::INFINITY,
         };
+        if plan_tel {
+            bot.plan.runway = bhop_runway;
+            bot.plan.hold_jump = sj_hold;
+        }
         let cmd = bot.bhop.step(
             &bhop::Input {
                 v_xy,
@@ -2689,6 +2755,12 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             Some(LinkKind::JumpGap | LinkKind::DoubleJump | LinkKind::SpeedJump)
         );
     let overlays_ok = !hook_engaged && !rj_engaged && !bhop_active && !traversal_lock;
+    if plan_tel {
+        bot.plan.on_ground = on_ground;
+        bot.plan.speed = speed;
+        bot.plan.vz = vz;
+        bot.plan.seq = bot.plan.seq.wrapping_add(1);
+    }
     SteerOut {
         cmd,
         bhop_cmd,
