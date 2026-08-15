@@ -530,19 +530,16 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // `control` knows there is no row to send. See [`crate::bot::state::PlanDiag`].
     let plan_tel = host.cvar_bool(c"rtx_plan_telemetry");
     if plan_tel {
-        // The first airborne frame of a hop, latched *before* `begin_frame` clears last frame's
-        // grounding. This is the leap's actual outcome as against the takeoff gate's prediction of
-        // it — the pair that separates a jump never attempted from one attempted and short.
-        if bot.plan.stamped > 0.0 && bot.plan.on_ground && !on_ground {
-            bot.plan.first_air_vz = vz;
-            bot.plan.first_air_vz_measured = true;
-        } else if on_ground {
+        // Landing clears the hop-scoped first-air bind. The *value* is bound at emit to the
+        // airborne PlanTick's own vel.z (not this think's entry vz) — see bind_first_air_to_row.
+        if on_ground {
             bot.plan.first_air_vz = 0.0;
             bot.plan.first_air_vz_measured = false;
         }
+        // Latch incoming phase *before* begin_frame opens the window. A later think in the same
+        // window must not overwrite it (B2 FLAGGA 1).
+        bot.plan.latch_phase_prev(bot.bhop.phase);
         bot.plan.begin_frame(now);
-        // Before the controller steps: the other end of any phase transition this frame.
-        bot.plan.phase_prev = bot.bhop.phase;
     }
 
     // Plain-jump commitment is normally pre-armed before objective resolution. Remember the first

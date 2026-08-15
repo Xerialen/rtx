@@ -974,14 +974,16 @@ pub struct PlanTick {
     /// reached the engine is exactly the jump-cmd-on-ground race this telemetry exists to catch, so
     /// recording the wish instead of the command would hide the bug it is here to expose.
     pub jump_cmd: bool,
-    /// Vertical speed on the first airborne tick of the current hop — the leap's actual outcome, as
-    /// against the takeoff gate's prediction of it. Valid only when `first_air_vz_measured`.
+    /// Vertical speed on the first *emitted airborne PlanTick* of the current hop — equal to
+    /// that row's `vel[2]`. Not a pre-pmove takeoff impulse (JUMP_VZ / 0 at the lip). Valid only
+    /// when `first_air_vz_measured`. Attestation (`takeoff_outcome`) uses this bound value.
     ///
     /// Signed, and **zero is a real reading**: a bot that left the ground with no upward impulse
     /// measures exactly that. So absence rides on the flag, like `runway` and `sj_progress`, and for
     /// the same reason — there is no out-of-domain number to spare.
     pub first_air_vz: f32,
-    /// Whether a takeoff has been observed in the current hop. Set on ground→air, cleared on landing.
+    /// Whether a first airborne PlanTick has been bound in the current hop. Set at emit when
+    /// `on_ground` is false; cleared on landing.
     pub first_air_vz_measured: bool,
     /// Hops taken in this engagement, and why the last one ended (`veto`, `runway`, `leg`; empty if
     /// still engaged or never engaged).
@@ -1038,8 +1040,9 @@ pub enum Cause {
 }
 
 impl Cause {
-    /// The wire/verdict spelling.
-    pub const fn as_str(self) -> &'static str {
+    /// The wire/verdict spelling. Crate-private: a verdict writer must go through
+    /// [`AttestedCause`] — an unattested `Cause` must not be serialisable as a causal label.
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Cause::VirtualRunwayGroundRace => "virtual_runway_ground_race",
             Cause::TakeoffLaunched => "takeoff_launched",
@@ -1079,8 +1082,15 @@ impl AttestedCause {
     pub const fn cause(self) -> Cause {
         self.0
     }
+    /// The only public spelling of a causal label. Requires attestation.
     pub const fn as_str(self) -> &'static str {
         self.0.as_str()
+    }
+}
+
+impl Serialize for AttestedCause {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -1735,6 +1745,20 @@ mod tests {
         for c in [Cause::VirtualRunwayGroundRace, Cause::TakeoffLaunched, Cause::StructuralNoPath] {
             assert_eq!(Cause::from_label(c.as_str()).unwrap(), c);
         }
+    }
+
+    /// A causal label on the wire requires [`AttestedCause`]. `Cause` itself is not `Serialize`.
+    #[test]
+    fn causal_label_serialisation_requires_attested_cause() {
+        let c1 = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        let attested = c1.attest(Cause::VirtualRunwayGroundRace, None).unwrap();
+        let bytes = rmp_serde::to_vec(&attested).expect("AttestedCause is the wire form");
+        let back: String = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(back, "virtual_runway_ground_race");
+        // Unattested Cause has no public as_str outside this crate; in-crate we can still
+        // name the variant, but we must not treat that as a verdict string without attest.
+        let raw = Cause::VirtualRunwayGroundRace;
+        assert_ne!(format!("{raw:?}"), "virtual_runway_ground_race");
     }
 
     /// The ground-race label is checked against the state that defines it, not against "some

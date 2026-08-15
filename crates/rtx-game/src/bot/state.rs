@@ -295,8 +295,10 @@ pub struct PlanDiag {
     pub vel: Vec3,
     pub speed: f32,
     pub jump_cmd: bool,
-    /// The hop phase as it stood at the top of this frame, before the controller stepped — the other
-    /// half of a transition, which a single phase reading cannot show.
+    /// Controller phase at the *opening* of this emit-window (first steer after the last
+    /// `frame_end` consume), i.e. the phase *before* the controller stepped in this window.
+    /// Think runs faster than frame_end; a later steer in the same window must not overwrite
+    /// this or Prestrafe→Hop becomes Hop→Hop.
     pub phase_prev: crate::bot::bhop::Phase,
     /// The takeoff point of the active speed jump; meaningful only alongside a speed-jump leg.
     pub takeoff_xyz: Vec3,
@@ -320,9 +322,9 @@ pub struct PlanDiag {
     pub goal_redirected: bool,
 
     // --- hop-scoped -------------------------------------------------------------------------
-    /// Vertical speed on the first airborne frame of the current hop, and whether one has been
-    /// observed at all. Zero is a real reading — a leap with no upward impulse — so the flag carries
-    /// the absence rather than the number.
+    /// Vertical speed bound to the first *emitted airborne PlanTick* of the current hop
+    /// (`vel.z` on that row). Not a pre-pmove takeoff impulse. Zero is a real reading, so the
+    /// flag carries absence. Bound in [`Self::bind_first_air_to_row`] at emit time.
     pub first_air_vz: f32,
     pub first_air_vz_measured: bool,
 }
@@ -342,6 +344,7 @@ impl PlanDiag {
             goal_redirected,
             first_air_vz,
             first_air_vz_measured,
+            phase_prev,
             ..
         } = *self;
         *self = PlanDiag {
@@ -354,6 +357,7 @@ impl PlanDiag {
             goal_redirected,
             first_air_vz,
             first_air_vz_measured,
+            phase_prev,
             // Not measured until something stamps it. `weave_cap` is a half-angle and never
             // negative, so -1 is safely out of band; `runway` and `sj_progress` are *signed* and have
             // no such value, which is why their absence is carried by a flag instead.
@@ -361,6 +365,25 @@ impl PlanDiag {
             ..PlanDiag::default()
         };
         let _ = stamped;
+    }
+
+    /// Latch the controller phase at the opening of this emit-window only.
+    ///
+    /// Subsequent steer passes in the same window (think ~77 Hz vs frame_end ~50 Hz) must keep
+    /// the first value: otherwise a Prestrafe→Hop step is reported as prev=Hop on the first Hop row.
+    pub fn latch_phase_prev(&mut self, current: crate::bot::bhop::Phase) {
+        if !self.fresh {
+            self.phase_prev = current;
+        }
+    }
+
+    /// Bind `first_air_vz` to *this row's* `vel.z` the first time an airborne PlanTick is emitted
+    /// in the hop. Later air rows keep the bound value. Landing (steer, `on_ground`) clears it.
+    pub fn bind_first_air_to_row(&mut self) {
+        if !self.on_ground && !self.first_air_vz_measured {
+            self.first_air_vz = self.vel.z;
+            self.first_air_vz_measured = true;
+        }
     }
 }
 
@@ -1089,5 +1112,55 @@ mod tests {
         assert!(!p.fresh, "never steered");
         assert_eq!(p.seq, 0);
         assert_eq!(p.link, None);
+    }
+
+    /// Kimi B2 FLAGGA 1 / f2: three Prestrafe rows then Hop must report prev=Prestrafe.
+    ///
+    /// The live bug was a second think in the same emit-window overwriting phase_prev after
+    /// the controller had already stepped to Hop.
+    #[test]
+    fn phase_prev_survives_extra_think_in_the_same_emit_window() {
+        use crate::bot::bhop::Phase;
+        let mut p = PlanDiag::default();
+        assert!(!p.fresh);
+
+        // Three Prestrafe emit-windows (one steer each, as a clean 50 Hz match).
+        for _ in 0..3 {
+            p.latch_phase_prev(Phase::Prestrafe);
+            p.begin_frame(1.0);
+            assert_eq!(p.phase_prev, Phase::Prestrafe);
+            p.fresh = false; // frame_end consume
+        }
+
+        // Hop window: first think still Prestrafe, controller steps to Hop, then a second think.
+        p.latch_phase_prev(Phase::Prestrafe);
+        p.begin_frame(1.0);
+        assert_eq!(p.phase_prev, Phase::Prestrafe, "window opened on Prestrafe");
+        // second think — controller already in Hop
+        p.latch_phase_prev(Phase::Hop);
+        p.begin_frame(1.1);
+        assert_eq!(
+            p.phase_prev,
+            Phase::Prestrafe,
+            "extra think must not rewrite prev to Hop"
+        );
+    }
+
+    /// first_air_vz is the bound airborne row's vel.z, not a leftover 0.0 from an earlier think.
+    #[test]
+    fn first_air_vz_binds_to_the_emitted_row_vel_z() {
+        let mut p = PlanDiag::default();
+        // An earlier think left the ground with vz=0 (the old latch would freeze this).
+        p.on_ground = false;
+        p.vel = Vec3::new(114.7, -324.1, 0.0);
+        // We do not bind until emit. A later think in the same hop has the row's vel.
+        p.vel = Vec3::new(114.7, -324.1, -9.6);
+        p.bind_first_air_to_row();
+        assert!(p.first_air_vz_measured);
+        assert_eq!(p.first_air_vz, -9.6);
+        // Subsequent air rows keep the first bound value.
+        p.vel = Vec3::new(100.0, -300.0, -19.2);
+        p.bind_first_air_to_row();
+        assert_eq!(p.first_air_vz, -9.6);
     }
 }

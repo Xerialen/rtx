@@ -265,8 +265,13 @@ pub(crate) fn frame_end(game: &mut GameState) {
         // two f32s are never bit-identical live. A bot that did not steer this frame (dead, not
         // in play) has `fresh == false` and must not emit a stale row.
         if let Some(id) = plan_stamp.as_ref() {
-            let p = &game.entities[e].bot.plan;
-            if plan_row_due(gate, p.fresh, p.seq) {
+            let due = {
+                let p = &game.entities[e].bot.plan;
+                plan_row_due(gate, p.fresh, p.seq)
+            };
+            if due {
+                // Bind first_air_vz to *this* row's vel.z before the snapshot is taken.
+                game.entities[e].bot.plan.bind_first_air_to_row();
                 let row = plan_tick(game, i, e, id.stamp);
                 send_event(game, Event::PlanTick(Box::new(row)));
             }
