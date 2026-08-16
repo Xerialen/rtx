@@ -34,8 +34,8 @@ class FixaTests(unittest.TestCase):
         self.assertEqual(fixa.main(["--recept", "west-shelf", "--dry-run", "--port", "27990"]), 2)
 
     def test_apply_without_on_expected_refused(self):
-        recipe = load_recipe()
-        self.assertIsNone(recipe["on_expected"])
+        recipe = dict(load_recipe())
+        recipe["on_expected"] = None
         with self.assertRaises(ValueError):
             on_expected(recipe)
 
