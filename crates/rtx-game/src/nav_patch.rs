@@ -79,9 +79,15 @@ pub struct ShelfPatch {
 }
 
 /// Look up a table recipe by short name. Unknown names are a hard error for `fixa` — the table
-/// is the only apply path (no second planter).
+/// is the only apply path (no second planter). `apply_for_map` still walks only
+/// [`PATCHES`] (west-shelf default-on). Ram recipes are named-only (`fixa`).
 pub fn patch_by_name(name: &str) -> Option<&'static ShelfPatch> {
-    PATCHES.iter().find(|p| p.name == name)
+    PATCHES.iter().chain(RAM_RECIPES.iter()).find(|p| p.name == name)
+}
+
+/// Every named recipe `fixa` may apply (west-shelf + ram package).
+pub fn registered_recipe_names() -> impl Iterator<Item = &'static str> {
+    PATCHES.iter().chain(RAM_RECIPES.iter()).map(|p| p.name)
 }
 
 /// Counts + both identity levels for a live graph. `graph_stamp` is the decimal string.
@@ -135,6 +141,52 @@ pub const PATCHES: &[ShelfPatch] = &[ShelfPatch {
     snap_z: 88.03125,
     pin: WEST_SHELF_PIN,
 }];
+
+/// Rail Y coordinates (facit-ram-paket §1). 32 u GRID, y=−784..−624.
+const RAM_RAIL_YS: [f32; 6] = [-784.0, -752.0, -720.0, -688.0, -656.0, -624.0];
+
+/// Recovery rail: six indegree-0 cells on the west sliver + one Drop each to
+/// the fixture-pinned floor `[-352,-672,-16]` (638-area; geometry probe).
+/// Not in [`PATCHES`] — named `fixa` only, never default-on with west-shelf.
+pub const RAM_RAIL: ShelfPatch = ShelfPatch {
+    map: "dm3",
+    name: "ram-rail",
+    cells: &[
+        [-360.0, -784.0, 128.03125],
+        [-360.0, -752.0, 128.03125],
+        [-360.0, -720.0, 128.03125],
+        [-360.0, -688.0, 128.03125],
+        [-360.0, -656.0, 128.03125],
+        [-360.0, -624.0, 128.03125],
+    ],
+    drops: &[
+        ([-360.0, -784.0, 128.03125], [-352.0, -672.0, -16.0]),
+        ([-360.0, -752.0, 128.03125], [-352.0, -672.0, -16.0]),
+        ([-360.0, -720.0, 128.03125], [-352.0, -672.0, -16.0]),
+        ([-360.0, -688.0, 128.03125], [-352.0, -672.0, -16.0]),
+        ([-360.0, -656.0, 128.03125], [-352.0, -672.0, -16.0]),
+        ([-360.0, -624.0, 128.03125], [-352.0, -672.0, -16.0]),
+    ],
+    snap_z: 128.03125,
+    pin: WEST_SHELF_PIN,
+};
+
+/// Prevention Drops (trajektorieprov + grok-dom): 733→669 and 734→670.
+/// Existing cells only — no new rail/walk topology. Named `fixa` only.
+pub const RAM_PREVENT: ShelfPatch = ShelfPatch {
+    map: "dm3",
+    name: "ram-prevent",
+    cells: &[],
+    drops: &[
+        ([-248.0, -704.0, 152.0], [-320.0, -704.0, -16.0]),
+        ([-248.0, -672.0, 152.0], [-320.0, -672.0, -16.0]),
+    ],
+    snap_z: 128.03125,
+    pin: WEST_SHELF_PIN,
+};
+
+/// Ram package. Not walked by [`apply_for_map`].
+pub const RAM_RECIPES: &[ShelfPatch] = &[RAM_RAIL, RAM_PREVENT];
 
 /// Endpoint resolution bounds for a drop's `to` point — same rationale and values as the control
 /// channel's `PlanDrop`: a target with nothing near it must be an error, not a silent snap to
@@ -483,24 +535,28 @@ mod tests {
     /// The table is data reviewed by eye; these hold the invariants the apply loop assumes.
     #[test]
     fn table_is_well_formed() {
-        for p in PATCHES {
+        for p in PATCHES.iter().chain(RAM_RECIPES.iter()) {
             assert!(!p.map.is_empty() && p.map == p.map.to_lowercase());
-            assert!(!p.cells.is_empty(), "{}: a patch with no cells patches nothing", p.name);
             assert!(
                 !p.drops.is_empty(),
                 "{}: a shelf with no way off is still a trap",
                 p.name
             );
-            for (from, _) in p.drops {
-                assert!(
-                    p.cells.iter().any(|c| {
-                        let dx = c[0] - from[0];
-                        let dy = c[1] - from[1];
-                        (dx * dx + dy * dy).sqrt() <= ALREADY_XY
-                    }),
-                    "{}: every drop must start on a patch cell",
-                    p.name
-                );
+            if p.cells.is_empty() {
+                // Link-only recipe (ram-prevent): drops start on already-carved cells.
+                assert_eq!(p.name, "ram-prevent");
+            } else {
+                for (from, _) in p.drops {
+                    assert!(
+                        p.cells.iter().any(|c| {
+                            let dx = c[0] - from[0];
+                            let dy = c[1] - from[1];
+                            (dx * dx + dy * dy).sqrt() <= ALREADY_XY
+                        }),
+                        "{}: every drop must start on a patch cell",
+                        p.name
+                    );
+                }
             }
             assert_eq!(
                 p.pin.stamp,
@@ -512,6 +568,20 @@ mod tests {
                 assert_eq!(h.len(), 64, "{}: content_hash is SHA-256 hex", p.name);
                 assert!(h.chars().all(|c| c.is_ascii_hexdigit()), "{}: hex", p.name);
             }
+        }
+        assert_eq!(RAM_RAIL.cells.len(), 6);
+        assert_eq!(RAM_RAIL.drops.len(), 6);
+        assert_eq!(RAM_PREVENT.cells.len(), 0);
+        assert_eq!(RAM_PREVENT.drops.len(), 2);
+        assert!(patch_by_name("ram-rail").is_some());
+        assert!(patch_by_name("ram-prevent").is_some());
+        assert!(patch_by_name("west-shelf").is_some());
+        assert!(patch_by_name("no-such").is_none());
+        for (i, &y) in RAM_RAIL_YS.iter().enumerate() {
+            assert_eq!(RAM_RAIL.cells[i][0], -360.0);
+            assert_eq!(RAM_RAIL.cells[i][1], y);
+            assert_eq!(RAM_RAIL.cells[i][2], 128.03125);
+            assert_eq!(RAM_RAIL.drops[i].1, [-352.0, -672.0, -16.0]);
         }
     }
 
@@ -795,5 +865,227 @@ mod tests {
         let _ = g.cell_origin(n1); // planted cell id, also gone
         route.clear(); // replan
         assert!(g.route_in_bounds(&route));
+    }
+
+    fn landing_origin() -> Vec3 {
+        Vec3::new(-352.0, -672.0, -16.0)
+    }
+
+    fn prevent_origins() -> Vec<Vec3> {
+        vec![
+            Vec3::new(-248.0, -704.0, 152.0), // 733
+            Vec3::new(-248.0, -672.0, 152.0), // 734
+            Vec3::new(-320.0, -704.0, -16.0), // 669
+            Vec3::new(-320.0, -672.0, -16.0), // 670
+            landing_origin(),                 // 638-area
+        ]
+    }
+
+    fn ram_rail_patch(graph: &NavGraph) -> ShelfPatch {
+        ShelfPatch {
+            map: "dm3",
+            name: "ram-rail",
+            cells: RAM_RAIL.cells,
+            drops: RAM_RAIL.drops,
+            snap_z: RAM_RAIL.snap_z,
+            pin: pin_for(graph),
+        }
+    }
+
+    fn ram_prevent_patch(graph: &NavGraph) -> ShelfPatch {
+        ShelfPatch {
+            map: "dm3",
+            name: "ram-prevent",
+            cells: RAM_PREVENT.cells,
+            drops: RAM_PREVENT.drops,
+            snap_z: RAM_PREVENT.snap_z,
+            pin: pin_for(graph),
+        }
+    }
+
+    fn incoming<'a>(g: &'a NavGraph, cell: u32) -> Vec<&'a Link> {
+        g.links.iter().filter(|l| l.to == cell).collect()
+    }
+
+    fn outgoing<'a>(g: &'a NavGraph, cell: u32) -> Vec<&'a Link> {
+        g.links.iter().filter(|l| l.from == cell).collect()
+    }
+
+    #[test]
+    fn ram_rail_indegree_zero_exactly_one_drop() {
+        // Tempting same-z neighbor 32 u east of each rail slot — if apply
+        // invented Walk, these would become in/out links.
+        let mut origins = vec![landing_origin()];
+        for &y in &RAM_RAIL_YS {
+            origins.push(Vec3::new(-328.0, y, 128.03125));
+        }
+        let mut g = NavGraph::from_topology(&origins, &[]);
+        let patch = ram_rail_patch(&g);
+        apply_txn(&patch, None, &mut g).expect("ram-rail apply");
+        assert_eq!(g.cells.len(), origins.len() + 6);
+        assert_eq!(g.links.len(), 6);
+        for &aim in RAM_RAIL.cells {
+            let id = g.cell_within(v(aim), ALREADY_XY, ALREADY_Z).expect("rail cell planted");
+            assert!(incoming(&g, id).is_empty(), "rail {aim:?} must have indegree 0");
+            let out = outgoing(&g, id);
+            assert_eq!(out.len(), 1, "rail {aim:?} must have exactly one out-link");
+            assert_eq!(out[0].kind, LinkKind::Drop);
+            let dest = g.cell_origin(out[0].to);
+            assert_eq!(dest, landing_origin());
+            assert!(
+                !g.links
+                    .iter()
+                    .any(|l| { (l.from == id || l.to == id) && l.kind == LinkKind::Walk }),
+                "rail {aim:?} must not grow Walk in or out"
+            );
+        }
+    }
+
+    #[test]
+    fn ram_rail_stamp_mismatch_fails_closed() {
+        let mut g = NavGraph::from_topology(&[landing_origin()], &[]);
+        let before = g.clone();
+        match apply_one(&RAM_RAIL, None, &mut g) {
+            Outcome::Failed(why) => assert!(why.contains("stamp mismatch"), "{why}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn ram_rail_already_meshed_is_idempotent() {
+        let mut origins = vec![landing_origin()];
+        origins.extend(RAM_RAIL.cells.iter().map(|&c| Vec3::new(c[0], c[1], RAM_RAIL.snap_z)));
+        let n_land = 1u32;
+        let drops: Vec<Link> = (0..6)
+            .map(|i| Link {
+                from: n_land + i,
+                to: 0,
+                kind: LinkKind::Drop,
+                cost: 1.0,
+            })
+            .collect();
+        let mut g = NavGraph::from_topology(&origins, &drops);
+        let patch = ram_rail_patch(&g);
+        let before = g.clone();
+        match apply_one(&patch, None, &mut g) {
+            Outcome::AlreadyMeshed => {}
+            other => panic!("expected AlreadyMeshed, got {other:?}"),
+        }
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn ram_rail_undo_roundtrip() {
+        let mut g = NavGraph::from_topology(&[landing_origin()], &[]);
+        let patch = ram_rail_patch(&g);
+        let before = g.clone();
+        let txn = apply_txn(&patch, None, &mut g).expect("apply");
+        assert_eq!(g.cells.len(), before.cells.len() + 6);
+        assert_eq!(g.links.len(), before.links.len() + 6);
+        txn.unapply(&mut g);
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn ram_rail_failed_rollback_discards_partial() {
+        let mut origins = vec![landing_origin()];
+        let second = RAM_RAIL.cells[1];
+        origins.push(Vec3::new(second[0], second[1], RAM_RAIL.snap_z + 1.0));
+        let mut g = NavGraph::from_topology(&origins, &[]);
+        let patch = ram_rail_patch(&g);
+        let before = g.clone();
+        match apply_txn(&patch, None, &mut g) {
+            Err(Outcome::Failed(why)) => assert!(why.contains("snapped to z="), "{why}"),
+            Err(other) => panic!("expected Failed, got {other:?}"),
+            Ok(_) => panic!("expected Failed, got Applied"),
+        }
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn ram_rail_apply_then_reapply_is_already_meshed() {
+        let mut g = NavGraph::from_topology(&[landing_origin()], &[]);
+        let patch = ram_rail_patch(&g);
+        apply_txn(&patch, None, &mut g).expect("first");
+        let after = g.clone();
+        match apply_one(&patch, None, &mut g) {
+            Outcome::AlreadyMeshed => {}
+            other => panic!("re-apply: {other:?}"),
+        }
+        assert!(topology_eq(&g, &after));
+    }
+
+    #[test]
+    fn ram_prevent_plants_two_drops_no_cells() {
+        let mut g = NavGraph::from_topology(&prevent_origins(), &[]);
+        let before_cells = g.cells.len();
+        let patch = ram_prevent_patch(&g);
+        apply_txn(&patch, None, &mut g).expect("prevent apply");
+        assert_eq!(g.cells.len(), before_cells, "prevention must not plant cells");
+        assert_eq!(g.links.len(), 2);
+        let from_733 = g
+            .cell_within(Vec3::new(-248.0, -704.0, 152.0), ALREADY_XY, ALREADY_Z)
+            .unwrap();
+        let from_734 = g
+            .cell_within(Vec3::new(-248.0, -672.0, 152.0), ALREADY_XY, ALREADY_Z)
+            .unwrap();
+        let to_669 = g
+            .cell_within(Vec3::new(-320.0, -704.0, -16.0), REACH_XY, REACH_Z)
+            .unwrap();
+        let to_670 = g
+            .cell_within(Vec3::new(-320.0, -672.0, -16.0), REACH_XY, REACH_Z)
+            .unwrap();
+        assert!(g
+            .links
+            .iter()
+            .any(|l| l.from == from_733 && l.to == to_669 && l.kind == LinkKind::Drop));
+        assert!(g
+            .links
+            .iter()
+            .any(|l| l.from == from_734 && l.to == to_670 && l.kind == LinkKind::Drop));
+        assert!(incoming(&g, from_733).is_empty());
+        assert!(incoming(&g, from_734).is_empty());
+    }
+
+    #[test]
+    fn ram_prevent_stamp_mismatch_fails_closed() {
+        let mut g = NavGraph::from_topology(&prevent_origins(), &[]);
+        let before = g.clone();
+        match apply_one(&RAM_PREVENT, None, &mut g) {
+            Outcome::Failed(why) => assert!(why.contains("stamp mismatch"), "{why}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn ram_prevent_undo_roundtrip() {
+        let mut g = NavGraph::from_topology(&prevent_origins(), &[]);
+        let patch = ram_prevent_patch(&g);
+        let before = g.clone();
+        let txn = apply_txn(&patch, None, &mut g).expect("apply");
+        assert_eq!(g.links.len(), before.links.len() + 2);
+        txn.unapply(&mut g);
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn ram_prevent_apply_then_reapply_is_already_meshed() {
+        let mut g = NavGraph::from_topology(&prevent_origins(), &[]);
+        let patch = ram_prevent_patch(&g);
+        apply_txn(&patch, None, &mut g).expect("first");
+        let after = g.clone();
+        match apply_one(&patch, None, &mut g) {
+            Outcome::AlreadyMeshed => {}
+            other => panic!("re-apply: {other:?}"),
+        }
+        assert!(topology_eq(&g, &after));
+    }
+
+    #[test]
+    fn apply_for_map_does_not_include_ram_recipes() {
+        assert!(PATCHES.iter().all(|p| p.name == "west-shelf"));
+        assert!(RAM_RECIPES.iter().all(|p| p.name.starts_with("ram-")));
     }
 }

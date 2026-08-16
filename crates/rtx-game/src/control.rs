@@ -539,8 +539,10 @@ fn do_fixa(
     lock_token: String,
 ) -> Result<Resp, String> {
     fixa_require_lock(&mode, &lock_token)?;
-    let patch = crate::nav_patch::patch_by_name(&recipe)
-        .ok_or_else(|| format!("unknown recipe {recipe:?}; only west-shelf is registered"))?;
+    let patch = crate::nav_patch::patch_by_name(&recipe).ok_or_else(|| {
+        let known: Vec<&str> = crate::nav_patch::registered_recipe_names().collect();
+        format!("unknown recipe {recipe:?}; registered: {known:?}")
+    })?;
     if patch.map != game.level.mapname {
         return Err(format!("recipe map {} != live map {}", patch.map, game.level.mapname));
     }

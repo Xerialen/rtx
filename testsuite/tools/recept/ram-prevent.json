@@ -1,0 +1,27 @@
+{
+  "id": "ram-prevent",
+  "map": "dm3",
+  "taxonomy_class": "lagg_lank",
+  "evidence": "Prevention Drop pair from the 733/734 west-corridor lip to 669/670 (deepseek-trajektorieprov.md; grok-trajektorieprov-dom.md OK). Source 733 [-248,-704,152] -> 669 [-320,-704,-16]; 734 [-248,-672,152] -> 670 [-320,-672,-16]. 638 rejected (8–9 u clip margin). Not west-shelf.",
+  "off": {
+    "cells": 5977,
+    "links": 48207,
+    "rj_links": 0,
+    "graph_stamp": "906595427771298736",
+    "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"
+  },
+  "on_expected": null,
+  "on_expected_note": "null until the pinning step measures live after-stamp. Never copy observed into expected.",
+  "source": [
+    {"cell": 733, "origin": [-248.0, -704.0, 152.0]},
+    {"cell": 734, "origin": [-248.0, -672.0, 152.0]}
+  ],
+  "target": [
+    {"cell": 669, "origin": [-320.0, -704.0, -16.0]},
+    {"cell": 670, "origin": [-320.0, -672.0, -16.0]}
+  ],
+  "drops": [
+    {"from": [-248.0, -704.0, 152.0], "to": [-320.0, -704.0, -16.0], "kind": "drop"},
+    {"from": [-248.0, -672.0, 152.0], "to": [-320.0, -672.0, -16.0], "kind": "drop"}
+  ]
+}

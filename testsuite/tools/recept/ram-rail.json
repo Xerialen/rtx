@@ -1,0 +1,31 @@
+{
+  "id": "ram-rail",
+  "map": "dm3",
+  "taxonomy_class": "carve_origin",
+  "evidence": "dm3 west sliver at x=-360 z=128.03125 (floor 104): six indegree-0 rail cells, 32 u y-spacing y=-784..-624, each with exactly one Drop to the fixture-pinned floor [-352,-672,-16] (638-area; facit-ram-paket §1; deepseek-r2-geometriprov). Not west-shelf.",
+  "off": {
+    "cells": 5977,
+    "links": 48207,
+    "rj_links": 0,
+    "graph_stamp": "906595427771298736",
+    "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"
+  },
+  "on_expected": null,
+  "on_expected_note": "null until the pinning step measures live after-stamp. Never copy observed into expected.",
+  "cells": [
+    {"origin": [-360.0, -784.0, 128.03125]},
+    {"origin": [-360.0, -752.0, 128.03125]},
+    {"origin": [-360.0, -720.0, 128.03125]},
+    {"origin": [-360.0, -688.0, 128.03125]},
+    {"origin": [-360.0, -656.0, 128.03125]},
+    {"origin": [-360.0, -624.0, 128.03125]}
+  ],
+  "drops": [
+    {"from": [-360.0, -784.0, 128.03125], "to": [-352.0, -672.0, -16.0], "kind": "drop"},
+    {"from": [-360.0, -752.0, 128.03125], "to": [-352.0, -672.0, -16.0], "kind": "drop"},
+    {"from": [-360.0, -720.0, 128.03125], "to": [-352.0, -672.0, -16.0], "kind": "drop"},
+    {"from": [-360.0, -688.0, 128.03125], "to": [-352.0, -672.0, -16.0], "kind": "drop"},
+    {"from": [-360.0, -656.0, 128.03125], "to": [-352.0, -672.0, -16.0], "kind": "drop"},
+    {"from": [-360.0, -624.0, 128.03125], "to": [-352.0, -672.0, -16.0], "kind": "drop"}
+  ]
+}
