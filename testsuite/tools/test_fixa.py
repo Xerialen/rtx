@@ -118,7 +118,7 @@ class FixaTests(unittest.TestCase):
                 binary_sha256="cd" * 32,
                 seed=1,
                 stratum={"id": "fixa-apply"},
-                raw_pointer=str(path),
+                raw_pointer=str(Path(tmp) / "raw.jsonl"),
             )
         self.assertEqual(doc["stamps"]["on"]["expected"], on)
         self.assertEqual(doc["stamps"]["on"]["observed"], on)

@@ -105,6 +105,9 @@ def make_kvitto(
     astar_before: dict,
     astar_after: dict,
     astar_next_best: dict,
+    gate_velocity: list[float] | None = None,
+    gate_cell: int | None = None,
+    gate_aim_hit: bool = False,
 ) -> dict[str, Any]:
     """Assemble a §4-complete receipt. Missing kwargs are a TypeError (fail closed)."""
     return {
@@ -138,6 +141,11 @@ def make_kvitto(
         "seed": int(seed),
         "stratum": dict(stratum),
         "raw_pointer": raw_pointer,
+        "gate": {
+            "velocity": None if gate_velocity is None else [float(x) for x in gate_velocity],
+            "cell": gate_cell,
+            "aim_hit": bool(gate_aim_hit),
+        },
         "astar": {
             "before": dict(astar_before),
             "after": dict(astar_after),

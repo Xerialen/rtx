@@ -75,6 +75,9 @@ def _valid(**overrides) -> dict:
         seed=20260816,
         stratum={"id": "T0", "start": [-865.0, -48.0, 90.0], "goal": [-864.0, -96.0, -16.0]},
         raw_pointer="/tmp/trap-repro.jsonl#T0",
+        gate_velocity=None,
+        gate_cell=None,
+        gate_aim_hit=False,
         astar_before=path,
         astar_after=path,
         astar_next_best=next_best,
@@ -222,6 +225,24 @@ class VerifyTests(unittest.TestCase):
         empty = astar_path(found=False)
         self.assertFalse(empty["found"])
         self.assertEqual(empty["links"], [])
+
+    def test_tag_raw_pointer_fails(self):
+        doc = _valid(raw_pointer="roktest:T0-OFF-01")
+        errs = verify(doc)
+        self.assertTrue(any("jsonl" in e or "path" in e for e in errs), errs)
+        doc = _valid(raw_pointer="d_sjalvbevis:A1-ON-01")
+        errs = verify(doc)
+        self.assertTrue(any("jsonl" in e or "path" in e for e in errs), errs)
+
+    def test_missing_gate_fails(self):
+        doc = _valid()
+        del doc["gate"]
+        errs = verify(doc)
+        self.assertTrue(any("gate" in e for e in errs), errs)
+        doc = _valid()
+        del doc["gate"]["velocity"]
+        errs = verify(doc)
+        self.assertTrue(any("gate.velocity" in e for e in errs), errs)
 
 
 class TrapReproGuardTests(unittest.TestCase):

@@ -209,7 +209,25 @@ def verify(doc: Any) -> list[str]:
     stratum = _require(doc, "stratum", errors)
     if isinstance(stratum, dict) and not stratum.get("id"):
         errors.append("stratum.id: missing")
-    _require(doc, "raw_pointer", errors)
+    raw_ptr = _require(doc, "raw_pointer", errors)
+    if isinstance(raw_ptr, str) and raw_ptr.strip():
+        head = raw_ptr.split("#", 1)[0]
+        tag = (":" in raw_ptr and "/" not in raw_ptr) or raw_ptr.startswith(
+            ("roktest:", "d_sjalvbevis:")
+        )
+        if tag or not head.endswith(".jsonl") or "/" not in head:
+            errors.append(
+                f"raw_pointer must be a .jsonl filesystem path, not a tag ({raw_ptr!r})"
+            )
+
+    gate = doc.get("gate")
+    if not isinstance(gate, dict):
+        errors.append("gate: missing object (velocity, cell)")
+    else:
+        if "velocity" not in gate:
+            errors.append("gate.velocity: missing")
+        if "cell" not in gate:
+            errors.append("gate.cell: missing")
 
     astar = doc.get("astar")
     if not isinstance(astar, dict):
