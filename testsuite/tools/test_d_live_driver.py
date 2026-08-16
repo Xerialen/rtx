@@ -388,9 +388,10 @@ class SequenceTests(unittest.TestCase):
         ctl.on_ground = False
         raw = drv.exec_trial(stratum_id="A1", arm="off", spec=STRATA["A1"], seq=1, window_s=1.0)
         drops = [e for e in raw["events"] if e["ev"] == "peak_drop_150"]
-        self.assertTrue(drops)
+        self.assertEqual(len(drops), 1, drops)
         self.assertIn("t", drops[0])
         self.assertGreater(drops[0]["t"], 0.0)
+        self.assertGreater(drops[0]["drop_dz"], 150.0)
 
 
 class ArmTests(unittest.TestCase):

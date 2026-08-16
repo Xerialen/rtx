@@ -396,6 +396,7 @@ class LiveTrialDriver:
                     "rel_t": t,
                     "z": o[2],
                     "peak": fall.peak,
+                    "drop_dz": fall.episode_dz,
                     "origin": o,
                 })
             if prev is not None:

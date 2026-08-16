@@ -112,6 +112,27 @@ class StratumTests(unittest.TestCase):
         self.assertFalse(t2.update(200.0, True))
         self.assertFalse(t2.update(40.0, True))
 
+    def test_one_descent_is_one_episode(self):
+        # R6: 4–5 rows at ~60 ms were one physical fall.
+        t = FallTracker()
+        self.assertFalse(t.update(360.0, False))
+        zs = [200.0, 140.0, 80.0, 20.0, -10.0]
+        fires = [z for z in zs if t.update(z, False)]
+        self.assertEqual(fires, [200.0])
+        self.assertAlmostEqual(t.episode_dz or 0.0, 370.0, places=5)
+        self.assertTrue(t.in_episode)
+
+    def test_two_separate_falls_are_two_episodes(self):
+        t = FallTracker()
+        self.assertFalse(t.update(360.0, False))
+        self.assertTrue(t.update(200.0, False))
+        self.assertFalse(t.update(40.0, False))
+        self.assertFalse(t.update(-16.0, True))
+        self.assertFalse(t.update(200.0, True))
+        self.assertFalse(t.update(200.0, False))
+        self.assertTrue(t.update(20.0, False))
+        self.assertFalse(t.update(-10.0, False))
+
     def test_trap_stall_then_arrived_still_trap(self):
         gate = _gates()["gates"]["west-shelf"]
         events = [
@@ -680,6 +701,8 @@ class AvsettDropTests(unittest.TestCase):
                 {"x": 160.0, "y": -728.0, "z": 328.0, "on_ground": True},
                 {"x": 140.0, "y": -740.0, "z": 360.0, "on_ground": False},
                 {"x": 120.0, "y": -750.0, "z": 200.0, "on_ground": False},
+                {"x": 110.0, "y": -755.0, "z": 80.0, "on_ground": False},
+                {"x": 100.0, "y": -760.0, "z": -10.0, "on_ground": False},
             ],
             gate=gate,
             stratum_at="start",

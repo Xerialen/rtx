@@ -196,21 +196,37 @@ def is_trap(events: list[dict], gate: dict, *, arrived_after_stall: bool) -> boo
 
 
 class FallTracker:
-    """Harness peak_drop_150: Δz > 150 from running peak without ground."""
+    """Harness peak_drop_150: one emission per airborne descent episode.
+
+    An episode starts at the first sample with Δz > 150 from the running
+    peak and lasts until ground. Further samples in the same descent do
+    not emit (R6: 4–5 rows / 60 ms were one physical fall).
+    """
 
     def __init__(self) -> None:
         self.peak: float | None = None
+        self.in_episode: bool = False
+        self.episode_dz: float | None = None
 
     def update(self, z: float, on_ground: bool) -> bool:
         if on_ground:
             self.peak = z
+            self.in_episode = False
+            self.episode_dz = None
             return False
         if self.peak is None:
             self.peak = z
             return False
         if z > self.peak:
             self.peak = z
-        return (self.peak - z) > PEAK_DROP
+        dz = self.peak - z
+        if dz <= PEAK_DROP:
+            return False
+        self.episode_dz = dz
+        if self.in_episode:
+            return False
+        self.in_episode = True
+        return True
 
 
 def in_avsett_geometry(
