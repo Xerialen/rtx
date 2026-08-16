@@ -56,6 +56,25 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def safe_recipe_id(recipe_id: str) -> str:
+    rid = str(recipe_id or "").strip()
+    if not rid or rid in {".", ".."} or "/" in rid or "\\" in rid:
+        raise ValueError(f"refusing unsafe recipe id for kvitto path: {recipe_id!r}")
+    return rid
+
+
+def recipe_kvitto_paths(kvitto_dir: Path, recipe_id: str, attempt_id: str) -> tuple[Path, Path]:
+    """Per-recipe subdirectory so ram-prevent cannot clobber ram-rail heldout.
+
+    `--kvitto-dir/ram-rail-v2/H1-OFF-01.json`  (not a flat H1-OFF-01.json)
+    """
+    root = Path(kvitto_dir) / safe_recipe_id(recipe_id)
+    stem = str(attempt_id)
+    if not stem or "/" in stem or "\\" in stem or stem in {".", ".."}:
+        raise ValueError(f"refusing unsafe attempt id for kvitto path: {attempt_id!r}")
+    return root / f"{stem}.json", root / f"{stem}.jsonl"
+
+
 def default_knockback_zone() -> dict:
     return {
         "cells": list(EAST_FLOOR_CELLS),
@@ -881,7 +900,8 @@ class RamRunner:
         """Same make_kvitto path as the tournament runner. kvitto-dir is the contract."""
         if self.kvitto_dir is None:
             raise RuntimeError("kvitto_dir is not set")
-        path = self.kvitto_dir / f"{att.attempt_id}.json"
+        rid = str(self.recipe.get("id") or "")
+        path, raw_path = recipe_kvitto_paths(self.kvitto_dir, rid, att.attempt_id)
         empty = astar_path(found=False)
         after = raw.get("astar_after") or empty
         before = raw.get("astar_before") or empty
@@ -931,7 +951,7 @@ class RamRunner:
             },
             seed=0,
             stratum={"id": att.stratum, "attempt": att.attempt_id},
-            raw_pointer=str((self.kvitto_dir / f"{att.attempt_id}.jsonl").resolve()),
+            raw_pointer=str(raw_path.resolve()),
             astar_before=before if isinstance(before, dict) else empty,
             astar_after=after if isinstance(after, dict) else empty,
             astar_next_best=nb if isinstance(nb, dict) else empty,
@@ -946,7 +966,7 @@ class RamRunner:
             cvars=recipe_cvars(self.recipe),
         )
         doc["binaries"] = {"qwprogs_sha256": qw, "mvdsv_sha256": mv}
-        write_kvitto(path, doc)
+        write_kvitto(path, doc, exclusive=True)
         return path
 
     def run(self) -> RamReport:
@@ -1222,8 +1242,8 @@ def main(argv: list[str] | None = None) -> int:
             if not args.kvitto_dir:
                 return
             started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            raw_path = args.kvitto_dir / f"{att.attempt_id}.jsonl"
-            driver.write_attempt_raw(raw_path, raw)
+            rec_path, raw_path = recipe_kvitto_paths(args.kvitto_dir, args.recipe, att.attempt_id)
+            driver.write_attempt_raw(raw_path, raw, exclusive=True)
             kb = raw.get("knockback") if att.stratum.startswith("K") else None
             if kb is None and att.stratum.startswith("K"):
                 kb = {
@@ -1233,7 +1253,7 @@ def main(argv: list[str] | None = None) -> int:
                     "t_land": att.t_land,
                 }
             driver.write_attempt_kvitto(
-                args.kvitto_dir / f"{att.attempt_id}.json",
+                rec_path,
                 attempt_id=att.attempt_id,
                 stratum_id=att.stratum,
                 raw_pointer=str(raw_path),
@@ -1253,6 +1273,7 @@ def main(argv: list[str] | None = None) -> int:
                 selected_link=raw.get("selected_link"),
                 knockback=kb,
                 cvars=recipe_cvars(recipe),
+                exclusive=True,
             )
 
         runner = RamRunner(

@@ -18,6 +18,7 @@ from d_ram_sjalvbevis import (  # noqa: E402
     knockback_points,
     knockback_zone,
     raw_from_jsonl,
+    recipe_kvitto_paths,
     score_knockback_raw,
     sha256_file,
 )
@@ -224,8 +225,9 @@ class RamKvittoTests(unittest.TestCase):
             )
             report = runner.run()
             self.assertTrue(report.as_dict()["godkand"], report.as_dict())
-            files = sorted(Path(td).glob("*.json"))
+            files = sorted((Path(td) / "ram-rail").glob("*.json"))
             self.assertEqual(len(files), 12, [p.name for p in files])
+            self.assertFalse(list(Path(td).glob("*.json")), "receipts must not land flat in --kvitto-dir")
             points = set()
             for path in files:
                 doc = json.loads(path.read_text(encoding="utf-8"))
@@ -267,7 +269,8 @@ class RamKvittoTests(unittest.TestCase):
             )
             report = runner.run()
             self.assertTrue(report.as_dict()["godkand"], report.as_dict())
-            files = sorted(Path(td).glob("*.json"))
+            files = sorted((Path(td) / "ram-prevent").glob("*.json"))
+            self.assertFalse(list(Path(td).glob("*.json")), "receipts must not land flat in --kvitto-dir")
             strata = {json.loads(p.read_text())["stratum"]["id"] for p in files}
             self.assertEqual(strata, {"P1", "P2", "H1", "H2", "H3", "H4"})
             self.assertEqual(len(files), 12)
@@ -290,11 +293,61 @@ class RamKvittoTests(unittest.TestCase):
                 "--kvitto-dir", td,
             ])
             self.assertEqual(rc, 0)
-            files = list(Path(td).glob("*.json"))
-            self.assertTrue(files, "CLI --kvitto-dir must write receipts")
+            files = list((Path(td) / "ram-rail").glob("*.json"))
+            self.assertTrue(files, "CLI --kvitto-dir must write receipts under recipe subdir")
+            self.assertFalse(list(Path(td).glob("*.json")), "CLI must not write flat H1-OFF-01 names")
             doc = json.loads(files[0].read_text(encoding="utf-8"))
             self.assertEqual(verify(doc), [])
             self.assertIn(doc["knockback"]["point"], {"K1", "K2", "K3", "K4", "K5", "K6"})
+
+    def test_shared_kvitto_dir_does_not_clobber_other_recipe(self):
+        """Prevent must not overwrite rail heldout JSON/JSONL in the same --kvitto-dir."""
+        import tempfile
+
+        marker = '{"recipe":"ram-rail-v2","keep":true}\n'
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            rail_json, rail_jsonl = recipe_kvitto_paths(root, "ram-rail-v2", "H1-OFF-01")
+            rail_json.parent.mkdir(parents=True, exist_ok=True)
+            rail_json.write_text(marker, encoding="utf-8")
+            rail_jsonl.write_text("rail-raw\n", encoding="utf-8")
+
+            fx = HERE / "recept" / "ram-prevent.json"
+            runner = RamRunner(
+                recipe=load_recipe(fx),
+                rail_gates=_rail_gates(),
+                prevent_gates=_prevent_gates(),
+                exec_knockback=_kb,
+                exec_trial=_trial,
+                ctl_port=0,
+                game_port=27595,
+                n_knock=0,
+                n_chain=1,
+                kvitto_dir=root,
+                demo_file="qw/demos/ram-prevent.mvd",
+                binaries={"qwprogs_sha256": "ab" * 32, "mvdsv_sha256": "cd" * 32},
+                fixture_sha256=sha256_file(fx),
+            )
+            report = runner.run()
+            self.assertTrue(report.as_dict()["godkand"], report.as_dict())
+
+            self.assertEqual(rail_json.read_text(encoding="utf-8"), marker)
+            self.assertEqual(rail_jsonl.read_text(encoding="utf-8"), "rail-raw\n")
+            prev_json, _ = recipe_kvitto_paths(root, "ram-prevent", "H1-OFF-01")
+            self.assertTrue(prev_json.is_file(), prev_json)
+            self.assertNotEqual(prev_json, rail_json)
+            prev_doc = json.loads(prev_json.read_text(encoding="utf-8"))
+            self.assertEqual(prev_doc["candidate"], "ram-prevent")
+            self.assertFalse((root / "H1-OFF-01.json").exists())
+
+            with self.assertRaises(FileExistsError):
+                runner._write_attempt_kvitto(report.attempts[0], {})
+            from d_kvitto import write_exclusive
+
+            with self.assertRaises(FileExistsError):
+                write_exclusive(rail_jsonl, "clobber\n")
+            self.assertEqual(rail_json.read_text(encoding="utf-8"), marker)
+            self.assertEqual(rail_jsonl.read_text(encoding="utf-8"), "rail-raw\n")
 
 
 class RamR3ZoneTests(unittest.TestCase):

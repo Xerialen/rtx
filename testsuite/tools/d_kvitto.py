@@ -8,6 +8,7 @@ rig — callers supply stamps, A* dumps and lock metadata. Live apply is GAP 4.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -191,7 +192,25 @@ def make_kvitto(
     return doc
 
 
-def write_kvitto(path: str | Path, doc: dict) -> None:
+def write_exclusive(path: str | Path, text: str) -> Path:
+    """Create `path` with O_CREAT|O_EXCL. Refuse to clobber an existing file."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(path, flags, 0o644)
+    except FileExistsError:
+        raise FileExistsError(f"refuse overwrite of existing kvitto {path}") from None
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return path
+
+
+def write_kvitto(path: str | Path, doc: dict, *, exclusive: bool = False) -> None:
+    text = json.dumps(doc, indent=2, sort_keys=True) + "\n"
+    if exclusive:
+        write_exclusive(path, text)
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
