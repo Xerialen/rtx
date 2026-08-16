@@ -10,5 +10,21 @@
     "graph_stamp": "906595427771298736",
     "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"
   },
-  "on_expected": null
+  "on_expected": {
+    "cells": 5981,
+    "links": 48217,
+    "rj_links": 0,
+    "graph_stamp": "17645347086516095554",
+    "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "on_expected_provenance": {
+    "lock": "fable gap4-sjalvbevis 2026-08-16T08:40:06Z runtime-tbx-d:27592/27996 binar=49f6f330",
+    "unit": "toolbox-d-test",
+    "ctl": 27996,
+    "game": 27592,
+    "commit": "50a613c",
+    "binary_sha256": "49f6f330fa6e199169ea2ddaf564134499a561724c229417c1017a65a7cc2133",
+    "measured": "2026-08-16T08:41:20Z",
+    "method": "fixa west-shelf dry-run on default-on graph (already_meshed); live_identity in-engine. Adjacency dump /tmp/d-gap4-on-graph.json has 48202 links (15 pruned T=0 stay in status 48217)."
+  }
 }
