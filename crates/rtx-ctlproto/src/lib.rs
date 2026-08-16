@@ -129,7 +129,20 @@ pub enum Cmd {
     /// route, a link listing or an earlier reply can be looked up without first knowing where it is.
     CellById { cell: u32 },
     /// Dump a bot's current A* route.
-    Route { bot: u32 },
+    ///
+    /// When `from` and `to` are set, dump a fresh A* search on the live graph instead of the
+    /// bot's live route (`bot` may be 0). `mask_links` are treated as absent for that one
+    /// search — the next-best path after the chosen route is masked. Omitted fields keep the
+    /// historical `{ "Route": { "bot": N } }` frame working.
+    Route {
+        bot: u32,
+        #[serde(default)]
+        from: Option<u32>,
+        #[serde(default)]
+        to: Option<u32>,
+        #[serde(default)]
+        mask_links: Vec<u32>,
+    },
     /// Dump the tail of a bot's `rtx_bot_debug` audit ring.
     Audit { bot: u32, lines: u32 },
     /// List generated speed-jump links. Curls (`gain > 0`) *and* straight/chained speed jumps —
@@ -560,6 +573,20 @@ pub struct RouteResp {
     pub route_pos: u32,
     pub origin: Vec3,
     pub legs: Vec<RouteLeg>,
+    /// Present when this reply is a from→to A* query (GAP 3). Absent on a live-bot dump.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub astar: Option<AstarDump>,
+}
+
+/// A* identity for a [`Cmd::Route`] from→to query: whether a path existed, its priced cost,
+/// the endpoints, and which links were masked for the next-best rescan.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AstarDump {
+    pub found: bool,
+    pub cost: f32,
+    pub start_cell: u32,
+    pub goal_cell: u32,
+    pub mask_links: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1086,5 +1113,25 @@ mod tests {
         assert!(read_frame(&mut cur).unwrap().is_none());
         assert_eq!(decode::<Request>(&f1).unwrap().id, 1);
         assert_eq!(decode::<Request>(&f2).unwrap().cmd, Cmd::Audit { bot: 2, lines: 50 });
+    }
+
+    /// Historical Route frames only carried `bot`. GAP 3 added from/to/mask_links with serde
+    /// defaults so those frames must still decode.
+    #[test]
+    fn route_frame_without_query_fields_still_decodes() {
+        #[derive(Serialize)]
+        enum OldRoute {
+            Route { bot: u32 },
+        }
+        let bytes = rmp_serde::to_vec_named(&OldRoute::Route { bot: 3 }).unwrap();
+        assert_eq!(
+            rmp_serde::from_slice::<Cmd>(&bytes).unwrap(),
+            Cmd::Route {
+                bot: 3,
+                from: None,
+                to: None,
+                mask_links: vec![],
+            }
+        );
     }
 }

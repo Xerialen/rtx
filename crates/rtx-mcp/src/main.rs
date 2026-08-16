@@ -1520,7 +1520,16 @@ impl RtxMcp {
     async fn bot_route(&self, Parameters(a): Parameters<BotArgs>) -> Result<CallToolResult, McpError> {
         let r = async {
             let bot = self.resolve_bot(a.bot).await?;
-            self.req(Cmd::Route { bot }, SHORT).await
+            self.req(
+                Cmd::Route {
+                    bot,
+                    from: None,
+                    to: None,
+                    mask_links: Vec::new(),
+                },
+                SHORT,
+            )
+            .await
         }
         .await;
         finish(r)

@@ -108,7 +108,7 @@ impl NavGraph {
     /// so the route bends around closed doors when it can and only crosses one (leaving the bot to
     /// open it) when there's no other way. Pass [`LinkCosts::gated`] (or `default`) for gates-only.
     pub fn find_path(&self, start: CellId, goal: CellId, costs: &LinkCosts) -> Option<Vec<u32>> {
-        self.find_path_filtered(start, goal, costs, None)
+        self.find_path_filtered(start, goal, costs, None, None)
     }
 
     /// [`find_path`](Self::find_path) restricted to a cluster window: expansion rejects any cell whose
@@ -121,7 +121,14 @@ impl NavGraph {
         costs: &LinkCosts,
         allowed: &[bool],
     ) -> Option<Vec<u32>> {
-        self.find_path_filtered(start, goal, costs, Some(allowed))
+        self.find_path_filtered(start, goal, costs, Some(allowed), None)
+    }
+
+    /// A* with named links treated as absent for this one search. The graph is not mutated —
+    /// this is how a D-receipt answers "what is the next-best path after the chosen route is
+    /// masked" (terras motfaktiska fråga). Empty `mask` is [`find_path`](Self::find_path).
+    pub fn find_path_masked(&self, start: CellId, goal: CellId, costs: &LinkCosts, mask: &[u32]) -> Option<Vec<u32>> {
+        self.find_path_filtered(start, goal, costs, None, Some(mask))
     }
 
     /// Whether `cell` may be expanded under an optional cluster window (`None` ⇒ unrestricted; a cell
@@ -142,6 +149,7 @@ impl NavGraph {
         goal: CellId,
         costs: &LinkCosts,
         allowed: Option<&[bool]>,
+        mask: Option<&[u32]>,
     ) -> Option<Vec<u32>> {
         use std::collections::BinaryHeap;
 
@@ -166,6 +174,9 @@ impl NavGraph {
                 return Some(self.reconstruct(&came_from, start, goal));
             }
             for &li in &self.adjacency[cell as usize] {
+                if mask.is_some_and(|m| m.contains(&li)) {
+                    continue;
+                }
                 let link = self.links[li as usize];
                 if !self.in_window(link.to, allowed) {
                     continue;

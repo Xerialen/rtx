@@ -3264,6 +3264,21 @@ mod tests {
         assert_eq!(g.find_path(0, 3, &LinkCosts::default()).unwrap(), vec![0, 1]);
     }
 
+    /// Masking the chosen path and re-searching yields the next-best route — the receipt's
+    /// counterfactual. The graph itself is unchanged, so a second unmasked search is the original.
+    #[test]
+    fn masked_rescan_yields_next_best() {
+        let g = diamond();
+        let costs = LinkCosts::default();
+        let best = g.find_path(0, 3, &costs).unwrap();
+        assert_eq!(best, vec![0, 1]);
+        let next = g.find_path_masked(0, 3, &costs, &best).unwrap();
+        assert_eq!(next, vec![2, 3]);
+        assert_ne!(next, best);
+        assert_eq!(g.find_path(0, 3, &costs).unwrap(), best, "mask must not mutate");
+        assert!(g.find_path_masked(0, 3, &costs, &[0, 1, 2, 3]).is_none());
+    }
+
     /// The rocket-jump fitness gate surcharges *only* RocketJump links: a bot unfit to rocket-jump
     /// diverts around a cheap-branch RJ leg, and a fit bot (no surcharge) still takes it.
     #[test]

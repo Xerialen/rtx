@@ -86,6 +86,22 @@ def _parse_verb(command: str) -> Any:
                     "rockets": float(tokens[3]),
                 }
             }
+        if verb == "route":
+            # route <bot>
+            # route query <from> <to> [mask id,id,...]
+            if len(tokens) >= 2 and tokens[1].lower() == "query":
+                mask = []
+                if len(tokens) >= 6 and tokens[4].lower() == "mask":
+                    mask = [int(x) for x in tokens[5].split(",") if x]
+                return {
+                    "Route": {
+                        "bot": 0,
+                        "from": int(tokens[2]),
+                        "to": int(tokens[3]),
+                        "mask_links": mask,
+                    }
+                }
+            return {"Route": {"bot": int(tokens[1])}}
     except (IndexError, ValueError) as exc:
         raise ControlError(f"invalid arguments for control verb {verb!r}") from exc
     raise ControlError(f"unsupported control verb {verb!r}")

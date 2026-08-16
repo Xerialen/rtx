@@ -484,7 +484,16 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
         }
         Cmd::Cell { pos } => cell_resp(game, v3(pos)).map(Resp::Cell),
         Cmd::CellById { cell } => cell_by_id_resp(game, cell).map(Resp::Cell),
-        Cmd::Route { bot } => route_resp(game, bot).map(Resp::Route),
+        Cmd::Route {
+            bot,
+            from,
+            to,
+            mask_links,
+        } => match (from, to) {
+            (Some(start), Some(goal)) => route_query(game, start, goal, &mask_links).map(Resp::Route),
+            (None, None) => route_resp(game, bot).map(Resp::Route),
+            _ => Err("route query needs both from and to".into()),
+        },
         Cmd::Audit { bot, lines } => audit_resp(game, bot, lines as usize).map(Resp::Audit),
         Cmd::Curls => curls_resp(game).map(Resp::Curls),
         Cmd::Bsp => bsp_resp(game).map(|b| Resp::Bsp(Box::new(b))),
@@ -1152,6 +1161,58 @@ fn route_resp(game: &GameState, bot: u32) -> Result<proto::RouteResp, String> {
         route_pos: b.route_pos as u32,
         origin: a3(game.entities[e].v.origin),
         legs,
+        astar: None,
+    })
+}
+
+/// Fresh A* from `start` to `goal` on the live graph. `mask` links are absent for this search
+/// only — used to dump the next-best path for a D-receipt.
+fn route_query(game: &GameState, start: u32, goal: u32, mask: &[u32]) -> Result<proto::RouteResp, String> {
+    let g = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
+    if start as usize >= g.cells.len() {
+        return Err(format!("start cell {start} out of range"));
+    }
+    if goal as usize >= g.cells.len() {
+        return Err(format!("goal cell {goal} out of range"));
+    }
+    let costs = crate::navmesh::LinkCosts::default();
+    let path = if mask.is_empty() {
+        g.find_path(start, goal, &costs)
+    } else {
+        g.find_path_masked(start, goal, &costs, mask)
+    };
+    let (found, legs, cost) = match path {
+        None => (false, Vec::new(), 0.0),
+        Some(links) => {
+            let cost: f32 = links.iter().map(|&li| g.priced_link_cost(li, &costs)).sum();
+            let legs = links
+                .iter()
+                .enumerate()
+                .map(|(i, &leg)| proto::RouteLeg {
+                    i: i as u32,
+                    link: leg,
+                    kind: kind_name(g.link_kind(leg)).to_string(),
+                    src_cell: g.link_source(leg),
+                    tgt_cell: g.link_target(leg),
+                    src: a3(g.cell_origin(g.link_source(leg))),
+                    tgt: a3(g.cell_origin(g.link_target(leg))),
+                })
+                .collect();
+            (true, legs, cost)
+        }
+    };
+    Ok(proto::RouteResp {
+        bot: 0,
+        route_pos: 0,
+        origin: a3(g.cell_origin(start)),
+        legs,
+        astar: Some(proto::AstarDump {
+            found,
+            cost,
+            start_cell: start,
+            goal_cell: goal,
+            mask_links: mask.to_vec(),
+        }),
     })
 }
 

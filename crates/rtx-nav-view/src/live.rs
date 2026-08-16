@@ -167,7 +167,16 @@ fn session(
                 continue;
             }
         }
-        match request(stream, next_id, Cmd::Route { bot: bot.unwrap() })? {
+        match request(
+            stream,
+            next_id,
+            Cmd::Route {
+                bot: bot.unwrap(),
+                from: None,
+                to: None,
+                mask_links: Vec::new(),
+            },
+        )? {
             Ok(Resp::Route(r)) => {
                 let _ = proxy.send_event(UserEvent::Live(Box::new(r)));
             }
