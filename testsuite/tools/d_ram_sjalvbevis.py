@@ -28,6 +28,7 @@ from d_kvitto import (  # noqa: E402
     recipe_kvitto_paths,
     refuse_shared_kvitto_dir,
     write_attempt_raw_file,
+    write_exclusive,
     write_kvitto,
 )
 from d_recipe import load_recipe, on_expected  # noqa: E402
@@ -352,6 +353,10 @@ def recipe_drop_pairs(recipe: dict) -> set[tuple[int, int]]:
 
 HARDKATALOG_SHA256 = "55a608426226522c45dd217c3741c9b9ff13d2d302e84511ffd810be506ad1fe"
 HARDKATALOG_PATH = HERE / "recept" / "ram-hardkatalog.jsonl"
+RAILKATALOG_SHA256 = "567d2ca0813adcf0eeadf122f8075965021f1d4dfbceb9d30c69bda6671986f9"
+RAILKATALOG_PATH = HERE / "recept" / "ram-railkatalog.jsonl"
+FACIT_RAM_R5_SHA256 = "088ee90971efe5574bc92c29e2491e645f947c0aa50cff01d6fbc408a1f4010e"
+LEDGER_SCHEMA = "verktygslada/ram-r5-attribution-ledger/1"
 KLASS_TO_EV = {"fall": "peak_drop_150", "fastnad": "bot_stall"}
 
 
@@ -373,6 +378,38 @@ def load_hardkatalog(
             continue
         rows.append(json.loads(line))
     return rows, "ok"
+
+
+def catalog_row_allowed(recipe_id: str, row: dict) -> bool:
+    """Cross-catalog forbid: rail rows never corroborate prevent, and vice versa."""
+    rid = str(recipe_id or "")
+    row_id = str((row or {}).get("id") or "")
+    if rid in RAIL_IDS:
+        return row_id.startswith("RAIL-")
+    if rid == "ram-prevent":
+        return row_id.startswith("RAM-GK")
+    return False
+
+
+def load_recipe_catalog(
+    recipe_id: str,
+    path: Path | None = None,
+    *,
+    expected_sha: str | None = None,
+) -> tuple[list[dict] | None, str]:
+    """Recipe-specific LED III source. SHA mismatch ⇒ unused (M1 only)."""
+    rid = str(recipe_id or "")
+    if rid in RAIL_IDS:
+        return load_hardkatalog(
+            path or RAILKATALOG_PATH,
+            expected_sha=RAILKATALOG_SHA256 if expected_sha is None else expected_sha,
+        )
+    if rid == "ram-prevent":
+        return load_hardkatalog(
+            path or HARDKATALOG_PATH,
+            expected_sha=HARDKATALOG_SHA256 if expected_sha is None else expected_sha,
+        )
+    return None, "no_catalog"
 
 
 def _catalog_falt(row: dict) -> dict:
@@ -429,12 +466,12 @@ def catalog_corroborate(
     live_cells: list[int] | None,
     live_goal: list[float] | None,
 ) -> dict | None:
-    """LED III via härdkatalogen. Fail-closed on every listed prohibition."""
+    """LED III via the recipe-owned catalog. Fail-closed on every listed prohibition."""
     if not rows:
         return None
     if str(stratum or "").startswith("K"):
         return None
-    if recipe_id in RAIL_IDS or recipe_id != "ram-prevent":
+    if str(recipe_id or "") not in RAIL_IDS and str(recipe_id or "") != "ram-prevent":
         return None
     if not isinstance(off_ev, dict) or not isinstance(on_ev, dict):
         return None
@@ -447,6 +484,8 @@ def catalog_corroborate(
     on_o = _origin_of(on_ev)
 
     for row in rows:
+        if not catalog_row_allowed(recipe_id, row):
+            continue
         falt = _catalog_falt(row)
         if str(falt.get("arm") or "").strip().lower() != "mixed":
             continue
@@ -854,7 +893,7 @@ class RamRunner:
         fixture_sha256: str | None = None,
         allow_shared: bool = False,
         catalog_path: Path | None = None,
-        catalog_sha: str | None = HARDKATALOG_SHA256,
+        catalog_sha: str | None = None,
     ) -> None:
         self.recipe = recipe
         self.rail_gates = rail_gates
@@ -884,8 +923,10 @@ class RamRunner:
             or (rail_gates.get("baseline_clusters") if rail_gates else None)
             or []
         )
-        self.catalog, self.catalog_status = load_hardkatalog(
-            catalog_path, expected_sha=catalog_sha,
+        self.catalog, self.catalog_status = load_recipe_catalog(
+            str(recipe.get("id") or ""),
+            catalog_path,
+            expected_sha=catalog_sha,
         )
         self.kb = knockback_points(rail_gates)
         self.p = prevention_specs(self.prevent_gates) if recipe.get("id") == "ram-prevent" else []
@@ -1246,6 +1287,219 @@ class RamRunner:
         }
 
 
+def _parse_attempt_stem(stem: str) -> tuple[str, str, int] | None:
+    parts = str(stem or "").split("-")
+    if len(parts) < 3:
+        return None
+    arm = parts[1].lower()
+    if arm not in {"off", "on"}:
+        return None
+    try:
+        seq = int(parts[2])
+    except ValueError:
+        return None
+    stratum = parts[0]
+    if not stratum or stratum.startswith("K"):
+        return None
+    if stratum not in CHAIN_IDS:
+        return None
+    return stratum, arm, seq
+
+
+def discover_receipt_files(kvitto_dir: Path, recipe_id: str) -> dict[str, Path]:
+    """Existing receipts only. Never invents stems or pairs."""
+    roots: list[Path] = []
+    nested = Path(kvitto_dir) / str(recipe_id)
+    if nested.is_dir():
+        roots.append(nested)
+    if Path(kvitto_dir).is_dir():
+        roots.append(Path(kvitto_dir))
+    found: dict[str, Path] = {}
+    for root in roots:
+        for rec in sorted(root.glob("*.json")):
+            if rec.stem in found:
+                continue
+            parsed = _parse_attempt_stem(rec.stem)
+            if parsed is None:
+                continue
+            found[rec.stem] = rec
+    return found
+
+
+def _raw_path_of(doc: dict, receipt_path: Path) -> Path | None:
+    raw_ptr = doc.get("raw_pointer")
+    if not isinstance(raw_ptr, str) or not raw_ptr.strip():
+        sibling = receipt_path.with_suffix(".jsonl")
+        return sibling if sibling.is_file() else None
+    head = raw_ptr.split("#", 1)[0]
+    p = Path(head)
+    if p.is_file():
+        return p
+    sibling = receipt_path.with_suffix(".jsonl")
+    return sibling if sibling.is_file() else None
+
+
+def _inject_receipt_astar(raw: dict, doc: dict, raw_path: Path) -> dict:
+    ast = doc.get("astar") or {}
+    if not raw.get("astar_before"):
+        raw["astar_before"] = ast.get("before") or {}
+    if not raw.get("astar_after"):
+        raw["astar_after"] = ast.get("after") or {}
+    raw["raw_pointer"] = str(raw_path)
+    return raw
+
+
+def _existing_pairs(receipts: dict[str, Path]) -> list[tuple[str, int, Path, Path]]:
+    pairs: list[tuple[str, int, Path, Path]] = []
+    seen: set[tuple[str, int]] = set()
+    for stem, off_path in sorted(receipts.items()):
+        parsed = _parse_attempt_stem(stem)
+        if parsed is None or parsed[1] != "off":
+            continue
+        stratum, _arm, seq = parsed
+        on_stem = f"{stratum}-ON-{seq:02d}"
+        on_path = receipts.get(on_stem)
+        if on_path is None:
+            continue
+        key = (stratum, seq)
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append((stratum, seq, off_path, on_path))
+    return pairs
+
+
+def rescore_kvitton(
+    kvitto_dir: Path,
+    *,
+    recipe_id: str,
+    ledger_path: Path,
+    recipe: dict | None = None,
+    catalog: list[dict] | None = None,
+    catalog_status: str | None = None,
+    catalog_sha: str | None = None,
+    prevent_gates: dict | None = None,
+    rail_gates: dict | None = None,
+) -> dict:
+    """Offline §4a only. Receipts and raw JSONL are immutable.
+
+    Verify-fail or missing raw ⇒ that pair is refused (no attribution).
+    Missing partners are skipped, never synthesised. Ledger is O_EXCL.
+    """
+    from verify_d_kvitto import verify  # lazy: verify_d_kvitto does not import us
+
+    rid = str(recipe_id or "")
+    if recipe is None:
+        recipe = load_recipe(HERE / "recept" / f"{rid}.json")
+    if rail_gates is None:
+        rail_path = RAIL_V2_GATES if rid == "ram-rail-v2" and RAIL_V2_GATES.is_file() else RAIL_GATES
+        rail_gates = json.loads(rail_path.read_text(encoding="utf-8")) if rail_path.is_file() else {}
+    if prevent_gates is None:
+        prevent_gates = (
+            json.loads(PREVENT_GATES.read_text(encoding="utf-8")) if PREVENT_GATES.is_file() else {}
+        )
+    avsett = (
+        (prevent_gates.get("avsett_drop") if prevent_gates else None)
+        or (rail_gates.get("avsett_drop") if rail_gates else None)
+    )
+    clusters = list(
+        (prevent_gates.get("baseline_clusters") if prevent_gates else None)
+        or (rail_gates.get("baseline_clusters") if rail_gates else None)
+        or []
+    )
+    if catalog_status is None:
+        loaded, catalog_status = load_recipe_catalog(rid, expected_sha=catalog_sha)
+        if catalog is None:
+            catalog = loaded
+    live_goals = {s["id"]: list(s.get("goal") or []) for s in heldout_specs() + prevention_specs(prevent_gates)}
+
+    receipts = discover_receipt_files(Path(kvitto_dir), rid)
+    pairs = _existing_pairs(receipts)
+    episodes: list[dict] = []
+    for stratum, seq, off_path, on_path in pairs:
+        off_text = off_path.read_text(encoding="utf-8")
+        on_text = on_path.read_text(encoding="utf-8")
+        off_doc = json.loads(off_text)
+        on_doc = json.loads(on_text)
+        off_sha = sha256_file(off_path)
+        on_sha = sha256_file(on_path)
+        base = {
+            "kind": "ram_r5_episode",
+            "stratum": stratum,
+            "seq": seq,
+            "off_attempt": off_path.stem,
+            "on_attempt": on_path.stem,
+            "off_kvitto_sha256": off_sha,
+            "on_kvitto_sha256": on_sha,
+            "off_raw_sha256": None,
+            "on_raw_sha256": None,
+            "legs": None,
+            "attributed": False,
+            "catalog_row": None,
+            "reasons": [],
+            "refused": None,
+        }
+        off_err = verify(off_doc)
+        on_err = verify(on_doc)
+        if off_err or on_err:
+            base["refused"] = "verify_failed"
+            base["verify_errors"] = {"off": off_err, "on": on_err}
+            base["reasons"] = ["verify failed — no attribution"]
+            episodes.append(base)
+            continue
+        off_raw_path = _raw_path_of(off_doc, off_path)
+        on_raw_path = _raw_path_of(on_doc, on_path)
+        if off_raw_path is None or on_raw_path is None:
+            base["refused"] = "raw_missing"
+            base["reasons"] = ["missing raw JSONL — no attribution"]
+            episodes.append(base)
+            continue
+        base["off_raw_sha256"] = sha256_file(off_raw_path)
+        base["on_raw_sha256"] = sha256_file(on_raw_path)
+        off_raw = _inject_receipt_astar(raw_from_jsonl(off_raw_path), off_doc, off_raw_path)
+        on_raw = _inject_receipt_astar(raw_from_jsonl(on_raw_path), on_doc, on_raw_path)
+        result = attribute_pair(
+            off_raw,
+            on_raw,
+            stratum=stratum,
+            off_id=off_path.stem,
+            on_id=on_path.stem,
+            recipe=recipe,
+            avsett=avsett,
+            clusters=clusters,
+            off_receipt=off_doc,
+            on_receipt=on_doc,
+            catalog=catalog,
+            live_goal=live_goals.get(stratum),
+        )
+        post = result["post"]
+        base["legs"] = dict(result["legs"])
+        base["attributed"] = bool(result["ok"])
+        base["catalog_row"] = post.get("catalog_row")
+        base["reasons"] = list(result["reasons"])
+        base["m1_cluster"] = post.get("m1_cluster")
+        episodes.append(base)
+
+    header = {
+        "kind": "ram_r5_rescore_header",
+        "schema": LEDGER_SCHEMA,
+        "facit_ram_r5_sha256": FACIT_RAM_R5_SHA256,
+        "prevent_katalog_sha256": HARDKATALOG_SHA256,
+        "rail_katalog_sha256": RAILKATALOG_SHA256,
+        "recipe_id": rid,
+        "kvitto_dir": str(Path(kvitto_dir)),
+        "catalog_status": catalog_status,
+        "n_pairs_seen": len(pairs),
+        "n_attributed": sum(1 for e in episodes if e.get("attributed")),
+        "n_refused": sum(1 for e in episodes if e.get("refused")),
+    }
+    lines = [json.dumps(header, sort_keys=True)]
+    lines.extend(json.dumps(ep, sort_keys=True) for ep in episodes)
+    write_exclusive(Path(ledger_path), "\n".join(lines) + "\n")
+    return {"header": header, "episodes": episodes, "ledger": str(Path(ledger_path))}
+
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", type=int, default=0)
@@ -1264,7 +1518,38 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--run", action="store_true")
+    ap.add_argument(
+        "--rescore",
+        action="store_true",
+        help="offline §4a rescore of existing receipts; no rig, receipts immutable",
+    )
+    ap.add_argument(
+        "--ledger",
+        type=Path,
+        help="O_EXCL attribution ledger path for --rescore",
+    )
     args = ap.parse_args(argv)
+    if args.rescore:
+        if args.run or args.smoke or args.port:
+            print("--rescore refuses --run/--smoke/--port (no rig)", file=sys.stderr)
+            return 2
+        if not args.kvitto_dir or not args.ledger:
+            print("--rescore requires --kvitto-dir and --ledger", file=sys.stderr)
+            return 2
+        try:
+            result = rescore_kvitton(
+                args.kvitto_dir,
+                recipe_id=args.recipe,
+                ledger_path=args.ledger,
+            )
+        except FileExistsError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        text_out = json.dumps(result["header"], indent=2, sort_keys=True)
+        if args.out:
+            args.out.write_text(text_out + "\n", encoding="utf-8")
+        print(text_out)
+        return 0 if result["header"].get("n_refused", 0) == 0 else 1
     fixture = args.fixture or (HERE / "recept" / f"{args.recipe}.json")
     recipe = load_recipe(fixture)
     fx_sha = sha256_file(Path(fixture))
