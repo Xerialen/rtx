@@ -181,7 +181,7 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(h1461["off_bank"], 0)
         self.assertEqual(
             g["facit_sha256"],
-            "e4b24f0814785876c354a4294c1621bc78f9ca57267034a27b773c2e0ce0905b",
+            "68f4c2ffc22d44213609f42cdb4fe0e4839adb95b1052ee1c293ecb37e123e4b",
         )
 
     def test_k2_appendix_is_49(self):
@@ -625,6 +625,60 @@ class ScoringTests(unittest.TestCase):
         runner.app_routes = []
         report = runner.run()
         self.assertTrue(report.repro_off_ok)
+
+    def test_stall_parity_rule_r4(self):
+        # facit r4: route-local paired non-regression — ON_stall <= OFF_stall.
+        # in_tunnel-shaped parity (stall in BOTH arms, arrives in budget) must
+        # NOT fail ON; an ON-only stall (delta>0) must fail; stats reported.
+        def make_exec(on_stalls: bool, off_stalls: bool):
+            def exec_trial(**k):
+                stallish = {"t_stall_gate": 4.0}
+                if k["stratum_id"] in {"in_vast", "in_tunnel"}:
+                    if k["arm"] == "off":
+                        raw = _hearth_raw()
+                        if off_stalls:
+                            raw.update(stallish)
+                        return raw
+                    raw = _clean_on()
+                    if on_stalls:
+                        raw.update(stallish)
+                    return raw
+                raw = _clean_on()
+                if k["stratum_id"] == "1416-1124":
+                    raw["events"] = list(raw.get("events") or []) + [
+                        {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
+                    ]
+                if k["stratum_id"] == "1461-1124":
+                    _r3_1461_ok(raw)
+                return raw
+            return exec_trial
+
+        def run_with(on_stalls, off_stalls):
+            runner = TournamentRunner(
+                recipe=_recipe(),
+                gates=_gates(),
+                exec_trial=make_exec(on_stalls, off_stalls),
+                ctl_port=0,
+                game_port=27592,
+                fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+                n_repro=1,
+                n_heldout=1,
+            )
+            runner.app_routes = []
+            return runner.run()
+
+        parity = run_with(on_stalls=True, off_stalls=True)
+        self.assertTrue(parity.repro_on_ok, parity.repro_stall)
+        for rid in ("in_vast", "in_tunnel"):
+            self.assertEqual(parity.repro_stall[rid]["stall_delta"], 0)
+        regression = run_with(on_stalls=True, off_stalls=False)
+        self.assertFalse(regression.repro_on_ok)
+        self.assertEqual(regression.repro_stall["in_vast"]["stall_delta"], 1)
+        eliminated = run_with(on_stalls=False, off_stalls=True)
+        self.assertTrue(eliminated.repro_on_ok)
+        self.assertEqual(eliminated.repro_stall["in_vast"]["stall_eliminated"], 1)
+        d = eliminated.as_dict()
+        self.assertIn("stall", d["reproduction"])
 
     def test_side_by_side_does_not_borrow(self):
         ok, _ = self._perfect("haz1462-k1")

@@ -427,6 +427,7 @@ class TournamentReport:
     heldout_on_ok: bool = False
     appendix_on_ok: bool = True
     pass_ok: bool = False
+    repro_stall: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
@@ -439,6 +440,8 @@ class TournamentReport:
             "reproduction": {
                 "off_ok": self.repro_off_ok,
                 "on_ok": self.repro_on_ok,
+                # facit r4: per-route paired stall non-regression stats.
+                "stall": self.repro_stall,
             },
             "heldout": {"on_ok": self.heldout_on_ok},
             "appendix": {"on_ok": self.appendix_on_ok},
@@ -462,9 +465,16 @@ class TournamentReport:
         }
 
 
-def score_reproduction(attempts: list[TAttempt], routes: list[dict]) -> tuple[bool, bool]:
+def score_reproduction(
+    attempts: list[TAttempt], routes: list[dict],
+) -> tuple[bool, bool, dict]:
     # facit r2: OFF needs >=1 hearth event across the COMBINED campaign
     # (stochastic per-route zeros at N=75 are expected); ON stays 0/N per route.
+    # facit r4: bot_stall is a route-local paired NON-REGRESSION test, not a
+    # universal zero — in each fixed route, ON_stall_attempts must not exceed
+    # OFF_stall_attempts (an attempt counts once if it has >=1 stall event).
+    # stall_delta > 0 fails; zero ON stalls reports full measured elimination.
+    # No cross-route pooling, no borrowing.
     on_ok = True
     route_ids = {spec["id"] for spec in routes}
     campaign_offs = [
@@ -472,16 +482,30 @@ def score_reproduction(attempts: list[TAttempt], routes: list[dict]) -> tuple[bo
         if a.route_id in route_ids and a.arm == "off" and a.valid
     ]
     off_ok = any(a.hearth for a in campaign_offs)
+    stall: dict[str, dict] = {}
     for spec in routes:
         rid = spec["id"]
         n = int(spec["n_pairs"])
         ons = [a for a in attempts if a.route_id == rid and a.arm == "on" and a.valid]
+        offs = [a for a in attempts if a.route_id == rid and a.arm == "off" and a.valid]
         if len(ons) != n:
             on_ok = False
             continue
-        if any(a.hearth or a.stall or not a.arrived for a in ons):
+        if any(a.hearth or not a.arrived for a in ons):
             on_ok = False
-    return off_ok, on_ok
+        off_stall = sum(1 for a in offs if a.stall)
+        on_stall = sum(1 for a in ons if a.stall)
+        stall[rid] = {
+            "off_count": off_stall,
+            "off_rate": off_stall / len(offs) if offs else None,
+            "on_count": on_stall,
+            "on_rate": on_stall / len(ons) if ons else None,
+            "stall_delta": on_stall - off_stall,
+            "stall_eliminated": off_stall - on_stall,
+        }
+        if on_stall > off_stall:
+            on_ok = False
+    return off_ok, on_ok, stall
 
 
 def score_migrate(attempts: list[TAttempt], routes: list[dict]) -> bool:
@@ -898,7 +922,7 @@ class TournamentRunner:
             self._run_pairs(spec, attempts, extra)
         for spec in self.app_routes:
             self._run_pairs(spec, attempts, extra)
-        repro_off, repro_on = score_reproduction(attempts, self.repro)
+        repro_off, repro_on, repro_stall = score_reproduction(attempts, self.repro)
         held_ok = score_migrate(attempts, self.heldout)
         app_ok = True if not self.app_routes else score_migrate(attempts, self.app_routes)
         valid = not extra
@@ -916,6 +940,7 @@ class TournamentRunner:
             heldout_on_ok=held_ok,
             appendix_on_ok=app_ok,
             pass_ok=pass_ok,
+            repro_stall=repro_stall,
         )
 
 
