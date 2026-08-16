@@ -607,16 +607,18 @@ class TournamentRunner:
         nb = raw.get("astar_next_best") or {}
         links = path_links(after)
         nb_links = path_links(nb)
+        ran = raw.get("stamp_ok") is not False
         sj_ok = True
         if spec.get("require_speedjump"):
             # facit r2: 1461-1124 must select and attest 34419 in BOTH arms.
             sj_ok = attests_speedjump(links, int(spec.get("speedjump") or SPEEDJUMP))
         corridor_ok = True
-        if spec.get("require_corridor") and arm == "on":
+        if ran and spec.get("require_corridor") and arm == "on":
             # facit r2: attest the ACTUAL route — at least one peak_drop_150
             # inside the pre-registered avsett_drop corridor; EVERY other
             # drop remains a failure. Fail-closed: an unstamped drop
             # (cell=None) counts as outside; the goal cell is NOT exempt.
+            # Stamp-exhausted arms never watched — do not score the corridor.
             allowed = set(int(c) for c in spec.get("avsett_drop_cells") or [])
             drops = [
                 ev for ev in (raw.get("events") or [])
@@ -657,7 +659,7 @@ class TournamentRunner:
         if raw.get("stamp_ok") is False:
             att.valid = False
             att.reason = raw.get("stamp_reason") or "start-vel stamp failed"
-        if not sj_ok:
+        elif not sj_ok:
             att.valid = False
             att.reason = f"{spec['id']} must attest SpeedJump {int(spec.get('speedjump') or SPEEDJUMP)}"
         elif not corridor_ok:

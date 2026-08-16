@@ -791,5 +791,85 @@ class KvittoFieldTests(unittest.TestCase):
         self.assertEqual(verify(doc), [])
 
 
+LAB_K1R4 = Path.home() / "lab" / "turnering-k1-r4"
+TD_REASON = HERE / "testdata" / "reasonfix"
+
+
+def _r4_1124_jsonl(stem: str) -> Path:
+    for root in (LAB_K1R4, TD_REASON):
+        p = root / f"{stem}.jsonl"
+        if p.is_file():
+            return p
+    raise FileNotFoundError(stem)
+
+
+class ReasonPriorityTests(unittest.TestCase):
+    """Stamp-exhausted 1416-1124 must not be reported as a corridor miss."""
+
+    def _spec_and_runner(self):
+        spec = next(s for s in heldout_obligations(_gates()) if s["id"] == "1416-1124")
+        runner = TournamentRunner(
+            recipe=_recipe(),
+            gates=_gates(),
+            exec_trial=lambda **k: {},
+            ctl_port=0,
+            game_port=27592,
+            fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+            n_repro=0,
+            n_heldout=0,
+        )
+        return spec, runner
+
+    def test_stamp_exhausted_pairs_keep_stamp_reason(self):
+        # K1-R4 1416-1124 ON-01/03/04/05: stamp_ok=false, no events (never watched).
+        spec, runner = self._spec_and_runner()
+        for seq in (1, 3, 4, 5):
+            raw = raw_from_jsonl(_r4_1124_jsonl(f"1416-1124-ON-{seq:02d}"))
+            self.assertIs(raw.get("stamp_ok"), False, seq)
+            self.assertFalse(raw.get("events"), seq)
+            att = runner._classify(spec, "on", seq, raw)
+            self.assertFalse(att.valid, seq)
+            self.assertIn("stamp", att.reason, (seq, att.reason))
+            self.assertNotIn("avsett_drop", att.reason, (seq, att.reason))
+
+    def test_on10_spread_into_1124_is_still_corridor(self):
+        spec, runner = self._spec_and_runner()
+        raw = raw_from_jsonl(_r4_1124_jsonl("1416-1124-ON-10"))
+        self.assertIsNot(raw.get("stamp_ok"), False)
+        drops = [e for e in raw["events"] if e.get("ev") == "peak_drop_150"]
+        self.assertEqual(drops[0].get("cell"), 1124)
+        att = runner._classify(spec, "on", 10, raw)
+        self.assertFalse(att.valid)
+        self.assertIn("avsett_drop", att.reason)
+        self.assertNotIn("exhausted", att.reason)
+
+    def test_on07_on09_ran_without_drop_stay_corridor(self):
+        # Raw K1-R4: ON-07/09 have stamp_ok=true and only `arrived` — they ran.
+        # Deepseek's FYND B list lumped them with stamp-exhausted; the jsonl does not.
+        spec, runner = self._spec_and_runner()
+        for seq in (7, 9):
+            raw = raw_from_jsonl(_r4_1124_jsonl(f"1416-1124-ON-{seq:02d}"))
+            self.assertIsNot(raw.get("stamp_ok"), False, seq)
+            evs = [e.get("ev") for e in raw["events"]]
+            self.assertIn("arrived", evs, seq)
+            self.assertNotIn("peak_drop_150", evs, seq)
+            att = runner._classify(spec, "on", seq, raw)
+            self.assertFalse(att.valid, seq)
+            self.assertIn("avsett_drop", att.reason, (seq, att.reason))
+
+    def test_validity_unchanged_stamp_still_invalid(self):
+        spec, runner = self._spec_and_runner()
+        raw = {
+            "stamp_ok": False,
+            "stamp_reason": "start-vel stamp exhausted vs partner (8 tries, tol=5.0)",
+            "events": [],
+            "measured_vel": [-89.24, 17.53, 0.0],
+        }
+        att = runner._classify(spec, "on", 1, raw)
+        self.assertFalse(att.valid)
+        self.assertIn("exhausted", att.reason)
+
+
 if __name__ == "__main__":
     unittest.main()
+
