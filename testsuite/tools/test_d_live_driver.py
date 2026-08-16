@@ -16,6 +16,7 @@ sys.path.insert(0, str(HERE.parent))
 
 from d_kvitto import WEST_SHELF_OFF  # noqa: E402
 from d_live_driver import (  # noqa: E402
+    T0_SETTLE_S,
     VEL_ALIGN,
     VEL_SAMPLE_S,
     LiveTrialDriver,
@@ -24,6 +25,7 @@ from d_live_driver import (  # noqa: E402
     mid_band_speed,
     origin_vel,
     refuse_ra,
+    status_dt,
     vel_components_within,
 )
 from d_recipe import load_gates, load_recipe, on_expected  # noqa: E402
@@ -66,9 +68,28 @@ class MockCtl:
         self._goto = False
         self._need_first_sample = False
         self.ignore_integrate = 0
+        self.server_t = 1000.0
+        self.clock: FakeClock | None = None
+        self.frame: float | None = None
+        self.last_wall = 0.0
+        self.prep_decel_until: float | None = None
+        self.prep_decel_vel = [32.4, 0.0, 0.0]
+        self.emulate_prep_decel = False
         recipe = load_recipe(HERE / "recept" / "west-shelf.json")
         self.off = dict(recipe["off"])
         self.on = on_expected(recipe)
+
+    def _advance_server(self) -> float:
+        """Return server dt since last status. Quantize when frame is set."""
+        if self.clock is not None and self.frame:
+            wall = self.clock.now()
+            wall_dt = max(0.0, wall - self.last_wall)
+            self.last_wall = wall
+            n = int(round(wall_dt / self.frame)) if wall_dt > 1e-12 else 0
+            return n * self.frame
+        if self._need_first_sample or self.ignore_integrate > 0:
+            return 0.0
+        return 0.04
 
     def _stamp(self) -> dict:
         s = self.on if self.arm == "on" else self.off
@@ -88,13 +109,19 @@ class MockCtl:
             if self.ignore_integrate > 0:
                 self.ignore_integrate -= 1
                 self._need_first_sample = True
-            if self.vel != [0.0, 0.0, 0.0] and not self._need_first_sample:
-                dt = 0.04
+            dt = self._advance_server()
+            if self.clock is not None and self.prep_decel_until is not None:
+                if self.clock.now() >= self.prep_decel_until:
+                    if self.vel == self.prep_decel_vel:
+                        self.vel = [0.0, 0.0, 0.0]
+                    self.prep_decel_until = None
+            if self.vel != [0.0, 0.0, 0.0] and not self._need_first_sample and dt > 0.0:
                 self.origin = [
                     self.origin[0] + self.vel[0] * dt,
                     self.origin[1] + self.vel[1] * dt,
                     self.origin[2] + self.vel[2] * dt,
                 ]
+            self.server_t += dt
             self._need_first_sample = False
             if self._goto and self.drop_after_goto:
                 self.origin = [self.origin[0], self.origin[1], self.origin[2] - 80.0]
@@ -104,6 +131,7 @@ class MockCtl:
                 "data": {
                     "navmesh": "ready",
                     "map": "dm3",
+                    "time": self.server_t,
                     "cells": self._stamp()["cells"],
                     "links": self._stamp()["links"],
                     "rj_links": 0,
@@ -139,6 +167,10 @@ class MockCtl:
                 return {"ok": True, "data": d}
             return {"ok": True, "data": {"outcome": "failed", "reason": mode}}
         if verb == "prep":
+            if self.emulate_prep_decel and self.clock is not None:
+                self.vel = list(self.prep_decel_vel)
+                # leftover decel lasts just under the T0 settle window
+                self.prep_decel_until = self.clock.now() + (T0_SETTLE_S - 0.02)
             return {"ok": True, "data": {}}
         if verb == "teleport":
             self.origin = [float(parts[2]), float(parts[3]), float(parts[4])]
@@ -146,6 +178,15 @@ class MockCtl:
                 self.vel = [float(parts[5]), float(parts[6]), float(parts[7])]
             self.on_ground = True
             self._need_first_sample = True
+            # A rest-teleport during leftover decel / onto the T0 shelf
+            # restarts the motion the settle window was meant to absorb.
+            if (
+                self.emulate_prep_decel
+                and self.clock is not None
+                and all(abs(v) <= 1e-9 for v in self.vel)
+            ):
+                self.vel = list(self.prep_decel_vel)
+                self.prep_decel_until = self.clock.now() + (T0_SETTLE_S - 0.02)
             return {"ok": True, "data": {}}
         if verb == "goto":
             self._goto = True
@@ -249,7 +290,9 @@ class SequenceTests(unittest.TestCase):
         spec = STRATA["T0"]
         raw = drv.exec_trial(stratum_id="T0", arm="off", spec=spec, seq=1, window_s=2.0)
         tele = [c for c in ctl.cmds if c.startswith("teleport")]
-        self.assertGreaterEqual(len(tele), 2)
+        # Land once at rest. A second rest-teleport (R4 stamp_start_vel) restarts
+        # shelf-fall / leftover decel and made every T0 invalid.
+        self.assertEqual(len(tele), 1)
         for tcmd in tele:
             toks = tcmd.split()
             self.assertEqual(toks[2:5], ["-865.0", "-48.0", "90.0"])
@@ -546,12 +589,75 @@ class KvittoTests(unittest.TestCase):
 
 
 class StartVelTests(unittest.TestCase):
-    def test_origin_vel_uses_nominal_dt_not_wall(self):
-        o0 = [0.0, 0.0, 0.0]
-        o1 = [8.4, 0.0, 0.0]  # 210 u/s * 0.04
-        self.assertAlmostEqual(origin_vel(o0, o1, 0.04)[0], 210.0, places=5)
-        # wall-clock 0.06 would have reported 140 — the r2 jitter class
-        self.assertAlmostEqual(origin_vel(o0, o1, 0.06)[0], 140.0, places=5)
+    def test_quantized_frames_fail_nominal_dt_pass_server_dt(self):
+        """R4 regression: origin_delta/0.04 on frame-quantized motion.
+
+        True v=210, frame=0.018, wall sleep 0.04 → 2 frames = 0.036 s.
+        Nominal divisor reports 189 (error 21 > ±5). Server dt recovers 210.
+        """
+        frame = 0.018
+        true_v = 210.0
+        n = int(round(VEL_SAMPLE_S / frame))
+        server_dt = n * frame
+        self.assertNotAlmostEqual(server_dt, VEL_SAMPLE_S, places=5)
+        dx = true_v * server_dt
+        o0, o1 = [0.0, 0.0, 0.0], [dx, 0.0, 0.0]
+        old = origin_vel(o0, o1, VEL_SAMPLE_S)
+        new = origin_vel(o0, o1, server_dt)
+        self.assertGreater(abs(old[0] - true_v), 5.0)
+        self.assertAlmostEqual(new[0], true_v, places=5)
+        # two arms quantized to 2 vs 3 frames: old pair delta is a constant > 5
+        dx3 = true_v * (3 * frame)
+        old_off = origin_vel(o0, [dx, 0.0, 0.0], VEL_SAMPLE_S)[0]
+        old_on = origin_vel(o0, [dx3, 0.0, 0.0], VEL_SAMPLE_S)[0]
+        self.assertGreater(abs(old_on - old_off), 5.0)
+        new_off = origin_vel(o0, [dx, 0.0, 0.0], 2 * frame)[0]
+        new_on = origin_vel(o0, [dx3, 0.0, 0.0], 3 * frame)[0]
+        self.assertLessEqual(abs(new_on - new_off), 5.0)
+
+    def test_quantized_mock_recovers_commanded_vel(self):
+        ctl = MockCtl()
+        clock = FakeClock()
+        ctl.clock = clock
+        ctl.frame = 0.018
+        drv, ctl, clock = _driver(ctl=ctl, stratum_at="start")
+        ctl.clock = clock
+        ctl.frame = 0.018
+        spec = STRATA["A2"]
+        ctl.origin = list(spec["start"])
+        raw = drv.exec_trial(stratum_id="A2", arm="off", spec=spec, seq=1, window_s=0.2)
+        self.assertTrue(
+            vel_components_within(raw["measured_vel"], raw["commanded_vel"], VEL_ALIGN),
+            raw["measured_vel"],
+        )
+        # same samples through the old divisor miss commanded by > 5
+        s0 = {"origin": spec["start"], "t": 0.0}
+        # reconstruct: if we had divided by 0.04 the error is the R4 class
+        frame = 0.018
+        n = int(round(VEL_SAMPLE_S / frame))
+        dx = raw["commanded_vel"][0] * n * frame
+        old = origin_vel(spec["start"], [spec["start"][0] + dx, spec["start"][1], spec["start"][2]], VEL_SAMPLE_S)
+        self.assertGreater(abs(old[0] - raw["commanded_vel"][0]), 5.0)
+
+    def test_t0_rest_after_settle_not_during_decel(self):
+        ctl = MockCtl()
+        drv, ctl, clock = _driver(ctl=ctl)
+        ctl.clock = clock
+        ctl.emulate_prep_decel = True
+        ctl.emit_after_goto = [{
+            "ev": "bot_stall",
+            "bot": 1,
+            "t": 1001.2,
+            "cell": 5977,
+            "origin": [-865.0, -48.0, 88.0],
+            "reason": "displacement",
+        }]
+        raw = drv.exec_trial(stratum_id="T0", arm="off", spec=STRATA["T0"], seq=1, window_s=2.0)
+        speed = math.sqrt(sum(v * v for v in raw["vel"]))
+        self.assertLessEqual(speed, 1.0, raw["vel"])
+        # leftover decel itself is well above the rest gate (R4's 25–40 class)
+        leftover = math.hypot(*ctl.prep_decel_vel[:2])
+        self.assertGreater(leftover, 1.0)
 
     def test_pair_two_exec_trials_within_5(self):
         drv, ctl, _ = _driver(stratum_at="start")
@@ -577,9 +683,12 @@ class StartVelTests(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(stamped), 2)
 
-    def test_sample_window_constant(self):
+    def test_sample_window_is_not_the_divisor(self):
         self.assertAlmostEqual(VEL_SAMPLE_S, 0.04)
         self.assertLessEqual(2 * VEL_ALIGN, 5.0)
+        s0 = {"t": 10.0, "time": 10.0}
+        s1 = {"t": 10.036, "time": 10.036}
+        self.assertAlmostEqual(status_dt(s0, s1), 0.036, places=5)
 
 
 class CellVerbTests(unittest.TestCase):

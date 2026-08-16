@@ -44,8 +44,9 @@ DEFAULT_MVDSV = Path.home() / ".local/share/qw-fasttrack/runtime-tbx-d/mvdsv"
 DEFAULT_LOCK = Path.home() / "lab/.rig-lock"
 POLL_S = 0.05
 T0_SETTLE_S = 0.15
-# Origin-delta sample window. Must be the *nominal* dt in vel = dxyz/dt —
-# wall-clock (sleep + two status RTT) was the 12–25 u/s pair jitter.
+# Poll window between the two status samples. The *divisor* is server
+# time (StatusResp.time), not this constant — R4's nominal-dt regression
+# was v·(actual/nominal−1) on frame-quantized ticks.
 VEL_SAMPLE_S = 0.04
 VEL_ALIGN = 2.5  # retry until |meas-cmd| ≤ this, so a pair is ≤ 5.0
 VEL_RETRIES = 8
@@ -114,6 +115,15 @@ def origin_vel(o0: list[float], o1: list[float], dt: float) -> list[float]:
     if dt <= 1e-4:
         return [0.0, 0.0, 0.0]
     return [(float(o1[i]) - float(o0[i])) / dt for i in range(3)]
+
+
+def status_dt(s0: dict, s1: dict) -> float:
+    """Server-clock interval from two status samples (A-stamp pattern)."""
+    t0 = s0.get("t", s0.get("time"))
+    t1 = s1.get("t", s1.get("time"))
+    if t0 is None or t1 is None:
+        return 0.0
+    return float(t1) - float(t0)
 
 
 def vel_components_within(a: list[float], b: list[float], tol: float) -> bool:
@@ -212,7 +222,11 @@ class LiveTrialDriver:
         row = next((b for b in data.get("bots") or [] if b.get("ent") == e), None)
         if not row:
             raise RuntimeError(f"bot {e} missing from status")
-        return row
+        out = dict(row)
+        server_t = data.get("time", data.get("t"))
+        if server_t is not None:
+            out["t"] = float(server_t)
+        return out
 
     def get_cvar(self, name: str) -> str | None:
         try:
@@ -433,22 +447,32 @@ class LiveTrialDriver:
             f"teleport {e} {pos[0]} {pos[1]} {pos[2]} {vel[0]} {vel[1]} {vel[2]}"
         )
 
-    def stamp_start_vel(self, e: int, start: list[float], cmd_vel: list[float]) -> tuple[list[float], int]:
-        """Place at `start` carrying `cmd_vel` and measure with a fixed sample dt.
+    def measure_origin_vel(self) -> list[float]:
+        """dxyz / (t1−t0) on StatusResp.time. Same pattern as A-stamping."""
+        s0 = self.bot()
+        self.sleep(VEL_SAMPLE_S)
+        s1 = self.bot()
+        return origin_vel(s0["origin"], s1["origin"], status_dt(s0, s1))
 
-        Wall-clock between two status polls includes ctl RTT and is not the
-        physics interval — that was the 12–25 u/s pair jitter. Divide by the
-        commanded sample window. Re-stamp until each component is within
-        VEL_ALIGN of cmd (so an OFF/ON pair stays inside ±5).
+    def stamp_start_vel(self, e: int, start: list[float], cmd_vel: list[float]) -> tuple[list[float], int]:
+        """Place at `start` carrying `cmd_vel` and measure on the server clock.
+
+        Divide origin-delta by StatusResp.time (not wall-clock, not the
+        nominal poll window). Frame-quantized actual dt made R4's
+        origin_vel(..., 0.04) report v·(actual/nominal−1).
+
+        T0 rest is measured *after* the caller's settle window, in place —
+        a re-teleport here restarts shelf-fall / leftover decel and was
+        why every R4 T0 failed rest ≤ 1 u/s.
         """
+        rest = all(abs(float(c)) <= 1e-9 for c in cmd_vel)
+        if rest:
+            return self.measure_origin_vel(), 1
         measured = [0.0, 0.0, 0.0]
         tries = 0
         for tries in range(1, VEL_RETRIES + 1):
             self._teleport(e, start, cmd_vel)
-            s0 = self.bot()
-            self.sleep(VEL_SAMPLE_S)
-            s1 = self.bot()
-            measured = origin_vel(s0["origin"], s1["origin"], VEL_SAMPLE_S)
+            measured = self.measure_origin_vel()
             if vel_components_within(measured, cmd_vel, VEL_ALIGN):
                 break
         return measured, tries
