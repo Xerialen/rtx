@@ -32,6 +32,22 @@ Domen mot facit är kimis. Det du får är underlaget, råt:
 Båda kör `v_req=320`. Det är poängen: farten kan inte skilja dem åt. Skiljelinjen
 ligger i controller-tillståndet.
 
+### C2-starter — avsiktlig mix (flagga 3)
+
+`b_v296_replay` ger **inte** tio identiska C2-starter. Typisk fördelning
+vid `--n 10`: ungefär **3/10 kanoniska** starter (facitets from, t.ex.
+`[107,−582,~297]`, grounded jump-cmd, positiv första luft-vz) och
+ungefär **7/10 avvikande-start-varianter** (annan from/redan fallande
+`vel_z`). Båda är **avsiktligt värdefulla**:
+
+- de kanoniska raderna är facitjämförelsen (C2-mönstret);
+- de avvikande visar att telemetrin följer kroppen, inte skriptets
+  avsikt — samma länk, annan start, annan (ofta C1-lik) bild.
+
+Det är inte täckningsbortfall och inte ett fel i replayen. Kimis B2
+FLAGGA 3 och fable-qa:s dokkrav: sviten ska deklarera mixen, inte
+låtsas att N=10 är N kanoniska C2.
+
 Avbryter (kod 2) om servern inte är redo, om planteringen nekas, om cvarerna inte
 läser tillbaka som satta, eller om **noll PlanTick** kommer in — det sista betyder
 fel bygge eller avstängd telemetri, och tomma rader hade sett ut som ett resultat.
