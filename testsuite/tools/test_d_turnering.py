@@ -27,8 +27,10 @@ from d_turnering import (  # noqa: E402
     next_best_fail_reason,
     next_best_is_floor_drop,
     next_best_ok,
+    raw_from_jsonl,
     reproduction_routes,
     score_side_by_side,
+    selected_traversed_shelf_from_1416,
 )
 
 
@@ -85,19 +87,47 @@ class PredicateTests(unittest.TestCase):
         self.assertFalse(next_best_is_floor_drop([10446, 10768]))
         self.assertFalse(next_best_is_floor_drop([]))
 
-    def test_next_best_ok_is_candidate_aware(self):
-        high = list(NEXT_HIGH)
-        hop = [10441, 10084]
-        self.assertTrue(next_best_ok(high, "haz1462-k1"))
-        self.assertTrue(next_best_ok(high, "haz1462-k3"))
-        self.assertFalse(next_best_ok(high, "haz1462-k2"))
-        self.assertTrue(next_best_ok(hop, "haz1462-k2"))
-        self.assertIn(hop[0], K2_NEXT_HIGH_FIRST)
-        self.assertFalse(next_best_ok(hop, "haz1462-k1"))
-        self.assertFalse(next_best_ok([], "haz1462-k1"))
-        self.assertFalse(next_best_ok([FLOOR_DROP, 10453], "haz1462-k1"))
-        self.assertFalse(next_best_ok([FLOOR_DROP], "haz1462-k2"))
-        self.assertIn("10446", next_best_fail_reason(hop, "haz1462-k1"))
+    def test_next_best_ok_is_per_obligation(self):
+        shelf_1416 = {"start_cell": 1416, "kind": "heldout", "id": "1416-1461"}
+        must_1158 = {"start_cell": 1158, "kind": "heldout", "id": "1158-1461"}
+        floor_796 = {"start_cell": 1416, "kind": "heldout", "id": "1416-796"}
+        # 10446 on next-best only when selected left 1416 via 10447.
+        self.assertTrue(next_best_ok(
+            [10446, 10767], "haz1462-k1",
+            spec=shelf_1416, selected=[10447], mask=[10447],
+        ))
+        self.assertFalse(next_best_ok(
+            [10441, 10084], "haz1462-k1",
+            spec=shelf_1416, selected=[10447], mask=[10447],
+        ))
+        # 10446 was selected (10447 gone) — actual next-best is 10445, not 10446 again.
+        self.assertTrue(next_best_ok(
+            [10445, 10751], "haz1462-k1",
+            spec=shelf_1416, selected=[10446, 10767], mask=[10446, 10767],
+        ))
+        # must-starter: 1416-link structurally impossible.
+        self.assertFalse(selected_traversed_shelf_from_1416(must_1158, [8560, 8796]))
+        self.assertTrue(next_best_ok(
+            [8560, 8796], "haz1462-k1",
+            spec=must_1158, selected=[8559, 8773], mask=[8559, 8773],
+        ))
+        # floor dest from 1416 via 10441 — not the 10446 shelf.
+        self.assertFalse(selected_traversed_shelf_from_1416(floor_796, [10441, 10076]))
+        self.assertTrue(next_best_ok(
+            [10440, 10059], "haz1462-k1",
+            spec=floor_796, selected=[10441, 10076], mask=[10441, 10076],
+        ))
+        self.assertFalse(next_best_ok([], "haz1462-k1", spec=shelf_1416, selected=[10447]))
+        self.assertFalse(next_best_ok([FLOOR_DROP, 10453], "haz1462-k1", spec=shelf_1416, selected=[10447]))
+        self.assertFalse(next_best_ok(
+            [10446], "haz1462-k1",
+            spec=shelf_1416, selected=[10447], mask=[10447, 34419],
+        ))
+        self.assertIn(10440, K2_NEXT_HIGH_FIRST)
+        self.assertIn("10446", next_best_fail_reason(
+            [10441, 10084], "haz1462-k1",
+            spec=shelf_1416, selected=[10447], mask=[10447],
+        ))
 
     def test_speedjump_attested(self):
         self.assertTrue(attests_speedjump([10446, SPEEDJUMP, 1]))
@@ -141,15 +171,16 @@ class ScoringTests(unittest.TestCase):
                     "links": [10447, SPEEDJUMP], "cost": 2.0, "mask_links": [],
                 }
             if arm == "on":
+                sel = list((raw.get("astar_after") or {}).get("links") or [])
                 if cid == "haz1462-k2":
                     raw["astar_next_best"] = {
                         "found": True, "cells": [1416, 1461],
-                        "links": [10441, 10084], "cost": 3.0, "mask_links": [10447, 10446],
+                        "links": [10441, 10084], "cost": 3.0, "mask_links": sel,
                     }
                 else:
                     raw["astar_next_best"] = {
                         "found": True, "cells": [1416, 1459],
-                        "links": [10446, 10768], "cost": 3.0, "mask_links": [10447],
+                        "links": [10446, 10768], "cost": 3.0, "mask_links": sel,
                     }
             return raw
 
@@ -317,6 +348,56 @@ class ScoringTests(unittest.TestCase):
             on = on_expected(_recipe(cid))
             self.assertEqual(len(on["graph_content_hash"]), 64)
 
+    def test_live_jsonl_off41_off45_are_hearth(self):
+        """Bug 2: K1 in_vast-OFF-41/45 (cell=1462, t≈8.3) must be hearth=True."""
+        hearth = _gates()["reproduction"]["hearth"]
+        live_dir = HERE / "testdata" / "turnering-k1"
+        for name in ("in_vast-OFF-41.jsonl", "in_vast-OFF-45.jsonl"):
+            raw = raw_from_jsonl(live_dir / name)
+            drops = [e for e in raw["events"] if e.get("ev") == "peak_drop_150"]
+            self.assertEqual(drops[0]["cell"], 1462, name)
+            self.assertGreater(drops[0]["t"], 8.2)
+            self.assertLess(drops[0]["t"], 8.4)
+            # mid-air z (~105) is >15 u from centroid z=-16 — 3D dist must not veto.
+            self.assertGreater(drops[0]["origin"][2], 100.0)
+            self.assertTrue(hearth_hit(raw, hearth), name)
+            self.assertEqual(raw["landing_cell"], 1462)
+
+    def test_live_astar_next_best_per_obligation(self):
+        """Bug 1: live K1 kvitton — 10446 only when 1416 shelf was selected."""
+        live_dir = HERE / "testdata" / "turnering-k1"
+
+        def load(name):
+            return json.loads((live_dir / name).read_text(encoding="utf-8"))
+
+        shelf = load("1416-1461-ON-01.json")
+        must = load("1158-1461-ON-01.json")
+        floor = load("1416-796-ON-01.json")
+        from_1035 = load("1035-1461-ON-01.json")
+
+        def ok(doc, start_cell, oid):
+            after = doc["astar"]["after"]
+            nb = doc["astar"]["next_best"]
+            spec = {"start_cell": start_cell, "kind": "heldout", "id": oid}
+            return next_best_ok(
+                list(nb["links"]), "haz1462-k1",
+                spec=spec, selected=list(after["links"]), mask=list(nb["mask_links"]),
+            )
+
+        self.assertEqual(shelf["astar"]["after"]["links"][:1], [10446])
+        self.assertEqual(shelf["astar"]["next_best"]["links"][:1], [10445])
+        self.assertTrue(ok(shelf, 1416, "1416-1461"))
+        self.assertTrue(ok(must, 1158, "1158-1461"))
+        self.assertTrue(ok(floor, 1416, "1416-796"))
+        self.assertTrue(ok(from_1035, 1035, "1035-1461"))
+        # 10444 substitute still forbidden on a 1416-shelf obligation.
+        self.assertFalse(next_best_ok(
+            [FLOOR_DROP, 10453], "haz1462-k1",
+            spec={"start_cell": 1416, "kind": "heldout", "id": "1416-1461"},
+            selected=list(shelf["astar"]["after"]["links"]),
+            mask=list(shelf["astar"]["after"]["links"]),
+        ))
+
     def test_p3_live_shaped_on_hearth_fails_repro(self):
         """P3: ON peak_drop at 1462 with live cell must fail reproduction_on."""
         def exec_trial(**k):
@@ -346,15 +427,16 @@ class ScoringTests(unittest.TestCase):
             if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
                 return _hearth_raw()
             raw = _clean_on()
-            raw["astar_next_best"] = {
-                "found": True, "cells": [1416, 1461],
-                "links": [10441, 10084], "cost": 2.0, "mask_links": [10447],
-            }
             if k["stratum_id"] == "1416-1124" and k["arm"] == "on":
                 raw["astar_after"] = {
                     "found": True, "cells": [1416, 1461, 1124],
                     "links": [10447, SPEEDJUMP], "cost": 2.0, "mask_links": [],
                 }
+            sel = list((raw.get("astar_after") or {}).get("links") or [])
+            raw["astar_next_best"] = {
+                "found": True, "cells": [1416, 1461],
+                "links": [10441, 10084], "cost": 2.0, "mask_links": sel,
+            }
             return raw
 
         k1 = TournamentRunner(

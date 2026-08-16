@@ -38,6 +38,8 @@ DEFAULT_GATES = HERE / "recept" / "haz1462-gates.json"
 DEFAULT_APPENDIX = HERE / "recept" / "haz1462-k2-appendix.json"
 FLOOR_DROP = 10444
 NEXT_HIGH = (10446, 10768)
+# High-shelf first walks from 1416 toward 1459/1461 (not the downward 10441 tree).
+SHELF_FROM_1416_FIRST = frozenset({10447, 10446})
 # After K2 cuts 10447+10446 the remaining high first-walks from 1416.
 # Hop-SP 1416→1461 is 10441+10084. Floor Drop 10444 is never next-best.
 K2_NEXT_HIGH_FIRST = frozenset({10440, 10441, 10443, 10445})
@@ -57,8 +59,41 @@ def dist(a: list[float] | None, b: list[float] | None) -> float:
     return math.sqrt(sum((float(a[i]) - float(b[i])) ** 2 for i in range(3)))
 
 
+def xy_dist(a: list[float] | None, b: list[float] | None) -> float:
+    """Horizontal locus. peak_drop_150 origin is mid-air (z still high)."""
+    if not a or not b or len(a) < 2 or len(b) < 2:
+        return float("inf")
+    return math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1]))
+
+
+def raw_from_jsonl(path: Path) -> dict:
+    """Rebuild exec_trial-shaped raw from a live write_attempt_raw JSONL."""
+    events: list[dict] = []
+    header: dict = {}
+    landing = None
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        kind = row.get("kind")
+        if kind == "header":
+            header = {k: v for k, v in row.items() if k != "kind"}
+            continue
+        if kind == "sample":
+            continue
+        if kind == "event" or row.get("ev"):
+            events.append(row)
+            if row.get("ev") == "peak_drop_150" and isinstance(row.get("cell"), int):
+                landing = int(row["cell"])
+    raw = dict(header)
+    raw["events"] = events
+    if raw.get("landing_cell") is None and landing is not None:
+        raw["landing_cell"] = landing
+    return raw
+
+
 def hearth_hit(raw: dict, hearth: dict) -> bool:
-    """One peak_drop_150 episode landing within radius of the 1462 locus."""
+    """peak_drop_150 with cell 1462 and XY locus ±radius (live mid-air z)."""
     centroid = list(hearth.get("centroid_aim") or hearth.get("origin") or [])
     radius = float(hearth.get("radius") or 15.0)
     want = int(hearth.get("cell") or 1462)
@@ -72,11 +107,20 @@ def hearth_hit(raw: dict, hearth: dict) -> bool:
             cell = landing
         if cell != want:
             continue
-        if origin and dist(list(origin), centroid) <= radius:
-            return True
+        if origin and len(origin) >= 2:
+            if xy_dist(list(origin), centroid) <= radius:
+                return True
+            continue
+        return True
     if landing == want:
+        for ev in raw.get("events") or []:
+            if ev.get("ev") != "peak_drop_150":
+                continue
+            origin = ev.get("origin")
+            if origin and xy_dist(list(origin), centroid) <= radius:
+                return True
         origin = raw.get("gate_origin")
-        if origin and dist(list(origin), centroid) <= radius:
+        if origin and xy_dist(list(origin), centroid) <= radius:
             return True
     return False
 
@@ -118,38 +162,78 @@ def links_contain_seq(links: list[int], seq: list[int] | tuple[int, ...]) -> boo
     return False
 
 
-def next_best_ok(links: list[int], candidate: str) -> bool:
-    """Candidate-aware next-best grind. Empty and 10444-first both fail.
+def astar_mask(blob: dict | None) -> list[int]:
+    if not isinstance(blob, dict):
+        return []
+    path = blob.get("path") if "path" in blob and isinstance(blob.get("path"), dict) else blob
+    if not isinstance(path, dict):
+        return []
+    return [int(x) for x in (path.get("mask_links") or [])]
 
-    K1/K3 must actually be the high walk 10446→10768 (not merely ¬10444).
-    K2 cut 10446; remaining high first-walks are 10440/10441/10443/10445.
+
+def selected_traversed_shelf_from_1416(spec: dict, selected: list[int]) -> bool:
+    """True iff the chosen path left 1416 on the high shelf (10447/10446), not the floor tree."""
+    try:
+        start = int(spec.get("start_cell") or 0)
+    except (TypeError, ValueError):
+        start = 0
+    if start != 1416 or not selected:
+        return False
+    return int(selected[0]) in SHELF_FROM_1416_FIRST
+
+
+def next_best_ok(
+    links: list[int],
+    candidate: str,
+    *,
+    spec: dict | None = None,
+    selected: list[int] | None = None,
+    mask: list[int] | None = None,
+) -> bool:
+    """Per-obligation next-best. Facit §3: 10446→10768 *when selected*.
+
+    Always: non-empty, not 10444, mask == entire chosen path when a mask is given.
+    10446 on next-best only when the chosen path left 1416 via 10447 (K1/K3).
+    Must-starters and floor dests have their own next-best — do not demand 10446.
     """
     have = [int(x) for x in (links or [])]
+    sel = [int(x) for x in (selected or [])]
     if not have or have[0] == FLOOR_DROP:
         return False
+    if mask is not None and [int(x) for x in mask] != sel:
+        return False
+    spec = spec or {}
+    if not selected_traversed_shelf_from_1416(spec, sel):
+        return True
     cid = str(candidate or "")
     if cid in {"haz1462-k1", "haz1462-k3", "k1", "k3"}:
-        return links_contain_seq(have, NEXT_HIGH)
-    if cid in {"haz1462-k2", "k2"}:
-        return have[0] in K2_NEXT_HIGH_FIRST
-    return False
+        if sel and int(sel[0]) == 10447:
+            return have[0] == 10446
+        return True
+    return True
 
 
-def next_best_fail_reason(links: list[int], candidate: str) -> str:
+def next_best_fail_reason(
+    links: list[int],
+    candidate: str,
+    *,
+    spec: dict | None = None,
+    selected: list[int] | None = None,
+    mask: list[int] | None = None,
+) -> str:
     have = [int(x) for x in (links or [])]
-    cid = str(candidate or "")
+    sel = [int(x) for x in (selected or [])]
     if not have:
-        if cid in {"haz1462-k2", "k2"}:
-            return "next-best empty — want remaining high first-walk 10440/10441/10443/10445"
-        return "next-best empty — want 10446→10768"
+        return "next-best empty — want the actual masked next path"
     if have[0] == FLOOR_DROP:
-        return "next-best is floor Drop 10444 — want 10446→10768"
-    if cid in {"haz1462-k2", "k2"}:
-        return (
-            f"next-best is not a remaining high first-walk "
-            f"(10440/10441/10443/10445) — got {have}"
-        )
-    return f"next-best is not 10446→10768 — got {have}"
+        return "next-best is floor Drop 10444 — not a high-path counterfactual"
+    if mask is not None and [int(x) for x in mask] != sel:
+        return f"next-best mask {list(mask)} != entire selected {sel}"
+    spec = spec or {}
+    if selected_traversed_shelf_from_1416(spec, sel) and sel and int(sel[0]) == 10447:
+        if have[0] != 10446:
+            return f"selected 10447 — next-best must start 10446 (got {have})"
+    return f"next-best rejected — got {have}"
 
 
 def attests_speedjump(links: list[int], sj: int = SPEEDJUMP) -> bool:
@@ -483,8 +567,11 @@ class TournamentRunner:
             sj_ok = attests_speedjump(links, int(spec.get("speedjump") or SPEEDJUMP))
         nb_ok = True
         cid = str(self.recipe.get("id") or "")
+        nb_mask = astar_mask(nb)
         if arm == "on" and spec.get("kind") == "heldout":
-            nb_ok = next_best_ok(nb_links, cid)
+            nb_ok = next_best_ok(
+                nb_links, cid, spec=spec, selected=links, mask=nb_mask,
+            )
         vel = raw.get("measured_vel") if raw.get("measured_vel") is not None else raw.get("vel")
         att = TAttempt(
             attempt_id=f"{spec['id']}-{arm.upper()}-{seq:02d}",
@@ -507,9 +594,11 @@ class TournamentRunner:
         if not sj_ok:
             att.valid = False
             att.reason = f"1416-1124 must attest SpeedJump {SPEEDJUMP}"
-        if not nb_ok:
+        elif not nb_ok:
             att.valid = False
-            att.reason = next_best_fail_reason(nb_links, cid)
+            att.reason = next_best_fail_reason(
+                nb_links, cid, spec=spec, selected=links, mask=nb_mask,
+            )
         return att
 
     def _write_attempt_kvitto(self, att: TAttempt, raw: dict) -> Path:
