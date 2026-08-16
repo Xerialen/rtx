@@ -115,6 +115,8 @@ pub struct GameState {
     ext_fields: ext_field::ExtFields,
     /// Auto-generated navmesh for the current map (bot navigation). Rebuilt each map load.
     pub(crate) nav: navmesh::NavState,
+    /// Last successful `fixa --apply` snapshot. Undo restores it without a process restart.
+    pub(crate) nav_patch_txn: Option<crate::nav_patch::AppliedTxn>,
     /// The map's KTX race routes (from `race/routes/*.route` and/or embedded
     /// `race_route_*` entities), loaded at the end of `load_entities`. See [`crate::race`].
     pub(crate) race: race::RaceState,
@@ -241,6 +243,7 @@ impl GameState {
             rng: 0x2545_f491, // nonzero default; reseeded in GAME_INIT
             ext_fields: ext_field::ExtFields::default(),
             nav: navmesh::NavState::default(),
+            nav_patch_txn: None,
             race: race::RaceState::default(),
             opponents: bot::model::OpponentModel::default(),
             client_lead: 0.0,

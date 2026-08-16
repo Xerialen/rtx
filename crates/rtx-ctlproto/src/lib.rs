@@ -143,6 +143,16 @@ pub enum Cmd {
         #[serde(default)]
         mask_links: Vec<u32>,
     },
+    /// `fixa` — apply / dry-run / undo a stamp-pinned recipe through `apply_one` (not a second
+    /// planter). `from`/`to` are optional A* endpoints for the receipt dump.
+    Fixa {
+        recipe: String,
+        mode: String,
+        #[serde(default)]
+        from: Option<u32>,
+        #[serde(default)]
+        to: Option<u32>,
+    },
     /// Dump the tail of a bot's `rtx_bot_debug` audit ring.
     Audit { bot: u32, lines: u32 },
     /// List generated speed-jump links. Curls (`gain > 0`) *and* straight/chained speed jumps —
@@ -238,6 +248,7 @@ pub enum Resp {
     },
     Cell(CellResp),
     Route(RouteResp),
+    Fixa(FixaResp),
     Audit(AuditResp),
     Curls(Vec<CurlLink>),
     Probe(ProbeResp),
@@ -587,6 +598,38 @@ pub struct AstarDump {
     pub start_cell: u32,
     pub goal_cell: u32,
     pub mask_links: Vec<u32>,
+}
+
+/// One A* dump on a `fixa` reply (cells + links + cost).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FixaPath {
+    pub found: bool,
+    pub cost: f32,
+    pub cells: Vec<u32>,
+    pub links: Vec<u32>,
+    pub mask_links: Vec<u32>,
+}
+
+/// Result of `Cmd::Fixa`. `outcome` is `dry_run_ok` / `applied` / `already_meshed` /
+/// `undone` / `failed`. Stamps are decimal strings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FixaResp {
+    pub recipe: String,
+    pub mode: String,
+    pub outcome: String,
+    pub reason: Option<String>,
+    pub map: String,
+    pub cells: u32,
+    pub links: u32,
+    pub rj_links: u32,
+    pub stamp: String,
+    pub content_hash: String,
+    pub stamp_before: Option<String>,
+    pub stamp_after: Option<String>,
+    pub astar_before: Option<FixaPath>,
+    pub astar_after: Option<FixaPath>,
+    pub astar_next_best: Option<FixaPath>,
+    pub audit: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

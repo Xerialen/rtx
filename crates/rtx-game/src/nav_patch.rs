@@ -78,6 +78,26 @@ pub struct ShelfPatch {
     pub pin: GraphPin,
 }
 
+/// Look up a table recipe by short name. Unknown names are a hard error for `fixa` — the table
+/// is the only apply path (no second planter).
+pub fn patch_by_name(name: &str) -> Option<&'static ShelfPatch> {
+    PATCHES.iter().find(|p| p.name == name)
+}
+
+/// Counts + both identity levels for a live graph. `graph_stamp` is the decimal string.
+pub fn live_identity(map: &str, graph: &NavGraph) -> (u32, u32, u32, String, String) {
+    let cells = graph.cells.len() as u32;
+    let links = graph.links.len() as u32;
+    let rj = graph.summary().rocket_jump;
+    (
+        cells,
+        links,
+        rj,
+        graph_stamp(map, cells, links, rj).to_string(),
+        graph_content_hash(graph),
+    )
+}
+
 /// dm3 west-shelf was measured on upstream main (`cc5fa8e`) — the **base** carve, not arm A's
 /// V296-plant (5978/48208). Nivå 1 + 2 goldens: `WORK_LOGS/graphstamp-kontrakt.md` §5 / §8.4.
 const WEST_SHELF_PIN: GraphPin = GraphPin {
@@ -206,6 +226,8 @@ fn kind_token(kind: LinkKind) -> &'static str {
 /// Canonical inventory bytes (kontrakt §8.2, no per-kind params — matches the dm3 golden dump).
 fn canonical_inventory(graph: &NavGraph) -> String {
     let mut lines: Vec<String> = graph
+        // CellId == Vec index in rtx (kontrakt §8.2 sorts on cell_id). dm3 holds that
+        // identity; a future non-index cell table would need an explicit id field.
         .cells
         .iter()
         .enumerate()
@@ -357,6 +379,11 @@ fn apply_one(patch: &ShelfPatch, bsp: Option<&Bsp>, graph: &mut NavGraph) -> Out
     // Already-meshed is decided before the pin: a second apply on the *post*-plant graph must stay
     // idempotent. The pin describes the *pre*-apply carve; checking it first would turn a re-apply
     // into a false stamp-mismatch.
+    //
+    // Invariant (kluster-1 minor A/4a): AlreadyMeshed assumes the live graph *started* as the
+    // pin-verified base (or is that base + this recipe). A foreign carve that happens to carry
+    // the four shelf cells would no-op here. GAP 4 / `fixa --apply` start from the sealed OFF
+    // pin, which is the verified-base gate.
     if fully_meshed(patch, graph) {
         return Outcome::AlreadyMeshed;
     }
@@ -705,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn undo_roundtrip_restores_bit_identity() {
+    fn undo_roundtrip_restores_topology() {
         let mut g = NavGraph::from_topology(&dest_origins(), &[]);
         let patch = fixture_patch(&g);
         let before = g.clone();

@@ -102,6 +102,13 @@ def _parse_verb(command: str) -> Any:
                     }
                 }
             return {"Route": {"bot": int(tokens[1])}}
+        if verb == "fixa":
+            # fixa <recipe> <dry-run|apply|undo> [from to]
+            payload = {"recipe": tokens[1], "mode": tokens[2]}
+            if len(tokens) >= 5:
+                payload["from"] = int(tokens[3])
+                payload["to"] = int(tokens[4])
+            return {"Fixa": payload}
     except (IndexError, ValueError) as exc:
         raise ControlError(f"invalid arguments for control verb {verb!r}") from exc
     raise ControlError(f"unsupported control verb {verb!r}")

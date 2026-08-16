@@ -514,6 +514,7 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
         } => plant_link_resp(game, v3(from), v3(takeoff), v3(tgt), v_req, gain).map(Resp::PlanLink),
         Cmd::PlanCell { pos } => plant_cell_resp(game, v3(pos)).map(Resp::PlanCell),
         Cmd::PlanDrop { from, to } => plant_drop_resp(game, v3(from), v3(to)).map(Resp::PlanDrop),
+        Cmd::Fixa { recipe, mode, from, to } => do_fixa(game, recipe, mode, from, to),
     };
     reply(game, conn, id, result);
 }
@@ -521,6 +522,278 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
 /// Send the typed reply for request `id` back to the connection that issued it.
 fn reply(game: &GameState, conn: u64, id: i64, result: Result<Resp, String>) {
     send_to(game, Target::One(conn), Msg::Reply { id, result });
+}
+
+fn do_fixa(
+    game: &mut GameState,
+    recipe: String,
+    mode: String,
+    from: Option<u32>,
+    to: Option<u32>,
+) -> Result<Resp, String> {
+    let patch = crate::nav_patch::patch_by_name(&recipe)
+        .ok_or_else(|| format!("unknown recipe {recipe:?}; only west-shelf is registered"))?;
+    if patch.map != game.level.mapname {
+        return Err(format!("recipe map {} != live map {}", patch.map, game.level.mapname));
+    }
+    match mode.as_str() {
+        "dry-run" => fixa_dry_run(game, patch, from, to),
+        "apply" => fixa_apply(game, patch, from, to),
+        "undo" => fixa_undo(game, patch),
+        other => Err(format!("fixa mode {other:?} (want dry-run|apply|undo)")),
+    }
+}
+
+fn fixa_path(g: &crate::navmesh::NavGraph, start: u32, goal: u32, mask: &[u32]) -> proto::FixaPath {
+    let costs = crate::navmesh::LinkCosts::default();
+    let path = if mask.is_empty() {
+        g.find_path(start, goal, &costs)
+    } else {
+        g.find_path_masked(start, goal, &costs, mask)
+    };
+    match path {
+        None => proto::FixaPath {
+            found: false,
+            cost: 0.0,
+            cells: vec![],
+            links: vec![],
+            mask_links: mask.to_vec(),
+        },
+        Some(links) => {
+            let cost: f32 = links.iter().map(|&li| g.priced_link_cost(li, &costs)).sum();
+            let mut cells = Vec::new();
+            if let Some(&first) = links.first() {
+                cells.push(g.link_source(first));
+                cells.extend(links.iter().map(|&li| g.link_target(li)));
+            } else {
+                cells.push(start);
+            }
+            proto::FixaPath {
+                found: true,
+                cost,
+                cells,
+                links,
+                mask_links: mask.to_vec(),
+            }
+        }
+    }
+}
+
+fn fixa_identity(map: &str, g: &crate::navmesh::NavGraph) -> (u32, u32, u32, String, String) {
+    crate::nav_patch::live_identity(map, g)
+}
+
+fn fixa_paths(
+    g: &crate::navmesh::NavGraph,
+    from: Option<u32>,
+    to: Option<u32>,
+) -> (Option<proto::FixaPath>, Option<proto::FixaPath>) {
+    match (from, to) {
+        (Some(s), Some(t)) => {
+            let before = fixa_path(g, s, t, &[]);
+            let next = if before.found {
+                Some(fixa_path(g, s, t, &before.links))
+            } else {
+                Some(proto::FixaPath {
+                    found: false,
+                    cost: 0.0,
+                    cells: vec![],
+                    links: vec![],
+                    mask_links: vec![],
+                })
+            };
+            (Some(before), next)
+        }
+        _ => (None, None),
+    }
+}
+
+fn fixa_dry_run(
+    game: &GameState,
+    patch: &crate::nav_patch::ShelfPatch,
+    from: Option<u32>,
+    to: Option<u32>,
+) -> Result<Resp, String> {
+    let g = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
+    let map = game.level.mapname.as_str();
+    let (cells, links, rj, stamp, hash) = fixa_identity(map, g);
+    let mut candidate = (**g).clone();
+    let bsp = game.nav.bsp.as_deref();
+    let preview = crate::nav_patch::apply_txn(patch, bsp, &mut candidate);
+    let (before, _) = fixa_paths(g, from, to);
+    let (after, next) = match &preview {
+        Ok(_) => fixa_paths(&candidate, from, to),
+        Err(crate::nav_patch::Outcome::AlreadyMeshed) => fixa_paths(g, from, to),
+        Err(_) => (None, None),
+    };
+    let (outcome, reason, stamp_after): (String, Option<String>, Option<String>) = match preview {
+        Ok(txn) => ("dry_run_ok".into(), None, Some(txn.stamp_after.to_string())),
+        Err(crate::nav_patch::Outcome::AlreadyMeshed) => ("already_meshed".into(), None, Some(stamp.clone())),
+        Err(crate::nav_patch::Outcome::Failed(why)) => ("failed".into(), Some(why), None),
+        Err(crate::nav_patch::Outcome::Applied { .. }) => {
+            ("failed".into(), Some("apply_txn Applied via Err".into()), None)
+        }
+    };
+    let audit = format!("rtx: navpatch {}: dry-run ({outcome})\n", patch.name);
+    Ok(Resp::Fixa(proto::FixaResp {
+        recipe: patch.name.to_string(),
+        mode: "dry-run".into(),
+        outcome,
+        reason,
+        map: map.to_string(),
+        cells,
+        links,
+        rj_links: rj,
+        stamp,
+        content_hash: hash,
+        stamp_before: Some(crate::nav_patch::graph_stamp(map, cells, links, rj).to_string()),
+        stamp_after,
+        astar_before: before,
+        astar_after: after,
+        astar_next_best: next,
+        audit,
+    }))
+}
+
+fn fixa_apply(
+    game: &mut GameState,
+    patch: &crate::nav_patch::ShelfPatch,
+    from: Option<u32>,
+    to: Option<u32>,
+) -> Result<Resp, String> {
+    let bsp = game.nav.bsp.clone().ok_or("no bsp")?;
+    let map = game.level.mapname.clone();
+    let mut keep_txn = None;
+    let resp = {
+        let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+        let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+        let (cells0, links0, rj0, stamp0, hash0) = fixa_identity(&map, g);
+        let before = match (from, to) {
+            (Some(s), Some(t)) => Some(fixa_path(g, s, t, &[])),
+            _ => None,
+        };
+        match crate::nav_patch::apply_txn(patch, Some(bsp.as_ref()), g) {
+            Ok(txn) => {
+                let (cells, links, rj, stamp, hash) = fixa_identity(&map, g);
+                let after = match (from, to) {
+                    (Some(s), Some(t)) => Some(fixa_path(g, s, t, &[])),
+                    _ => None,
+                };
+                let next = match (from, to, after.as_ref()) {
+                    (Some(s), Some(t), Some(a)) if a.found => Some(fixa_path(g, s, t, &a.links)),
+                    (Some(_), Some(_), _) => Some(proto::FixaPath {
+                        found: false,
+                        cost: 0.0,
+                        cells: vec![],
+                        links: vec![],
+                        mask_links: vec![],
+                    }),
+                    _ => None,
+                };
+                let audit = crate::nav_patch::console_line(
+                    patch.name,
+                    &crate::nav_patch::Outcome::Applied {
+                        cells: (cells as usize).saturating_sub(cells0 as usize),
+                        drops: 0,
+                        stamp_before: txn.stamp_before,
+                        stamp_after: txn.stamp_after,
+                    },
+                );
+                let stamp_before = txn.stamp_before.to_string();
+                let stamp_after = txn.stamp_after.to_string();
+                keep_txn = Some(txn);
+                proto::FixaResp {
+                    recipe: patch.name.to_string(),
+                    mode: "apply".into(),
+                    outcome: "applied".into(),
+                    reason: None,
+                    map,
+                    cells,
+                    links,
+                    rj_links: rj,
+                    stamp,
+                    content_hash: hash,
+                    stamp_before: Some(stamp_before),
+                    stamp_after: Some(stamp_after),
+                    astar_before: before,
+                    astar_after: after,
+                    astar_next_best: next,
+                    audit,
+                }
+            }
+            Err(crate::nav_patch::Outcome::AlreadyMeshed) => proto::FixaResp {
+                recipe: patch.name.to_string(),
+                mode: "apply".into(),
+                outcome: "already_meshed".into(),
+                reason: None,
+                map,
+                cells: cells0,
+                links: links0,
+                rj_links: rj0,
+                stamp: stamp0.clone(),
+                content_hash: hash0,
+                stamp_before: Some(stamp0.clone()),
+                stamp_after: Some(stamp0),
+                astar_before: before.clone(),
+                astar_after: before,
+                astar_next_best: None,
+                audit: crate::nav_patch::console_line(patch.name, &crate::nav_patch::Outcome::AlreadyMeshed),
+            },
+            Err(crate::nav_patch::Outcome::Failed(why)) => proto::FixaResp {
+                recipe: patch.name.to_string(),
+                mode: "apply".into(),
+                outcome: "failed".into(),
+                reason: Some(why.clone()),
+                map,
+                cells: cells0,
+                links: links0,
+                rj_links: rj0,
+                stamp: stamp0.clone(),
+                content_hash: hash0,
+                stamp_before: Some(stamp0),
+                stamp_after: None,
+                astar_before: before,
+                astar_after: None,
+                astar_next_best: None,
+                audit: crate::nav_patch::console_line(patch.name, &crate::nav_patch::Outcome::Failed(why)),
+            },
+            Err(crate::nav_patch::Outcome::Applied { .. }) => {
+                return Err("apply_txn returned Applied as Err".into());
+            }
+        }
+    };
+    if let Some(txn) = keep_txn {
+        game.nav_patch_txn = Some(txn);
+    }
+    Ok(Resp::Fixa(resp))
+}
+
+fn fixa_undo(game: &mut GameState, patch: &crate::nav_patch::ShelfPatch) -> Result<Resp, String> {
+    let txn = game.nav_patch_txn.take().ok_or("no apply snapshot — nothing to undo")?;
+    let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+    let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+    let stamp = txn.unapply(g);
+    let map = game.level.mapname.clone();
+    let (cells, links, rj, stamp_s, hash) = fixa_identity(&map, g);
+    let audit = crate::nav_patch::console_unapplied(patch.name, stamp);
+    Ok(Resp::Fixa(proto::FixaResp {
+        recipe: patch.name.to_string(),
+        mode: "undo".into(),
+        outcome: "undone".into(),
+        reason: None,
+        map,
+        cells,
+        links,
+        rj_links: rj,
+        stamp: stamp_s,
+        content_hash: hash,
+        stamp_before: None,
+        stamp_after: Some(stamp.to_string()),
+        astar_before: None,
+        astar_after: None,
+        astar_next_best: None,
+        audit,
+    }))
 }
 
 /// Validate that `bot` names a live rtx bot's client slot.

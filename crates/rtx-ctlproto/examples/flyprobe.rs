@@ -136,7 +136,7 @@ fn main() {
     // route <bot> — the plan as it stands, with the current leg marked.
     if mode == "route" {
         let bot: u32 = argv[1].parse().expect("bot ent id");
-        match c.req(Cmd::Route { bot }, &mut |_| {}) {
+        match c.req(Cmd::Route { bot, from: None, to: None, mask_links: Vec::new() }, &mut |_| {}) {
             Ok(Resp::Route(r)) => {
                 println!("bot {bot}: {} legs, at {}", r.legs.len(), r.route_pos);
                 for (i, l) in r.legs.iter().enumerate().take(8) {
@@ -272,7 +272,7 @@ fn main() {
             // The plan, read the moment the order lands: "which path does it intend" is a different
             // question from "where did it end up", and the answer is what says whether the planner or
             // the driver is at fault.
-            if let Ok(Resp::Route(r)) = c.req(Cmd::Route { bot }, &mut |_| {}) {
+            if let Ok(Resp::Route(r)) = c.req(Cmd::Route { bot, from: None, to: None, mask_links: Vec::new() }, &mut |_| {}) {
                 let mut kinds: Vec<String> = Vec::new();
                 for leg in &r.legs {
                     let k = leg.kind.clone();

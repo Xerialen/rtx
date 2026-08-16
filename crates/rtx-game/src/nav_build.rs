@@ -236,6 +236,7 @@ impl GameState {
             }
         };
         self.nav.pending = None;
+        self.nav_patch_txn = None;
         // Map-pinned navmesh patches (see `nav_patch`): applied while the graph is still owned,
         // before the summary below counts it and before anything routes over it. Every patch
         // reports one console line — `applied`, `skipped (...)` or `failed (...)` — so a run's
@@ -243,7 +244,8 @@ impl GameState {
         if self.rtx_cvar_bool("rtx_nav_patch") {
             if let Some(bsp) = self.nav.bsp.clone() {
                 for (name, outcome) in crate::nav_patch::apply_for_map(&self.level.mapname, &bsp, &mut graph) {
-                    self.host.dprint(&cstring(&crate::nav_patch::console_line(name, &outcome)));
+                    self.host
+                        .dprint(&cstring(&crate::nav_patch::console_line(name, &outcome)));
                 }
             }
         }
