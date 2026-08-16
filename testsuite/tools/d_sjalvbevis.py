@@ -18,17 +18,27 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from d_kvitto import astar_path, make_kvitto  # noqa: E402
-from d_recipe import gates_registered, load_gates, load_recipe, on_expected  # noqa: E402
+from d_recipe import (  # noqa: E402
+    avsett_drop_registered,
+    gates_registered,
+    load_avsett_drop,
+    load_gates,
+    load_recipe,
+    on_expected,
+)
 from d_strata import (  # noqa: E402
+    AVSETT_DROP_STRATA,
     FORBIDDEN_CTL,
     FORBIDDEN_GAME,
     HELDOUT_IDS,
+    HELDOUT_PAIR_REPLACE_CAP,
     STRATA,
     STRATUM_AT_GATE,
     STRATUM_AT_VALUES,
     FallTracker,
     gate_passage,
     heldout_stratum_at,
+    in_avsett_geometry,
     is_trap,
     pair_start_vel_ok,
     profiles_ok,
@@ -47,6 +57,7 @@ class Attempt:
     reason: str
     trap: bool = False
     fall: bool = False
+    avsett_drop: bool = False
     arrived: bool = False
     events: list[dict] = field(default_factory=list)
     start_vel: list[float] | None = None
@@ -92,6 +103,7 @@ class DrillReport:
                     "reason": a.reason,
                     "trap": a.trap,
                     "fall": a.fall,
+                    "avsett_drop": a.avsett_drop,
                     "arrived": a.arrived,
                 }
                 for a in self.attempts
@@ -154,6 +166,7 @@ def classify_trial(
     gate_cell: int | None = None,
     gate_origin: list[float] | None = None,
     stratum_at: str | None = None,
+    avsett_drop: dict | None = None,
 ) -> Attempt:
     spec = STRATA[stratum_id]
     aid = f"{stratum_id}-{arm.upper()}"
@@ -181,12 +194,27 @@ def classify_trial(
     arrived, reason = arrived_in_budget(spec, events, t_arrive)
     trap = is_trap(events, gate, arrived_after_stall=any(e.get("ev") == "arrived" for e in events))
     fall = False
+    avsett = False
     tracker = FallTracker()
+    allow_avsett = stratum_id in AVSETT_DROP_STRATA and avsett_drop is not None
     for s in samples:
-        if tracker.update(float(s["z"]), bool(s.get("on_ground"))):
-            fall = True
-            break
-    return Attempt(aid, stratum_id, arm, True, reason, trap=trap, fall=fall, arrived=arrived, events=events)
+        if not tracker.update(float(s["z"]), bool(s.get("on_ground"))):
+            continue
+        origin = [s.get("x"), s.get("y"), s.get("z")]
+        cell = s.get("cell")
+        if allow_avsett and in_avsett_geometry(
+            avsett_drop,
+            origin=origin if origin[0] is not None else None,
+            cell_id=cell if isinstance(cell, int) else None,
+        ):
+            avsett = True
+            continue
+        fall = True
+        break
+    return Attempt(
+        aid, stratum_id, arm, True, reason,
+        trap=trap, fall=fall, avsett_drop=avsett, arrived=arrived, events=events,
+    )
 
 
 class DrillRunner:
@@ -203,6 +231,7 @@ class DrillRunner:
         off_profile: dict[str, str],
         on_profile: dict[str, str],
         ensure_arm: Callable[[str], None] | None = None,
+        avsett_drop: dict | None = None,
     ) -> None:
         self.recipe = recipe
         self.gates = gates
@@ -212,6 +241,7 @@ class DrillRunner:
         self.off_profile = off_profile
         self.on_profile = on_profile
         self.ensure_arm = ensure_arm
+        self.avsett_drop = avsett_drop
 
     def preflight(self) -> list[str]:
         reasons: list[str] = []
@@ -227,6 +257,22 @@ class DrillRunner:
         pwhy = profiles_ok(self.off_profile, self.on_profile)
         if pwhy:
             reasons.append(pwhy)
+        geom = self.avsett_drop
+        if geom is None:
+            try:
+                geom = load_avsett_drop()
+                self.avsett_drop = geom
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                reasons.append(f"avsett_drop fixture unreadable: {exc}")
+                geom = None
+        if geom is not None:
+            awhy = avsett_drop_registered(
+                geom,
+                self.recipe["off"]["graph_stamp"],
+                self.recipe["off"].get("graph_content_hash"),
+            )
+            if awhy:
+                reasons.append(awhy)
         return reasons
 
     def _gate(self) -> dict:
@@ -250,6 +296,7 @@ class DrillRunner:
             gate_cell=raw.get("gate_cell"),
             gate_origin=raw.get("gate_origin"),
             stratum_at=locus,
+            avsett_drop=self.avsett_drop,
         )
         att.attempt_id = f"{stratum_id}-{arm.upper()}-{seq:02d}"
         raw_vel = raw.get("measured_vel") if raw.get("measured_vel") is not None else raw.get("vel")
@@ -268,24 +315,38 @@ class DrillRunner:
         for i in range(1, STRATA["T0"]["n_on"] + 1):
             attempts.append(self._run_one("T0", "on", i))
 
-        # Heldout: 5 OFF/ON pairs per stratum, kedjad only. New ids, no T0 teleport start.
+        # Heldout: 5 valid OFF/ON pairs per stratum. Out-of-box pairs are
+        # replaced (new attempt ids), not counted (facit r3 §2).
+        extra: list[str] = []
         for sid in HELDOUT_IDS:
-            for i in range(1, STRATA[sid]["n_on"] + 1):
-                off_att = self._run_one(sid, "off", i)
-                on_att = self._run_one(sid, "on", i)
+            need = int(STRATA[sid]["n_on"])
+            got = 0
+            seq = 0
+            cap = need + int(HELDOUT_PAIR_REPLACE_CAP)
+            while got < need:
+                seq += 1
+                if seq > cap:
+                    extra.append(f"{sid}: could not assemble {need} valid pairs ({seq - 1} attempts)")
+                    break
+                off_att = self._run_one(sid, "off", seq)
+                on_att = self._run_one(sid, "on", seq)
                 pok, pwhy = pair_start_vel_ok(off_att.start_vel, on_att.start_vel)
-                if not pok:
-                    off_att.valid = False
-                    off_att.reason = pwhy
-                    on_att.valid = False
-                    on_att.reason = pwhy
+                if not pok or not off_att.valid or not on_att.valid:
+                    if not pok:
+                        off_att.valid = False
+                        on_att.valid = False
+                        off_att.reason = pwhy
+                        on_att.reason = pwhy
+                    attempts.append(off_att)
+                    attempts.append(on_att)
+                    continue
+                got += 1
                 attempts.append(off_att)
                 attempts.append(on_att)
 
         # Incomplete / invalid trials make the whole run invalid (facit §4).
         wanted = 4 + 8 + 40
         valid = [a for a in attempts if a.valid]
-        extra: list[str] = []
         if len(valid) != wanted:
             extra.append(f"incomplete pairs: {len(valid)} valid of {wanted}")
         t0_ok = score_t0(attempts)
@@ -348,6 +409,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--fixture", type=Path)
     ap.add_argument("--gates", type=Path)
+    ap.add_argument("--avsett-drop", type=Path)
     ap.add_argument("--out", type=Path)
     ap.add_argument("--kvitto-dir", type=Path)
     ap.add_argument("--lock", type=Path)
@@ -363,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     recipe = load_recipe(args.fixture)
     gates = load_gates(args.gates)
+    avsett = load_avsett_drop(args.avsett_drop)
 
     from d_live_driver import (  # local: tools/ is already on sys.path
         DEFAULT_LOCK,
@@ -389,6 +452,7 @@ def main(argv: list[str] | None = None) -> int:
             game_port=args.game_port,
             off_profile={"rtx_nav_patch": "0"},
             on_profile={"rtx_nav_patch": "1"},
+            avsett_drop=avsett,
         )
         report = runner.run()
         payload = report.as_dict()
@@ -593,6 +657,7 @@ def _run_live(driver, recipe: dict, gates: dict, lock: dict, args) -> int:
         off_profile={"rtx_nav_patch": "0"},
         on_profile={"rtx_nav_patch": "1"},
         ensure_arm=driver.ensure_arm,
+        avsett_drop=load_avsett_drop(args.avsett_drop),
     )
     report = runner.run()
     if driver.arm == "on":

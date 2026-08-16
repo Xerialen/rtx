@@ -6,13 +6,14 @@ from __future__ import annotations
 import unittest
 
 from d_kvitto import WEST_SHELF_OFF
-from d_recipe import on_expected
+from d_recipe import load_avsett_drop, on_expected
 import d_sjalvbevis as drill
 from d_sjalvbevis import score_heldout, score_t0
 from d_strata import (
     FallTracker,
     STRATA,
     direction_dot,
+    in_avsett_geometry,
     is_trap,
     pair_start_vel_ok,
     profiles_ok,
@@ -54,7 +55,12 @@ def _gates(cells=None, stratum_at="start") -> dict:
     }
     if stratum_at is not None:
         doc["heldout_stratum_at"] = stratum_at
+    doc["t0_budget_s"] = STRATA["T0"]["budget_s"]
     return doc
+
+
+def _avsett() -> dict:
+    return load_avsett_drop()
 
 
 class StratumTests(unittest.TestCase):
@@ -260,6 +266,25 @@ class DrillTests(unittest.TestCase):
 
 # keep the accidental alias unused
 class BudgetTests(unittest.TestCase):
+    def test_t0_budget_is_1_10(self):
+        self.assertAlmostEqual(STRATA["T0"]["budget_s"], 1.10)
+        from d_recipe import load_gates
+        self.assertAlmostEqual(load_gates()["t0_budget_s"], 1.10)
+
+    def test_t0_arrived_at_0_95_is_a_hit(self):
+        gate = _gates()["gates"]["west-shelf"]
+        att = drill.classify_trial(
+            stratum_id="T0",
+            arm="on",
+            vel=[0, 0, 0],
+            events=[{"ev": "arrived"}],
+            samples=[{"z": -16.0, "on_ground": True}],
+            gate=gate,
+            t_arrive=0.95,
+        )
+        self.assertTrue(att.valid)
+        self.assertTrue(att.arrived)
+
     def test_t0_late_arrived_is_not_a_hit(self):
         gate = _gates()["gates"]["west-shelf"]
         att = drill.classify_trial(
@@ -275,6 +300,20 @@ class BudgetTests(unittest.TestCase):
         self.assertFalse(att.arrived)
         self.assertIn("budget", att.reason)
         self.assertFalse(drill.score_t0([att]))
+
+    def test_t0_arrived_just_over_1_10_is_not_a_hit(self):
+        gate = _gates()["gates"]["west-shelf"]
+        att = drill.classify_trial(
+            stratum_id="T0",
+            arm="on",
+            vel=[0, 0, 0],
+            events=[{"ev": "arrived"}],
+            samples=[{"z": -16.0, "on_ground": True}],
+            gate=gate,
+            t_arrive=1.11,
+        )
+        self.assertTrue(att.valid)
+        self.assertFalse(att.arrived)
 
     def test_heldout_late_arrived_is_not_a_hit(self):
         gate = _gates()["gates"]["west-shelf"]
@@ -398,7 +437,7 @@ class GateLocusTests(unittest.TestCase):
         reasons = runner.preflight()
         self.assertTrue(any("heldout_stratum_at" in r for r in reasons), reasons)
 
-    def test_pair_mismatch_invalidates_both(self):
+    def test_pair_mismatch_is_replaced_not_counted(self):
         def exec_trial(stratum_id, arm, spec, seq):
             if stratum_id == "T0":
                 vel = [0, 0, 0]
@@ -441,10 +480,65 @@ class GateLocusTests(unittest.TestCase):
         )
         rep = runner.run()
         a1 = [a for a in rep.attempts if a.stratum == "A1"]
-        self.assertTrue(a1)
+        # 5 needed + 5 replacements = 10 full pairs, none counted
+        self.assertEqual(len(a1), 20)
         self.assertTrue(all(not a.valid for a in a1))
         self.assertTrue(any("delta" in a.reason for a in a1))
+        self.assertTrue(any(a.attempt_id.endswith("-10") for a in a1))
+        self.assertTrue(any("could not assemble" in r for r in rep.invalid_reasons))
+        self.assertEqual(sum(1 for a in a1 if a.valid), 0)
         self.assertFalse(score_heldout(rep.attempts))
+
+    def test_pair_mismatch_then_valid_replacement_counts(self):
+        def exec_trial(stratum_id, arm, spec, seq):
+            if stratum_id == "T0":
+                vel = [0, 0, 0]
+                if arm == "off":
+                    return {
+                        "vel": vel,
+                        "measured_vel": vel,
+                        "events": [{"ev": "bot_stall", "cell": 9001, "origin": [-865.0, -48.0, 90.0]}],
+                        "samples": [{"z": 90.0, "on_ground": True}],
+                    }
+                return {
+                    "vel": vel,
+                    "measured_vel": vel,
+                    "events": [{"ev": "arrived"}],
+                    "samples": [{"z": -16.0, "on_ground": True}],
+                    "t_arrive": 0.4,
+                }
+            sign = -1.0 if spec["goal"][0] < spec["start"][0] else 1.0
+            mid = spec["vh_lo"] + 10
+            vel = [sign * mid, 0.0, 0.0]
+            if arm == "on" and stratum_id == "A1" and seq == 1:
+                vel = [sign * mid - 8.0, 0.0, 0.0]
+            extra = {
+                "vel": vel,
+                "measured_vel": vel,
+                "samples": [{"z": 0.0, "on_ground": True}],
+            }
+            if arm == "on":
+                return {**extra, "events": [{"ev": "arrived"}], "t_arrive": 1.0}
+            return {**extra, "events": []}
+
+        runner = drill.DrillRunner(
+            recipe=_recipe_with_on(),
+            gates=_gates(stratum_at="start"),
+            exec_trial=exec_trial,
+            ctl_port=27996,
+            game_port=27591,
+            off_profile={"rtx_nav_patch": "0"},
+            on_profile={"rtx_nav_patch": "1"},
+        )
+        rep = runner.run()
+        a1 = [a for a in rep.attempts if a.stratum == "A1"]
+        a1_valid = [a for a in a1 if a.valid]
+        a1_bad = [a for a in a1 if not a.valid]
+        self.assertEqual(len(a1_bad), 2)  # first pair replaced
+        self.assertEqual(len(a1_valid), 10)  # 5 off + 5 on
+        self.assertTrue(any(a.attempt_id == "A1-OFF-06" for a in a1_valid))
+        self.assertTrue(rep.valid)
+        self.assertTrue(score_heldout(rep.attempts))
 
     def test_missing_stratum_at_classify_fail_closed(self):
         gate = _gates()["gates"]["west-shelf"]
@@ -458,6 +552,124 @@ class GateLocusTests(unittest.TestCase):
         )
         self.assertFalse(att.valid)
         self.assertIn("heldout_stratum_at", att.reason)
+
+
+class AvsettDropTests(unittest.TestCase):
+    def test_shipped_fixture_pins_off_stamp_and_a12_only(self):
+        geom = _avsett()
+        self.assertEqual(geom["graph_stamp"], WEST_SHELF_OFF["graph_stamp"])
+        self.assertEqual(geom["graph_content_hash"], WEST_SHELF_OFF["graph_content_hash"])
+        self.assertEqual(set(geom["applies_to"]), {"A1", "A2"})
+        self.assertEqual(geom["source"]["cell"], 1372)
+        self.assertEqual(geom["target"]["cell"], 403)
+        self.assertIn(1214, geom["drop_cells"])
+        self.assertIn(1156, geom["landing_cells"])
+        self.assertEqual(geom["path_cells"][0], 1372)
+        self.assertEqual(geom["path_cells"][-1], 403)
+
+    def test_a1_peak_drop_inside_geometry_is_avsett_not_fall(self):
+        gate = _gates()["gates"]["west-shelf"]
+        geom = _avsett()
+        # airborne origin on the BFS descent (graph, not r2 observed)
+        att = drill.classify_trial(
+            stratum_id="A1",
+            arm="on",
+            vel=[-120.0, 0.0, 0.0],
+            events=[],
+            samples=[
+                {"x": 160.0, "y": -728.0, "z": 328.0, "on_ground": True},
+                {"x": 140.0, "y": -740.0, "z": 360.0, "on_ground": False},
+                {"x": 120.0, "y": -750.0, "z": 200.0, "on_ground": False},
+            ],
+            gate=gate,
+            stratum_at="start",
+            avsett_drop=geom,
+        )
+        self.assertTrue(att.valid)
+        self.assertTrue(att.avsett_drop)
+        self.assertFalse(att.fall)
+
+    def test_a1_peak_drop_outside_geometry_is_fall(self):
+        gate = _gates()["gates"]["west-shelf"]
+        geom = _avsett()
+        att = drill.classify_trial(
+            stratum_id="A1",
+            arm="on",
+            vel=[-120.0, 0.0, 0.0],
+            events=[],
+            samples=[
+                {"x": -865.0, "y": -48.0, "z": 200.0, "on_ground": False},
+                {"x": -865.0, "y": -48.0, "z": 40.0, "on_ground": False},
+            ],
+            gate=gate,
+            stratum_at="start",
+            avsett_drop=geom,
+        )
+        self.assertTrue(att.valid)
+        self.assertTrue(att.fall)
+        self.assertFalse(att.avsett_drop)
+
+    def test_a3_peak_drop_is_fall_even_inside_a12_geometry(self):
+        gate = _gates()["gates"]["west-shelf"]
+        geom = _avsett()
+        att = drill.classify_trial(
+            stratum_id="A3",
+            arm="on",
+            vel=[120.0, 0.0, 0.0],
+            events=[],
+            samples=[
+                {"x": 160.0, "y": -728.0, "z": 328.0, "on_ground": True},
+                {"x": 140.0, "y": -740.0, "z": 360.0, "on_ground": False},
+                {"x": 120.0, "y": -750.0, "z": 200.0, "on_ground": False},
+            ],
+            gate=gate,
+            stratum_at="start",
+            avsett_drop=geom,
+        )
+        self.assertTrue(att.valid)
+        self.assertTrue(att.fall)
+        self.assertFalse(att.avsett_drop)
+
+    def test_a2_inside_same_pin(self):
+        gate = _gates()["gates"]["west-shelf"]
+        geom = _avsett()
+        att = drill.classify_trial(
+            stratum_id="A2",
+            arm="off",
+            vel=[-200.0, 0.0, 0.0],
+            events=[],
+            samples=[
+                {"x": 96.0, "y": -768.0, "z": 328.0, "on_ground": False},
+                {"x": 96.0, "y": -768.0, "z": 160.0, "on_ground": False},
+            ],
+            gate=gate,
+            stratum_at="start",
+            avsett_drop=geom,
+        )
+        self.assertTrue(att.valid)
+        self.assertTrue(att.avsett_drop)
+        self.assertFalse(att.fall)
+
+    def test_corridor_rejects_west_shelf_and_accepts_descent(self):
+        geom = _avsett()
+        self.assertTrue(in_avsett_geometry(geom, origin=[160.0, -728.0, 328.0], cell_id=1214))
+        self.assertTrue(in_avsett_geometry(geom, origin=[96.0, -768.0, -16.0], cell_id=1156))
+        self.assertFalse(in_avsett_geometry(geom, origin=[-865.0, -48.0, 90.0]))
+        self.assertFalse(in_avsett_geometry(geom, origin=[400.0, -704.0, 328.0]))
+
+    def test_missing_avsett_fixture_preflight(self):
+        runner = drill.DrillRunner(
+            recipe=_recipe_with_on(),
+            gates=_gates(),
+            exec_trial=lambda **k: {},
+            ctl_port=27996,
+            game_port=27591,
+            off_profile={"rtx_nav_patch": "0"},
+            on_profile={"rtx_nav_patch": "1"},
+            avsett_drop={},
+        )
+        reasons = runner.preflight()
+        self.assertTrue(any("avsett_drop" in r for r in reasons), reasons)
 
 
 class _AliasGuard(unittest.TestCase):

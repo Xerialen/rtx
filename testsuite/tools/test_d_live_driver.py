@@ -309,7 +309,7 @@ class SequenceTests(unittest.TestCase):
         }]
         raw = drv.exec_trial(stratum_id="T0", arm="on", spec=STRATA["T0"], seq=1, window_s=2.0)
         self.assertIsNotNone(raw["t_arrive"])
-        self.assertLess(raw["t_arrive"], 0.6)
+        self.assertLess(raw["t_arrive"], STRATA["T0"]["budget_s"])
         ev = next(e for e in raw["events"] if e["ev"] == "arrived")
         self.assertEqual(ev["t"], raw["t_arrive"])
         att = classify_trial(

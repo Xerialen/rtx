@@ -16,7 +16,7 @@ STRATA: dict[str, dict[str, Any]] = {
         "goal": list(T0_GOAL),
         "n_off": 4,
         "n_on": 8,
-        "budget_s": 0.6,
+        "budget_s": 1.10,
         "off_window_s": 40.0,
         "rest_speed_max": 1.0,
         "population": "teleport_drill",
@@ -79,8 +79,12 @@ HELDOUT_IDS = ("A1", "A2", "A3", "A4")
 FORBIDDEN_CTL = {27990, 27993}
 FORBIDDEN_GAME = {27540, 27570}
 PEAK_DROP = 150.0
-# r2 §2 / Fable: ON/OFF pair start-vel within ±5 u/s per component.
+# r2/r3 §2: ON/OFF pair start-vel within ±5 u/s per component. Unchanged in r3.
 PAIR_VEL_TOL = 5.0
+# r3 §2: an out-of-box pair is not counted; replace it as a new full pair.
+# 5 needed + this many extra pair attempts per heldout stratum.
+HELDOUT_PAIR_REPLACE_CAP = 5
+AVSETT_DROP_STRATA = frozenset({"A1", "A2"})
 # Terra facit revision (ongoing): (i) "gate" = |vh| at west-shelf-gate;
 # (ii) "start" = |vh| at teleport start. Missing key is fail-closed.
 STRATUM_AT_GATE = "gate"
@@ -207,6 +211,40 @@ class FallTracker:
         if z > self.peak:
             self.peak = z
         return (self.peak - z) > PEAK_DROP
+
+
+def in_avsett_geometry(
+    geom: dict | None,
+    *,
+    origin: Iterable[float] | None = None,
+    cell_id: int | None = None,
+) -> bool:
+    """True if origin/cell sits in the pinned A1/A2 west-out corridor."""
+    if not isinstance(geom, dict):
+        return False
+    cells: set[int] = set()
+    for key in ("drop_cells", "landing_cells", "path_cells"):
+        for c in geom.get(key) or []:
+            if isinstance(c, int):
+                cells.add(c)
+    if isinstance(cell_id, int) and cell_id in cells:
+        return True
+    if origin is None:
+        return False
+    o = list(origin)
+    if len(o) < 3:
+        return False
+    corridor = geom.get("corridor") or {}
+    try:
+        if (
+            float(corridor["xmin"]) <= float(o[0]) <= float(corridor["xmax"])
+            and float(corridor["ymin"]) <= float(o[1]) <= float(corridor["ymax"])
+            and float(corridor["zmin"]) <= float(o[2]) <= float(corridor["zmax"])
+        ):
+            return True
+    except (KeyError, TypeError, ValueError):
+        return False
+    return False
 
 
 def pair_start_vel_ok(
