@@ -37,8 +37,8 @@ def _recipe_with_on() -> dict:
     }
 
 
-def _gates(cells=None) -> dict:
-    return {
+def _gates(cells=None, stratum_at="gate") -> dict:
+    doc = {
         "recipe": "west-shelf",
         "graph_stamp": WEST_SHELF_OFF["graph_stamp"],
         "graph_content_hash": WEST_SHELF_OFF["graph_content_hash"],
@@ -51,6 +51,9 @@ def _gates(cells=None) -> dict:
             }
         },
     }
+    if stratum_at is not None:
+        doc["heldout_stratum_at"] = stratum_at
+    return doc
 
 
 class StratumTests(unittest.TestCase):
@@ -169,14 +172,20 @@ class DrillTests(unittest.TestCase):
             mid = spec["vh_lo"] + 10
             sign = -1.0 if goal[0] < start[0] else 1.0
             vel = [sign * mid, 0.0, 0.0]
+            extra = {
+                "vel": vel,
+                "gate_velocity": vel,
+                "gate_cell": 9001,
+                "gate_origin": [-865.0, -48.0, 90.0],
+                "samples": [{"z": 0.0, "on_ground": True}],
+            }
             if arm == "on":
                 return {
-                    "vel": vel,
+                    **extra,
                     "events": [{"ev": "arrived"}],
-                    "samples": [{"z": 0.0, "on_ground": True}],
                     "t_arrive": 1.0,
                 }
-            return {"vel": vel, "events": [], "samples": [{"z": 0.0, "on_ground": True}]}
+            return {**extra, "events": []}
 
         runner = drill.DrillRunner(
             recipe=_recipe_with_on(),
@@ -253,6 +262,9 @@ class BudgetTests(unittest.TestCase):
             samples=[{"z": 0.0, "on_ground": True}],
             gate=gate,
             t_arrive=30.0,
+            gate_velocity=[-120.0, 0.0, 0.0],
+            gate_cell=9001,
+            stratum_at="gate",
         )
         self.assertTrue(att.valid)
         self.assertFalse(att.arrived)
@@ -270,6 +282,110 @@ class BudgetTests(unittest.TestCase):
         )
         self.assertFalse(att.arrived)
         self.assertIn("without time", att.reason)
+
+
+class GateLocusTests(unittest.TestCase):
+    def test_heldout_without_gate_vel_invalid_when_locus_gate(self):
+        gate = _gates()["gates"]["west-shelf"]
+        att = drill.classify_trial(
+            stratum_id="A1",
+            arm="on",
+            vel=[-120.0, 0.0, 0.0],
+            events=[],
+            samples=[{"z": 0.0, "on_ground": True}],
+            gate=gate,
+            gate_cell=9001,
+            stratum_at="gate",
+        )
+        self.assertFalse(att.valid)
+        self.assertIn("gate_velocity", att.reason)
+
+    def test_heldout_start_vel_without_gate_hit_rejected(self):
+        gate = _gates()["gates"]["west-shelf"]
+        att = drill.classify_trial(
+            stratum_id="A1",
+            arm="off",
+            vel=[-120.0, 0.0, 0.0],
+            events=[],
+            samples=[{"z": 0.0, "on_ground": True}],
+            gate=gate,
+            gate_velocity=[-120.0, 0.0, 0.0],
+            stratum_at="gate",
+        )
+        self.assertFalse(att.valid)
+        self.assertIn("gate", att.reason)
+
+    def test_heldout_valid_with_gate_vel_and_cell(self):
+        gate = _gates()["gates"]["west-shelf"]
+        att = drill.classify_trial(
+            stratum_id="A1",
+            arm="on",
+            vel=[0.0, 0.0, 0.0],
+            events=[{"ev": "arrived"}],
+            samples=[{"z": 0.0, "on_ground": True}],
+            gate=gate,
+            t_arrive=1.0,
+            gate_velocity=[-120.0, 0.0, 0.0],
+            gate_cell=9001,
+            stratum_at="gate",
+        )
+        self.assertTrue(att.valid)
+        self.assertTrue(att.arrived)
+
+    def test_heldout_valid_with_aim_hit(self):
+        gate = _gates()["gates"]["west-shelf"]
+        att = drill.classify_trial(
+            stratum_id="A1",
+            arm="on",
+            vel=[0.0, 0.0, 0.0],
+            events=[{"ev": "arrived"}],
+            samples=[{"z": 0.0, "on_ground": True}],
+            gate=gate,
+            t_arrive=1.0,
+            gate_velocity=[-120.0, 0.0, 0.0],
+            gate_origin=[-865.0, -48.0, 90.0],
+            stratum_at="gate",
+        )
+        self.assertTrue(att.valid)
+
+    def test_heldout_start_locus_uses_start_vel(self):
+        gate = _gates()["gates"]["west-shelf"]
+        att = drill.classify_trial(
+            stratum_id="A1",
+            arm="off",
+            vel=[-120.0, 0.0, 0.0],
+            events=[],
+            samples=[{"z": 0.0, "on_ground": True}],
+            gate=gate,
+            stratum_at="start",
+        )
+        self.assertTrue(att.valid)
+
+    def test_missing_stratum_at_preflight(self):
+        runner = drill.DrillRunner(
+            recipe=_recipe_with_on(),
+            gates=_gates(stratum_at=None),
+            exec_trial=lambda **k: {},
+            ctl_port=27996,
+            game_port=27591,
+            off_profile={"rtx_nav_patch": "0"},
+            on_profile={"rtx_nav_patch": "1"},
+        )
+        reasons = runner.preflight()
+        self.assertTrue(any("heldout_stratum_at" in r for r in reasons), reasons)
+
+    def test_missing_stratum_at_classify_fail_closed(self):
+        gate = _gates()["gates"]["west-shelf"]
+        att = drill.classify_trial(
+            stratum_id="A1",
+            arm="on",
+            vel=[-120.0, 0.0, 0.0],
+            events=[],
+            samples=[],
+            gate=gate,
+        )
+        self.assertFalse(att.valid)
+        self.assertIn("heldout_stratum_at", att.reason)
 
 
 class _AliasGuard(unittest.TestCase):

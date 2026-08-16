@@ -24,7 +24,11 @@ from d_strata import (  # noqa: E402
     FORBIDDEN_GAME,
     HELDOUT_IDS,
     STRATA,
+    STRATUM_AT_GATE,
+    STRATUM_AT_VALUES,
     FallTracker,
+    gate_passage,
+    heldout_stratum_at,
     is_trap,
     profiles_ok,
     stratum_ok,
@@ -144,10 +148,32 @@ def classify_trial(
     samples: list[dict],
     gate: dict,
     t_arrive: float | None = None,
+    gate_velocity: list[float] | None = None,
+    gate_cell: int | None = None,
+    gate_origin: list[float] | None = None,
+    stratum_at: str | None = None,
 ) -> Attempt:
     spec = STRATA[stratum_id]
-    ok, why = stratum_ok(stratum_id, vel, spec["start"], spec["goal"])
     aid = f"{stratum_id}-{arm.upper()}"
+    if spec["kind"] == "heldout":
+        if stratum_at not in STRATUM_AT_VALUES:
+            return Attempt(
+                aid, stratum_id, arm, False,
+                "heldout_stratum_at missing or invalid (facit i=gate|ii=start)",
+                events=events,
+            )
+        if stratum_at == STRATUM_AT_GATE:
+            hit, how = gate_passage(gate, gate_cell=gate_cell, origin=gate_origin)
+            if not hit:
+                return Attempt(aid, stratum_id, arm, False, how, events=events)
+            if gate_velocity is None:
+                return Attempt(
+                    aid, stratum_id, arm, False,
+                    "no gate_velocity at the gate (no start-vel fallback)",
+                    events=events,
+                )
+            vel = list(gate_velocity)
+    ok, why = stratum_ok(stratum_id, vel, spec["start"], spec["goal"])
     if not ok:
         return Attempt(aid, stratum_id, arm, False, why, events=events)
     arrived, reason = arrived_in_budget(spec, events, t_arrive)
@@ -209,6 +235,7 @@ class DrillRunner:
         if self.ensure_arm is not None:
             self.ensure_arm(arm)
         raw = self.exec_trial(stratum_id=stratum_id, arm=arm, spec=spec, seq=seq)
+        locus, _ = heldout_stratum_at(self.gates)
         att = classify_trial(
             stratum_id=stratum_id,
             arm=arm,
@@ -217,6 +244,10 @@ class DrillRunner:
             samples=raw.get("samples") or [],
             gate=self._gate(),
             t_arrive=raw.get("t_arrive"),
+            gate_velocity=raw.get("gate_velocity"),
+            gate_cell=raw.get("gate_cell"),
+            gate_origin=raw.get("gate_origin"),
+            stratum_at=locus,
         )
         att.attempt_id = f"{stratum_id}-{arm.upper()}-{seq:02d}"
         return att
@@ -279,7 +310,7 @@ def receipt_skeleton(recipe: dict, stratum_id: str, attempt_id: str) -> dict:
         recipe={"id": recipe["id"], "taxonomy_class": recipe["taxonomy_class"], "evidence": recipe["evidence"]},
         seed=0,
         stratum={"id": stratum_id, "attempt": attempt_id},
-        raw_pointer=f"d_sjalvbevis:{attempt_id}",
+        raw_pointer=f"/tmp/d_sjalvbevis/{attempt_id}.jsonl",
         astar_before=empty,
         astar_after=empty,
         astar_next_best=empty,
@@ -438,18 +469,11 @@ def _run_smoke(driver, lock: dict, args, ident: dict) -> int:
         att.attempt_id = f"T0-OFF-{i:02d}"
         ended = _iso_now()
         kvitto_path = None
+        raw_path = None
         if args.kvitto_dir:
-            kvitto_path = args.kvitto_dir / f"{att.attempt_id}.json"
-            driver.write_attempt_kvitto(
-                kvitto_path,
-                attempt_id=att.attempt_id,
-                stratum_id="T0",
-                raw_pointer=f"roktest:{att.attempt_id}",
-                started_at=t0,
-                ended_at=ended,
-                lock_owner=lock["owner"],
-                lock_issued=lock["issued"],
-            )
+            raw_path = args.kvitto_dir / f"{att.attempt_id}.jsonl"
+            driver.write_attempt_raw(raw_path, raw)
+            # Smoke never applies — refuse to invent ON-observed from expected.
         rows.append({
             "id": att.attempt_id,
             "valid": att.valid,
@@ -467,6 +491,7 @@ def _run_smoke(driver, lock: dict, args, ident: dict) -> int:
                 for e in (raw.get("events") or [])
             ],
             "kvitto": str(kvitto_path) if kvitto_path else None,
+            "raw_pointer": str(raw_path) if raw_path else None,
         })
     after = driver.confirm("off")
     payload = {
@@ -493,36 +518,44 @@ def _run_smoke(driver, lock: dict, args, ident: dict) -> int:
 
 
 def _run_live(driver, recipe: dict, gates: dict, lock: dict, args) -> int:
-    from datetime import datetime, timezone
+    driver.measure_both_stamps()
+    last: dict = {}
 
     def write_one(att, raw):
         if not args.kvitto_dir:
             return
-        try:
-            driver.snapshot_astar(STRATA[att.stratum])
-        except Exception:
-            pass
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        jsonl = args.kvitto_dir / f"{att.attempt_id}.jsonl"
+        driver.write_attempt_raw(jsonl, raw)
+        origin = raw.get("gate_origin")
+        _, how = gate_passage(
+            driver.gate, gate_cell=raw.get("gate_cell"), origin=origin
+        )
         driver.write_attempt_kvitto(
             args.kvitto_dir / f"{att.attempt_id}.json",
             attempt_id=att.attempt_id,
             stratum_id=att.stratum,
-            raw_pointer=f"d_sjalvbevis:{att.attempt_id}",
-            started_at=now,
-            ended_at=now,
+            raw_pointer=str(jsonl),
+            started_at=raw.get("started_at") or _iso_now(),
+            ended_at=raw.get("ended_at") or _iso_now(),
             lock_owner=lock["owner"],
             lock_issued=lock["issued"],
+            gate_velocity=raw.get("gate_velocity"),
+            gate_cell=raw.get("gate_cell"),
+            gate_aim_hit=how == "aim",
         )
 
     def exec_trial(**k):
+        t0 = _iso_now()
         raw = driver.exec_trial(**k)
+        raw["started_at"] = t0
+        raw["ended_at"] = _iso_now()
+        last["raw"] = raw
         return raw
 
-    # wrap classify path: DrillRunner has no kvitto hook; write after each _run_one via subclass
     class _Live(DrillRunner):
         def _run_one(self, stratum_id: str, arm: str, seq: int):
             att = super()._run_one(stratum_id, arm, seq)
-            write_one(att, {})
+            write_one(att, last.get("raw") or {})
             return att
 
     runner = _Live(

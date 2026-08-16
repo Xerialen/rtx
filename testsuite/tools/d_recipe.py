@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from d_strata import heldout_stratum_at  # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 DEFAULT_RECIPE = HERE / "recept" / "west-shelf.json"
 DEFAULT_GATES = HERE / "recept" / "west-shelf-gates.json"
@@ -52,4 +54,7 @@ def gates_registered(gates: dict[str, Any], off_stamp: str) -> str | None:
     cells = ws.get("cell_ids") or []
     if not cells:
         return "west-shelf gate cell_ids not pre-registered (facit §2)"
+    _, locus_err = heldout_stratum_at(gates)
+    if locus_err:
+        return locus_err
     return None

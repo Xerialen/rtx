@@ -22,9 +22,11 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+import json
+
 from d_kvitto import astar_from_route_resp, astar_path, make_kvitto, write_kvitto
 from d_recipe import on_expected
-from d_strata import FORBIDDEN_CTL, FORBIDDEN_GAME, FallTracker, in_gate, vh
+from d_strata import FORBIDDEN_CTL, FORBIDDEN_GAME, STRATA, FallTracker, in_gate, vh
 from verify_d_kvitto import verify
 
 DEFAULT_QWPROGS = Path.home() / ".local/share/qw-fasttrack/runtime-tbx-d/qw/qwprogs.so"
@@ -149,7 +151,7 @@ class LiveTrialDriver:
         self.arm = "off"
         self._ent: int | None = None
         self.last_stamps: dict[str, dict] = {}
-        self.astar_cache: dict[str, dict] = {}
+        self.astar_by: dict[tuple[str, str], dict] = {}
         self.cmds: list[str] = []
         self._saved_cvars: dict[str, str | None] = {}
 
@@ -307,6 +309,7 @@ class LiveTrialDriver:
         events: list[dict] = []
         gate_vel: list[float] | None = None
         gate_cell: int | None = None
+        gate_origin: list[float] | None = None
         prev: dict | None = None
         t_arrive: float | None = None
         t_stall_gate: float | None = None
@@ -343,6 +346,7 @@ class LiveTrialDriver:
                     cell = self.cell_at(o)
                 if in_gate(self.gate, origin=o, cell_id=cell):
                     gate_vel = v
+                    gate_origin = o
                     if isinstance(cell, int) and cell in gate_cells:
                         gate_cell = cell
             prev = samp
@@ -357,6 +361,8 @@ class LiveTrialDriver:
                 ):
                     if t_stall_gate is None:
                         t_stall_gate = float(ev.get("rel_t", t))
+                    if gate_origin is None and isinstance(origin, (list, tuple)):
+                        gate_origin = [float(x) for x in origin]
                     if isinstance(cell, int) and cell in gate_cells:
                         gate_cell = cell
                 if ev.get("ev") == "arrived" and t_arrive is None:
@@ -375,6 +381,7 @@ class LiveTrialDriver:
             "t_stall_gate": t_stall_gate,
             "gate_velocity": gate_vel,
             "gate_cell": gate_cell,
+            "gate_origin": gate_origin,
         }
 
     def exec_trial(
@@ -415,7 +422,8 @@ class LiveTrialDriver:
         if spec.get("kind") == "trap":
             vel = measured
         else:
-            vel = watched.get("gate_velocity") if watched.get("gate_velocity") is not None else measured
+            # Heldout: never fall back to start-vel. classify_trial invalidates a miss.
+            vel = watched.get("gate_velocity")
         start_cell = self.cell_at([float(x) for x in o0])
         return {
             "vel": vel,
@@ -423,24 +431,28 @@ class LiveTrialDriver:
             "measured_vel": measured,
             "gate_velocity": watched.get("gate_velocity"),
             "gate_cell": watched.get("gate_cell"),
+            "gate_origin": watched.get("gate_origin"),
             "start_cell": start_cell,
             "events": watched["events"],
             "samples": watched["samples"],
             "t_arrive": watched.get("t_arrive"),
             "t_stall_gate": watched.get("t_stall_gate"),
-            "vh": vh(vel),
+            "vh": None if vel is None else vh(vel),
             "stratum_id": stratum_id,
             "arm": arm,
             "seq": seq,
         }
 
-    def snapshot_astar(self, spec: dict) -> dict:
+    def snapshot_astar(self, spec: dict, stratum_id: str) -> dict:
+        """A* for THIS spec's start/goal on the current arm. Keyed (stratum, arm)."""
         start_cell = self.cell_at(spec["start"])
         goal_cell = self.cell_at(spec["goal"])
         empty = astar_path(found=False)
+        key = (stratum_id, self.arm)
         if start_cell is None or goal_cell is None:
-            self.astar_cache[self.arm] = {"path": empty, "next_best": empty}
-            return self.astar_cache[self.arm]
+            blob = {"path": empty, "next_best": empty}
+            self.astar_by[key] = blob
+            return blob
         try:
             data = self.request(f"route query {start_cell} {goal_cell}")["data"]
             path = astar_from_route_resp(data)
@@ -457,8 +469,45 @@ class LiveTrialDriver:
             except Exception:
                 next_best = astar_path(found=False, mask_links=list(path["links"]))
         blob = {"path": path, "next_best": next_best}
-        self.astar_cache[self.arm] = blob
+        self.astar_by[key] = blob
         return blob
+
+    def snapshot_all_strata(self) -> None:
+        for sid, spec in STRATA.items():
+            self.snapshot_astar(spec, sid)
+
+    def measure_both_stamps(self) -> None:
+        """Observe OFF and ON via apply/undo. Never copy expected into observed."""
+        self.confirm("off")
+        self.snapshot_all_strata()
+        self.apply()
+        self.snapshot_all_strata()
+        self.undo()
+
+    def write_attempt_raw(self, path: Path, raw: dict) -> Path:
+        """Per-attempt events/samples as JSONL. Pointer is this path."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as fh:
+            header = {
+                "kind": "header",
+                "stratum_id": raw.get("stratum_id"),
+                "arm": raw.get("arm"),
+                "seq": raw.get("seq"),
+                "gate_velocity": raw.get("gate_velocity"),
+                "gate_cell": raw.get("gate_cell"),
+                "gate_origin": raw.get("gate_origin"),
+            }
+            fh.write(json.dumps(header, sort_keys=True) + "\n")
+            for ev in raw.get("events") or []:
+                row = dict(ev)
+                row["kind"] = "event"
+                fh.write(json.dumps(row, sort_keys=True) + "\n")
+            for samp in raw.get("samples") or []:
+                row = dict(samp)
+                row["kind"] = "sample"
+                fh.write(json.dumps(row, sort_keys=True) + "\n")
+        return path
 
     def write_attempt_kvitto(
         self,
@@ -471,20 +520,26 @@ class LiveTrialDriver:
         ended_at: str,
         lock_owner: str,
         lock_issued: str,
+        gate_velocity: list[float] | None = None,
+        gate_cell: int | None = None,
+        gate_aim_hit: bool = False,
         astar_before: dict | None = None,
         astar_after: dict | None = None,
         astar_next_best: dict | None = None,
     ) -> dict:
+        if "off" not in self.last_stamps:
+            raise RuntimeError("OFF stamp not confirmed")
+        if "on" not in self.last_stamps:
+            raise RuntimeError(
+                "ON stamp not confirmed — refusing to invent observed from expected"
+            )
         off = dict(self.recipe["off"])
         on = on_expected(self.recipe)
-        obs_off = self.last_stamps.get("off", off)
-        obs_on = self.last_stamps.get("on", on)
-        cached_off = (self.astar_cache.get("off") or {}).get("path")
-        cached_on = (self.astar_cache.get("on") or {}).get("path")
-        cached_nb = (
-            (self.astar_cache.get("on") or self.astar_cache.get("off") or {}).get("next_best")
-        )
+        obs_off = self.last_stamps["off"]
+        obs_on = self.last_stamps["on"]
         empty = astar_path(found=False)
+        off_blob = self.astar_by.get((stratum_id, "off")) or {}
+        on_blob = self.astar_by.get((stratum_id, "on")) or {}
         doc = make_kvitto(
             riglock_owner=lock_owner,
             riglock_issued_at=lock_issued,
@@ -502,7 +557,7 @@ class LiveTrialDriver:
             stamps_off_expected=off,
             stamps_off_observed={k: obs_off[k] for k in off},
             stamps_on_expected=on,
-            stamps_on_observed={k: obs_on[k] for k in on} if all(k in obs_on for k in on) else on,
+            stamps_on_observed={k: obs_on[k] for k in on},
             stamps_undo_expected=off,
             stamps_undo_observed={k: obs_off[k] for k in off},
             recipe={
@@ -513,9 +568,12 @@ class LiveTrialDriver:
             seed=0,
             stratum={"id": stratum_id, "attempt": attempt_id},
             raw_pointer=raw_pointer,
-            astar_before=astar_before or cached_off or empty,
-            astar_after=astar_after or cached_on or empty,
-            astar_next_best=astar_next_best or cached_nb or empty,
+            astar_before=astar_before or off_blob.get("path") or empty,
+            astar_after=astar_after or on_blob.get("path") or empty,
+            astar_next_best=astar_next_best or on_blob.get("next_best") or off_blob.get("next_best") or empty,
+            gate_velocity=gate_velocity,
+            gate_cell=gate_cell,
+            gate_aim_hit=gate_aim_hit,
         )
         # Facit §1 "binärens SHA-256" = qwprogs.so (spellogik). mvdsv carried explicitly too.
         doc["binaries"] = {

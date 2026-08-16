@@ -79,6 +79,11 @@ HELDOUT_IDS = ("A1", "A2", "A3", "A4")
 FORBIDDEN_CTL = {27990, 27993}
 FORBIDDEN_GAME = {27540, 27570}
 PEAK_DROP = 150.0
+# Terra facit revision (ongoing): (i) "gate" = |vh| at west-shelf-gate;
+# (ii) "start" = |vh| at teleport start. Missing key is fail-closed.
+STRATUM_AT_GATE = "gate"
+STRATUM_AT_START = "start"
+STRATUM_AT_VALUES = {STRATUM_AT_GATE, STRATUM_AT_START}
 
 
 def vh(vel: Iterable[float]) -> float:
@@ -124,6 +129,32 @@ def stratum_ok(stratum_id: str, vel: Iterable[float], start: Iterable[float], go
     if dot < spec["dir_min"]:
         return False, f"direction dot {dot:.3f} < {spec['dir_min']}"
     return True, "ok"
+
+
+def heldout_stratum_at(gates: dict) -> tuple[str | None, str | None]:
+    """Return (locus, error). error is set when the gate file omits i|ii."""
+    v = gates.get("heldout_stratum_at")
+    if v is None:
+        ws = (gates.get("gates") or {}).get("west-shelf")
+        if isinstance(ws, dict):
+            v = ws.get("heldout_stratum_at")
+    if v is None:
+        return None, "heldout_stratum_at missing from gate file (facit i=gate|ii=start)"
+    if v not in STRATUM_AT_VALUES:
+        return None, f"heldout_stratum_at {v!r} not in {{gate, start}}"
+    return str(v), None
+
+
+def gate_passage(
+    gate: dict, *, gate_cell: int | None = None, origin: Iterable[float] | None = None
+) -> tuple[bool, str]:
+    """True if the bot hit a registered cell_id or a documented aim-point."""
+    cells = gate.get("cell_ids") or []
+    if isinstance(gate_cell, int) and gate_cell in cells:
+        return True, "cell"
+    if origin is not None and in_gate(gate, origin=origin, cell_id=None):
+        return True, "aim"
+    return False, "no gate_cell/aim hit at the gate"
 
 
 def in_gate(gate: dict, *, origin: Iterable[float] | None = None, cell_id: int | None = None) -> bool:

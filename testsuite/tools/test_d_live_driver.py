@@ -350,17 +350,21 @@ class KvittoTests(unittest.TestCase):
     def test_kvitto_carries_qwprogs_and_mvdsv(self):
         drv, ctl, _ = _driver()
         drv.confirm("off")
+        drv.apply()
+        drv.undo()
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "T0-OFF-01.json"
             doc = drv.write_attempt_kvitto(
                 path,
                 attempt_id="T0-OFF-01",
                 stratum_id="T0",
-                raw_pointer="roktest:T0-OFF-01",
+                raw_pointer=str(Path(td) / "T0-OFF-01.jsonl"),
                 started_at="2026-08-16T09:50:00+00:00",
                 ended_at="2026-08-16T09:50:02+00:00",
                 lock_owner="fable",
                 lock_issued="2026-08-16T08:40:06Z",
+                gate_velocity=None,
+                gate_cell=None,
             )
             self.assertEqual(doc["binary_sha256"], QW)
             self.assertEqual(doc["binaries"]["qwprogs_sha256"], QW)
@@ -373,12 +377,14 @@ class KvittoTests(unittest.TestCase):
     def test_kvitto_on_expected_from_fixture_not_observed_invention(self):
         drv, _, _ = _driver()
         drv.confirm("off")
+        drv.apply()
+        drv.undo()
         with tempfile.TemporaryDirectory() as td:
             doc = drv.write_attempt_kvitto(
                 Path(td) / "x.json",
                 attempt_id="T0-OFF-01",
                 stratum_id="T0",
-                raw_pointer="x",
+                raw_pointer=str(Path(td) / "x.jsonl"),
                 started_at="2026-08-16T09:50:00+00:00",
                 ended_at="2026-08-16T09:50:02+00:00",
                 lock_owner="fable",
@@ -389,6 +395,100 @@ class KvittoTests(unittest.TestCase):
                 doc["stamps"]["on"]["expected"]["graph_stamp"],
                 "17645347086516095554",
             )
+            self.assertEqual(doc["stamps"]["on"]["observed"]["cells"], 5981)
+
+    def test_kvitto_refuses_unconfirmed_on(self):
+        drv, _, _ = _driver()
+        drv.confirm("off")
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(RuntimeError) as ctx:
+                drv.write_attempt_kvitto(
+                    Path(td) / "x.json",
+                    attempt_id="T0-OFF-01",
+                    stratum_id="T0",
+                    raw_pointer=str(Path(td) / "x.jsonl"),
+                    started_at="2026-08-16T09:50:00+00:00",
+                    ended_at="2026-08-16T09:50:02+00:00",
+                    lock_owner="fable",
+                    lock_issued="2026-08-16T08:40:06Z",
+                )
+        self.assertIn("invent observed", str(ctx.exception))
+
+    def test_kvitto_carries_gate_and_jsonl_pointer(self):
+        drv, _, _ = _driver()
+        drv.confirm("off")
+        drv.apply()
+        drv.undo()
+        with tempfile.TemporaryDirectory() as td:
+            jsonl = Path(td) / "A1-ON-01.jsonl"
+            drv.write_attempt_raw(jsonl, {
+                "stratum_id": "A1",
+                "arm": "on",
+                "seq": 1,
+                "gate_velocity": [-130.0, 4.0, 0.0],
+                "gate_cell": 5979,
+                "events": [{"ev": "arrived", "t": 0.4}],
+                "samples": [{"t": 0.1, "z": 90.0, "on_ground": True}],
+            })
+            doc = drv.write_attempt_kvitto(
+                Path(td) / "A1-ON-01.json",
+                attempt_id="A1-ON-01",
+                stratum_id="A1",
+                raw_pointer=str(jsonl),
+                started_at="2026-08-16T09:50:00+00:00",
+                ended_at="2026-08-16T09:50:02+00:00",
+                lock_owner="fable",
+                lock_issued="2026-08-16T08:40:06Z",
+                gate_velocity=[-130.0, 4.0, 0.0],
+                gate_cell=5979,
+                gate_aim_hit=False,
+            )
+            self.assertEqual(doc["gate"]["velocity"], [-130.0, 4.0, 0.0])
+            self.assertEqual(doc["gate"]["cell"], 5979)
+            self.assertTrue(doc["raw_pointer"].endswith(".jsonl"))
+            self.assertIn("/", doc["raw_pointer"])
+            self.assertTrue(jsonl.is_file())
+            self.assertEqual(verify(doc), [])
+
+    def test_astar_keyed_by_stratum_not_stale(self):
+        drv, _, _ = _driver()
+        drv.confirm("off")
+        drv.apply()
+        drv.undo()
+        drv.snapshot_astar(STRATA["T0"], "T0")
+        with tempfile.TemporaryDirectory() as td:
+            doc = drv.write_attempt_kvitto(
+                Path(td) / "A1.json",
+                attempt_id="A1-OFF-01",
+                stratum_id="A1",
+                raw_pointer=str(Path(td) / "A1.jsonl"),
+                started_at="2026-08-16T09:50:00+00:00",
+                ended_at="2026-08-16T09:50:02+00:00",
+                lock_owner="fable",
+                lock_issued="2026-08-16T08:40:06Z",
+            )
+            self.assertFalse(doc["astar"]["before"]["found"])
+            drv.snapshot_astar(STRATA["A1"], "A1")
+            doc2 = drv.write_attempt_kvitto(
+                Path(td) / "A1b.json",
+                attempt_id="A1-OFF-01",
+                stratum_id="A1",
+                raw_pointer=str(Path(td) / "A1b.jsonl"),
+                started_at="2026-08-16T09:50:00+00:00",
+                ended_at="2026-08-16T09:50:02+00:00",
+                lock_owner="fable",
+                lock_issued="2026-08-16T08:40:06Z",
+            )
+            self.assertTrue(doc2["astar"]["before"]["found"])
+
+    def test_exec_trial_heldout_no_start_vel_fallback(self):
+        drv, ctl, _ = _driver()
+        spec = STRATA["A1"]
+        ctl.origin = list(spec["start"])
+        raw = drv.exec_trial(stratum_id="A1", arm="off", spec=spec, seq=1, window_s=0.3)
+        self.assertIsNone(raw["gate_velocity"])
+        self.assertIsNone(raw["vel"])
+        self.assertIsNotNone(raw["measured_vel"])
 
 
 class CellVerbTests(unittest.TestCase):
