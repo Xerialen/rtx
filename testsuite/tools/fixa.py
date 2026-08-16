@@ -63,10 +63,27 @@ def path_from_fixa(block: dict | None) -> dict:
     )
 
 
-def run_fixa(ctl, *, recipe_id: str, mode: str, from_cell: int | None, to_cell: int | None) -> dict:
+def lock_token_from_file(lock_path: Path) -> str:
+    body = lock_path.read_text(encoding="utf-8", errors="replace").strip()
+    if not body:
+        raise SystemExit(f"{lock_path} is empty")
+    return body.split()[0]
+
+
+def run_fixa(
+    ctl,
+    *,
+    recipe_id: str,
+    mode: str,
+    from_cell: int | None,
+    to_cell: int | None,
+    lock_token: str | None = None,
+) -> dict:
     cmd = f"fixa {recipe_id} {mode}"
     if from_cell is not None and to_cell is not None:
         cmd += f" {from_cell} {to_cell}"
+    if lock_token:
+        cmd += f" lock {lock_token}"
     return parse_fixa_reply(ctl.request(cmd)["data"])
 
 
@@ -174,6 +191,9 @@ def main(argv: list[str] | None = None) -> int:
     from runner.control import Control  # local import so unit tests can skip it
 
     started = datetime.now(timezone.utc).isoformat()
+    token = None
+    if mode_s in {"apply", "undo"}:
+        token = lock_token_from_file(args.lock)
     ctl = Control(args.host, args.port)
     try:
         reply = run_fixa(
@@ -182,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
             mode=mode_s,
             from_cell=args.from_cell,
             to_cell=args.to_cell,
+            lock_token=token,
         )
     finally:
         ctl.close()

@@ -51,6 +51,26 @@ class FixaTests(unittest.TestCase):
         fixa.run_fixa(ctl, recipe_id="west-shelf", mode="dry-run", from_cell=1, to_cell=2)
         self.assertEqual(ctl.cmds, ["fixa west-shelf dry-run 1 2"])
 
+    def test_apply_command_sends_lock_token(self):
+        ctl = FakeCtl({"outcome": "applied", "recipe": "west-shelf"})
+        fixa.run_fixa(
+            ctl,
+            recipe_id="west-shelf",
+            mode="apply",
+            from_cell=None,
+            to_cell=None,
+            lock_token="fable",
+        )
+        self.assertEqual(ctl.cmds, ["fixa west-shelf apply lock fable"])
+
+    def test_dry_run_command_omits_lock_token(self):
+        ctl = FakeCtl({"outcome": "dry_run_ok", "recipe": "west-shelf"})
+        fixa.run_fixa(
+            ctl, recipe_id="west-shelf", mode="dry-run", from_cell=None, to_cell=None
+        )
+        self.assertEqual(ctl.cmds, ["fixa west-shelf dry-run"])
+        self.assertNotIn("lock", ctl.cmds[0])
+
     def test_kvitto_uses_fixture_on_expected_not_observed(self):
         on = {
             **WEST_SHELF_OFF,

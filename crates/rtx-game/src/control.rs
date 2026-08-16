@@ -514,7 +514,13 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
         } => plant_link_resp(game, v3(from), v3(takeoff), v3(tgt), v_req, gain).map(Resp::PlanLink),
         Cmd::PlanCell { pos } => plant_cell_resp(game, v3(pos)).map(Resp::PlanCell),
         Cmd::PlanDrop { from, to } => plant_drop_resp(game, v3(from), v3(to)).map(Resp::PlanDrop),
-        Cmd::Fixa { recipe, mode, from, to } => do_fixa(game, recipe, mode, from, to),
+        Cmd::Fixa {
+            recipe,
+            mode,
+            from,
+            to,
+            lock_token,
+        } => do_fixa(game, recipe, mode, from, to, lock_token),
     };
     reply(game, conn, id, result);
 }
@@ -530,7 +536,9 @@ fn do_fixa(
     mode: String,
     from: Option<u32>,
     to: Option<u32>,
+    lock_token: String,
 ) -> Result<Resp, String> {
+    fixa_require_lock(&mode, &lock_token)?;
     let patch = crate::nav_patch::patch_by_name(&recipe)
         .ok_or_else(|| format!("unknown recipe {recipe:?}; only west-shelf is registered"))?;
     if patch.map != game.level.mapname {
@@ -540,6 +548,46 @@ fn do_fixa(
         "dry-run" => fixa_dry_run(game, patch, from, to),
         "apply" => fixa_apply(game, patch, from, to),
         "undo" => fixa_undo(game, patch),
+        other => Err(format!("fixa mode {other:?} (want dry-run|apply|undo)")),
+    }
+}
+
+/// `RTX_RIG_LOCK` overrides so tests never touch the live `~/lab/.rig-lock`.
+pub(crate) fn rig_lock_path() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("RTX_RIG_LOCK") {
+        if !p.is_empty() {
+            return std::path::PathBuf::from(p);
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    std::path::PathBuf::from(home).join("lab/.rig-lock")
+}
+
+/// Apply/undo require a token that matches `~/lab/.rig-lock` (full trimmed body or first
+/// field). Dry-run does not. This is the engine grind — Python-CLI is not enough.
+pub(crate) fn fixa_require_lock(mode: &str, token: &str) -> Result<(), String> {
+    fixa_require_lock_at(mode, token, &rig_lock_path())
+}
+
+pub(crate) fn fixa_require_lock_at(mode: &str, token: &str, path: &std::path::Path) -> Result<(), String> {
+    match mode {
+        "dry-run" => Ok(()),
+        "apply" | "undo" => {
+            let tok = token.trim();
+            if tok.is_empty() {
+                return Err("fixa apply/undo requires lock_token".into());
+            }
+            let body = std::fs::read_to_string(path).map_err(|_| format!("no rig-lock at {}", path.display()))?;
+            let body = body.trim();
+            if body.is_empty() {
+                return Err("rig-lock is empty".into());
+            }
+            let first = body.split_whitespace().next().unwrap_or("");
+            if tok != body && tok != first {
+                return Err("lock_token does not match rig-lock".into());
+            }
+            Ok(())
+        }
         other => Err(format!("fixa mode {other:?} (want dry-run|apply|undo)")),
     }
 }
@@ -2178,5 +2226,51 @@ mod tests {
         assert!(!valid_cvar_name("rtx; quit"));
         assert!(!valid_cvar_name(""));
         assert!(!valid_cvar_name("foo bar"));
+    }
+
+    fn write_tmp_lock(body: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "rtx-fixa-lock-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    #[test]
+    fn fixa_apply_without_token_fails() {
+        let p = write_tmp_lock("fable 1\n");
+        let err = fixa_require_lock_at("apply", "", &p).unwrap_err();
+        assert!(err.contains("requires lock_token"), "{err}");
+        let err = fixa_require_lock_at("undo", "   ", &p).unwrap_err();
+        assert!(err.contains("requires lock_token"), "{err}");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn fixa_apply_wrong_token_fails() {
+        let p = write_tmp_lock("fable 99\n");
+        let err = fixa_require_lock_at("apply", "not-the-lock", &p).unwrap_err();
+        assert!(err.contains("does not match"), "{err}");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn fixa_dry_run_does_not_require_token() {
+        let missing = std::env::temp_dir().join("rtx-fixa-lock-absent-dry-run");
+        let _ = std::fs::remove_file(&missing);
+        assert!(fixa_require_lock_at("dry-run", "", &missing).is_ok());
+        assert!(fixa_require_lock_at("dry-run", "anything", &missing).is_ok());
+    }
+
+    #[test]
+    fn fixa_apply_matching_token_ok() {
+        let p = write_tmp_lock("fable 42\n");
+        assert!(fixa_require_lock_at("apply", "fable", &p).is_ok());
+        assert!(fixa_require_lock_at("undo", "fable 42", &p).is_ok());
+        let _ = std::fs::remove_file(p);
     }
 }

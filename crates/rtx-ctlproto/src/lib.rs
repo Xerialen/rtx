@@ -152,6 +152,10 @@ pub enum Cmd {
         from: Option<u32>,
         #[serde(default)]
         to: Option<u32>,
+        /// Contents (or first token) of `~/lab/.rig-lock`. Required for apply/undo in the
+        /// engine; dry-run may be empty. Serde-default keeps old frames decoding.
+        #[serde(default)]
+        lock_token: String,
     },
     /// Dump the tail of a bot's `rtx_bot_debug` audit ring.
     Audit { bot: u32, lines: u32 },
@@ -1174,6 +1178,29 @@ mod tests {
                 from: None,
                 to: None,
                 mask_links: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn fixa_frame_without_lock_token_defaults_empty() {
+        #[derive(Serialize)]
+        enum OldFixa {
+            Fixa { recipe: String, mode: String },
+        }
+        let bytes = rmp_serde::to_vec_named(&OldFixa::Fixa {
+            recipe: "west-shelf".into(),
+            mode: "apply".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            rmp_serde::from_slice::<Cmd>(&bytes).unwrap(),
+            Cmd::Fixa {
+                recipe: "west-shelf".into(),
+                mode: "apply".into(),
+                from: None,
+                to: None,
+                lock_token: String::new(),
             }
         );
     }
