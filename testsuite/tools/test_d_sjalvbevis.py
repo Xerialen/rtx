@@ -162,6 +162,7 @@ class DrillTests(unittest.TestCase):
                     "vel": vel,
                     "events": [{"ev": "arrived"}],
                     "samples": [{"z": 90.0, "on_ground": True}, {"z": -16.0, "on_ground": True}],
+                    "t_arrive": 0.4,
                 }
             # heldout A*: heading toward goal
             start, goal = spec["start"], spec["goal"]
@@ -169,7 +170,12 @@ class DrillTests(unittest.TestCase):
             sign = -1.0 if goal[0] < start[0] else 1.0
             vel = [sign * mid, 0.0, 0.0]
             if arm == "on":
-                return {"vel": vel, "events": [{"ev": "arrived"}], "samples": [{"z": 0.0, "on_ground": True}]}
+                return {
+                    "vel": vel,
+                    "events": [{"ev": "arrived"}],
+                    "samples": [{"z": 0.0, "on_ground": True}],
+                    "t_arrive": 1.0,
+                }
             return {"vel": vel, "events": [], "samples": [{"z": 0.0, "on_ground": True}]}
 
         runner = drill.DrillRunner(
@@ -220,6 +226,52 @@ class DrillTests(unittest.TestCase):
 
 
 # keep the accidental alias unused
+class BudgetTests(unittest.TestCase):
+    def test_t0_late_arrived_is_not_a_hit(self):
+        gate = _gates()["gates"]["west-shelf"]
+        att = drill.classify_trial(
+            stratum_id="T0",
+            arm="on",
+            vel=[0, 0, 0],
+            events=[{"ev": "arrived"}],
+            samples=[{"z": -16.0, "on_ground": True}],
+            gate=gate,
+            t_arrive=2.0,
+        )
+        self.assertTrue(att.valid)
+        self.assertFalse(att.arrived)
+        self.assertIn("budget", att.reason)
+        self.assertFalse(drill.score_t0([att]))
+
+    def test_heldout_late_arrived_is_not_a_hit(self):
+        gate = _gates()["gates"]["west-shelf"]
+        att = drill.classify_trial(
+            stratum_id="A1",
+            arm="on",
+            vel=[-120.0, 0.0, 0.0],
+            events=[{"ev": "arrived"}],
+            samples=[{"z": 0.0, "on_ground": True}],
+            gate=gate,
+            t_arrive=30.0,
+        )
+        self.assertTrue(att.valid)
+        self.assertFalse(att.arrived)
+        self.assertIn("budget", att.reason)
+
+    def test_arrived_without_time_is_not_a_hit(self):
+        gate = _gates()["gates"]["west-shelf"]
+        att = drill.classify_trial(
+            stratum_id="T0",
+            arm="on",
+            vel=[0, 0, 0],
+            events=[{"ev": "arrived"}],
+            samples=[{"z": -16.0, "on_ground": True}],
+            gate=gate,
+        )
+        self.assertFalse(att.arrived)
+        self.assertIn("without time", att.reason)
+
+
 class _AliasGuard(unittest.TestCase):
     def test_import_real_module(self):
         self.assertTrue(hasattr(drill, "DrillRunner"))

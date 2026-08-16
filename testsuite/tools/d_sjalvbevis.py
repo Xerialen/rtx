@@ -118,6 +118,23 @@ def score_heldout(attempts: list[Attempt]) -> bool:
     return all(a.arrived and not a.fall and not a.trap for a in on)
 
 
+def arrived_in_budget(spec: dict, events: list[dict], t_arrive: float | None) -> tuple[bool, str]:
+    # Facit §3: arrived after budget_s is not a hit. Missing time cannot prove the budget.
+    if not any(e.get("ev") == "arrived" for e in events):
+        return False, "ok"
+    if t_arrive is None:
+        for e in events:
+            if e.get("ev") == "arrived":
+                t_arrive = e.get("t", e.get("rel_t"))
+                break
+    budget = float(spec["budget_s"])
+    if t_arrive is None:
+        return False, "arrived without time — cannot prove budget"
+    if float(t_arrive) > budget:
+        return False, f"arrived at {t_arrive}s > budget {budget}s"
+    return True, "ok"
+
+
 def classify_trial(
     *,
     stratum_id: str,
@@ -126,21 +143,22 @@ def classify_trial(
     events: list[dict],
     samples: list[dict],
     gate: dict,
+    t_arrive: float | None = None,
 ) -> Attempt:
     spec = STRATA[stratum_id]
     ok, why = stratum_ok(stratum_id, vel, spec["start"], spec["goal"])
     aid = f"{stratum_id}-{arm.upper()}"
     if not ok:
         return Attempt(aid, stratum_id, arm, False, why, events=events)
-    arrived = any(e.get("ev") == "arrived" for e in events)
-    trap = is_trap(events, gate, arrived_after_stall=arrived)
+    arrived, reason = arrived_in_budget(spec, events, t_arrive)
+    trap = is_trap(events, gate, arrived_after_stall=any(e.get("ev") == "arrived" for e in events))
     fall = False
     tracker = FallTracker()
     for s in samples:
         if tracker.update(float(s["z"]), bool(s.get("on_ground"))):
             fall = True
             break
-    return Attempt(aid, stratum_id, arm, True, "ok", trap=trap, fall=fall, arrived=arrived, events=events)
+    return Attempt(aid, stratum_id, arm, True, reason, trap=trap, fall=fall, arrived=arrived, events=events)
 
 
 class DrillRunner:
@@ -194,6 +212,7 @@ class DrillRunner:
             events=raw.get("events") or [],
             samples=raw.get("samples") or [],
             gate=self._gate(),
+            t_arrive=raw.get("t_arrive"),
         )
         att.attempt_id = f"{stratum_id}-{arm.upper()}-{seq:02d}"
         return att
