@@ -558,6 +558,14 @@ def _run_smoke(driver, lock: dict, args, ident: dict) -> int:
     spec = STRATA["T0"]
     rows = []
     started = _iso_now()
+    driver.start_demo(smoke=True, started_at=started)
+    try:
+        return _run_smoke_body(driver, args, ident, spec, rows, started)
+    finally:
+        driver.stop_demo()
+
+
+def _run_smoke_body(driver, args, ident: dict, spec: dict, rows: list, started: str) -> int:
     for i in range(1, max(1, args.n_smoke) + 1):
         t0 = _iso_now()
         raw = driver.exec_trial(
@@ -615,6 +623,7 @@ def _run_smoke(driver, lock: dict, args, ident: dict) -> int:
         "commit": driver.commit,
         "started_at": started,
         "ended_at": _iso_now(),
+        "demo_file": driver.demo_file,
     }
     text = json.dumps(payload, indent=2, sort_keys=True)
     if args.out:
@@ -624,6 +633,14 @@ def _run_smoke(driver, lock: dict, args, ident: dict) -> int:
 
 
 def _run_live(driver, recipe: dict, gates: dict, lock: dict, args) -> int:
+    driver.start_demo(smoke=False, started_at=_iso_now())
+    try:
+        return _run_live_body(driver, recipe, gates, lock, args)
+    finally:
+        driver.stop_demo()
+
+
+def _run_live_body(driver, recipe: dict, gates: dict, lock: dict, args) -> int:
     driver.measure_both_stamps()
     last: dict = {}
 
@@ -684,6 +701,7 @@ def _run_live(driver, recipe: dict, gates: dict, lock: dict, args) -> int:
         "mvdsv_sha256": driver.mvdsv_sha,
     }
     payload["stamps"] = driver.last_stamps
+    payload["demo_file"] = driver.demo_file
     text = json.dumps(payload, indent=2, sort_keys=True)
     if args.out:
         args.out.write_text(text + "\n", encoding="utf-8")

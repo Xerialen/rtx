@@ -244,6 +244,41 @@ class VerifyTests(unittest.TestCase):
         errs = verify(doc)
         self.assertTrue(any("gate.velocity" in e for e in errs), errs)
 
+    def test_demo_file_absent_is_ok(self):
+        doc = _valid()
+        self.assertNotIn("demo_file", doc)
+        self.assertEqual(verify(doc), [])
+
+    def test_demo_file_nonexistent_path_is_ok(self):
+        doc = _valid(demo_file="qw/demos/never-written-rotated.mvd")
+        self.assertFalse(Path("qw/demos/never-written-rotated.mvd").is_file())
+        self.assertEqual(verify(doc), [])
+        doc2 = _valid(
+            demo_file="/tmp/definitely-missing-d-demo-xyzzy.mvd"
+        )
+        self.assertFalse(Path(doc2["demo_file"]).exists())
+        self.assertEqual(verify(doc2), [])
+
+    def test_demo_file_empty_or_not_mvd_fails(self):
+        doc = _valid(demo_file="")
+        errs = verify(doc)
+        self.assertTrue(any("demo_file" in e for e in errs), errs)
+        doc = _valid()
+        doc["demo_file"] = "   "
+        errs = verify(doc)
+        self.assertTrue(any("demo_file" in e for e in errs), errs)
+        doc = _valid()
+        doc["demo_file"] = None
+        errs = verify(doc)
+        self.assertTrue(any("demo_file" in e for e in errs), errs)
+        doc = _valid()
+        doc["demo_file"] = 12
+        errs = verify(doc)
+        self.assertTrue(any("demo_file" in e for e in errs), errs)
+        doc = _valid(demo_file="qw/demos/foo.jsonl")
+        errs = verify(doc)
+        self.assertTrue(any(".mvd" in e for e in errs), errs)
+
 
 class TrapReproGuardTests(unittest.TestCase):
     def test_refuse_ra_port_before_connect(self):

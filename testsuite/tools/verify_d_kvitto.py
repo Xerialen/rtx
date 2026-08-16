@@ -241,6 +241,17 @@ def verify(doc: Any) -> list[str]:
             _astar_ok(astar.get("next_best"), "astar.next_best", errors)
             _next_best_masks_entire_chosen(astar, errors)
 
+    # Optional pointer. Shape only — never require the file to exist
+    # (demos rotate after 7 days; the receipt is permanent).
+    if "demo_file" in doc:
+        demo = doc.get("demo_file")
+        if not isinstance(demo, str) or not demo.strip():
+            errors.append("demo_file: must be a non-empty path string when present")
+        elif not demo.strip().lower().endswith(".mvd"):
+            errors.append(
+                f"demo_file: must look like a .mvd path, got {demo!r}"
+            )
+
     return errors
 
 

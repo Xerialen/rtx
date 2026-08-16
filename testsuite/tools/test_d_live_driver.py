@@ -21,6 +21,8 @@ from d_live_driver import (  # noqa: E402
     VEL_SAMPLE_S,
     LiveTrialDriver,
     annotate_event,
+    demo_relpath,
+    demo_stem,
     heading_vel,
     mid_band_speed,
     origin_vel,
@@ -215,6 +217,8 @@ class MockCtl:
             return {"ok": True, "data": {"string": "0"}}
         if verb == "set":
             return {"ok": True, "data": {}}
+        if verb == "runcmd":
+            return {"ok": True, "data": {"queued": True}}
         if verb == "route":
             return {
                 "ok": True,
@@ -760,6 +764,94 @@ class AnnotateTests(unittest.TestCase):
         self.assertIn("bot_stall", kinds)
         self.assertNotIn("pmove", kinds)
         self.assertNotIn("seat_heartbeat", kinds)
+
+
+class DemoRecordTests(unittest.TestCase):
+    def test_stem_is_commit8_and_utc_timestamp(self):
+        stem = demo_stem("d08f8e0deadbeef", "2026-08-16T14:30:22Z")
+        self.assertEqual(stem, "d08f8e0d_20260816T143022Z")
+        self.assertEqual(
+            demo_relpath(stem), "qw/demos/d08f8e0d_20260816T143022Z.mvd"
+        )
+        smoke = demo_stem(
+            "d08f8e0deadbeef", "2026-08-16T14:30:22+00:00", smoke=True
+        )
+        self.assertEqual(smoke, "d08f8e0d_20260816T143022Z_smoke")
+        short = demo_stem("abc", "2026-08-16T00:00:00Z")
+        self.assertEqual(short, "abc00000_20260816T000000Z")
+
+    def test_start_stop_uses_sv_demorecord_via_runcmd(self):
+        drv, ctl, _ = _driver()
+        with tempfile.TemporaryDirectory() as td:
+            drv.runtime_dir = Path(td)
+            path = drv.start_demo(started_at="2026-08-16T14:30:22Z")
+            self.assertTrue((Path(td) / "qw" / "demos").is_dir())
+        self.assertEqual(path, "qw/demos/d08f8e0d_20260816T143022Z.mvd")
+        self.assertEqual(drv.demo_file, path)
+        self.assertIn("set sv_demoDir demos", ctl.cmds)
+        rec = [c for c in ctl.cmds if c.startswith("runcmd ")]
+        self.assertEqual(rec, ["runcmd sv_demorecord d08f8e0d_20260816T143022Z"])
+        self.assertFalse(any(c == "runcmd stop" or c == "stop" for c in ctl.cmds))
+        drv.stop_demo()
+        self.assertIn("runcmd sv_demostop", ctl.cmds)
+        self.assertEqual(drv.demo_file, path)
+        self.assertIsNone(drv._demo_stem)
+        drv.stop_demo()
+        self.assertEqual(
+            [c for c in ctl.cmds if c == "runcmd sv_demostop"],
+            ["runcmd sv_demostop"],
+        )
+
+    def test_smoke_stem_suffix(self):
+        drv, ctl, _ = _driver()
+        with tempfile.TemporaryDirectory() as td:
+            drv.runtime_dir = Path(td)
+            path = drv.start_demo(smoke=True, started_at="2026-08-16T14:30:22Z")
+        self.assertEqual(path, "qw/demos/d08f8e0d_20260816T143022Z_smoke.mvd")
+        self.assertIn(
+            "runcmd sv_demorecord d08f8e0d_20260816T143022Z_smoke", ctl.cmds
+        )
+
+    def test_kvitto_carries_demo_file_even_if_missing_on_disk(self):
+        drv, _, _ = _driver()
+        drv.confirm("off")
+        drv.apply()
+        drv.undo()
+        drv.demo_file = "qw/demos/does-not-exist-anywhere.mvd"
+        with tempfile.TemporaryDirectory() as td:
+            doc = drv.write_attempt_kvitto(
+                Path(td) / "T0-OFF-01.json",
+                attempt_id="T0-OFF-01",
+                stratum_id="T0",
+                raw_pointer=str(Path(td) / "T0-OFF-01.jsonl"),
+                started_at="2026-08-16T09:50:00+00:00",
+                ended_at="2026-08-16T09:50:02+00:00",
+                lock_owner="fable",
+                lock_issued="2026-08-16T08:40:06Z",
+            )
+        self.assertEqual(doc["demo_file"], "qw/demos/does-not-exist-anywhere.mvd")
+        self.assertFalse(Path("qw/demos/does-not-exist-anywhere.mvd").exists())
+        self.assertEqual(verify(doc), [])
+
+    def test_kvitto_omits_demo_file_when_unset(self):
+        drv, _, _ = _driver()
+        drv.confirm("off")
+        drv.apply()
+        drv.undo()
+        self.assertIsNone(drv.demo_file)
+        with tempfile.TemporaryDirectory() as td:
+            doc = drv.write_attempt_kvitto(
+                Path(td) / "T0-OFF-01.json",
+                attempt_id="T0-OFF-01",
+                stratum_id="T0",
+                raw_pointer=str(Path(td) / "T0-OFF-01.jsonl"),
+                started_at="2026-08-16T09:50:00+00:00",
+                ended_at="2026-08-16T09:50:02+00:00",
+                lock_owner="fable",
+                lock_issued="2026-08-16T08:40:06Z",
+            )
+        self.assertNotIn("demo_file", doc)
+        self.assertEqual(verify(doc), [])
 
 
 if __name__ == "__main__":

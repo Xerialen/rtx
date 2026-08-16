@@ -108,9 +108,15 @@ def make_kvitto(
     gate_velocity: list[float] | None = None,
     gate_cell: int | None = None,
     gate_aim_hit: bool = False,
+    demo_file: str | None = None,
 ) -> dict[str, Any]:
-    """Assemble a §4-complete receipt. Missing kwargs are a TypeError (fail closed)."""
-    return {
+    """Assemble a §4-complete receipt. Missing kwargs are a TypeError (fail closed).
+
+    `demo_file` is an optional pointer to a server MVD (`qw/demos/….mvd`).
+    Omitted when None. Presence is not proof the file still exists — demos
+    rotate after 7 days; the receipt is permanent.
+    """
+    doc: dict[str, Any] = {
         "schema": SCHEMA,
         "riglock": {
             "owner": riglock_owner,
@@ -152,6 +158,9 @@ def make_kvitto(
             "next_best": dict(astar_next_best),
         },
     }
+    if demo_file is not None:
+        doc["demo_file"] = demo_file
+    return doc
 
 
 def write_kvitto(path: str | Path, doc: dict) -> None:

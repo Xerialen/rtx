@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -63,6 +64,42 @@ RESTART = (
     "$HOME/.local/share/qw-fasttrack/runtime-tbx-d/mvdsv -port 27592 "
     "+set rtx_nav_patch 0 +exec fasttrack.cfg"
 )
+
+# MVDSV 1.20-dev (runtime-tbx-d/mvdsv) records via console commands, not
+# sv_autorecord. Path format in the binary is %s/%s/%s.mvd =
+# gamedir / sv_demoDir / stem. We pin sv_demoDir=demos so the file is
+# qw/demos/{stem}.mvd under the runtime cwd. Use sv_demostop, never the
+# ctl verb `stop` (that stops the bot).
+DEMO_RELDIR = "qw/demos"
+DEMO_CMD_RECORD = "sv_demorecord"
+DEMO_CMD_STOP = "sv_demostop"
+_DEMO_STEM_OK = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def compact_demo_ts(iso_ts: str) -> str:
+    """2026-08-16T14:30:22Z / +00:00 → 20260816T143022Z."""
+    s = (iso_ts or "").strip()
+    if s.endswith("+00:00"):
+        s = s[:-6] + "Z"
+    s = s.replace("-", "").replace(":", "")
+    if not s.endswith("Z"):
+        s += "Z"
+    return s
+
+
+def demo_stem(commit: str, started_at: str, *, smoke: bool = False) -> str:
+    """{commit8}_{YYYYMMDDTHHMMSSZ}[_smoke] — no .mvd; MVDSV appends it."""
+    sha = re.sub(r"[^0-9a-fA-F]", "", commit or "")[:8]
+    if len(sha) < 8:
+        sha = (sha + "00000000")[:8]
+    stem = f"{sha.lower()}_{compact_demo_ts(started_at)}"
+    if smoke:
+        stem += "_smoke"
+    return _DEMO_STEM_OK.sub("", stem)
+
+
+def demo_relpath(stem: str) -> str:
+    return f"{DEMO_RELDIR}/{stem}.mvd"
 
 
 def file_sha256(path: Path) -> str:
@@ -172,6 +209,7 @@ class LiveTrialDriver:
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.monotonic,
         stratum_at: str | None = None,
+        runtime_dir: Path | None = None,
     ) -> None:
         why = refuse_ra(ctl_port, game_port)
         if why:
@@ -190,16 +228,46 @@ class LiveTrialDriver:
         self.sleep = sleep
         self.now = now
         self.stratum_at = stratum_at or gate.get("heldout_stratum_at")
+        self.runtime_dir = Path(runtime_dir) if runtime_dir else DEFAULT_MVDSV.parent
         self.arm = "off"
         self._ent: int | None = None
         self.last_stamps: dict[str, dict] = {}
         self.astar_by: dict[tuple[str, str], dict] = {}
         self.cmds: list[str] = []
         self._saved_cvars: dict[str, str | None] = {}
+        self.demo_file: str | None = None
+        self._demo_stem: str | None = None
 
     def request(self, cmd: str) -> dict:
         self.cmds.append(cmd)
         return self.ctl.request(cmd)
+
+    def start_demo(self, *, smoke: bool = False, started_at: str | None = None) -> str:
+        """One MVD per drill. Name {commit8}_{UTC}[_smoke].mvd under qw/demos/."""
+        if self._demo_stem:
+            self.stop_demo()
+        if started_at is None:
+            from datetime import datetime, timezone
+            started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stem = demo_stem(self.commit, started_at, smoke=smoke)
+        if not stem:
+            raise RuntimeError("demo stem empty")
+        (self.runtime_dir / "qw" / "demos").mkdir(parents=True, exist_ok=True)
+        # Pin dir so binary %s/%s/%s.mvd = qw/demos/{stem}.mvd.
+        self.request("set sv_demoDir demos")
+        self.request(f"runcmd {DEMO_CMD_RECORD} {stem}")
+        self._demo_stem = stem
+        self.demo_file = demo_relpath(stem)
+        return self.demo_file
+
+    def stop_demo(self) -> None:
+        """sv_demostop via runcmd. Keeps demo_file as a pointer after stop."""
+        if not self._demo_stem:
+            return
+        try:
+            self.request(f"runcmd {DEMO_CMD_STOP}")
+        finally:
+            self._demo_stem = None
 
     def wait_ready(self, timeout: float = 90.0) -> dict:
         deadline = self.now() + timeout
@@ -675,6 +743,7 @@ class LiveTrialDriver:
         astar_before: dict | None = None,
         astar_after: dict | None = None,
         astar_next_best: dict | None = None,
+        demo_file: str | None = None,
     ) -> dict:
         if "off" not in self.last_stamps:
             raise RuntimeError("OFF stamp not confirmed")
@@ -723,6 +792,7 @@ class LiveTrialDriver:
             gate_velocity=gate_velocity,
             gate_cell=gate_cell,
             gate_aim_hit=gate_aim_hit,
+            demo_file=self.demo_file if demo_file is None else demo_file,
         )
         # Facit §1 "binärens SHA-256" = qwprogs.so (spellogik). mvdsv carried explicitly too.
         doc["binaries"] = {
