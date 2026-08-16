@@ -1,0 +1,85 @@
+{
+  "recipe": "ram-prevent",
+  "graph_stamp": "906595427771298736",
+  "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+  "heldout_stratum_at": "start",
+  "t0_budget_s": 1.1,
+  "facit_sha256": "f65e6caee8cf1298ff58896aa55fbaca319d04767945050969d4e1506466e6ea",
+  "gates": {
+    "ram-prevent": {
+      "cell_ids": [
+        733,
+        734,
+        669,
+        670
+      ],
+      "cell_origins": [
+        [
+          -248.0,
+          -704.0,
+          152.0
+        ],
+        [
+          -248.0,
+          -672.0,
+          152.0
+        ],
+        [
+          -320.0,
+          -704.0,
+          -16.0
+        ],
+        [
+          -320.0,
+          -672.0,
+          -16.0
+        ]
+      ],
+      "drops": [
+        {
+          "from_cell": 733,
+          "to_cell": 669
+        },
+        {
+          "from_cell": 734,
+          "to_cell": 670
+        }
+      ],
+      "tolerance_xy": 24.0,
+      "tolerance_z": 16.0
+    }
+  },
+  "prevention": {
+    "start": {
+      "cell": 1372,
+      "origin": [
+        256.0,
+        -704.0,
+        328.0
+      ]
+    },
+    "goal": {
+      "cell": 403,
+      "aim": [
+        -593.0,
+        -677.0,
+        -16.0
+      ],
+      "origin": [
+        -608.0,
+        -672.0,
+        -16.0
+      ]
+    },
+    "P1": {
+      "vh_lo": 80.0,
+      "vh_hi": 160.0,
+      "n_pairs": 5
+    },
+    "P2": {
+      "vh_lo": 160.0,
+      "vh_hi": 260.0,
+      "n_pairs": 5
+    }
+  }
+}

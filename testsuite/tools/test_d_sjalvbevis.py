@@ -813,10 +813,10 @@ class Haz1462FixtureTests(unittest.TestCase):
             doc = load_recipe(here / f"{rid}.json")
             self.assertEqual(doc["id"], rid)
             self.assertEqual(doc["taxonomy_class"], "slapp_lank")
-            self.assertIsNone(doc["on_expected"])
-            with self.assertRaises(ValueError) as ctx:
-                on_expected(doc)
-            self.assertIn("ON expected missing", str(ctx.exception))
+            on = on_expected(doc)
+            self.assertEqual(on["cells"], 5977)
+            self.assertEqual(len(on["graph_content_hash"]), 64)
+            self.assertNotEqual(on["graph_content_hash"], WEST_SHELF_OFF["graph_content_hash"])
 
     def test_haz_gates_point_at_1462_geometry(self):
         gates = load_gates(Path(__file__).resolve().parent / "recept" / "haz1462-gates.json")
@@ -844,7 +844,6 @@ class Haz1462FixtureTests(unittest.TestCase):
             any("haz1462-k1" in r and "gate" in r for r in reasons),
             reasons,
         )
-        self.assertTrue(any("ON expected missing" in r for r in reasons), reasons)
         self.assertTrue(any("avsett_drop" in r for r in reasons), reasons)
 
     def test_unknown_recipe_id_refused(self):

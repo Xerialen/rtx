@@ -2,7 +2,7 @@
   "id": "haz1462-k3",
   "map": "dm3",
   "taxonomy_class": "slapp_lank",
-  "evidence": "HAZ-1462 k3: retype Walk 10447 (1416→1461, z=264) to Drop. Class is slapp_lank (fable-qa attested leave-link), not lagg_lank — Drop 10444 1416→1417 already exists; this is a kind-variant of the same slack walk, not a missing drop. Not ignorera_avsett (that class is scoring, not mesh mutation). Same-z Drop is the kantsemantikbyte. ON-expected null until pinning. deepseek-haz1462-diagnos.md; grok2-haz1462-diagnos-dom.md §4.",
+  "evidence": "HAZ-1462 k3: retype 10447 Walk\u2192Drop. Counts unchanged; niv\u00e5-1 FNV equals OFF; niv\u00e5-2 hash differs.",
   "off": {
     "cells": 5977,
     "links": 48207,
@@ -10,11 +10,47 @@
     "graph_stamp": "906595427771298736",
     "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"
   },
-  "on_expected": null,
-  "on_expected_note": "null until the pinning step measures live after-stamp. Never copy observed into expected.",
+  "on_expected": {
+    "cells": 5977,
+    "links": 48207,
+    "rj_links": 0,
+    "graph_stamp": "906595427771298736",
+    "graph_content_hash": "ab0974e0f2518b63d87f427143404b2b7f455d39a541b45a3f007518190be9a3"
+  },
+  "on_expected_note": "Pinned live. FNV equals OFF because counts are unchanged; graph_content_hash is the ON identity.",
+  "on_expected_provenance": {
+    "lock": "fable k-turnering+ram-pinning 2026-08-16T16:14:19Z tbx-d:27592/27996 tbx-d2:27593/27997 tbx-d3:27594/27998 tbx-d4:27595/27999 binar=56cc6b22",
+    "binary_sha256": "56cc6b22409f755b322a129c2bc0f97bf870f2af330488a2cf60b01ab6d79886",
+    "mvdsv_sha256": "858465007c7bea52c5c790cdfdd07c0d65cce17b48110b327595bb8c2e051f15",
+    "commit": "e967900",
+    "method": "fixa apply lock fable; live_identity; undo; OFF bit-identical",
+    "measured": "2026-08-16T16:20:00Z",
+    "unit": "tbx-d3:27594/27998"
+  },
+  "facit_sha256": "e9371c84bcb5755915b65225fe68d41c455a41b4b34e40da9ddd02ea88777afb",
   "retype_links": [
-    {"id": 10447, "from": 1416, "to": 1461, "old_kind": "walk", "new_kind": "drop"}
+    {
+      "id": 10447,
+      "from": 1416,
+      "to": 1461,
+      "old_kind": "walk",
+      "new_kind": "drop"
+    }
   ],
-  "source": {"cell": 1416, "origin": [288.0, -844.0, 264.0]},
-  "target": {"cell": 1461, "origin": [328.0, -800.0, 264.0]}
+  "source": {
+    "cell": 1416,
+    "origin": [
+      288.0,
+      -844.0,
+      264.0
+    ]
+  },
+  "target": {
+    "cell": 1461,
+    "origin": [
+      328.0,
+      -800.0,
+      264.0
+    ]
+  }
 }

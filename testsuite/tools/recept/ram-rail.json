@@ -2,7 +2,7 @@
   "id": "ram-rail",
   "map": "dm3",
   "taxonomy_class": "carve_origin",
-  "evidence": "dm3 west sliver at x=-360 z=128.03125 (floor 104): six indegree-0 rail cells, 32 u y-spacing y=-784..-624, each with exactly one Drop to the fixture-pinned floor [-352,-672,-16] (638-area; facit-ram-paket §1; deepseek-r2-geometriprov). Not west-shelf.",
+  "evidence": "Six indegree-0 rail cells + Drop each to 638. Pinned ON 5983/48213.",
   "off": {
     "cells": 5977,
     "links": 48207,
@@ -10,22 +10,162 @@
     "graph_stamp": "906595427771298736",
     "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"
   },
-  "on_expected": null,
-  "on_expected_note": "null until the pinning step measures live after-stamp. Never copy observed into expected.",
-  "cells": [
-    {"origin": [-360.0, -784.0, 128.03125]},
-    {"origin": [-360.0, -752.0, 128.03125]},
-    {"origin": [-360.0, -720.0, 128.03125]},
-    {"origin": [-360.0, -688.0, 128.03125]},
-    {"origin": [-360.0, -656.0, 128.03125]},
-    {"origin": [-360.0, -624.0, 128.03125]}
+  "on_expected": {
+    "cells": 5983,
+    "links": 48213,
+    "rj_links": 0,
+    "graph_stamp": "8774822664048001128",
+    "graph_content_hash": "9dbcc5fefce1e05650367be11189d645b565f7a2f8d10f7ad5234f5158fb9698"
+  },
+  "on_expected_note": "Pinned on dedicated instance from OFF base via fixa apply; never from a judged --run.",
+  "on_expected_provenance": {
+    "lock": "fable k-turnering+ram-pinning 2026-08-16T16:14:19Z tbx-d:27592/27996 tbx-d2:27593/27997 tbx-d3:27594/27998 tbx-d4:27595/27999 binar=56cc6b22",
+    "binary_sha256": "56cc6b22409f755b322a129c2bc0f97bf870f2af330488a2cf60b01ab6d79886",
+    "mvdsv_sha256": "858465007c7bea52c5c790cdfdd07c0d65cce17b48110b327595bb8c2e051f15",
+    "commit": "e967900",
+    "method": "fixa apply lock fable; live_identity; undo; OFF bit-identical",
+    "measured": "2026-08-16T16:20:00Z",
+    "unit": "tbx-d4:27595/27999"
+  },
+  "facit_sha256": "f65e6caee8cf1298ff58896aa55fbaca319d04767945050969d4e1506466e6ea",
+  "source": [
+    {
+      "cell": 5977,
+      "origin": [
+        -360.0,
+        -784.0,
+        128.03125
+      ]
+    },
+    {
+      "cell": 5978,
+      "origin": [
+        -360.0,
+        -752.0,
+        128.03125
+      ]
+    },
+    {
+      "cell": 5979,
+      "origin": [
+        -360.0,
+        -720.0,
+        128.03125
+      ]
+    },
+    {
+      "cell": 5980,
+      "origin": [
+        -360.0,
+        -688.0,
+        128.03125
+      ]
+    },
+    {
+      "cell": 5981,
+      "origin": [
+        -360.0,
+        -656.0,
+        128.03125
+      ]
+    },
+    {
+      "cell": 5982,
+      "origin": [
+        -360.0,
+        -624.0,
+        128.03125
+      ]
+    }
+  ],
+  "target": [
+    {
+      "cell": 638,
+      "origin": [
+        -352.0,
+        -672.0,
+        -16.0
+      ]
+    }
   ],
   "drops": [
-    {"from": [-360.0, -784.0, 128.03125], "to": [-352.0, -672.0, -16.0], "kind": "drop"},
-    {"from": [-360.0, -752.0, 128.03125], "to": [-352.0, -672.0, -16.0], "kind": "drop"},
-    {"from": [-360.0, -720.0, 128.03125], "to": [-352.0, -672.0, -16.0], "kind": "drop"},
-    {"from": [-360.0, -688.0, 128.03125], "to": [-352.0, -672.0, -16.0], "kind": "drop"},
-    {"from": [-360.0, -656.0, 128.03125], "to": [-352.0, -672.0, -16.0], "kind": "drop"},
-    {"from": [-360.0, -624.0, 128.03125], "to": [-352.0, -672.0, -16.0], "kind": "drop"}
+    {
+      "from": [
+        -360.0,
+        -784.0,
+        128.03125
+      ],
+      "to": [
+        -352.0,
+        -672.0,
+        -16.0
+      ],
+      "kind": "drop"
+    },
+    {
+      "from": [
+        -360.0,
+        -752.0,
+        128.03125
+      ],
+      "to": [
+        -352.0,
+        -672.0,
+        -16.0
+      ],
+      "kind": "drop"
+    },
+    {
+      "from": [
+        -360.0,
+        -720.0,
+        128.03125
+      ],
+      "to": [
+        -352.0,
+        -672.0,
+        -16.0
+      ],
+      "kind": "drop"
+    },
+    {
+      "from": [
+        -360.0,
+        -688.0,
+        128.03125
+      ],
+      "to": [
+        -352.0,
+        -672.0,
+        -16.0
+      ],
+      "kind": "drop"
+    },
+    {
+      "from": [
+        -360.0,
+        -656.0,
+        128.03125
+      ],
+      "to": [
+        -352.0,
+        -672.0,
+        -16.0
+      ],
+      "kind": "drop"
+    },
+    {
+      "from": [
+        -360.0,
+        -624.0,
+        128.03125
+      ],
+      "to": [
+        -352.0,
+        -672.0,
+        -16.0
+      ],
+      "kind": "drop"
+    }
   ]
 }
