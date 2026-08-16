@@ -584,6 +584,57 @@ impl NavGraph {
         self.push_link(link);
     }
 
+    /// Remove directed links by index. Unknown or duplicate ids fail closed and leave
+    /// the graph untouched. Adjacency and side-table tags are remapped so remaining
+    /// ids stay consistent (a hole is not left in `links`).
+    pub fn remove_links_by_id(&mut self, ids: &[u32]) -> Result<Vec<Link>, String> {
+        let n = self.links.len() as u32;
+        let mut seen = std::collections::BTreeSet::new();
+        for &id in ids {
+            if id >= n {
+                return Err(format!("unknown link id {id}"));
+            }
+            if !seen.insert(id) {
+                return Err(format!("duplicate link id {id}"));
+            }
+        }
+        let mut removed = Vec::with_capacity(seen.len());
+        let mut kept: Vec<Link> = Vec::with_capacity(self.links.len() - seen.len());
+        let mut old_to_new: Vec<Option<u32>> = vec![None; self.links.len()];
+        for (i, &link) in self.links.iter().enumerate() {
+            if seen.contains(&(i as u32)) {
+                removed.push(link);
+            } else {
+                old_to_new[i] = Some(kept.len() as u32);
+                kept.push(link);
+            }
+        }
+        self.links.clear();
+        for adj in &mut self.adjacency {
+            adj.clear();
+        }
+        for link in kept {
+            self.push_link(link);
+        }
+        self.gates.remap_after_remove(&old_to_new);
+        self.hooks.remap_after_remove(&old_to_new);
+        self.speed_jumps.remap_after_remove(&old_to_new);
+        self.rocket_jumps.remap_after_remove(&old_to_new);
+        self.plats.remap_after_remove(&old_to_new);
+        Ok(removed)
+    }
+
+    /// Change `links[id].kind`. Unknown id fails closed and leaves the graph untouched.
+    pub fn retype_link(&mut self, id: u32, new_kind: LinkKind) -> Result<LinkKind, String> {
+        let link = self
+            .links
+            .get_mut(id as usize)
+            .ok_or_else(|| format!("unknown link id {id}"))?;
+        let old = link.kind;
+        link.kind = new_kind;
+        Ok(old)
+    }
+
     /// Append a link that is *not* in the adjacency (pruned / T=0). Only for inventory-hash tests.
     pub fn insert_pruned_link(&mut self, link: Link) {
         self.links.push(link);
@@ -2586,17 +2637,9 @@ mod tests {
         let b = Vec3::new(-360.0, -752.0, 128.0);
 
         let mut wired = NavGraph::from_topology(&[], &[]);
-        wired
-            .plant_cell(&bsp, a)
-            .expect("rail slot a is standable");
-        let (_, wired_n) = wired
-            .plant_cell(&bsp, b)
-            .expect("rail slot b is standable");
-        let wired_walks = wired
-            .links
-            .iter()
-            .filter(|l| l.kind == LinkKind::Walk)
-            .count();
+        wired.plant_cell(&bsp, a).expect("rail slot a is standable");
+        let (_, wired_n) = wired.plant_cell(&bsp, b).expect("rail slot b is standable");
+        let wired_walks = wired.links.iter().filter(|l| l.kind == LinkKind::Walk).count();
         assert!(
             wired_n > 0 || wired_walks > 0,
             "plant_cell (live) must auto-Walk 32u same-z rail slots; \
@@ -2604,12 +2647,8 @@ mod tests {
         );
 
         let mut iso = NavGraph::from_topology(&[], &[]);
-        let (_, i0) = iso
-            .plant_cell_isolated(&bsp, a)
-            .expect("isolated a");
-        let (_, i1) = iso
-            .plant_cell_isolated(&bsp, b)
-            .expect("isolated b");
+        let (_, i0) = iso.plant_cell_isolated(&bsp, a).expect("isolated a");
+        let (_, i1) = iso.plant_cell_isolated(&bsp, b).expect("isolated b");
         assert_eq!(i0, 0, "isolated plant creates no neighbour links");
         assert_eq!(i1, 0, "isolated plant creates no neighbour links");
         assert!(

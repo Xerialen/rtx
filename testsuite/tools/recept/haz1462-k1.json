@@ -1,0 +1,20 @@
+{
+  "id": "haz1462-k1",
+  "map": "dm3",
+  "taxonomy_class": "slapp_lank",
+  "evidence": "HAZ-1462: Walk 10447 (1416[288,-844,264]→1461[328,-800,264]) is the attested leave-link (plan_fail empty; origin ≈[299,-818,264]; hull hangs ~16 u over lip y≈-816.5). Parallel Drop 10444→Walk 10453 exists. deepseek-haz1462-diagnos.md + grok2-haz1462-diagnos-dom.md. Remove only 10447; live-A* next high walk is 10446 (not the drop). ON-expected null until pinning.",
+  "off": {
+    "cells": 5977,
+    "links": 48207,
+    "rj_links": 0,
+    "graph_stamp": "906595427771298736",
+    "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"
+  },
+  "on_expected": null,
+  "on_expected_note": "null until the pinning step measures live after-stamp. Never copy observed into expected.",
+  "remove_links": [
+    {"id": 10447, "from": 1416, "to": 1461, "kind": "walk"}
+  ],
+  "source": {"cell": 1416, "origin": [288.0, -844.0, 264.0]},
+  "target": {"cell": 1461, "origin": [328.0, -800.0, 264.0]}
+}

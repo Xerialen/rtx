@@ -80,18 +80,49 @@ pub struct ShelfPatch {
     /// (ram-rail: slots are 32 u apart, inside the 48 u search). False for
     /// west-shelf, which must keep its Walk neighbours.
     pub no_auto_walk: bool,
+    /// Delete these existing edges (id + from/to/kind pin). Empty for plant recipes.
+    pub remove_links: &'static [RemoveLink],
+    /// Change kind on these existing edges (id + from/to/old/new pin). Empty for plant recipes.
+    pub retype_links: &'static [RetypeLink],
+}
+
+/// Fail-closed delete: id must exist *and* match from/to/kind, or apply is `Failed`.
+#[derive(Clone, Copy, Debug)]
+pub struct RemoveLink {
+    pub id: u32,
+    pub from: u32,
+    pub to: u32,
+    pub kind: LinkKind,
+}
+
+/// Fail-closed kind change: id must exist *and* match from/to/old_kind.
+#[derive(Clone, Copy, Debug)]
+pub struct RetypeLink {
+    pub id: u32,
+    pub from: u32,
+    pub to: u32,
+    pub old_kind: LinkKind,
+    pub new_kind: LinkKind,
 }
 
 /// Look up a table recipe by short name. Unknown names are a hard error for `fixa` — the table
 /// is the only apply path (no second planter). `apply_for_map` still walks only
 /// [`PATCHES`] (west-shelf default-on). Ram recipes are named-only (`fixa`).
 pub fn patch_by_name(name: &str) -> Option<&'static ShelfPatch> {
-    PATCHES.iter().chain(RAM_RECIPES.iter()).find(|p| p.name == name)
+    PATCHES
+        .iter()
+        .chain(RAM_RECIPES.iter())
+        .chain(HAZ1462_RECIPES.iter())
+        .find(|p| p.name == name)
 }
 
-/// Every named recipe `fixa` may apply (west-shelf + ram package).
+/// Every named recipe `fixa` may apply (west-shelf + ram + HAZ-1462 tournament).
 pub fn registered_recipe_names() -> impl Iterator<Item = &'static str> {
-    PATCHES.iter().chain(RAM_RECIPES.iter()).map(|p| p.name)
+    PATCHES
+        .iter()
+        .chain(RAM_RECIPES.iter())
+        .chain(HAZ1462_RECIPES.iter())
+        .map(|p| p.name)
 }
 
 /// Counts + both identity levels for a live graph. `graph_stamp` is the decimal string.
@@ -145,6 +176,8 @@ pub const PATCHES: &[ShelfPatch] = &[ShelfPatch {
     snap_z: 88.03125,
     pin: WEST_SHELF_PIN,
     no_auto_walk: false,
+    remove_links: &[],
+    retype_links: &[],
 }];
 
 /// Rail Y coordinates (facit-ram-paket §1). 32 u GRID, y=−784..−624.
@@ -175,6 +208,8 @@ pub const RAM_RAIL: ShelfPatch = ShelfPatch {
     snap_z: 128.03125,
     pin: WEST_SHELF_PIN,
     no_auto_walk: true,
+    remove_links: &[],
+    retype_links: &[],
 };
 
 /// Prevention Drops (trajektorieprov + grok-dom): 733→669 and 734→670.
@@ -190,10 +225,35 @@ pub const RAM_PREVENT: ShelfPatch = ShelfPatch {
     snap_z: 128.03125,
     pin: WEST_SHELF_PIN,
     no_auto_walk: false,
+    remove_links: &[],
+    retype_links: &[],
 };
 
 /// Ram package. Not walked by [`apply_for_map`].
 pub const RAM_RECIPES: &[ShelfPatch] = &[RAM_RAIL, RAM_PREVENT];
+
+/// HAZ-1462 k1: drop Walk 10447 (1416→1461). Attested leave-link
+/// (`deepseek-haz1462-diagnos.md`, grok2 JUSTERAS: next live walk is 10446).
+/// Named `fixa` only — never default-on. ON-expected is pinned later.
+pub const HAZ1462_K1: ShelfPatch = ShelfPatch {
+    map: "dm3",
+    name: "haz1462-k1",
+    cells: &[],
+    drops: &[],
+    snap_z: 264.0,
+    pin: WEST_SHELF_PIN,
+    no_auto_walk: false,
+    remove_links: &[RemoveLink {
+        id: 10447,
+        from: 1416,
+        to: 1461,
+        kind: LinkKind::Walk,
+    }],
+    retype_links: &[],
+};
+
+/// HAZ-1462 tournament recipes. Not walked by [`apply_for_map`].
+pub const HAZ1462_RECIPES: &[ShelfPatch] = &[HAZ1462_K1];
 
 /// Endpoint resolution bounds for a drop's `to` point — same rationale and values as the control
 /// channel's `PlanDrop`: a target with nothing near it must be an error, not a silent snap to
@@ -348,7 +408,10 @@ fn v(a: [f32; 3]) -> Vec3 {
     Vec3::new(a[0], a[1], a[2])
 }
 
-fn fully_meshed(patch: &ShelfPatch, graph: &NavGraph) -> bool {
+fn plant_fully_meshed(patch: &ShelfPatch, graph: &NavGraph) -> bool {
+    if patch.cells.is_empty() && patch.drops.is_empty() {
+        return true;
+    }
     patch
         .cells
         .iter()
@@ -365,6 +428,46 @@ fn fully_meshed(patch: &ShelfPatch, graph: &NavGraph) -> bool {
                 .iter()
                 .any(|l| l.from == from_cell && l.to == to_cell && l.kind == LinkKind::Drop)
         })
+}
+
+fn remove_edge_present(graph: &NavGraph, spec: &RemoveLink) -> bool {
+    graph
+        .links
+        .iter()
+        .any(|l| l.from == spec.from && l.to == spec.to && l.kind == spec.kind)
+}
+
+fn remove_has_conflict(graph: &NavGraph, spec: &RemoveLink) -> bool {
+    match graph.links.get(spec.id as usize) {
+        Some(l) if l.from == spec.from && l.to == spec.to && l.kind != spec.kind => true,
+        Some(l) if (l.from != spec.from || l.to != spec.to) && remove_edge_present(graph, spec) => true,
+        _ => false,
+    }
+}
+
+fn remove_fully_done(patch: &ShelfPatch, graph: &NavGraph) -> bool {
+    patch
+        .remove_links
+        .iter()
+        .all(|spec| !remove_has_conflict(graph, spec) && !remove_edge_present(graph, spec))
+}
+
+fn retype_fully_done(patch: &ShelfPatch, graph: &NavGraph) -> bool {
+    patch
+        .retype_links
+        .iter()
+        .all(|spec| match graph.links.get(spec.id as usize) {
+            Some(l) if l.from == spec.from && l.to == spec.to && l.kind == spec.new_kind => true,
+            _ => false,
+        })
+}
+
+fn fully_meshed(patch: &ShelfPatch, graph: &NavGraph) -> bool {
+    let has_edit = !patch.remove_links.is_empty() || !patch.retype_links.is_empty();
+    if has_edit {
+        return plant_fully_meshed(patch, graph) && remove_fully_done(patch, graph) && retype_fully_done(patch, graph);
+    }
+    plant_fully_meshed(patch, graph)
 }
 
 fn pin_matches(patch: &ShelfPatch, map: &str, graph: &NavGraph) -> Result<u64, String> {
@@ -528,13 +631,68 @@ fn apply_one(patch: &ShelfPatch, bsp: Option<&Bsp>, graph: &mut NavGraph) -> Out
         new_drops += 1;
     }
 
-    if new_cells == 0 && new_drops == 0 {
+    let mut n_removed = 0usize;
+    let mut to_remove: Vec<u32> = Vec::new();
+    for spec in patch.remove_links {
+        match graph.links.get(spec.id as usize) {
+            None => {
+                if graph
+                    .links
+                    .iter()
+                    .any(|l| l.from == spec.from && l.to == spec.to && l.kind == spec.kind)
+                {
+                    return Outcome::Failed(format!(
+                        "link {} missing but {}→{} {:?} exists at another id",
+                        spec.id, spec.from, spec.to, spec.kind
+                    ));
+                }
+            }
+            Some(l) if l.from == spec.from && l.to == spec.to && l.kind == spec.kind => {
+                to_remove.push(spec.id);
+            }
+            Some(l) => {
+                return Outcome::Failed(format!(
+                    "link {} is {}→{} {:?}, want {}→{} {:?}",
+                    spec.id, l.from, l.to, l.kind, spec.from, spec.to, spec.kind
+                ));
+            }
+        }
+    }
+    if !to_remove.is_empty() {
+        if let Err(why) = graph.remove_links_by_id(&to_remove) {
+            return Outcome::Failed(why);
+        }
+        n_removed = to_remove.len();
+    }
+
+    let mut n_retyped = 0usize;
+    for spec in patch.retype_links {
+        let Some(l) = graph.links.get(spec.id as usize).copied() else {
+            return Outcome::Failed(format!("unknown link id {}", spec.id));
+        };
+        if l.from == spec.from && l.to == spec.to && l.kind == spec.new_kind {
+            continue;
+        }
+        if l.from == spec.from && l.to == spec.to && l.kind == spec.old_kind {
+            if let Err(why) = graph.retype_link(spec.id, spec.new_kind) {
+                return Outcome::Failed(why);
+            }
+            n_retyped += 1;
+            continue;
+        }
+        return Outcome::Failed(format!(
+            "link {} is {}→{} {:?}, want {}→{} {:?}→{:?}",
+            spec.id, l.from, l.to, l.kind, spec.from, spec.to, spec.old_kind, spec.new_kind
+        ));
+    }
+
+    if new_cells == 0 && new_drops == 0 && n_removed == 0 && n_retyped == 0 {
         return Outcome::AlreadyMeshed;
     }
     let stamp_after = stamp_of(patch.map, graph);
     Outcome::Applied {
         cells: new_cells,
-        drops: new_drops,
+        drops: new_drops + n_removed + n_retyped,
         stamp_before,
         stamp_after,
     }
@@ -547,17 +705,18 @@ mod tests {
     /// The table is data reviewed by eye; these hold the invariants the apply loop assumes.
     #[test]
     fn table_is_well_formed() {
-        for p in PATCHES.iter().chain(RAM_RECIPES.iter()) {
+        for p in PATCHES.iter().chain(RAM_RECIPES.iter()).chain(HAZ1462_RECIPES.iter()) {
             assert!(!p.map.is_empty() && p.map == p.map.to_lowercase());
+            let link_edit = !p.remove_links.is_empty() || !p.retype_links.is_empty();
             assert!(
-                !p.drops.is_empty(),
+                !p.drops.is_empty() || link_edit,
                 "{}: a shelf with no way off is still a trap",
                 p.name
             );
-            if p.cells.is_empty() {
+            if p.cells.is_empty() && !link_edit {
                 // Link-only recipe (ram-prevent): drops start on already-carved cells.
                 assert_eq!(p.name, "ram-prevent");
-            } else {
+            } else if !p.cells.is_empty() {
                 for (from, _) in p.drops {
                     assert!(
                         p.cells.iter().any(|c| {
@@ -588,7 +747,15 @@ mod tests {
         assert!(patch_by_name("ram-rail").is_some());
         assert!(patch_by_name("ram-prevent").is_some());
         assert!(patch_by_name("west-shelf").is_some());
+        assert!(patch_by_name("haz1462-k1").is_some());
         assert!(patch_by_name("no-such").is_none());
+        assert_eq!(HAZ1462_K1.remove_links.len(), 1);
+        assert_eq!(HAZ1462_K1.remove_links[0].id, 10447);
+        assert_eq!(HAZ1462_K1.remove_links[0].from, 1416);
+        assert_eq!(HAZ1462_K1.remove_links[0].to, 1461);
+        assert_eq!(HAZ1462_K1.remove_links[0].kind, LinkKind::Walk);
+        assert!(HAZ1462_K1.retype_links.is_empty());
+        assert!(HAZ1462_K1.cells.is_empty() && HAZ1462_K1.drops.is_empty());
         assert!(RAM_RAIL.no_auto_walk, "ram-rail must not auto-Walk");
         assert!(!PATCHES[0].no_auto_walk, "west-shelf keeps auto-Walk");
         assert!(!RAM_PREVENT.no_auto_walk);
@@ -722,6 +889,8 @@ mod tests {
             snap_z: PATCHES[0].snap_z,
             pin: pin_for(graph),
             no_auto_walk: false,
+            remove_links: &[],
+            retype_links: &[],
         }
     }
 
@@ -906,6 +1075,8 @@ mod tests {
             snap_z: RAM_RAIL.snap_z,
             pin: pin_for(graph),
             no_auto_walk: true,
+            remove_links: &[],
+            retype_links: &[],
         }
     }
 
@@ -918,6 +1089,8 @@ mod tests {
             snap_z: RAM_PREVENT.snap_z,
             pin: pin_for(graph),
             no_auto_walk: false,
+            remove_links: &[],
+            retype_links: &[],
         }
     }
 
@@ -1105,6 +1278,242 @@ mod tests {
     fn apply_for_map_does_not_include_ram_recipes() {
         assert!(PATCHES.iter().all(|p| p.name == "west-shelf"));
         assert!(RAM_RECIPES.iter().all(|p| p.name.starts_with("ram-")));
+        assert!(HAZ1462_RECIPES.iter().all(|p| p.name.starts_with("haz1462-")));
+        assert!(PATCHES
+            .iter()
+            .all(|p| p.remove_links.is_empty() && p.retype_links.is_empty()));
+    }
+
+    /// 3 cells, 3 walks: 0→1, 0→2, 1→2. Remove/retype target id 1 (0→2).
+    fn edit_origins() -> Vec<Vec3> {
+        vec![
+            Vec3::new(288.0, -844.0, 264.0),
+            Vec3::new(328.0, -800.0, 264.0),
+            Vec3::new(320.0, -768.0, -16.0),
+        ]
+    }
+
+    fn edit_walks() -> Vec<Link> {
+        vec![
+            Link {
+                from: 0,
+                to: 1,
+                kind: LinkKind::Walk,
+                cost: 1.0,
+            },
+            Link {
+                from: 0,
+                to: 2,
+                kind: LinkKind::Walk,
+                cost: 1.0,
+            },
+            Link {
+                from: 1,
+                to: 2,
+                kind: LinkKind::Walk,
+                cost: 1.0,
+            },
+        ]
+    }
+
+    fn remove_patch(graph: &NavGraph, specs: &'static [RemoveLink]) -> ShelfPatch {
+        ShelfPatch {
+            map: "dm3",
+            name: "remove-fixture",
+            cells: &[],
+            drops: &[],
+            snap_z: 264.0,
+            pin: pin_for(graph),
+            no_auto_walk: false,
+            remove_links: specs,
+            retype_links: &[],
+        }
+    }
+
+    fn retype_patch(graph: &NavGraph, specs: &'static [RetypeLink]) -> ShelfPatch {
+        ShelfPatch {
+            map: "dm3",
+            name: "retype-fixture",
+            cells: &[],
+            drops: &[],
+            snap_z: 264.0,
+            pin: pin_for(graph),
+            no_auto_walk: false,
+            remove_links: &[],
+            retype_links: specs,
+        }
+    }
+
+    #[test]
+    fn remove_link_unknown_id_fails_closed() {
+        let mut g = NavGraph::from_topology(&edit_origins(), &edit_walks());
+        let before = g.clone();
+        static SPECS: [RemoveLink; 1] = [RemoveLink {
+            id: 99,
+            from: 0,
+            to: 2,
+            kind: LinkKind::Walk,
+        }];
+        let patch = remove_patch(&g, &SPECS);
+        match apply_one(&patch, None, &mut g) {
+            Outcome::Failed(why) => assert!(why.contains("unknown link id") || why.contains("99"), "{why}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn remove_link_wrong_kind_fails_closed() {
+        let mut g = NavGraph::from_topology(&edit_origins(), &edit_walks());
+        let before = g.clone();
+        static SPECS: [RemoveLink; 1] = [RemoveLink {
+            id: 1,
+            from: 0,
+            to: 2,
+            kind: LinkKind::Drop,
+        }];
+        let patch = remove_patch(&g, &SPECS);
+        match apply_one(&patch, None, &mut g) {
+            Outcome::Failed(why) => assert!(why.contains("want"), "{why}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn remove_link_stamp_mismatch_fails_closed() {
+        let mut g = NavGraph::from_topology(&edit_origins(), &edit_walks());
+        let before = g.clone();
+        static SPECS: [RemoveLink; 1] = [RemoveLink {
+            id: 1,
+            from: 0,
+            to: 2,
+            kind: LinkKind::Walk,
+        }];
+        let mut patch = remove_patch(&g, &SPECS);
+        patch.pin = WEST_SHELF_PIN;
+        match apply_one(&patch, None, &mut g) {
+            Outcome::Failed(why) => assert!(why.contains("stamp mismatch"), "{why}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn remove_link_undo_roundtrip_bit_identity() {
+        let mut g = NavGraph::from_topology(&edit_origins(), &edit_walks());
+        static SPECS: [RemoveLink; 1] = [RemoveLink {
+            id: 1,
+            from: 0,
+            to: 2,
+            kind: LinkKind::Walk,
+        }];
+        let patch = remove_patch(&g, &SPECS);
+        let before = g.clone();
+        let txn = apply_txn(&patch, None, &mut g).expect("remove apply");
+        assert_eq!(g.links.len(), 2);
+        assert!(!g.links.iter().any(|l| l.from == 0 && l.to == 2));
+        assert!(g.links.iter().any(|l| l.from == 0 && l.to == 1));
+        txn.unapply(&mut g);
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn remove_link_apply_then_reapply_is_already_meshed() {
+        let mut g = NavGraph::from_topology(&edit_origins(), &edit_walks());
+        static SPECS: [RemoveLink; 1] = [RemoveLink {
+            id: 1,
+            from: 0,
+            to: 2,
+            kind: LinkKind::Walk,
+        }];
+        let patch = remove_patch(&g, &SPECS);
+        apply_txn(&patch, None, &mut g).expect("first");
+        let after = g.clone();
+        match apply_one(&patch, None, &mut g) {
+            Outcome::AlreadyMeshed => {}
+            other => panic!("re-apply: {other:?}"),
+        }
+        assert!(topology_eq(&g, &after));
+    }
+
+    #[test]
+    fn retype_link_unknown_id_fails_closed() {
+        let mut g = NavGraph::from_topology(&edit_origins(), &edit_walks());
+        let before = g.clone();
+        static SPECS: [RetypeLink; 1] = [RetypeLink {
+            id: 99,
+            from: 0,
+            to: 2,
+            old_kind: LinkKind::Walk,
+            new_kind: LinkKind::Drop,
+        }];
+        let patch = retype_patch(&g, &SPECS);
+        match apply_one(&patch, None, &mut g) {
+            Outcome::Failed(why) => assert!(why.contains("unknown link id"), "{why}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn retype_link_wrong_kind_fails_closed() {
+        let mut g = NavGraph::from_topology(&edit_origins(), &edit_walks());
+        let before = g.clone();
+        static SPECS: [RetypeLink; 1] = [RetypeLink {
+            id: 1,
+            from: 0,
+            to: 2,
+            old_kind: LinkKind::Drop,
+            new_kind: LinkKind::JumpGap,
+        }];
+        let patch = retype_patch(&g, &SPECS);
+        match apply_one(&patch, None, &mut g) {
+            Outcome::Failed(why) => assert!(why.contains("want"), "{why}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn retype_link_undo_roundtrip_bit_identity() {
+        let mut g = NavGraph::from_topology(&edit_origins(), &edit_walks());
+        static SPECS: [RetypeLink; 1] = [RetypeLink {
+            id: 1,
+            from: 0,
+            to: 2,
+            old_kind: LinkKind::Walk,
+            new_kind: LinkKind::Drop,
+        }];
+        let patch = retype_patch(&g, &SPECS);
+        let before = g.clone();
+        let txn = apply_txn(&patch, None, &mut g).expect("retype apply");
+        assert_eq!(g.links.len(), before.links.len());
+        assert_eq!(g.links[1].kind, LinkKind::Drop);
+        assert_eq!(g.links[1].from, 0);
+        assert_eq!(g.links[1].to, 2);
+        txn.unapply(&mut g);
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn retype_link_apply_then_reapply_is_already_meshed() {
+        let mut g = NavGraph::from_topology(&edit_origins(), &edit_walks());
+        static SPECS: [RetypeLink; 1] = [RetypeLink {
+            id: 1,
+            from: 0,
+            to: 2,
+            old_kind: LinkKind::Walk,
+            new_kind: LinkKind::Drop,
+        }];
+        let patch = retype_patch(&g, &SPECS);
+        apply_txn(&patch, None, &mut g).expect("first");
+        let after = g.clone();
+        match apply_one(&patch, None, &mut g) {
+            Outcome::AlreadyMeshed => {}
+            other => panic!("re-apply: {other:?}"),
+        }
+        assert!(topology_eq(&g, &after));
     }
 
     fn load_dm3_bsp() -> Bsp {
@@ -1164,11 +1573,7 @@ mod tests {
         let patch = fixture_patch(&g);
         assert!(!patch.no_auto_walk);
         apply_txn(&patch, Some(&bsp), &mut g).expect("west-shelf live apply");
-        let walks = g
-            .links
-            .iter()
-            .filter(|l| l.kind == LinkKind::Walk)
-            .count();
+        let walks = g.links.iter().filter(|l| l.kind == LinkKind::Walk).count();
         assert!(
             walks > 0,
             "west-shelf plant_cell must still auto-Walk same-z shelf neighbours"
@@ -1179,9 +1584,10 @@ mod tests {
             .iter()
             .map(|&c| g.cell_within(v(c), ALREADY_XY, ALREADY_Z).expect("shelf cell"))
             .collect();
-        let inter_shelf_walk = g.links.iter().any(|l| {
-            l.kind == LinkKind::Walk && shelf_ids.contains(&l.from) && shelf_ids.contains(&l.to)
-        });
+        let inter_shelf_walk = g
+            .links
+            .iter()
+            .any(|l| l.kind == LinkKind::Walk && shelf_ids.contains(&l.from) && shelf_ids.contains(&l.to));
         assert!(
             inter_shelf_walk,
             "west-shelf cells must Walk to each other (flag must not leak)"
