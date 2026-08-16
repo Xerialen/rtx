@@ -142,11 +142,16 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(repro[0]["budget_s"], 25.0)
         self.assertEqual(repro[1]["budget_s"], 23.0)
         held = heldout_obligations(g)
-        self.assertEqual(len(held), 16)
+        # facit r2: 12 dests + 4 must-starters + separate 1461-1124 = 17
+        self.assertEqual(len(held), 17)
         sj = [h for h in held if h.get("require_speedjump")]
         self.assertEqual(len(sj), 1)
-        self.assertEqual(sj[0]["id"], "1416-1124")
+        self.assertEqual(sj[0]["id"], "1461-1124")
         self.assertEqual(sj[0]["speedjump"], SPEEDJUMP)
+        h1124 = next(h for h in held if h["id"] == "1416-1124")
+        self.assertFalse(h1124["require_speedjump"])
+        self.assertTrue(h1124["require_corridor"])
+        self.assertEqual(sorted(h1124["avsett_drop_cells"]), [1090, 1122, 1123])
 
     def test_k2_appendix_is_49(self):
         app = json.loads((HERE / "recept" / "haz1462-k2-appendix.json").read_text())
@@ -166,9 +171,19 @@ class ScoringTests(unittest.TestCase):
                 return _hearth_raw()
             raw = _clean_on()
             if sid == "1416-1124" and arm == "on":
+                # facit r2: the ACTUAL route is the drop corridor, attested
+                # by peak_drop_150 inside the pre-registered cells.
                 raw["astar_after"] = {
-                    "found": True, "cells": [1416, 1461, 1124],
-                    "links": [10447, SPEEDJUMP], "cost": 2.0, "mask_links": [],
+                    "found": True, "cells": [1416, 1122, 1124],
+                    "links": [9001, 9002], "cost": 1.4, "mask_links": [],
+                }
+                raw["events"] = list(raw.get("events") or []) + [
+                    {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
+                ]
+            if sid == "1461-1124" and arm == "on":
+                raw["astar_after"] = {
+                    "found": True, "cells": [1461, 1124],
+                    "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
                 }
             if arm == "on":
                 sel = list((raw.get("astar_after") or {}).get("links") or [])
@@ -278,14 +293,19 @@ class ScoringTests(unittest.TestCase):
         self.assertFalse(report.heldout_on_ok)
         self.assertTrue(any("10444" in a.reason for a in report.attempts if not a.valid))
 
-    def test_1124_without_34419_is_invalid(self):
+    def test_1461_1124_without_34419_is_invalid(self):
+        # facit r2: the SpeedJump attest lives on 1461-1124, not 1416-1124.
         def exec_trial(**k):
             if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
                 return _hearth_raw()
             raw = _clean_on()
             if k["stratum_id"] == "1416-1124":
+                raw["events"] = list(raw.get("events") or []) + [
+                    {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
+                ]
+            if k["stratum_id"] == "1461-1124":
                 raw["astar_after"] = {
-                    "found": True, "cells": [1416, 1124],
+                    "found": True, "cells": [1461, 1124],
                     "links": [1, 2], "cost": 1.0, "mask_links": [],
                 }
             return raw
@@ -302,7 +322,87 @@ class ScoringTests(unittest.TestCase):
         )
         runner.app_routes = []
         report = runner.run()
-        self.assertTrue(any("34419" in a.reason for a in report.attempts if not a.valid))
+        bad = [a for a in report.attempts if not a.valid and "34419" in a.reason]
+        self.assertTrue(bad)
+        self.assertTrue(all(a.route_id == "1461-1124" for a in bad))
+
+    def test_1416_1124_drop_route_passes_and_outside_corridor_fails(self):
+        # facit r2 live-shaped: the K1-R3B raw evidence (drop corridor
+        # 1122/1090/1123, arrive ~1.4 s) must PASS; a >150-drop outside the
+        # pre-registered corridor must FAIL the corridor attest.
+        def make_exec(outside: bool):
+            def exec_trial(**k):
+                if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
+                    return _hearth_raw()
+                raw = _clean_on()
+                if k["stratum_id"] == "1416-1124":
+                    cell = 671 if outside else 1122
+                    raw["events"] = list(raw.get("events") or []) + [
+                        {"ev": "peak_drop_150", "cell": cell,
+                         "origin": [64.0, -844.0, 60.0]},
+                    ]
+                if k["stratum_id"] == "1461-1124":
+                    raw["astar_after"] = {
+                        "found": True, "cells": [1461, 1124],
+                        "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
+                    }
+                return raw
+            return exec_trial
+
+        def run_with(outside: bool):
+            runner = TournamentRunner(
+                recipe=_recipe(),
+                gates=_gates(),
+                exec_trial=make_exec(outside),
+                ctl_port=0,
+                game_port=27592,
+                fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+                n_repro=1,
+                n_heldout=1,
+            )
+            runner.app_routes = []
+            return runner.run()
+
+        ok_report = run_with(outside=False)
+        r1124 = [a for a in ok_report.attempts if a.route_id == "1416-1124"]
+        self.assertTrue(all(a.valid for a in r1124), [a.reason for a in r1124])
+        bad_report = run_with(outside=True)
+        bad = [a for a in bad_report.attempts
+               if a.route_id == "1416-1124" and not a.valid]
+        self.assertTrue(bad)
+        self.assertIn("avsett_drop", bad[0].reason)
+
+    def test_campaign_off_hearth_survives_one_zero_route(self):
+        # facit r2: >=1 OFF hearth across the COMBINED campaign; a single
+        # stochastically zeroed route must not fail reproduction.
+        def exec_trial(**k):
+            if k["arm"] == "off" and k["stratum_id"] == "in_tunnel":
+                return _hearth_raw()
+            raw = _clean_on()
+            if k["stratum_id"] == "1416-1124":
+                raw["events"] = list(raw.get("events") or []) + [
+                    {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
+                ]
+            if k["stratum_id"] == "1461-1124":
+                raw["astar_after"] = {
+                    "found": True, "cells": [1461, 1124],
+                    "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
+                }
+            return raw
+
+        runner = TournamentRunner(
+            recipe=_recipe(),
+            gates=_gates(),
+            exec_trial=exec_trial,
+            ctl_port=0,
+            game_port=27592,
+            fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+            n_repro=1,
+            n_heldout=1,
+        )
+        runner.app_routes = []
+        report = runner.run()
+        self.assertTrue(report.repro_off_ok)
 
     def test_side_by_side_does_not_borrow(self):
         ok, _ = self._perfect("haz1462-k1")
@@ -428,9 +528,14 @@ class ScoringTests(unittest.TestCase):
                 return _hearth_raw()
             raw = _clean_on()
             if k["stratum_id"] == "1416-1124" and k["arm"] == "on":
+                # facit r2: drop-corridor route, corridor attested
+                raw["events"] = list(raw.get("events") or []) + [
+                    {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
+                ]
+            if k["stratum_id"] == "1461-1124" and k["arm"] == "on":
                 raw["astar_after"] = {
-                    "found": True, "cells": [1416, 1461, 1124],
-                    "links": [10447, SPEEDJUMP], "cost": 2.0, "mask_links": [],
+                    "found": True, "cells": [1461, 1124],
+                    "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
                 }
             sel = list((raw.get("astar_after") or {}).get("links") or [])
             raw["astar_next_best"] = {

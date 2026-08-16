@@ -4,7 +4,7 @@
   "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
   "heldout_stratum_at": "start",
   "t0_budget_s": 1.1,
-  "facit_sha256": "e9371c84bcb5755915b65225fe68d41c455a41b4b34e40da9ddd02ea88777afb",
+  "facit_sha256": "ce0e886e3dd49c52e935a36fbec700c1397d6249d95743f87b6ee2b252624649",
   "leave_link": 10447,
   "next_high_walk": 10446,
   "parallel_drop": 10444,
@@ -363,5 +363,51 @@
       "tolerance_xy": 24.0,
       "tolerance_z": 16.0
     }
-  }
+  },
+  "route_1124_avsett_drop": {
+    "cells": [
+      1122,
+      1090,
+      1123
+    ],
+    "origins": [
+      [
+        64.0,
+        -844.0,
+        8.0
+      ],
+      [
+        32.0,
+        -844.0,
+        152.0
+      ],
+      [
+        64.0,
+        -844.0,
+        168.0
+      ]
+    ],
+    "note": "pre-registered drop corridor for 1416-1124 actual route (facit r2; K1-R3B raw evidence)"
+  },
+  "sj_obligation": {
+    "id": "1461-1124",
+    "start": {
+      "cell": 1461,
+      "origin": [
+        328.0,
+        -800.0,
+        264.0
+      ]
+    },
+    "goal": {
+      "cell": 1124,
+      "origin": [
+        64.0,
+        -800.0,
+        -16.0
+      ]
+    },
+    "note": "separate mandatory SpeedJump 34419 obligation (facit r2)"
+  },
+  "reproduction_min_off_hearth_campaign": 1
 }

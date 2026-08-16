@@ -298,8 +298,37 @@ def heldout_obligations(gates: dict) -> list[dict]:
             "vh_lo": 80.0,
             "vh_hi": 160.0,
             "dir_min": 0.8,
-            "require_speedjump": cid == 1124,
+            # facit r2: 1416-1124 attests its ACTUAL pre-registered drop
+            # corridor; the SpeedJump attest lives on the separate
+            # 1461-1124 obligation below.
+            "require_speedjump": False,
             "speedjump": sj,
+            "avsett_drop_cells": (
+                [int(c) for c in (gates.get("route_1124_avsett_drop") or {}).get("cells") or []]
+                if cid == 1124 else []
+            ),
+            "require_corridor": cid == 1124,
+            "population": "kedjad",
+        })
+    sj_ob = gates.get("sj_obligation") or {}
+    if sj_ob:
+        src, tgt = sj_ob.get("start") or {}, sj_ob.get("goal") or {}
+        out.append({
+            "id": str(sj_ob.get("id") or "1461-1124"),
+            "kind": "heldout",
+            "start": list(src.get("origin") or []),
+            "goal": list(tgt.get("origin") or []),
+            "start_cell": src.get("cell"),
+            "goal_cell": tgt.get("cell"),
+            "budget_s": budget,
+            "n_pairs": n_pairs,
+            "vh_lo": 80.0,
+            "vh_hi": 160.0,
+            "dir_min": 0.8,
+            "require_speedjump": True,
+            "speedjump": sj,
+            "avsett_drop_cells": [],
+            "require_corridor": False,
             "population": "kedjad",
         })
     for ms in gates.get("must_starters") or []:
@@ -410,15 +439,19 @@ class TournamentReport:
 
 
 def score_reproduction(attempts: list[TAttempt], routes: list[dict]) -> tuple[bool, bool]:
-    off_ok = True
+    # facit r2: OFF needs >=1 hearth event across the COMBINED campaign
+    # (stochastic per-route zeros at N=75 are expected); ON stays 0/N per route.
     on_ok = True
+    route_ids = {spec["id"] for spec in routes}
+    campaign_offs = [
+        a for a in attempts
+        if a.route_id in route_ids and a.arm == "off" and a.valid
+    ]
+    off_ok = any(a.hearth for a in campaign_offs)
     for spec in routes:
         rid = spec["id"]
         n = int(spec["n_pairs"])
-        offs = [a for a in attempts if a.route_id == rid and a.arm == "off" and a.valid]
         ons = [a for a in attempts if a.route_id == rid and a.arm == "on" and a.valid]
-        if not any(a.hearth for a in offs):
-            off_ok = False
         if len(ons) != n:
             on_ok = False
             continue
@@ -538,8 +571,8 @@ class TournamentRunner:
             reasons.append(str(exc))
         if not self.repro or {s["id"] for s in self.repro} != {"in_vast", "in_tunnel"}:
             reasons.append("gates.reproduction missing in_vast/in_tunnel")
-        if len(self.heldout) != 16:
-            reasons.append(f"heldout obligations {len(self.heldout)} != 16")
+        if len(self.heldout) != 17:  # facit r2: 12 dests + 4 must-starters + 1461-1124
+            reasons.append(f"heldout obligations {len(self.heldout)} != 17")
         if not any(s.get("require_speedjump") for s in self.heldout):
             reasons.append("heldout missing 1416-1124 speedjump obligation")
         hearth = (self.gates.get("reproduction") or {}).get("hearth")
@@ -565,6 +598,30 @@ class TournamentRunner:
         sj_ok = True
         if spec.get("require_speedjump") and arm == "on":
             sj_ok = attests_speedjump(links, int(spec.get("speedjump") or SPEEDJUMP))
+        corridor_ok = True
+        if spec.get("require_corridor") and arm == "on":
+            # facit r2: attest the ACTUAL route — at least one peak_drop_150
+            # inside the pre-registered avsett_drop corridor, and none outside
+            # corridor ∪ {goal}. Drops there are intended, not falls.
+            allowed = set(int(c) for c in spec.get("avsett_drop_cells") or [])
+            goal_cell = spec.get("goal_cell")
+            if goal_cell is not None:
+                allowed_landing = allowed | {int(goal_cell)}
+            else:
+                allowed_landing = set(allowed)
+            drops = [
+                ev for ev in (raw.get("events") or [])
+                if ev.get("ev") == "peak_drop_150"
+            ]
+            in_corr = [
+                ev for ev in drops
+                if ev.get("cell") is not None and int(ev["cell"]) in allowed
+            ]
+            outside = [
+                ev for ev in drops
+                if ev.get("cell") is not None and int(ev["cell"]) not in allowed_landing
+            ]
+            corridor_ok = bool(in_corr) and not outside
         nb_ok = True
         cid = str(self.recipe.get("id") or "")
         nb_mask = astar_mask(nb)
@@ -593,7 +650,13 @@ class TournamentRunner:
             att.reason = raw.get("stamp_reason") or "start-vel stamp failed"
         if not sj_ok:
             att.valid = False
-            att.reason = f"1416-1124 must attest SpeedJump {SPEEDJUMP}"
+            att.reason = f"{spec['id']} must attest SpeedJump {int(spec.get('speedjump') or SPEEDJUMP)}"
+        elif not corridor_ok:
+            att.valid = False
+            att.reason = (
+                f"{spec['id']} must attest the pre-registered avsett_drop "
+                f"corridor {sorted(set(int(c) for c in spec.get('avsett_drop_cells') or []))}"
+            )
         elif not nb_ok:
             att.valid = False
             att.reason = next_best_fail_reason(
