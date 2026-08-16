@@ -13,6 +13,16 @@ from typing import Any
 
 SCHEMA = "verktygslada/d-kvitto/1"
 
+# Facit r2 arm profile: only these two cvars may differ OFF vs ON.
+CVAR_ARM_DIFF_OK = frozenset({"rtx_nav_patch", "rtx_r1_lite"})
+
+
+def recipe_cvars(recipe: dict | None) -> dict | None:
+    cv = (recipe or {}).get("cvars")
+    if isinstance(cv, dict) and isinstance(cv.get("off"), dict) and isinstance(cv.get("on"), dict):
+        return {"off": dict(cv["off"]), "on": dict(cv["on"])}
+    return None
+
 # Facit §1 OFF-bas. ON expected is *not* invented here — the fixture must
 # carry it before a live run (observed must never become its own expected).
 WEST_SHELF_OFF = {
@@ -114,6 +124,7 @@ def make_kvitto(
     landing_cell: int | None = None,
     selected_link: int | None = None,
     knockback: dict | None = None,
+    cvars: dict | None = None,
 ) -> dict[str, Any]:
     """Assemble a §4-complete receipt. Missing kwargs are a TypeError (fail closed).
 
@@ -175,6 +186,8 @@ def make_kvitto(
         doc["selected_link"] = int(selected_link)
     if knockback is not None:
         doc["knockback"] = dict(knockback)
+    if cvars is not None:
+        doc["cvars"] = dict(cvars)
     return doc
 
 

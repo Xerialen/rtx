@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 import json
 
-from d_kvitto import astar_from_route_resp, astar_path, make_kvitto, write_kvitto
+from d_kvitto import astar_from_route_resp, astar_path, make_kvitto, recipe_cvars, write_kvitto
 from d_recipe import on_expected
 from d_strata import (
     FORBIDDEN_CTL,
@@ -371,11 +371,14 @@ class LiveTrialDriver:
         d = self.request(cmd)["data"]
         if d.get("outcome") not in {"applied", "already_meshed"}:
             raise RuntimeError(f"fixa apply failed: {d}")
-        return self.confirm("on")
+        ident = self.confirm("on")
+        self._apply_arm_cvars("on")
+        return ident
 
     def undo(self) -> dict:
         if not self.lock_token:
             raise RuntimeError("fixa undo requires lock_token")
+        self._apply_arm_cvars("off")
         self.quiesce()
         rid = self.recipe.get("id") or "west-shelf"
         cmd = f"fixa {rid} undo lock {self.lock_token}"
@@ -387,11 +390,19 @@ class LiveTrialDriver:
             )
         return self.confirm("off")
 
+    def _apply_arm_cvars(self, want: str) -> None:
+        """rtx_r1_lite follows the recipe arm profile. Default off = no-op."""
+        cv = ((self.recipe.get("cvars") or {}).get(want) or {})
+        if "rtx_r1_lite" not in cv:
+            return
+        self.request(f"set rtx_r1_lite {cv['rtx_r1_lite']}")
+
     def ensure_arm(self, want: str) -> None:
         if want not in {"off", "on"}:
             raise ValueError(want)
         if self.arm == want:
             self.confirm(want)
+            self._apply_arm_cvars(want)
             return
         if want == "on":
             self.apply()
@@ -862,6 +873,7 @@ class LiveTrialDriver:
         landing_cell: int | None = None,
         selected_link: int | None = None,
         knockback: dict | None = None,
+        cvars: dict | None = None,
     ) -> dict:
         if "off" not in self.last_stamps:
             raise RuntimeError("OFF stamp not confirmed")
@@ -916,6 +928,7 @@ class LiveTrialDriver:
             landing_cell=landing_cell,
             selected_link=selected_link,
             knockback=knockback,
+            cvars=cvars if cvars is not None else recipe_cvars(self.recipe),
         )
         # Facit §1 "binärens SHA-256" = qwprogs.so (spellogik). mvdsv carried explicitly too.
         doc["binaries"] = {

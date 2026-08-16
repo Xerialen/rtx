@@ -288,6 +288,20 @@ def verify(doc: Any) -> list[str]:
             if t_land is not None and not isinstance(t_land, (int, float)):
                 errors.append("knockback.t_land: number or null (marknivåtid)")
 
+    if "cvars" in doc:
+        cv = doc.get("cvars")
+        if not isinstance(cv, dict) or not isinstance(cv.get("off"), dict) or not isinstance(cv.get("on"), dict):
+            errors.append("cvars: need off/on objects")
+        else:
+            allowed = {"rtx_nav_patch", "rtx_r1_lite"}
+            off_c, on_c = cv["off"], cv["on"]
+            keys = set(off_c) | set(on_c)
+            for k in keys:
+                if off_c.get(k) != on_c.get(k) and k not in allowed:
+                    errors.append(
+                        f"cvars: {k} differs between arms — only rtx_nav_patch and rtx_r1_lite may"
+                    )
+
     return errors
 
 

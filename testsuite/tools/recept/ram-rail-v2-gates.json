@@ -24,10 +24,11 @@
         [-288.0, -640.0, -16.0],
         [-288.0, -608.0, -16.0]
       ],
+      "drop_to_cells": [698, 699, 700, 702, 703, 704],
       "land": {
         "cell": 702,
         "origin": [-288.0, -672.0, -16.0],
-        "note": "Xerial path 1; zone covers the six east pads"
+        "note": "Xerial path 1; zone covers the six east pads (698-700,702-704)"
       },
       "land_zone": {
         "x": -288.0,

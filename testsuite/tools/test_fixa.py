@@ -41,11 +41,21 @@ class FixaTests(unittest.TestCase):
     def test_ram_rail_v2_drops_east_not_638(self):
         rec = load_recipe(Path(fixa.__file__).resolve().parent / "recept" / "ram-rail-v2.json")
         self.assertEqual(rec["id"], "ram-rail-v2")
-        self.assertIsNone(rec.get("on_expected"))
+        on = on_expected(rec)
+        self.assertEqual(on["cells"], 5983)
+        self.assertEqual(on["links"], 48213)
+        self.assertEqual(on["graph_stamp"], "8774822664048001128")
+        self.assertEqual(
+            on["graph_content_hash"],
+            "1d8df1d9fa4685554cb6ab55911276bf6b104bdeec025a3381c0261055edebf9",
+        )
         self.assertEqual(len(rec["drops"]), 6)
+        self.assertEqual([d["to_cell"] for d in rec["drops"]], [698, 699, 700, 702, 703, 704])
         for d in rec["drops"]:
             self.assertEqual(d["to"][0], -288.0)
             self.assertNotEqual(d["to"], [-352.0, -672.0, -16.0])
+        self.assertEqual(rec["cvars"]["off"]["rtx_r1_lite"], "0")
+        self.assertEqual(rec["cvars"]["on"]["rtx_r1_lite"], "1")
 
     def test_ra_port_refused(self):
         self.assertEqual(fixa.main(["--recept", "west-shelf", "--dry-run", "--port", "27990"]), 2)

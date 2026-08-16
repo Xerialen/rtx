@@ -2,7 +2,7 @@
   "id": "ram-rail-v2",
   "map": "dm3",
   "taxonomy_class": "carve_origin",
-  "evidence": "Six indegree-0 rail cells + Drop each east to the 670/702-line (Xerial path 1: takeoff (-352,-687) land (-291,-685)), not 638. on_expected null until pinning.",
+  "evidence": "Six indegree-0 rail cells + Drop each east to the 670/702-line (Xerial path 1: takeoff (-352,-687) land (-291,-685)), not 638.",
   "off": {
     "cells": 5977,
     "links": 48207,
@@ -10,9 +10,31 @@
     "graph_stamp": "906595427771298736",
     "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"
   },
-  "on_expected": null,
-  "on_expected_note": "Pin on dedicated tbx-d4 after deepseek+grok2; never invent from observed.",
+  "on_expected": {
+    "cells": 5983,
+    "links": 48213,
+    "rj_links": 0,
+    "graph_stamp": "8774822664048001128",
+    "graph_content_hash": "1d8df1d9fa4685554cb6ab55911276bf6b104bdeec025a3381c0261055edebf9"
+  },
+  "on_expected_note": "Pinned on tbx-d4 from OFF base via fixa apply; never from a judged --run. Counts match v1 (same FNV); nivå-2 distinguishes east drops.",
+  "on_expected_provenance": {
+    "lock": "fable k-turnering-domda-korningar 2026-08-16T16:57:27Z tbx-d:27592/27996 tbx-d2:27593/27997 tbx-d3:27594/27998 tbx-d4:27595/27999 binar=56cc6b22",
+    "binary_sha256": "849afa9e5ea2d032aab70bc40550fbf3c3d8c86019ca25d1f0506705890476eb",
+    "binary_note": "tbx-d4 qwprogs = bb1ece6 (R1-lite built in, cvar default off)",
+    "mvdsv_sha256": "858465007c7bea52c5c790cdfdd07c0d65cce17b48110b327595bb8c2e051f15",
+    "commit": "bb1ece6",
+    "method": "fixa ram-rail-v2 apply lock fable; live_identity; undo; OFF bit-identical",
+    "measured": "2026-08-16T18:47:00Z",
+    "unit": "tbx-d4:27595/27999",
+    "rail_cells": [5977, 5978, 5979, 5980, 5981, 5982],
+    "land_cells": [698, 699, 700, 702, 703, 704]
+  },
   "facit_sha256": "988a4f77db8c8aa72df0e7387c603d22cf9cef8dc740b982300c8e6d38afbe8b",
+  "cvars": {
+    "off": {"rtx_nav_patch": "0", "rtx_r1_lite": "0"},
+    "on": {"rtx_nav_patch": "1", "rtx_r1_lite": "1"}
+  },
   "source": [
     {"cell": 5977, "origin": [-360.0, -784.0, 128.03125]},
     {"cell": 5978, "origin": [-360.0, -752.0, 128.03125]},
@@ -22,19 +44,19 @@
     {"cell": 5982, "origin": [-360.0, -624.0, 128.03125]}
   ],
   "target": [
-    {"origin": [-288.0, -800.0, -16.0]},
-    {"origin": [-288.0, -768.0, -16.0]},
-    {"origin": [-288.0, -736.0, -16.0]},
-    {"origin": [-288.0, -672.0, -16.0], "note": "702 — Xerial path 1 landing (-291,-685)"},
-    {"origin": [-288.0, -640.0, -16.0]},
-    {"origin": [-288.0, -608.0, -16.0]}
+    {"cell": 698, "origin": [-288.0, -800.0, -16.0]},
+    {"cell": 699, "origin": [-288.0, -768.0, -16.0]},
+    {"cell": 700, "origin": [-288.0, -736.0, -16.0]},
+    {"cell": 702, "origin": [-288.0, -672.0, -16.0], "note": "Xerial path 1 landing (-291,-685)"},
+    {"cell": 703, "origin": [-288.0, -640.0, -16.0]},
+    {"cell": 704, "origin": [-288.0, -608.0, -16.0]}
   ],
   "drops": [
-    {"from": [-360.0, -784.0, 128.03125], "to": [-288.0, -800.0, -16.0], "kind": "drop"},
-    {"from": [-360.0, -752.0, 128.03125], "to": [-288.0, -768.0, -16.0], "kind": "drop"},
-    {"from": [-360.0, -720.0, 128.03125], "to": [-288.0, -736.0, -16.0], "kind": "drop"},
-    {"from": [-360.0, -688.0, 128.03125], "to": [-288.0, -672.0, -16.0], "kind": "drop"},
-    {"from": [-360.0, -656.0, 128.03125], "to": [-288.0, -640.0, -16.0], "kind": "drop"},
-    {"from": [-360.0, -624.0, 128.03125], "to": [-288.0, -608.0, -16.0], "kind": "drop"}
+    {"from": [-360.0, -784.0, 128.03125], "to": [-288.0, -800.0, -16.0], "kind": "drop", "to_cell": 698},
+    {"from": [-360.0, -752.0, 128.03125], "to": [-288.0, -768.0, -16.0], "kind": "drop", "to_cell": 699},
+    {"from": [-360.0, -720.0, 128.03125], "to": [-288.0, -736.0, -16.0], "kind": "drop", "to_cell": 700},
+    {"from": [-360.0, -688.0, 128.03125], "to": [-288.0, -672.0, -16.0], "kind": "drop", "to_cell": 702},
+    {"from": [-360.0, -656.0, 128.03125], "to": [-288.0, -640.0, -16.0], "kind": "drop", "to_cell": 703},
+    {"from": [-360.0, -624.0, 128.03125], "to": [-288.0, -608.0, -16.0], "kind": "drop", "to_cell": 704}
   ]
 }

@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from d_kvitto import astar_path, make_kvitto, write_kvitto  # noqa: E402
+from d_kvitto import astar_path, make_kvitto, recipe_cvars, write_kvitto  # noqa: E402
 from d_recipe import load_recipe, on_expected  # noqa: E402
 from d_strata import FORBIDDEN_CTL, FORBIDDEN_GAME, pair_start_vel_ok  # noqa: E402
 
@@ -404,6 +404,7 @@ class RamRunner:
             landing_cell=int(landing) if isinstance(landing, int) else None,
             selected_link=int(selected) if isinstance(selected, int) else None,
             knockback=kb if isinstance(kb, dict) else None,
+            cvars=recipe_cvars(self.recipe),
         )
         doc["binaries"] = {"qwprogs_sha256": qw, "mvdsv_sha256": mv}
         write_kvitto(path, doc)
@@ -641,6 +642,7 @@ def main(argv: list[str] | None = None) -> int:
                 landing_cell=raw.get("landing_cell"),
                 selected_link=raw.get("selected_link"),
                 knockback=kb,
+                cvars=recipe_cvars(recipe),
             )
 
         runner = RamRunner(

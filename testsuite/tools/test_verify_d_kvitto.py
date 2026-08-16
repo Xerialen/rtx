@@ -307,6 +307,19 @@ class VerifyTests(unittest.TestCase):
         self.assertTrue(any("incoming_velocity" in e for e in errs), errs)
         self.assertTrue(any("land_hit" in e for e in errs), errs)
 
+    def test_cvars_only_nav_and_r1_may_differ(self):
+        ok = {
+            "off": {"rtx_nav_patch": "0", "rtx_r1_lite": "0"},
+            "on": {"rtx_nav_patch": "1", "rtx_r1_lite": "1"},
+        }
+        self.assertEqual(verify(_valid(cvars=ok)), [])
+        bad = {
+            "off": {"rtx_nav_patch": "0", "rtx_r1_lite": "0", "sv_maxspeed": "320"},
+            "on": {"rtx_nav_patch": "1", "rtx_r1_lite": "1", "sv_maxspeed": "400"},
+        }
+        errs = verify(_valid(cvars=bad))
+        self.assertTrue(any("sv_maxspeed" in e for e in errs), errs)
+
 
 class TrapReproGuardTests(unittest.TestCase):
     def test_refuse_ra_port_before_connect(self):
