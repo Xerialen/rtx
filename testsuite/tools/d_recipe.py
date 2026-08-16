@@ -124,8 +124,13 @@ def gates_registered(
     return None
 
 
-def avsett_drop_registered(geom: dict[str, Any], off_stamp: str, off_hash: str | None = None) -> str | None:
-    """Return an invalidity reason, or None if the A1/A2 pin is complete."""
+def avsett_drop_registered(
+    geom: dict[str, Any],
+    off_stamp: str,
+    off_hash: str | None = None,
+    recipe_id: str = "west-shelf",
+) -> str | None:
+    """Return an invalidity reason, or None if the intended-drop pin is complete."""
     if not isinstance(geom, dict) or not geom:
         return "avsett_drop fixture missing (facit r3 §3)"
     if geom.get("graph_stamp") != off_stamp:
@@ -148,6 +153,9 @@ def avsett_drop_registered(geom: dict[str, Any], off_stamp: str, off_hash: str |
         if k not in corridor:
             return f"avsett_drop corridor missing {k}"
     applies = set(geom.get("applies_to") or [])
-    if applies != {"A1", "A2"}:
+    if recipe_id in {"ram-rail", "ram-rail-v2", "ram-prevent"}:
+        if not applies & {"H1", "H2", "P1", "P2"}:
+            return "ram avsett_drop must apply to H1/H2 (and P1/P2)"
+    elif applies != {"A1", "A2"}:
         return "avsett_drop must apply to A1/A2 only"
     return None

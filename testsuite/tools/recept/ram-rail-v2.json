@@ -30,7 +30,7 @@
     "rail_cells": [5977, 5978, 5979, 5980, 5981, 5982],
     "land_cells": [698, 699, 700, 702, 703, 704]
   },
-  "facit_sha256": "988a4f77db8c8aa72df0e7387c603d22cf9cef8dc740b982300c8e6d38afbe8b",
+  "facit_sha256": "a017cbe36cca43f643b0ddc0b3da866cb074f39c7bd9eccebf29523aa1cb156d",
   "cvars": {
     "off": {"rtx_nav_patch": "0", "rtx_r1_lite": "0"},
     "on": {"rtx_nav_patch": "1", "rtx_r1_lite": "1"}

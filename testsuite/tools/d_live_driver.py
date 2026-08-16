@@ -738,12 +738,25 @@ class LiveTrialDriver:
                     "z": o[2],
                     "cell": self.cell_at(o),
                 })
-            if (
+            zone = (self.gate or {}).get("knockback_zone") or {}
+            in_union = False
+            if zone.get("cells") or zone.get("union"):
+                u = zone.get("union") or {}
+                try:
+                    in_union = (
+                        abs(o[0] - float(u.get("x", -288.0))) <= float(u.get("x_tol", 32.0))
+                        and float(u.get("y_lo", -816.0)) <= o[1] <= float(u.get("y_hi", -592.0))
+                        and abs(o[2] - float(u.get("z", -16.0))) <= float(u.get("z_tol", 24.0))
+                    )
+                except (TypeError, ValueError):
+                    in_union = False
+            elif (
                 abs(o[0] - land[0]) <= 32.0
                 and abs(o[1] - land[1]) <= 32.0
                 and abs(o[2] - land[2]) <= 24.0
-                and on_ground
             ):
+                in_union = True
+            if in_union and on_ground:
                 land_hit = True
                 if t_arrive is None:
                     t_arrive = t

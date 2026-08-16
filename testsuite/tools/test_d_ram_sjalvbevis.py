@@ -11,17 +11,59 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from d_ram_sjalvbevis import RamRunner, knockback_points, sha256_file  # noqa: E402
+from d_ram_sjalvbevis import (  # noqa: E402
+    EAST_FLOOR_CELLS,
+    RamRunner,
+    attribute_pair,
+    knockback_points,
+    knockback_zone,
+    raw_from_jsonl,
+    score_knockback_raw,
+    sha256_file,
+)
 from d_recipe import load_recipe  # noqa: E402
 from verify_d_kvitto import verify  # noqa: E402
+
+LAB = Path.home() / "lab" / "ram-v2-sjalvbevis"
+TD = HERE / "testdata" / "ram-v3"
 
 
 def _rail_gates():
     return json.loads((HERE / "recept" / "ram-rail-gates.json").read_text(encoding="utf-8"))
 
 
+def _rail_v2_gates():
+    return json.loads((HERE / "recept" / "ram-rail-v2-gates.json").read_text(encoding="utf-8"))
+
+
 def _prevent_gates():
     return json.loads((HERE / "recept" / "ram-prevent-gates.json").read_text(encoding="utf-8"))
+
+
+def _live_jsonl(stem: str) -> Path:
+    for p in (LAB / f"{stem}.jsonl", TD / f"{stem}.jsonl"):
+        if p.is_file():
+            return p
+    raise FileNotFoundError(stem)
+
+
+def _live_astar(stem: str) -> dict:
+    lab = LAB / f"{stem}.json"
+    if lab.is_file():
+        return json.loads(lab.read_text(encoding="utf-8"))
+    td = TD / f"{stem}.astar.json"
+    return json.loads(td.read_text(encoding="utf-8"))
+
+
+def _inject_astar(raw: dict, rec: dict) -> dict:
+    ast = rec.get("astar") or rec
+    out = dict(raw)
+    out["astar_before"] = ast.get("before") or {}
+    out["astar_after"] = ast.get("after") or {}
+    out["astar_next_best"] = ast.get("next_best") or {}
+    if rec.get("landing_cell") is not None:
+        out["landing_cell"] = rec["landing_cell"]
+    return out
 
 
 class KnockbackLoaderTests(unittest.TestCase):
@@ -253,6 +295,146 @@ class RamKvittoTests(unittest.TestCase):
             doc = json.loads(files[0].read_text(encoding="utf-8"))
             self.assertEqual(verify(doc), [])
             self.assertIn(doc["knockback"]["point"], {"K1", "K2", "K3", "K4", "K5", "K6"})
+
+
+class RamR3ZoneTests(unittest.TestCase):
+    def test_gates_knockback_zone_is_union_698_704(self):
+        for gates in (_rail_gates(), _rail_v2_gates()):
+            zone = knockback_zone(gates)
+            cells = list(zone["cells"])
+            self.assertEqual(cells, [698, 699, 700, 701, 702, 703, 704], cells)
+            self.assertEqual(len(cells), 7)
+            self.assertIn(701, cells)
+            u = zone["union"]
+            self.assertEqual(u["x"], -288.0)
+            self.assertGreaterEqual(u["x_tol"], 32.0)
+            self.assertLessEqual(u["y_lo"], -800.0)
+            self.assertGreaterEqual(u["y_hi"], -608.0)
+
+    def test_k3_k4_k6_live_land_hit_and_idle(self):
+        zone = knockback_zone(_rail_v2_gates())
+        want_cell = {
+            "K3-ON-01": 699,
+            "K3-ON-02": 699,
+            "K4-ON-01": 704,
+            "K6-ON-01": 703,
+        }
+        for stem, cell in want_cell.items():
+            raw = raw_from_jsonl(_live_jsonl(stem))
+            scored = score_knockback_raw(raw, zone, 2.0)
+            self.assertTrue(scored["land_hit"], (stem, scored))
+            self.assertTrue(scored["post_recovery_idle"], (stem, scored))
+            self.assertFalse(scored["stall"], (stem, scored))
+            self.assertEqual(scored["landing_cell"], cell, stem)
+            self.assertIn(scored["landing_cell"], EAST_FLOOR_CELLS)
+
+    def test_stall_before_land_is_still_fail(self):
+        zone = knockback_zone(_rail_v2_gates())
+        raw = {
+            "events": [
+                {
+                    "ev": "bot_stall",
+                    "t": 0.2,
+                    "cell": 5979,
+                    "origin": [-360.0, -720.0, 128.03125],
+                    "speed": 0.0,
+                }
+            ],
+            "samples": [],
+            "t_stall_gate": 0.2,
+        }
+        scored = score_knockback_raw(raw, zone, 2.0)
+        self.assertFalse(scored["land_hit"], scored)
+        self.assertTrue(scored["stall"], scored)
+        self.assertFalse(scored["post_recovery_idle"], scored)
+
+
+class RamR3AttributionTests(unittest.TestCase):
+    def _h2_pair(self):
+        off_raw = _inject_astar(raw_from_jsonl(_live_jsonl("H2-OFF-04")), _live_astar("H2-OFF-04"))
+        on_raw = _inject_astar(raw_from_jsonl(_live_jsonl("H2-ON-04")), _live_astar("H2-ON-04"))
+        return off_raw, on_raw
+
+    def test_h2_off_pattern_emits_hazard_post(self):
+        off_raw, on_raw = self._h2_pair()
+        gates = _prevent_gates()
+        result = attribute_pair(
+            off_raw,
+            on_raw,
+            stratum="H2",
+            off_id="H2-OFF-04",
+            on_id="H2-ON-04",
+            recipe=load_recipe(HERE / "recept" / "ram-prevent.json"),
+            avsett=gates["avsett_drop"],
+            clusters=gates["baseline_clusters"],
+            off_receipt=_live_astar("H2-OFF-04"),
+            on_receipt=_live_astar("H2-ON-04"),
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(all(result["legs"].values()), result["legs"])
+        self.assertEqual(result["post"]["kind"], "preexisting_hazard")
+        self.assertEqual(result["post"]["off_attempt"], "H2-OFF-04")
+        self.assertEqual(result["post"]["on_attempt"], "H2-ON-04")
+        self.assertIn("bot_stall", result["post"]["event_signature"])
+
+    def test_h2_off_pattern_scorer_counts(self):
+        off_raw, on_raw = self._h2_pair()
+
+        def kb(**k):
+            return _kb(**k)
+
+        def trial(**k):
+            sid = k.get("stratum_id")
+            arm = k.get("arm")
+            if sid == "H2":
+                return off_raw if arm == "off" else on_raw
+            return _trial(**k)
+
+        runner = RamRunner(
+            recipe=load_recipe(HERE / "recept" / "ram-prevent.json"),
+            rail_gates=_rail_gates(),
+            prevent_gates=_prevent_gates(),
+            exec_knockback=kb,
+            exec_trial=trial,
+            ctl_port=0,
+            game_port=27595,
+            n_knock=0,
+            n_chain=1,
+        )
+        report = runner.run()
+        d = report.as_dict()
+        held = d["heldout"]
+        self.assertGreaterEqual(held["attempted"], 1)
+        self.assertGreaterEqual(held["preexisting_hazards"], 1, d)
+        self.assertEqual(held["non_attributed_failures"], 0, held)
+        self.assertTrue(held["on_ok"], held)
+        posts = d["preexisting_hazard_posts"]
+        self.assertTrue(posts, "H2-OFF pattern must emit a preexisting_hazard post")
+        self.assertTrue(any(p.get("kind") == "preexisting_hazard" and p.get("stratum") == "H2" for p in posts), posts)
+        self.assertIn("attempted", d["prevention"])
+        self.assertIn("eligible", d["prevention"])
+        self.assertIn("preexisting_hazards", d["prevention"])
+        self.assertIn("non_attributed_failures", d["prevention"])
+
+    def test_missing_m1_stays_failure(self):
+        off_raw, on_raw = self._h2_pair()
+        gates = _prevent_gates()
+        result = attribute_pair(
+            off_raw,
+            on_raw,
+            stratum="H2",
+            off_id="H2-OFF-04",
+            on_id="H2-ON-04",
+            recipe=load_recipe(HERE / "recept" / "ram-prevent.json"),
+            avsett=gates["avsett_drop"],
+            clusters=[],
+            off_receipt=_live_astar("H2-OFF-04"),
+            on_receipt=_live_astar("H2-ON-04"),
+        )
+        self.assertFalse(result["ok"], result)
+        self.assertFalse(result["legs"]["m1"])
+        self.assertEqual(result["post"]["kind"], "preexisting_hazard")
+        self.assertFalse(result["post"]["attributed"])
 
 
 if __name__ == "__main__":

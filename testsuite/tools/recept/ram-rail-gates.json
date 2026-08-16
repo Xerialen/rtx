@@ -4,7 +4,7 @@
   "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
   "heldout_stratum_at": "start",
   "t0_budget_s": 1.1,
-  "facit_sha256": "f65e6caee8cf1298ff58896aa55fbaca319d04767945050969d4e1506466e6ea",
+  "facit_sha256": "a017cbe36cca43f643b0ddc0b3da866cb074f39c7bd9eccebf29523aa1cb156d",
   "gates": {
     "ram-rail": {
       "cell_ids": [
@@ -62,6 +62,27 @@
           -672.0,
           -16.0
         ]
+      },
+      "knockback_zone": {
+        "cells": [698, 699, 700, 701, 702, 703, 704],
+        "origins": [
+          [-288.0, -800.0, -16.0],
+          [-288.0, -768.0, -16.0],
+          [-288.0, -736.0, -16.0],
+          [-288.0, -704.0, -16.0],
+          [-288.0, -672.0, -16.0],
+          [-288.0, -640.0, -16.0],
+          [-288.0, -608.0, -16.0]
+        ],
+        "union": {
+          "x": -288.0,
+          "x_tol": 32.0,
+          "y_lo": -816.0,
+          "y_hi": -592.0,
+          "z": -16.0,
+          "z_tol": 24.0
+        },
+        "note": "r3: union of stamped east-floor cells 698-704 (32-u steps), not per-slot circles"
       },
       "tolerance_xy": 24.0,
       "tolerance_z": 16.0

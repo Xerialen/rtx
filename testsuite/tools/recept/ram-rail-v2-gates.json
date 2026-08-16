@@ -3,7 +3,7 @@
   "graph_stamp": "906595427771298736",
   "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
   "heldout_stratum_at": "start",
-  "facit_sha256": "988a4f77db8c8aa72df0e7387c603d22cf9cef8dc740b982300c8e6d38afbe8b",
+  "facit_sha256": "a017cbe36cca43f643b0ddc0b3da866cb074f39c7bd9eccebf29523aa1cb156d",
   "recovery": "r1-lite",
   "gates": {
     "ram-rail-v2": {
@@ -28,15 +28,28 @@
       "land": {
         "cell": 702,
         "origin": [-288.0, -672.0, -16.0],
-        "note": "Xerial path 1; zone covers the six east pads (698-700,702-704)"
+        "note": "Xerial path 1; r3 knockback zone is the 698-704 union, not this slot"
       },
-      "land_zone": {
-        "x": -288.0,
-        "x_tol": 32.0,
-        "y_lo": -816.0,
-        "y_hi": -592.0,
-        "z": -16.0,
-        "z_tol": 24.0
+      "knockback_zone": {
+        "cells": [698, 699, 700, 701, 702, 703, 704],
+        "origins": [
+          [-288.0, -800.0, -16.0],
+          [-288.0, -768.0, -16.0],
+          [-288.0, -736.0, -16.0],
+          [-288.0, -704.0, -16.0],
+          [-288.0, -672.0, -16.0],
+          [-288.0, -640.0, -16.0],
+          [-288.0, -608.0, -16.0]
+        ],
+        "union": {
+          "x": -288.0,
+          "x_tol": 32.0,
+          "y_lo": -816.0,
+          "y_hi": -592.0,
+          "z": -16.0,
+          "z_tol": 24.0
+        },
+        "note": "r3: union of stamped east-floor cells 698-704 (includes 701), not per-slot circles"
       },
       "tolerance_xy": 24.0,
       "tolerance_z": 16.0
@@ -50,5 +63,37 @@
     {"id": "K5", "y": -656.0, "cell": 5981, "velocity": [0.0, -60.0, 40.0], "budget_s": 2.0},
     {"id": "K6", "y": -624.0, "cell": 5982, "velocity": [0.0, -100.0, 40.0], "budget_s": 2.0}
   ],
-  "n_pairs": 2
+  "n_pairs": 2,
+  "avsett_drop": {
+    "id": "ram-h12-avsett-drop",
+    "recipe": "ram-rail-v2",
+    "applies_to": ["H1", "H2"],
+    "route_id": "ut-vast-z328-to-z-16",
+    "graph_stamp": "906595427771298736",
+    "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+    "source": {"cell": 1372, "origin": [256.0, -704.0, 328.0]},
+    "target": {"cell": 403, "origin": [-608.0, -672.0, -16.0], "strata_goal": [-593.0, -677.0, -16.0]},
+    "drop_cells": [671, 666, 638],
+    "landing_cells": [638, 670],
+    "corridor": {
+      "xmin": -400.0,
+      "xmax": -200.0,
+      "ymin": -900.0,
+      "ymax": -500.0,
+      "zmin": 50.0,
+      "zmax": 376.0,
+      "note": "airborne z=328→-16 descent; floor stalls (z≈-16) are outside"
+    }
+  },
+  "baseline_clusters": [
+    {
+      "id": "RAM-HS-P2H2",
+      "class": "ut_vast_high_peak_drop_stall",
+      "population": "kedjad",
+      "cell": 704,
+      "origin": [-280.0, -624.0, -16.0],
+      "source": "facit-ram-paket-r3 §R3; P2/H2 recurrence (r2 P2-OFF-01/P2-ON-01; v2 H2-OFF-04)",
+      "pre_recipe": true
+    }
+  ]
 }
