@@ -16,15 +16,19 @@ sys.path.insert(0, str(HERE.parent))
 
 from d_kvitto import WEST_SHELF_OFF  # noqa: E402
 from d_live_driver import (  # noqa: E402
+    VEL_ALIGN,
+    VEL_SAMPLE_S,
     LiveTrialDriver,
     annotate_event,
     heading_vel,
     mid_band_speed,
+    origin_vel,
     refuse_ra,
+    vel_components_within,
 )
 from d_recipe import load_gates, load_recipe, on_expected  # noqa: E402
 from d_sjalvbevis import classify_trial  # noqa: E402
-from d_strata import STRATA, direction_dot, vh  # noqa: E402
+from d_strata import STRATA, direction_dot, pair_start_vel_ok, vh  # noqa: E402
 from verify_d_kvitto import verify  # noqa: E402
 
 
@@ -60,6 +64,8 @@ class MockCtl:
         self.emit_after_goto: list[dict] = []
         self.drop_after_goto = False
         self._goto = False
+        self._need_first_sample = False
+        self.ignore_integrate = 0
         recipe = load_recipe(HERE / "recept" / "west-shelf.json")
         self.off = dict(recipe["off"])
         self.on = on_expected(recipe)
@@ -79,13 +85,17 @@ class MockCtl:
         parts = cmd.split()
         verb = parts[0]
         if verb == "status":
-            if self._goto and self.vel != [0.0, 0.0, 0.0]:
-                dt = 0.05
+            if self.ignore_integrate > 0:
+                self.ignore_integrate -= 1
+                self._need_first_sample = True
+            if self.vel != [0.0, 0.0, 0.0] and not self._need_first_sample:
+                dt = 0.04
                 self.origin = [
                     self.origin[0] + self.vel[0] * dt,
                     self.origin[1] + self.vel[1] * dt,
                     self.origin[2] + self.vel[2] * dt,
                 ]
+            self._need_first_sample = False
             if self._goto and self.drop_after_goto:
                 self.origin = [self.origin[0], self.origin[1], self.origin[2] - 80.0]
                 self.on_ground = False
@@ -135,6 +145,7 @@ class MockCtl:
             if len(parts) >= 8:
                 self.vel = [float(parts[5]), float(parts[6]), float(parts[7])]
             self.on_ground = True
+            self._need_first_sample = True
             return {"ok": True, "data": {}}
         if verb == "goto":
             self._goto = True
@@ -142,6 +153,8 @@ class MockCtl:
             return {"ok": True, "data": {}}
         if verb == "stop":
             self._goto = False
+            return {"ok": True, "data": {}}
+        if verb == "hold":
             return {"ok": True, "data": {}}
         if verb == "cell":
             if len(parts) >= 2 and parts[1] == "id":
@@ -236,10 +249,11 @@ class SequenceTests(unittest.TestCase):
         spec = STRATA["T0"]
         raw = drv.exec_trial(stratum_id="T0", arm="off", spec=spec, seq=1, window_s=2.0)
         tele = [c for c in ctl.cmds if c.startswith("teleport")]
-        self.assertEqual(len(tele), 1)
-        toks = tele[0].split()
-        self.assertEqual(toks[2:5], ["-865.0", "-48.0", "90.0"])
-        self.assertEqual([float(x) for x in toks[5:8]], [0.0, 0.0, 0.0])
+        self.assertGreaterEqual(len(tele), 2)
+        for tcmd in tele:
+            toks = tcmd.split()
+            self.assertEqual(toks[2:5], ["-865.0", "-48.0", "90.0"])
+            self.assertEqual([float(x) for x in toks[5:8]], [0.0, 0.0, 0.0])
         self.assertTrue(any(c.startswith("prep ") for c in ctl.cmds))
         self.assertTrue(any(c.startswith("goto ") for c in ctl.cmds))
         self.assertTrue(any(c.startswith("stop ") for c in ctl.cmds))
@@ -265,8 +279,9 @@ class SequenceTests(unittest.TestCase):
         # integrate vel on every status so the pre-goto pair also measures heading
         ctl._goto = True
         raw = drv.exec_trial(stratum_id="A1", arm="off", spec=spec, seq=1, window_s=0.3)
-        tele = [c for c in ctl.cmds if c.startswith("teleport")][0].split()
-        cmd = [float(x) for x in tele[5:8]]
+        tele = [c.split() for c in ctl.cmds if c.startswith("teleport")]
+        stamped = next(t for t in tele if len(t) >= 8 and any(float(x) != 0.0 for x in t[5:8]))
+        cmd = [float(x) for x in stamped[5:8]]
         self.assertGreaterEqual(vh(cmd), 80.0)
         self.assertLess(vh(cmd), 160.0)
         self.assertGreaterEqual(direction_dot(cmd, spec["start"], spec["goal"]), 0.8)
@@ -528,6 +543,43 @@ class KvittoTests(unittest.TestCase):
         raw = drv.exec_trial(stratum_id="A1", arm="off", spec=spec, seq=1, window_s=0.3)
         self.assertEqual(raw["vel"], raw["measured_vel"])
         self.assertIsNotNone(raw["vel"])
+
+
+class StartVelTests(unittest.TestCase):
+    def test_origin_vel_uses_nominal_dt_not_wall(self):
+        o0 = [0.0, 0.0, 0.0]
+        o1 = [8.4, 0.0, 0.0]  # 210 u/s * 0.04
+        self.assertAlmostEqual(origin_vel(o0, o1, 0.04)[0], 210.0, places=5)
+        # wall-clock 0.06 would have reported 140 — the r2 jitter class
+        self.assertAlmostEqual(origin_vel(o0, o1, 0.06)[0], 140.0, places=5)
+
+    def test_pair_two_exec_trials_within_5(self):
+        drv, ctl, _ = _driver(stratum_at="start")
+        spec = STRATA["A2"]
+        a = drv.exec_trial(stratum_id="A2", arm="off", spec=spec, seq=1, window_s=0.2)
+        b = drv.exec_trial(stratum_id="A2", arm="on", spec=spec, seq=1, window_s=0.2)
+        ok, why = pair_start_vel_ok(a["measured_vel"], b["measured_vel"])
+        self.assertTrue(ok, why)
+        self.assertTrue(vel_components_within(a["measured_vel"], a["commanded_vel"], VEL_ALIGN))
+        self.assertTrue(vel_components_within(b["measured_vel"], b["commanded_vel"], VEL_ALIGN))
+
+    def test_stamp_retries_when_first_sample_misses(self):
+        drv, ctl, _ = _driver(stratum_at="start")
+        spec = STRATA["A2"]
+        # wait_ready + land polls, then first vel-stamp's two samples stay at rest.
+        ctl.ignore_integrate = 8
+        raw = drv.exec_trial(stratum_id="A2", arm="off", spec=spec, seq=1, window_s=0.2)
+        self.assertGreaterEqual(raw["vel_tries"], 2)
+        self.assertTrue(vel_components_within(raw["measured_vel"], raw["commanded_vel"], VEL_ALIGN))
+        stamped = [
+            c for c in ctl.cmds
+            if c.startswith("teleport ") and not c.rstrip().endswith("0.0 0.0 0.0")
+        ]
+        self.assertGreaterEqual(len(stamped), 2)
+
+    def test_sample_window_constant(self):
+        self.assertAlmostEqual(VEL_SAMPLE_S, 0.04)
+        self.assertLessEqual(2 * VEL_ALIGN, 5.0)
 
 
 class CellVerbTests(unittest.TestCase):

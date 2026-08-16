@@ -44,7 +44,11 @@ DEFAULT_MVDSV = Path.home() / ".local/share/qw-fasttrack/runtime-tbx-d/mvdsv"
 DEFAULT_LOCK = Path.home() / "lab/.rig-lock"
 POLL_S = 0.05
 T0_SETTLE_S = 0.15
-VEL_SAMPLE_S = 0.05
+# Origin-delta sample window. Must be the *nominal* dt in vel = dxyz/dt —
+# wall-clock (sleep + two status RTT) was the 12–25 u/s pair jitter.
+VEL_SAMPLE_S = 0.04
+VEL_ALIGN = 2.5  # retry until |meas-cmd| ≤ this, so a pair is ≤ 5.0
+VEL_RETRIES = 8
 PREP_CVARS = ("rtx_telemetry", "rtx_bot_pacifist")
 # Telemetry on also emits Pmove at tick rate. Keep stall/arrived/drop only.
 KEEP_EVENTS = {"bot_stall", "arrived", "goto_stall", "peak_drop_150"}
@@ -94,8 +98,9 @@ def mid_band_speed(spec: dict) -> float:
     return 0.5 * (lo + hi)
 
 
-def vel_from_pair(a: dict, b: dict) -> list[float]:
-    dt = float(b["t"]) - float(a["t"])
+def vel_from_pair(a: dict, b: dict, dt: float | None = None) -> list[float]:
+    if dt is None:
+        dt = float(b["t"]) - float(a["t"])
     if dt <= 1e-4:
         return [0.0, 0.0, 0.0]
     return [
@@ -103,6 +108,18 @@ def vel_from_pair(a: dict, b: dict) -> list[float]:
         (b["y"] - a["y"]) / dt,
         (b["z"] - a["z"]) / dt,
     ]
+
+
+def origin_vel(o0: list[float], o1: list[float], dt: float) -> list[float]:
+    if dt <= 1e-4:
+        return [0.0, 0.0, 0.0]
+    return [(float(o1[i]) - float(o0[i])) / dt for i in range(3)]
+
+
+def vel_components_within(a: list[float], b: list[float], tol: float) -> bool:
+    aa = list(a) + [0.0, 0.0, 0.0]
+    bb = list(b) + [0.0, 0.0, 0.0]
+    return all(abs(aa[i] - bb[i]) <= tol for i in range(3))
 
 
 def refuse_ra(ctl_port: int, game_port: int) -> str | None:
@@ -411,6 +428,31 @@ class LiveTrialDriver:
             "gate_origin": gate_origin,
         }
 
+    def _teleport(self, e: int, pos: list[float], vel: list[float]) -> None:
+        self.request(
+            f"teleport {e} {pos[0]} {pos[1]} {pos[2]} {vel[0]} {vel[1]} {vel[2]}"
+        )
+
+    def stamp_start_vel(self, e: int, start: list[float], cmd_vel: list[float]) -> tuple[list[float], int]:
+        """Place at `start` carrying `cmd_vel` and measure with a fixed sample dt.
+
+        Wall-clock between two status polls includes ctl RTT and is not the
+        physics interval — that was the 12–25 u/s pair jitter. Divide by the
+        commanded sample window. Re-stamp until each component is within
+        VEL_ALIGN of cmd (so an OFF/ON pair stays inside ±5).
+        """
+        measured = [0.0, 0.0, 0.0]
+        tries = 0
+        for tries in range(1, VEL_RETRIES + 1):
+            self._teleport(e, start, cmd_vel)
+            s0 = self.bot()
+            self.sleep(VEL_SAMPLE_S)
+            s1 = self.bot()
+            measured = origin_vel(s0["origin"], s1["origin"], VEL_SAMPLE_S)
+            if vel_components_within(measured, cmd_vel, VEL_ALIGN):
+                break
+        return measured, tries
+
     def exec_trial(
         self,
         *,
@@ -423,23 +465,19 @@ class LiveTrialDriver:
         e = self.ent()
         start = spec["start"]
         cmd_vel = self.commanded_vel(spec)
+        try:
+            self.request(f"stop {e}")
+        except Exception:
+            pass
+        try:
+            self.request(f"hold {e}")
+        except Exception:
+            pass
         self.request(f"prep {e} 100 0")
-        self.request(
-            f"teleport {e} {start[0]} {start[1]} {start[2]} "
-            f"{cmd_vel[0]} {cmd_vel[1]} {cmd_vel[2]}"
-        )
+        # Land first so the vel-stamp is not fighting a fall from the previous trial.
+        self._teleport(e, start, [0.0, 0.0, 0.0])
         self.sleep(T0_SETTLE_S if spec.get("kind") == "trap" else 0.05)
-        s0 = self.bot()
-        t_a = self.now()
-        self.sleep(VEL_SAMPLE_S)
-        s1 = self.bot()
-        t_b = self.now()
-        o0 = s0["origin"]
-        o1 = s1["origin"]
-        measured = vel_from_pair(
-            {"t": 0.0, "x": o0[0], "y": o0[1], "z": o0[2]},
-            {"t": t_b - t_a, "x": o1[0], "y": o1[1], "z": o1[2]},
-        )
+        measured, vel_tries = self.stamp_start_vel(e, start, cmd_vel)
         if window_s is None:
             if spec.get("kind") == "trap":
                 window_s = float(spec["off_window_s"] if arm == "off" else spec["budget_s"] + 1.5)
@@ -453,11 +491,12 @@ class LiveTrialDriver:
         else:
             # locus=gate: never fall back to start-vel. classify_trial invalidates a miss.
             vel = watched.get("gate_velocity")
-        start_cell = self.cell_at([float(x) for x in o0])
+        start_cell = self.cell_at([float(x) for x in start])
         return {
             "vel": vel,
             "commanded_vel": cmd_vel,
             "measured_vel": measured,
+            "vel_tries": vel_tries,
             "gate_velocity": watched.get("gate_velocity"),
             "gate_cell": watched.get("gate_cell"),
             "gate_origin": watched.get("gate_origin"),
@@ -527,6 +566,9 @@ class LiveTrialDriver:
                 "gate_velocity": raw.get("gate_velocity"),
                 "gate_cell": raw.get("gate_cell"),
                 "gate_origin": raw.get("gate_origin"),
+                "commanded_vel": raw.get("commanded_vel"),
+                "measured_vel": raw.get("measured_vel"),
+                "vel_tries": raw.get("vel_tries"),
             }
             fh.write(json.dumps(header, sort_keys=True) + "\n")
             for ev in raw.get("events") or []:
