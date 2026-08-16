@@ -333,10 +333,12 @@ def _git_commit(repo: Path) -> str:
     import subprocess
     try:
         return subprocess.check_output(
-            ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
     except Exception:
-        return "unknown"
+        return ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -349,7 +351,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path)
     ap.add_argument("--kvitto-dir", type=Path)
     ap.add_argument("--lock", type=Path)
-    ap.add_argument("--commit", default="")
+    ap.add_argument(
+        "--commit",
+        default="",
+        help="kvitto commit SHA (required for --run if git lookup fails, e.g. git archive)",
+    )
     ap.add_argument("--smoke", action="store_true", help="T0 OFF handful; not a judged run")
     ap.add_argument("--n-smoke", type=int, default=2)
     ap.add_argument("--smoke-window", type=float, default=3.0)
@@ -401,7 +407,13 @@ def main(argv: list[str] | None = None) -> int:
     lock = parse_lock(lock_path)
     qw = file_sha256(DEFAULT_QWPROGS) if DEFAULT_QWPROGS.is_file() else "00" * 32
     mv = file_sha256(DEFAULT_MVDSV) if DEFAULT_MVDSV.is_file() else "00" * 32
-    commit = args.commit or _git_commit(Path(__file__).resolve().parents[2])
+    commit = (args.commit or "").strip() or _git_commit(Path(__file__).resolve().parents[2])
+    if args.run and not commit:
+        print(
+            "judged --run requires --commit (git lookup failed; pass the SHA from a worktree)",
+            file=sys.stderr,
+        )
+        return 2
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from runner.control import Control  # noqa: E402

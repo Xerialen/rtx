@@ -207,6 +207,20 @@ class RefuseTests(unittest.TestCase):
         rc = drill.main(["--port", "27996", "--game-port", "27540"])
         self.assertEqual(rc, 2)
 
+    def test_run_requires_commit_when_git_missing(self):
+        import d_sjalvbevis as drill
+        orig = drill._git_commit
+        drill._git_commit = lambda _repo: ""
+        try:
+            rc = drill.main(["--port", "27996", "--run"])
+        finally:
+            drill._git_commit = orig
+        self.assertEqual(rc, 2)
+
+    def test_restart_mentions_reset_failed(self):
+        from d_live_driver import RESTART
+        self.assertIn("reset-failed", RESTART)
+
 
 class SequenceTests(unittest.TestCase):
     def test_t0_teleport_is_rest(self):
@@ -326,6 +340,19 @@ class ArmTests(unittest.TestCase):
         self.assertTrue(any("fixa west-shelf undo lock fable" == c for c in ctl.cmds))
         self.assertEqual(drv.last_stamps["on"]["cells"], 5981)
         self.assertEqual(drv.last_stamps["off"]["cells"], 5977)
+
+    def test_apply_undo_quiesce_before_fixa(self):
+        drv, ctl, _ = _driver(token="fable")
+        drv.confirm("off")
+        drv.apply()
+        apply_i = ctl.cmds.index("fixa west-shelf apply lock fable")
+        before = ctl.cmds[:apply_i]
+        self.assertTrue(any(c.startswith("stop ") for c in before), before)
+        self.assertTrue(any(c.startswith("hold ") for c in before), before)
+        drv.undo()
+        undo_i = ctl.cmds.index("fixa west-shelf undo lock fable")
+        mid = ctl.cmds[apply_i + 1 : undo_i]
+        self.assertTrue(any(c.startswith("stop ") for c in mid), mid)
 
     def test_apply_without_token_refused(self):
         drv, ctl, _ = _driver(token="")

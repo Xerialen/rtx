@@ -835,17 +835,22 @@ fn fixa_apply(
     };
     if let Some(txn) = keep_txn {
         game.nav_patch_txn = Some(txn);
+        invalidate_all_bot_nav(game);
     }
     Ok(Resp::Fixa(resp))
 }
 
 fn fixa_undo(game: &mut GameState, patch: &crate::nav_patch::ShelfPatch) -> Result<Resp, String> {
     let txn = game.nav_patch_txn.take().ok_or("no apply snapshot — nothing to undo")?;
-    let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
-    let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
-    let stamp = txn.unapply(g);
     let map = game.level.mapname.clone();
-    let (cells, links, rj, stamp_s, hash) = fixa_identity(&map, g);
+    let (stamp, cells, links, rj, stamp_s, hash) = {
+        let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+        let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+        let stamp = txn.unapply(g);
+        let (cells, links, rj, stamp_s, hash) = fixa_identity(&map, g);
+        (stamp, cells, links, rj, stamp_s, hash)
+    };
+    invalidate_all_bot_nav(game);
     let audit = crate::nav_patch::console_unapplied(patch.name, stamp);
     Ok(Resp::Fixa(proto::FixaResp {
         recipe: patch.name.to_string(),
@@ -939,6 +944,34 @@ fn reset_nav_state(bot: &mut crate::bot::state::BotState, at: Vec3, now: f32) {
     bot.watchdog.stuck_origin = at;
     bot.watchdog.stuck_since = now;
     bot.repath_time = now;
+}
+
+/// Drop every bot's route/plan that names link or cell ids. apply/undo and a freshly
+/// swapped navmesh shrink or replace those tables; a held ON-leg after undo is the
+/// query.rs:480 panic (index 48216 into 48207). Next think replans from scratch.
+pub(crate) fn invalidate_nav_for_graph_swap(bot: &mut crate::bot::state::BotState, at: Vec3, now: f32) {
+    reset_nav_state(bot, at, now);
+    bot.goal_cell = None;
+    bot.cell = None;
+    bot.interim = None;
+    bot.route_target = None;
+    bot.route_goal = None;
+    bot.hop = None;
+    bot.water_exit = None;
+    bot.water_exit_face = None;
+    bot.failed_links = Default::default();
+    bot.recent_tele = Default::default();
+}
+
+pub(crate) fn invalidate_all_bot_nav(game: &mut GameState) {
+    let now = game.time();
+    for ent in game.entities.iter_mut() {
+        if !ent.bot.is_bot {
+            continue;
+        }
+        let at = ent.v.origin;
+        invalidate_nav_for_graph_swap(&mut ent.bot, at, now);
+    }
 }
 
 fn do_goto(game: &mut GameState, bot: u32, pos: Vec3) -> Result<Resp, String> {
@@ -2272,5 +2305,26 @@ mod tests {
         assert!(fixa_require_lock_at("apply", "fable", &p).is_ok());
         assert!(fixa_require_lock_at("undo", "fable 42", &p).is_ok());
         let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn graph_swap_clears_bot_route_and_failed_links() {
+        let mut bot = crate::bot::state::BotState {
+            is_bot: true,
+            route: vec![48216],
+            route_pos: 3,
+            failed_links: [(48216, 1.0, 1); 8],
+            recent_tele: [(48216, 1.0); 8],
+            goal_cell: Some(5980),
+            cell: Some(5980),
+            ..Default::default()
+        };
+        invalidate_nav_for_graph_swap(&mut bot, Vec3::ZERO, 0.0);
+        assert!(bot.route.is_empty());
+        assert_eq!(bot.route_pos, 0);
+        assert!(bot.failed_links.iter().all(|&(l, _, _)| l == 0));
+        assert!(bot.recent_tele.iter().all(|&(l, _)| l == 0));
+        assert!(bot.goal_cell.is_none());
+        assert!(bot.cell.is_none());
     }
 }

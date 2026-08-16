@@ -1744,6 +1744,20 @@ fn run_bot(game: &mut GameState, e: EntId) {
 
     let idle = |angles: Vec3| host.set_bot_cmd(client, msec, angles, 0, 0, 0, 0, 0);
 
+    // Graph swap (apply/undo, nav rebuild) can leave route legs that no longer index. Drop
+    // them here so prearm/steer never call link_kind on a stale ON-id. Next repath fills a
+    // fresh route. Never panic — query accessors are also fail-closed.
+    if let Some(g) = game.nav.graph.as_ref() {
+        let bot = &game.entities[e].bot;
+        let stale = !g.route_in_bounds(&bot.route)
+            || bot.cell.is_some_and(|c| !g.has_cell(c))
+            || bot.goal_cell.is_some_and(|c| !g.has_cell(c));
+        if stale {
+            let at = origin;
+            crate::control::invalidate_nav_for_graph_swap(&mut game.entities[e].bot, at, now);
+        }
+    }
+
     // Arm traversal ownership *before* resolving this frame's mode/enemy/item objective. The route
     // was selected on an earlier frame; once its current leg is a gap/double/speed jump, a newly
     // perceived enemy must not get one frame in which to replace that route or turn the view at the

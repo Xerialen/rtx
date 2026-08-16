@@ -5,9 +5,11 @@ Talks ctlproto on a dedicated D-instance (never RA/main). Does not invent
 ON-expected from observed. Arm switching is fixa apply/undo with lock_token.
 
 RESTART — documented fallback if undo has no AppliedTxn snapshot (this
-process never applied, or the unit was started already-meshed). Restart
-ONLY toolbox-d-test, never RA/main:
+process never applied, or the unit was started already-meshed), or after
+a core-dump. Restart ONLY toolbox-d-test, never RA/main. After a failed
+unit, reset-failed first or systemd-run refuses the name:
 
+  systemctl --user reset-failed toolbox-d-test
   systemctl --user stop toolbox-d-test && systemd-run --user --unit=toolbox-d-test \\
     -p RuntimeMaxSec=10800 --working-directory=$HOME/.local/share/qw-fasttrack/runtime-tbx-d \\
     $HOME/.local/share/qw-fasttrack/runtime-tbx-d/mvdsv -port 27592 \\
@@ -48,6 +50,7 @@ PREP_CVARS = ("rtx_telemetry", "rtx_bot_pacifist")
 KEEP_EVENTS = {"bot_stall", "arrived", "goto_stall", "peak_drop_150"}
 
 RESTART = (
+    "systemctl --user reset-failed toolbox-d-test; "
     "systemctl --user stop toolbox-d-test && systemd-run --user --unit=toolbox-d-test "
     "-p RuntimeMaxSec=10800 --working-directory=$HOME/.local/share/qw-fasttrack/runtime-tbx-d "
     "$HOME/.local/share/qw-fasttrack/runtime-tbx-d/mvdsv -port 27592 "
@@ -245,9 +248,22 @@ class LiveTrialDriver:
         self.arm = want
         return ident
 
+    def quiesce(self) -> None:
+        """Stop/hold the puppet before a graph swap so it cannot hold an ON-leg across undo."""
+        try:
+            e = self.ent()
+        except Exception:
+            return
+        for verb in ("stop", "hold"):
+            try:
+                self.request(f"{verb} {e}")
+            except Exception:
+                continue
+
     def apply(self) -> dict:
         if not self.lock_token:
             raise RuntimeError("fixa apply requires lock_token")
+        self.quiesce()
         cmd = f"fixa west-shelf apply lock {self.lock_token}"
         d = self.request(cmd)["data"]
         if d.get("outcome") not in {"applied", "already_meshed"}:
@@ -257,6 +273,7 @@ class LiveTrialDriver:
     def undo(self) -> dict:
         if not self.lock_token:
             raise RuntimeError("fixa undo requires lock_token")
+        self.quiesce()
         cmd = f"fixa west-shelf undo lock {self.lock_token}"
         d = self.request(cmd)["data"]
         if d.get("outcome") != "undone":
@@ -490,6 +507,7 @@ class LiveTrialDriver:
 
     def measure_both_stamps(self) -> None:
         """Observe OFF and ON via apply/undo. Never copy expected into observed."""
+        self.quiesce()
         self.confirm("off")
         self.snapshot_all_strata()
         self.apply()

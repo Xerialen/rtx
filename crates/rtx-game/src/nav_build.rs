@@ -285,6 +285,7 @@ impl GameState {
         self.host.dprint(&msg);
         self.nav.graph = Some(std::sync::Arc::new(graph));
         self.nav.goals = goals;
+        crate::control::invalidate_all_bot_nav(self);
     }
 
     /// Build the static item-goal catalog: every spawned pickup (weapons, health, armor, ammo,
