@@ -109,6 +109,10 @@ def make_kvitto(
     gate_cell: int | None = None,
     gate_aim_hit: bool = False,
     demo_file: str | None = None,
+    fixture_sha256: str | None = None,
+    candidate: str | None = None,
+    landing_cell: int | None = None,
+    selected_link: int | None = None,
 ) -> dict[str, Any]:
     """Assemble a §4-complete receipt. Missing kwargs are a TypeError (fail closed).
 
@@ -160,6 +164,14 @@ def make_kvitto(
     }
     if demo_file is not None:
         doc["demo_file"] = demo_file
+    if fixture_sha256 is not None:
+        doc["fixture_sha256"] = fixture_sha256
+    if candidate is not None:
+        doc["candidate"] = candidate
+    if landing_cell is not None:
+        doc["landing_cell"] = int(landing_cell)
+    if selected_link is not None:
+        doc["selected_link"] = int(selected_link)
     return doc
 
 

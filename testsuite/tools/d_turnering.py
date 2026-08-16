@@ -1,0 +1,681 @@
+#!/usr/bin/env python3
+"""HAZ-1462 tournament runner. Consumes haz1462-gates.json — not west-shelf STRATA.
+
+Reproduction: 2 routes × N pairs, rest teleport, ±5 pairing, hearth episode
+dedup within 15 u of [317.64,-758.40,-15.97] stamped cell 1462.
+Migration heldout: 16 obligations × 5 pairs; SpeedJump 34419 must be
+attested on 1416→1124; next-best must be the high walk (10446→10768),
+never floor-drop 10444. K2 also runs the 49-dest appendix.
+§5 scoring is candidate-local — no borrowed outcomes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from d_recipe import load_recipe, on_expected  # noqa: E402
+from d_strata import (  # noqa: E402
+    FORBIDDEN_CTL,
+    FORBIDDEN_GAME,
+    HELDOUT_PAIR_REPLACE_CAP,
+    PAIR_VEL_TOL,
+    pair_start_vel_ok,
+)
+from d_kvitto import astar_path  # noqa: E402
+
+HERE = Path(__file__).resolve().parent
+DEFAULT_GATES = HERE / "recept" / "haz1462-gates.json"
+DEFAULT_APPENDIX = HERE / "recept" / "haz1462-k2-appendix.json"
+FLOOR_DROP = 10444
+NEXT_HIGH = (10446, 10768)
+SPEEDJUMP = 34419
+CANDIDATES = ("haz1462-k1", "haz1462-k2", "haz1462-k3")
+
+
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def dist(a: list[float] | None, b: list[float] | None) -> float:
+    if not a or not b or len(a) < 3 or len(b) < 3:
+        return float("inf")
+    return math.sqrt(sum((float(a[i]) - float(b[i])) ** 2 for i in range(3)))
+
+
+def hearth_hit(raw: dict, hearth: dict) -> bool:
+    """One peak_drop_150 episode landing within radius of the 1462 locus."""
+    centroid = list(hearth.get("centroid_aim") or hearth.get("origin") or [])
+    radius = float(hearth.get("radius") or 15.0)
+    want = int(hearth.get("cell") or 1462)
+    landing = raw.get("landing_cell")
+    for ev in raw.get("events") or []:
+        if ev.get("ev") != "peak_drop_150":
+            continue
+        origin = ev.get("origin")
+        cell = ev.get("cell")
+        if cell is None:
+            cell = landing
+        if cell != want:
+            continue
+        if origin and dist(list(origin), centroid) <= radius:
+            return True
+    if landing == want:
+        origin = raw.get("gate_origin")
+        if origin and dist(list(origin), centroid) <= radius:
+            return True
+    return False
+
+
+def has_stall(raw: dict) -> bool:
+    if raw.get("t_stall_gate") is not None:
+        return True
+    return any(ev.get("ev") == "bot_stall" for ev in (raw.get("events") or []))
+
+
+def arrived_in_budget(raw: dict, budget_s: float) -> bool:
+    t = raw.get("t_arrive")
+    return t is not None and float(t) <= float(budget_s) + 1e-9
+
+
+def path_links(blob: dict | None) -> list[int]:
+    if not isinstance(blob, dict):
+        return []
+    path = blob.get("path") if "path" in blob else blob
+    if not isinstance(path, dict):
+        return []
+    return [int(x) for x in (path.get("links") or [])]
+
+
+def next_best_is_floor_drop(links: list[int]) -> bool:
+    """10444→10453 is the floor Drop, not the next high walk."""
+    return bool(links) and int(links[0]) == FLOOR_DROP
+
+
+def attests_speedjump(links: list[int], sj: int = SPEEDJUMP) -> bool:
+    return int(sj) in {int(x) for x in links}
+
+
+def reproduction_routes(gates: dict) -> list[dict]:
+    repro = gates.get("reproduction") or {}
+    out = []
+    for key in ("in_vast", "in_tunnel"):
+        row = repro.get(key)
+        if not isinstance(row, dict):
+            continue
+        start = row.get("start") or {}
+        goal = row.get("goal") or {}
+        out.append({
+            "id": str(row.get("id") or key),
+            "kind": "trap",
+            "start": list(start.get("aim") or start.get("origin") or []),
+            "goal": list(goal.get("aim") or goal.get("origin") or []),
+            "start_cell": start.get("cell"),
+            "goal_cell": goal.get("cell"),
+            "budget_s": float(row.get("budget_s") or 25.0),
+            "n_pairs": int(row.get("n_pairs") or 75),
+            "population": "teleport_drill",
+        })
+    return out
+
+
+def heldout_obligations(gates: dict) -> list[dict]:
+    start_cell = 1416
+    start_origin = None
+    for row in gates.get("heldout_from_1416") or []:
+        if int(row.get("cell") or 0) == start_cell:
+            start_origin = list(row.get("origin") or [])
+            break
+    if not start_origin:
+        # 1416 is the start, not a dest — look at gates block
+        for block in (gates.get("gates") or {}).values():
+            ids = block.get("cell_ids") or []
+            origs = block.get("cell_origins") or []
+            if start_cell in ids:
+                start_origin = list(origs[ids.index(start_cell)])
+                break
+    if not start_origin:
+        start_origin = [288.0, -844.0, 264.0]
+    budget = float(gates.get("heldout_budget_s") or 25.0)
+    n_pairs = int(gates.get("n_heldout_pairs") or 5)
+    sj = int(gates.get("speedjump") or SPEEDJUMP)
+    out = []
+    for dest in gates.get("heldout_from_1416") or []:
+        cid = int(dest["cell"])
+        out.append({
+            "id": f"1416-{cid}",
+            "kind": "heldout",
+            "start": list(start_origin),
+            "goal": list(dest["origin"]),
+            "start_cell": start_cell,
+            "goal_cell": cid,
+            "budget_s": budget,
+            "n_pairs": n_pairs,
+            "vh_lo": 80.0,
+            "vh_hi": 160.0,
+            "dir_min": 0.8,
+            "require_speedjump": cid == 1124,
+            "speedjump": sj,
+            "population": "kedjad",
+        })
+    for ms in gates.get("must_starters") or []:
+        src, tgt = ms.get("start") or {}, ms.get("goal") or {}
+        out.append({
+            "id": str(ms.get("id") or f"{src.get('cell')}-{tgt.get('cell')}"),
+            "kind": "heldout",
+            "start": list(src.get("origin") or []),
+            "goal": list(tgt.get("origin") or []),
+            "start_cell": src.get("cell"),
+            "goal_cell": tgt.get("cell"),
+            "budget_s": float(ms.get("budget_s") or budget),
+            "n_pairs": n_pairs,
+            "vh_lo": 80.0,
+            "vh_hi": 160.0,
+            "dir_min": 0.8,
+            "require_speedjump": False,
+            "population": "kedjad",
+        })
+    return out
+
+
+def appendix_obligations(appendix: dict, start_1416: list[float]) -> list[dict]:
+    budget = float(appendix.get("budget_s") or 25.0)
+    n_pairs = int(appendix.get("n_pairs") or 5)
+    start = list((appendix.get("start") or {}).get("origin") or start_1416)
+    out = []
+    for dest in appendix.get("destinations") or []:
+        cid = int(dest["cell"])
+        out.append({
+            "id": f"app-1416-{cid}",
+            "kind": "heldout",
+            "start": start,
+            "goal": list(dest["origin"]),
+            "start_cell": 1416,
+            "goal_cell": cid,
+            "budget_s": budget,
+            "n_pairs": n_pairs,
+            "vh_lo": 80.0,
+            "vh_hi": 160.0,
+            "dir_min": 0.8,
+            "require_speedjump": False,
+            "population": "kedjad",
+        })
+    return out
+
+
+@dataclass
+class TAttempt:
+    attempt_id: str
+    route_id: str
+    arm: str
+    valid: bool
+    reason: str
+    hearth: bool = False
+    stall: bool = False
+    arrived: bool = False
+    start_vel: list[float] | None = None
+    astar_links: list[int] = field(default_factory=list)
+    next_best_links: list[int] = field(default_factory=list)
+    sj_ok: bool = True
+    next_best_ok: bool = True
+
+
+@dataclass
+class TournamentReport:
+    candidate: str
+    fixture_sha256: str
+    valid: bool
+    invalid_reasons: list[str]
+    attempts: list[TAttempt]
+    repro_off_ok: bool = False
+    repro_on_ok: bool = False
+    heldout_on_ok: bool = False
+    appendix_on_ok: bool = True
+    pass_ok: bool = False
+
+    def as_dict(self) -> dict:
+        return {
+            "kind": "haz1462-turnering",
+            "candidate": self.candidate,
+            "fixture_sha256": self.fixture_sha256,
+            "valid": self.valid,
+            "invalid_reasons": list(self.invalid_reasons),
+            "godkand": self.valid and self.pass_ok,
+            "reproduction": {
+                "off_ok": self.repro_off_ok,
+                "on_ok": self.repro_on_ok,
+            },
+            "heldout": {"on_ok": self.heldout_on_ok},
+            "appendix": {"on_ok": self.appendix_on_ok},
+            "attempts": [
+                {
+                    "id": a.attempt_id,
+                    "route": a.route_id,
+                    "arm": a.arm,
+                    "valid": a.valid,
+                    "reason": a.reason,
+                    "hearth": a.hearth,
+                    "stall": a.stall,
+                    "arrived": a.arrived,
+                    "sj_ok": a.sj_ok,
+                    "next_best_ok": a.next_best_ok,
+                }
+                for a in self.attempts
+            ],
+        }
+
+
+def score_reproduction(attempts: list[TAttempt], routes: list[dict]) -> tuple[bool, bool]:
+    off_ok = True
+    on_ok = True
+    for spec in routes:
+        rid = spec["id"]
+        n = int(spec["n_pairs"])
+        offs = [a for a in attempts if a.route_id == rid and a.arm == "off" and a.valid]
+        ons = [a for a in attempts if a.route_id == rid and a.arm == "on" and a.valid]
+        if not any(a.hearth for a in offs):
+            off_ok = False
+        if len(ons) != n:
+            on_ok = False
+            continue
+        if any(a.hearth or a.stall or not a.arrived for a in ons):
+            on_ok = False
+    return off_ok, on_ok
+
+
+def score_migrate(attempts: list[TAttempt], routes: list[dict]) -> bool:
+    for spec in routes:
+        rid = spec["id"]
+        n = int(spec["n_pairs"])
+        ons = [a for a in attempts if a.route_id == rid and a.arm == "on" and a.valid]
+        if len(ons) != n:
+            return False
+        if any(a.hearth or a.stall or not a.arrived or not a.sj_ok or not a.next_best_ok for a in ons):
+            return False
+    return True
+
+
+def score_side_by_side(reports: dict[str, TournamentReport]) -> dict:
+    """§5: candidates side by side. No borrowed stamps/outcomes."""
+    out = {"kind": "haz1462-side-by-side", "candidates": {}}
+    for cid, rep in reports.items():
+        out["candidates"][cid] = {
+            "godkand": bool(rep.valid and rep.pass_ok),
+            "valid": rep.valid,
+            "fixture_sha256": rep.fixture_sha256,
+            "reproduction_off": rep.repro_off_ok,
+            "reproduction_on": rep.repro_on_ok,
+            "heldout_on": rep.heldout_on_ok,
+            "appendix_on": rep.appendix_on_ok,
+        }
+    winners = [c for c, b in out["candidates"].items() if b["godkand"]]
+    out["winner"] = winners[0] if len(winners) == 1 else None
+    out["tournament"] = "GODKAND" if winners else "UNDERKAND"
+    return out
+
+
+class TournamentRunner:
+    def __init__(
+        self,
+        *,
+        recipe: dict,
+        gates: dict,
+        exec_trial: Callable[..., dict],
+        ctl_port: int,
+        game_port: int,
+        fixture_sha256: str,
+        appendix: dict | None = None,
+        ensure_arm: Callable[[str], None] | None = None,
+        n_repro: int | None = None,
+        n_heldout: int | None = None,
+    ) -> None:
+        self.recipe = recipe
+        self.gates = gates
+        self.appendix = appendix
+        self.exec_trial = exec_trial
+        self.ctl_port = ctl_port
+        self.game_port = game_port
+        self.fixture_sha256 = fixture_sha256
+        self.ensure_arm = ensure_arm
+        self.repro = reproduction_routes(gates)
+        self.heldout = heldout_obligations(gates)
+        start_1416 = [288.0, -844.0, 264.0]
+        self.app_routes = (
+            appendix_obligations(appendix, start_1416)
+            if appendix and recipe.get("id") == "haz1462-k2"
+            else []
+        )
+        if n_repro is not None:
+            for s in self.repro:
+                s["n_pairs"] = int(n_repro)
+        if n_heldout is not None:
+            for s in self.heldout + self.app_routes:
+                s["n_pairs"] = int(n_heldout)
+        self.last_raw: dict = {}
+
+    def preflight(self) -> list[str]:
+        reasons: list[str] = []
+        if self.ctl_port in FORBIDDEN_CTL or self.game_port in FORBIDDEN_GAME:
+            reasons.append("RA/main endpoint")
+        rid = self.recipe.get("id")
+        if rid not in CANDIDATES:
+            reasons.append(f"candidate {rid!r} not in {CANDIDATES}")
+        try:
+            on_expected(self.recipe)
+        except ValueError as exc:
+            reasons.append(str(exc))
+        if not self.repro or {s["id"] for s in self.repro} != {"in_vast", "in_tunnel"}:
+            reasons.append("gates.reproduction missing in_vast/in_tunnel")
+        if len(self.heldout) != 16:
+            reasons.append(f"heldout obligations {len(self.heldout)} != 16")
+        if not any(s.get("require_speedjump") for s in self.heldout):
+            reasons.append("heldout missing 1416-1124 speedjump obligation")
+        hearth = (self.gates.get("reproduction") or {}).get("hearth")
+        if not isinstance(hearth, dict) or hearth.get("cell") != 1462:
+            reasons.append("reproduction.hearth cell must be 1462")
+        if rid == "haz1462-k2":
+            if not self.appendix:
+                reasons.append("K2 missing appendix fixture")
+            elif len(self.app_routes) != 49:
+                reasons.append(f"K2 appendix dests {len(self.app_routes)} != 49")
+        if not self.fixture_sha256 or len(self.fixture_sha256) != 64:
+            reasons.append("fixture_sha256 missing")
+        return reasons
+
+    def _classify(self, spec: dict, arm: str, seq: int, raw: dict) -> TAttempt:
+        hearth = hearth_hit(raw, (self.gates.get("reproduction") or {}).get("hearth") or {})
+        stall = has_stall(raw)
+        arrived = arrived_in_budget(raw, spec["budget_s"])
+        after = raw.get("astar_after") or raw.get("astar") or {}
+        nb = raw.get("astar_next_best") or {}
+        links = path_links(after)
+        nb_links = path_links(nb)
+        sj_ok = True
+        if spec.get("require_speedjump") and arm == "on":
+            sj_ok = attests_speedjump(links, int(spec.get("speedjump") or SPEEDJUMP))
+        nb_ok = True
+        if arm == "on" and spec.get("kind") == "heldout":
+            nb_ok = not next_best_is_floor_drop(nb_links)
+        vel = raw.get("measured_vel") if raw.get("measured_vel") is not None else raw.get("vel")
+        att = TAttempt(
+            attempt_id=f"{spec['id']}-{arm.upper()}-{seq:02d}",
+            route_id=spec["id"],
+            arm=arm,
+            valid=True,
+            reason="ok",
+            hearth=hearth,
+            stall=stall,
+            arrived=arrived,
+            start_vel=list(vel) if vel is not None else None,
+            astar_links=links,
+            next_best_links=nb_links,
+            sj_ok=sj_ok,
+            next_best_ok=nb_ok,
+        )
+        if raw.get("stamp_ok") is False:
+            att.valid = False
+            att.reason = raw.get("stamp_reason") or "start-vel stamp failed"
+        if not sj_ok:
+            att.valid = False
+            att.reason = f"1416-1124 must attest SpeedJump {SPEEDJUMP}"
+        if not nb_ok:
+            att.valid = False
+            att.reason = "next-best is floor Drop 10444 — want 10446→10768"
+        return att
+
+    def _run_one(self, spec: dict, arm: str, seq: int, match_vel=None) -> TAttempt:
+        if self.ensure_arm is not None:
+            self.ensure_arm(arm)
+        raw = self.exec_trial(
+            stratum_id=spec["id"],
+            arm=arm,
+            spec=spec,
+            seq=seq,
+            match_vel=match_vel,
+            window_s=float(spec["budget_s"]),
+        )
+        self.last_raw = raw
+        return self._classify(spec, arm, seq, raw)
+
+    def _run_pairs(self, spec: dict, attempts: list[TAttempt], extra: list[str]) -> None:
+        need = int(spec["n_pairs"])
+        got = 0
+        seq = 0
+        cap = need + int(HELDOUT_PAIR_REPLACE_CAP)
+        while got < need:
+            seq += 1
+            if seq > cap:
+                extra.append(f"{spec['id']}: could not assemble {need} valid pairs")
+                break
+            off_att = self._run_one(spec, "off", seq)
+            if not off_att.valid:
+                attempts.append(off_att)
+                continue
+            on_att = self._run_one(spec, "on", seq, match_vel=off_att.start_vel)
+            pok, pwhy = pair_start_vel_ok(off_att.start_vel, on_att.start_vel)
+            if not pok or not on_att.valid:
+                if not pok and on_att.valid:
+                    on_att.valid = False
+                    on_att.reason = pwhy
+                off_att.valid = False
+                if "stamp" not in (off_att.reason or ""):
+                    off_att.reason = on_att.reason
+                attempts.append(off_att)
+                attempts.append(on_att)
+                continue
+            got += 1
+            attempts.append(off_att)
+            attempts.append(on_att)
+
+    def run(self) -> TournamentReport:
+        reasons = self.preflight()
+        attempts: list[TAttempt] = []
+        extra: list[str] = []
+        if reasons:
+            return TournamentReport(
+                candidate=str(self.recipe.get("id")),
+                fixture_sha256=self.fixture_sha256,
+                valid=False,
+                invalid_reasons=reasons,
+                attempts=attempts,
+            )
+        for spec in self.repro:
+            self._run_pairs(spec, attempts, extra)
+        for spec in self.heldout:
+            self._run_pairs(spec, attempts, extra)
+        for spec in self.app_routes:
+            self._run_pairs(spec, attempts, extra)
+        repro_off, repro_on = score_reproduction(attempts, self.repro)
+        held_ok = score_migrate(attempts, self.heldout)
+        app_ok = True if not self.app_routes else score_migrate(attempts, self.app_routes)
+        valid = not extra
+        pass_ok = valid and repro_off and repro_on and held_ok and app_ok
+        if not valid:
+            extra = extra
+        return TournamentReport(
+            candidate=str(self.recipe.get("id")),
+            fixture_sha256=self.fixture_sha256,
+            valid=valid,
+            invalid_reasons=extra,
+            attempts=attempts,
+            repro_off_ok=repro_off,
+            repro_on_ok=repro_on,
+            heldout_on_ok=held_ok,
+            appendix_on_ok=app_ok,
+            pass_ok=pass_ok,
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--port", type=int, default=0)
+    ap.add_argument("--game-port", type=int, default=27592)
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--candidate", choices=("k1", "k2", "k3", "haz1462-k1", "haz1462-k2", "haz1462-k3"))
+    ap.add_argument("--fixture", type=Path)
+    ap.add_argument("--gates", type=Path, default=DEFAULT_GATES)
+    ap.add_argument("--appendix", type=Path, default=DEFAULT_APPENDIX)
+    ap.add_argument("--out", type=Path)
+    ap.add_argument("--kvitto-dir", type=Path)
+    ap.add_argument("--lock", type=Path)
+    ap.add_argument("--commit", default="")
+    ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--n-repro", type=int)
+    ap.add_argument("--n-heldout", type=int)
+    ap.add_argument("--run", action="store_true")
+    args = ap.parse_args(argv)
+
+    cand = args.candidate or "k1"
+    if not cand.startswith("haz"):
+        cand = f"haz1462-{cand}"
+    fixture = args.fixture or (HERE / "recept" / f"{cand}.json")
+    recipe = load_recipe(fixture)
+    gates = json.loads(Path(args.gates).read_text(encoding="utf-8"))
+    appendix = None
+    if cand == "haz1462-k2" and args.appendix and Path(args.appendix).is_file():
+        appendix = json.loads(Path(args.appendix).read_text(encoding="utf-8"))
+    fx_sha = file_sha256(Path(fixture))
+
+    n_repro = args.n_repro if args.n_repro is not None else (1 if args.smoke else None)
+    n_heldout = args.n_heldout if args.n_heldout is not None else (0 if args.smoke else None)
+
+    if not args.port:
+        def stub(**k):
+            return {
+                "vel": [0, 0, 0],
+                "measured_vel": [0, 0, 0],
+                "stamp_ok": True,
+                "events": [],
+                "samples": [],
+                "t_arrive": 1.0,
+                "astar_after": astar_path(found=False),
+                "astar_next_best": astar_path(found=False),
+            }
+        runner = TournamentRunner(
+            recipe=recipe,
+            gates=gates,
+            appendix=appendix,
+            exec_trial=stub,
+            ctl_port=args.port,
+            game_port=args.game_port,
+            fixture_sha256=fx_sha,
+            n_repro=n_repro,
+            n_heldout=0 if n_heldout is None and not args.run else n_heldout,
+        )
+        report = runner.run()
+        text = json.dumps(report.as_dict(), indent=2, sort_keys=True)
+        if args.out:
+            args.out.write_text(text + "\n", encoding="utf-8")
+        print(text)
+        return 0 if report.as_dict().get("godkand") else 1
+
+    if args.port in FORBIDDEN_CTL or args.game_port in FORBIDDEN_GAME:
+        print("RA/main endpoint", file=sys.stderr)
+        return 2
+
+    from d_live_driver import (  # noqa: E402
+        DEFAULT_LOCK,
+        DEFAULT_MVDSV,
+        DEFAULT_QWPROGS,
+        LiveTrialDriver,
+        file_sha256 as sha_file,
+        parse_lock,
+    )
+
+    lock_path = args.lock or DEFAULT_LOCK
+    if not lock_path.is_file():
+        print(f"no {lock_path}", file=sys.stderr)
+        return 2
+    lock = parse_lock(lock_path)
+    qw = sha_file(DEFAULT_QWPROGS) if DEFAULT_QWPROGS.is_file() else "00" * 32
+    mv = sha_file(DEFAULT_MVDSV) if DEFAULT_MVDSV.is_file() else "00" * 32
+    commit = (args.commit or "").strip()
+    if args.run and not commit:
+        print("judged --run requires --commit", file=sys.stderr)
+        return 2
+
+    sys.path.insert(0, str(HERE.parent))
+    from runner.control import Control  # noqa: E402
+
+    ctl = Control(args.host, args.port)
+    driver = LiveTrialDriver(
+        ctl,
+        gate=(gates.get("gates") or {}).get(cand) or {},
+        recipe=recipe,
+        lock_token=lock["token"],
+        qwprogs_sha=qw,
+        mvdsv_sha=mv,
+        commit=commit or "unrun",
+        host=args.host,
+        ctl_port=args.port,
+        game_port=args.game_port,
+        lock_path=lock_path,
+    )
+    try:
+        driver.prepare()
+        driver.confirm("off")
+        if args.smoke:
+            driver.start_demo(smoke=True)
+            n_repro = n_repro if n_repro is not None else 1
+            n_heldout = 0
+        elif args.run:
+            driver.start_demo(smoke=False)
+        else:
+            ident = driver.identity()
+            print(json.dumps({"identity": ident, "candidate": cand, "hint": "--smoke or --run"}, indent=2))
+            return 0
+
+        def exec_trial(**k):
+            return driver.exec_trial(**k)
+
+        runner = TournamentRunner(
+            recipe=recipe,
+            gates=gates,
+            appendix=appendix,
+            exec_trial=exec_trial,
+            ctl_port=args.port,
+            game_port=args.game_port,
+            fixture_sha256=fx_sha,
+            ensure_arm=driver.ensure_arm,
+            n_repro=n_repro,
+            n_heldout=n_heldout,
+        )
+        report = runner.run()
+        payload = report.as_dict()
+        payload["binaries"] = {"qwprogs_sha256": qw, "mvdsv_sha256": mv}
+        payload["demo_file"] = driver.demo_file
+        payload["stamps"] = driver.last_stamps
+        text = json.dumps(payload, indent=2, sort_keys=True)
+        if args.out:
+            args.out.write_text(text + "\n", encoding="utf-8")
+        print(text)
+        return 0 if payload.get("godkand") else 1
+    finally:
+        try:
+            driver.stop_demo()
+        except Exception:
+            pass
+        if driver.arm == "on":
+            try:
+                driver.undo()
+            except Exception as exc:
+                print(f"undo-on-exit failed: {exc}", file=sys.stderr)
+        try:
+            driver.restore()
+        except Exception:
+            pass
+        ctl.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

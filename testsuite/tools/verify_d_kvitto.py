@@ -252,6 +252,23 @@ def verify(doc: Any) -> list[str]:
                 f"demo_file: must look like a .mvd path, got {demo!r}"
             )
 
+    if "fixture_sha256" in doc:
+        fx = doc.get("fixture_sha256")
+        if not isinstance(fx, str) or len(fx) != 64 or any(
+            c not in "0123456789abcdef" for c in fx
+        ):
+            errors.append("fixture_sha256: not lowercase SHA-256 hex")
+    if "candidate" in doc:
+        cand = doc.get("candidate")
+        if not isinstance(cand, str) or not cand.strip():
+            errors.append("candidate: must be a non-empty string when present")
+    if "landing_cell" in doc and doc["landing_cell"] is not None:
+        if not isinstance(doc["landing_cell"], int) or isinstance(doc["landing_cell"], bool):
+            errors.append("landing_cell: must be int")
+    if "selected_link" in doc and doc["selected_link"] is not None:
+        if not isinstance(doc["selected_link"], int) or isinstance(doc["selected_link"], bool):
+            errors.append("selected_link: must be int")
+
     return errors
 
 

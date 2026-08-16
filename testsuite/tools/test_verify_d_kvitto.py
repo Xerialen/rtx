@@ -279,6 +279,18 @@ class VerifyTests(unittest.TestCase):
         errs = verify(doc)
         self.assertTrue(any(".mvd" in e for e in errs), errs)
 
+    def test_fixture_sha_and_candidate_shape(self):
+        doc = _valid(fixture_sha256="ab" * 32, candidate="haz1462-k1")
+        self.assertEqual(verify(doc), [])
+        doc = _valid()
+        doc["fixture_sha256"] = "zz" * 32
+        errs = verify(doc)
+        self.assertTrue(any("fixture_sha256" in e for e in errs), errs)
+        doc = _valid()
+        doc["candidate"] = ""
+        errs = verify(doc)
+        self.assertTrue(any("candidate" in e for e in errs), errs)
+
 
 class TrapReproGuardTests(unittest.TestCase):
     def test_refuse_ra_port_before_connect(self):

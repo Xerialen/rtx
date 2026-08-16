@@ -10,7 +10,7 @@ from pathlib import Path
 
 import fixa
 from d_kvitto import WEST_SHELF_OFF
-from d_recipe import load_recipe, on_expected
+from d_recipe import REGISTERED_IDS, load_recipe, on_expected
 
 
 class FakeCtl:
@@ -29,6 +29,13 @@ class FakeCtl:
 class FixaTests(unittest.TestCase):
     def test_unknown_recipe_refused(self):
         self.assertEqual(fixa.main(["--recept", "other", "--dry-run", "--port", "27996"]), 2)
+
+    def test_ram_recipes_are_cli_wired(self):
+        """P5: ram-rail / ram-prevent must not die as 'west-shelf is the only recipe'."""
+        self.assertIn("ram-rail", REGISTERED_IDS)
+        self.assertIn("ram-prevent", REGISTERED_IDS)
+        text = Path(fixa.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("west-shelf is the only recipe", text)
 
     def test_ra_port_refused(self):
         self.assertEqual(fixa.main(["--recept", "west-shelf", "--dry-run", "--port", "27990"]), 2)

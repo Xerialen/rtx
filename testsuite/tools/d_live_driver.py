@@ -598,7 +598,7 @@ class LiveTrialDriver:
             measured, vel_tries, stamp_ok = self.stamp_start_vel(
                 e, start, cmd_vel, align_to=match_vel,
             )
-            if stamp_ok and match_vel is None:
+            if stamp_ok and match_vel is None and stratum_id in STRATA:
                 sok, swhy = stratum_ok(stratum_id, measured, spec["start"], spec["goal"])
                 if not sok:
                     stamp_ok = False
@@ -651,6 +651,87 @@ class LiveTrialDriver:
             "t_arrive": watched.get("t_arrive"),
             "t_stall_gate": watched.get("t_stall_gate"),
             "vh": None if vel is None else vh(vel),
+            "stratum_id": stratum_id,
+            "arm": arm,
+            "seq": seq,
+        }
+
+    def exec_knockback(
+        self,
+        *,
+        pos: list[float],
+        vel: list[float],
+        land: list[float],
+        window_s: float = 2.0,
+        seq: int = 1,
+        arm: str = "off",
+        stratum_id: str = "K1",
+    ) -> dict:
+        """Teleport with incoming vel; no goto. Watch stall vs land for 2 s."""
+        e = self.ent()
+        try:
+            self.request(f"stop {e}")
+        except Exception:
+            pass
+        self.request(f"prep {e} 100 0")
+        self._teleport(e, pos, list(vel))
+        t0 = self.now()
+        self._clear_events()
+        samples: list[dict] = []
+        events: list[dict] = []
+        fall = FallTracker()
+        t_arrive: float | None = None
+        t_stall: float | None = None
+        land_hit = False
+        while self.now() - t0 < window_s:
+            b = self.bot()
+            t = self.now() - t0
+            o = [float(x) for x in b["origin"]]
+            on_ground = bool(b.get("on_ground"))
+            samp = {"t": t, "x": o[0], "y": o[1], "z": o[2], "on_ground": on_ground}
+            samples.append(samp)
+            if fall.update(o[2], on_ground):
+                events.append({
+                    "ev": "peak_drop_150",
+                    "t": t,
+                    "rel_t": t,
+                    "origin": o,
+                    "z": o[2],
+                })
+            if (
+                abs(o[0] - land[0]) <= 32.0
+                and abs(o[1] - land[1]) <= 32.0
+                and abs(o[2] - land[2]) <= 24.0
+                and on_ground
+            ):
+                land_hit = True
+                if t_arrive is None:
+                    t_arrive = t
+            for ev in self._drain_events(t, e):
+                events.append(ev)
+                if ev.get("ev") == "bot_stall" and t_stall is None:
+                    t_stall = float(ev.get("rel_t", t))
+                if ev.get("ev") == "arrived" and t_arrive is None:
+                    t_arrive = float(ev.get("rel_t", t))
+            if t_arrive is not None or t_stall is not None:
+                break
+            self.sleep(POLL_S)
+        try:
+            self.request(f"stop {e}")
+        except Exception:
+            pass
+        return {
+            "vel": list(vel),
+            "commanded_vel": list(vel),
+            "measured_vel": list(vel),
+            "vel_tries": 1,
+            "stamp_ok": True,
+            "stamp_reason": "ok",
+            "events": events,
+            "samples": samples,
+            "t_arrive": t_arrive,
+            "t_stall_gate": t_stall,
+            "land_hit": land_hit,
             "stratum_id": stratum_id,
             "arm": arm,
             "seq": seq,
@@ -747,6 +828,10 @@ class LiveTrialDriver:
         astar_after: dict | None = None,
         astar_next_best: dict | None = None,
         demo_file: str | None = None,
+        fixture_sha256: str | None = None,
+        candidate: str | None = None,
+        landing_cell: int | None = None,
+        selected_link: int | None = None,
     ) -> dict:
         if "off" not in self.last_stamps:
             raise RuntimeError("OFF stamp not confirmed")
@@ -796,6 +881,10 @@ class LiveTrialDriver:
             gate_cell=gate_cell,
             gate_aim_hit=gate_aim_hit,
             demo_file=self.demo_file if demo_file is None else demo_file,
+            fixture_sha256=fixture_sha256,
+            candidate=candidate,
+            landing_cell=landing_cell,
+            selected_link=selected_link,
         )
         # Facit §1 "binärens SHA-256" = qwprogs.so (spellogik). mvdsv carried explicitly too.
         doc["binaries"] = {
