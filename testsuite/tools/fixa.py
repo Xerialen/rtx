@@ -164,14 +164,28 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
 
-    if args.recept != "west-shelf":
-        print(f"unknown recipe {args.recept!r} — west-shelf is the only recipe", file=sys.stderr)
+    from d_recipe import REGISTERED_IDS
+
+    if args.recept not in REGISTERED_IDS:
+        print(
+            f"unknown recipe {args.recept!r} — registered: {sorted(REGISTERED_IDS)}",
+            file=sys.stderr,
+        )
         return 2
     if args.game_port in FORBIDDEN_GAME:
         print(f"game port {args.game_port} is RA/main", file=sys.stderr)
         return 2
 
-    recipe = load_recipe(args.fixture)
+    fixture = args.fixture
+    if fixture is None and args.recept != "west-shelf":
+        fixture = Path(__file__).resolve().parent / "recept" / f"{args.recept}.json"
+    recipe = load_recipe(fixture)
+    if recipe.get("id") != args.recept:
+        print(
+            f"fixture id {recipe.get('id')!r} != --recept {args.recept!r}",
+            file=sys.stderr,
+        )
+        return 2
     mode_s = "dry-run" if args.dry_run else "apply" if args.apply else "undo"
 
     if mode_s in {"apply", "undo"}:

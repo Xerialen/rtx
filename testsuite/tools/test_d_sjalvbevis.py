@@ -6,7 +6,17 @@ from __future__ import annotations
 import unittest
 
 from d_kvitto import WEST_SHELF_OFF
-from d_recipe import load_avsett_drop, on_expected
+from pathlib import Path
+
+from d_recipe import (
+    REGISTERED_IDS,
+    gates_registered,
+    load_avsett_drop,
+    load_gates,
+    load_recipe,
+    on_expected,
+    recipe_gate,
+)
 import d_sjalvbevis as drill
 from d_sjalvbevis import score_heldout, score_t0
 from d_strata import (
@@ -793,6 +803,63 @@ class AvsettDropTests(unittest.TestCase):
         )
         reasons = runner.preflight()
         self.assertTrue(any("avsett_drop" in r for r in reasons), reasons)
+
+
+class Haz1462FixtureTests(unittest.TestCase):
+    def test_registered_haz_recipes_load(self):
+        here = Path(__file__).resolve().parent / "recept"
+        for rid in ("haz1462-k1", "haz1462-k2", "haz1462-k3"):
+            self.assertIn(rid, REGISTERED_IDS)
+            doc = load_recipe(here / f"{rid}.json")
+            self.assertEqual(doc["id"], rid)
+            self.assertEqual(doc["taxonomy_class"], "slapp_lank")
+            self.assertIsNone(doc["on_expected"])
+            with self.assertRaises(ValueError) as ctx:
+                on_expected(doc)
+            self.assertIn("ON expected missing", str(ctx.exception))
+
+    def test_haz_gates_point_at_1462_geometry(self):
+        gates = load_gates(Path(__file__).resolve().parent / "recept" / "haz1462-gates.json")
+        for rid in ("haz1462-k1", "haz1462-k2", "haz1462-k3"):
+            why = gates_registered(gates, WEST_SHELF_OFF["graph_stamp"], rid)
+            self.assertIsNone(why, why)
+            block = recipe_gate(gates, rid)
+            self.assertIsNotNone(block)
+            self.assertIn(1416, block["cell_ids"])
+            self.assertIn(1462, block["cell_ids"])
+
+    def test_haz_missing_gates_fail_closed(self):
+        recipe = load_recipe(Path(__file__).resolve().parent / "recept" / "haz1462-k1.json")
+        runner = drill.DrillRunner(
+            recipe=recipe,
+            gates=_gates(),
+            exec_trial=lambda **k: {},
+            ctl_port=27996,
+            game_port=27591,
+            off_profile={"rtx_nav_patch": "0"},
+            on_profile={"rtx_nav_patch": "1"},
+        )
+        reasons = runner.preflight()
+        self.assertTrue(
+            any("haz1462-k1" in r and "gate" in r for r in reasons),
+            reasons,
+        )
+        self.assertTrue(any("ON expected missing" in r for r in reasons), reasons)
+        self.assertTrue(any("avsett_drop" in r for r in reasons), reasons)
+
+    def test_unknown_recipe_id_refused(self):
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "x.json"
+            p.write_text(
+                json.dumps({"id": "not-a-recipe", "off": dict(WEST_SHELF_OFF)}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                load_recipe(p)
+            self.assertIn("unknown recipe", str(ctx.exception))
 
 
 class _AliasGuard(unittest.TestCase):

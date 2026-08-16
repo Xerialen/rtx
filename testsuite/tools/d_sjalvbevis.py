@@ -25,6 +25,7 @@ from d_recipe import (  # noqa: E402
     load_gates,
     load_recipe,
     on_expected,
+    recipe_gate,
 )
 from d_strata import (  # noqa: E402
     AVSETT_DROP_STRATA,
@@ -251,7 +252,8 @@ class DrillRunner:
             on_expected(self.recipe)
         except ValueError as exc:
             reasons.append(str(exc))
-        gwhy = gates_registered(self.gates, self.recipe["off"]["graph_stamp"])
+        rid = self.recipe.get("id") or "west-shelf"
+        gwhy = gates_registered(self.gates, self.recipe["off"]["graph_stamp"], rid)
         if gwhy:
             reasons.append(gwhy)
         pwhy = profiles_ok(self.off_profile, self.on_profile)
@@ -260,7 +262,7 @@ class DrillRunner:
         geom = self.avsett_drop
         if geom is None:
             try:
-                geom = load_avsett_drop()
+                geom = load_avsett_drop(recipe_id=rid)
                 self.avsett_drop = geom
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 reasons.append(f"avsett_drop fixture unreadable: {exc}")
@@ -276,7 +278,11 @@ class DrillRunner:
         return reasons
 
     def _gate(self) -> dict:
-        return self.gates["gates"]["west-shelf"]
+        rid = self.recipe.get("id") or "west-shelf"
+        block = recipe_gate(self.gates, rid)
+        if block is None:
+            raise RuntimeError(f"gate file missing gates.{rid}")
+        return block
 
     def _run_one(
         self,
@@ -441,7 +447,11 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     recipe = load_recipe(args.fixture)
     gates = load_gates(args.gates)
-    avsett = load_avsett_drop(args.avsett_drop)
+    rid = recipe.get("id") or "west-shelf"
+    try:
+        avsett = load_avsett_drop(args.avsett_drop, recipe_id=rid)
+    except (OSError, ValueError, json.JSONDecodeError):
+        avsett = None
 
     from d_live_driver import (  # local: tools/ is already on sys.path
         DEFAULT_LOCK,
@@ -504,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
     locus, _ = heldout_stratum_at(gates)
     driver = LiveTrialDriver(
         ctl,
-        gate=gates["gates"]["west-shelf"],
+        gate=recipe_gate(gates, recipe.get("id") or "west-shelf") or {},
         recipe=recipe,
         lock_token=lock["token"],
         qwprogs_sha=qw,
@@ -690,7 +700,7 @@ def _run_live_body(driver, recipe: dict, gates: dict, lock: dict, args) -> int:
         off_profile={"rtx_nav_patch": "0"},
         on_profile={"rtx_nav_patch": "1"},
         ensure_arm=driver.ensure_arm,
-        avsett_drop=load_avsett_drop(args.avsett_drop),
+        avsett_drop=avsett,
     )
     report = runner.run()
     if driver.arm == "on":

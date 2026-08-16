@@ -1,0 +1,50 @@
+{
+  "recipe": "haz1462",
+  "graph_stamp": "906595427771298736",
+  "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+  "heldout_stratum_at": "start",
+  "t0_budget_s": 1.10,
+  "unsealed": true,
+  "note": "Draft 1462 geometry from HAZ-1462 diagnosis (1416/1461/1462, leave 10447). Terra seals the tournament facit in parallel — this file only lets the driver point at the locus. Not west-shelf. Not ON-expected.",
+  "gates": {
+    "haz1462-k1": {
+      "cell_ids": [1416, 1461, 1462],
+      "cell_origins": [
+        [288.0, -844.0, 264.0],
+        [328.0, -800.0, 264.0],
+        [320.0, -768.0, -16.0]
+      ],
+      "leave_link": 10447,
+      "next_high_walk": 10446,
+      "parallel_drop": 10444,
+      "tolerance_xy": 24.0,
+      "tolerance_z": 16.0
+    },
+    "haz1462-k2": {
+      "cell_ids": [1416, 1461, 1459, 1462],
+      "cell_origins": [
+        [288.0, -844.0, 264.0],
+        [328.0, -800.0, 264.0],
+        [323.0, -834.0, 264.0],
+        [320.0, -768.0, -16.0]
+      ],
+      "leave_link": 10447,
+      "next_high_walk": 10446,
+      "parallel_drop": 10444,
+      "tolerance_xy": 24.0,
+      "tolerance_z": 16.0
+    },
+    "haz1462-k3": {
+      "cell_ids": [1416, 1461, 1462],
+      "cell_origins": [
+        [288.0, -844.0, 264.0],
+        [328.0, -800.0, 264.0],
+        [320.0, -768.0, -16.0]
+      ],
+      "leave_link": 10447,
+      "parallel_drop": 10444,
+      "tolerance_xy": 24.0,
+      "tolerance_z": 16.0
+    }
+  }
+}

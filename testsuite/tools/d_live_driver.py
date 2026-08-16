@@ -325,7 +325,8 @@ class LiveTrialDriver:
 
     def identity(self) -> dict:
         """Counts + both hash levels via dry-run (no mutation)."""
-        d = self.request("fixa west-shelf dry-run")["data"]
+        rid = self.recipe.get("id") or "west-shelf"
+        d = self.request(f"fixa {rid} dry-run")["data"]
         return {
             "cells": int(d["cells"]),
             "links": int(d["links"]),
@@ -365,7 +366,8 @@ class LiveTrialDriver:
         if not self.lock_token:
             raise RuntimeError("fixa apply requires lock_token")
         self.quiesce()
-        cmd = f"fixa west-shelf apply lock {self.lock_token}"
+        rid = self.recipe.get("id") or "west-shelf"
+        cmd = f"fixa {rid} apply lock {self.lock_token}"
         d = self.request(cmd)["data"]
         if d.get("outcome") not in {"applied", "already_meshed"}:
             raise RuntimeError(f"fixa apply failed: {d}")
@@ -375,7 +377,8 @@ class LiveTrialDriver:
         if not self.lock_token:
             raise RuntimeError("fixa undo requires lock_token")
         self.quiesce()
-        cmd = f"fixa west-shelf undo lock {self.lock_token}"
+        rid = self.recipe.get("id") or "west-shelf"
+        cmd = f"fixa {rid} undo lock {self.lock_token}"
         d = self.request(cmd)["data"]
         if d.get("outcome") != "undone":
             raise RuntimeError(

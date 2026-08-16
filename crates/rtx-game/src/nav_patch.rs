@@ -280,8 +280,29 @@ pub const HAZ1462_K2: ShelfPatch = ShelfPatch {
     retype_links: &[],
 };
 
+/// HAZ-1462 k3: retype Walk 10447 → Drop (same endpoints 1416→1461).
+/// Cause class is still `slapp_lank` (fable-qa attested); this is a
+/// kind-variant remedy, not `lagg_lank` (Drop 10444 already exists).
+pub const HAZ1462_K3: ShelfPatch = ShelfPatch {
+    map: "dm3",
+    name: "haz1462-k3",
+    cells: &[],
+    drops: &[],
+    snap_z: 264.0,
+    pin: WEST_SHELF_PIN,
+    no_auto_walk: false,
+    remove_links: &[],
+    retype_links: &[RetypeLink {
+        id: 10447,
+        from: 1416,
+        to: 1461,
+        old_kind: LinkKind::Walk,
+        new_kind: LinkKind::Drop,
+    }],
+};
+
 /// HAZ-1462 tournament recipes. Not walked by [`apply_for_map`].
-pub const HAZ1462_RECIPES: &[ShelfPatch] = &[HAZ1462_K1, HAZ1462_K2];
+pub const HAZ1462_RECIPES: &[ShelfPatch] = &[HAZ1462_K1, HAZ1462_K2, HAZ1462_K3];
 
 /// Endpoint resolution bounds for a drop's `to` point — same rationale and values as the control
 /// channel's `PlanDrop`: a target with nothing near it must be an error, not a silent snap to
@@ -777,6 +798,7 @@ mod tests {
         assert!(patch_by_name("west-shelf").is_some());
         assert!(patch_by_name("haz1462-k1").is_some());
         assert!(patch_by_name("haz1462-k2").is_some());
+        assert!(patch_by_name("haz1462-k3").is_some());
         assert!(patch_by_name("no-such").is_none());
         assert_eq!(HAZ1462_K1.remove_links.len(), 1);
         assert_eq!(HAZ1462_K1.remove_links[0].id, 10447);
@@ -791,6 +813,11 @@ mod tests {
         assert_eq!(HAZ1462_K2.remove_links[1].from, 1416);
         assert_eq!(HAZ1462_K2.remove_links[1].to, 1459);
         assert_eq!(HAZ1462_K2.remove_links[1].kind, LinkKind::Walk);
+        assert!(HAZ1462_K3.remove_links.is_empty());
+        assert_eq!(HAZ1462_K3.retype_links.len(), 1);
+        assert_eq!(HAZ1462_K3.retype_links[0].id, 10447);
+        assert_eq!(HAZ1462_K3.retype_links[0].old_kind, LinkKind::Walk);
+        assert_eq!(HAZ1462_K3.retype_links[0].new_kind, LinkKind::Drop);
         assert!(RAM_RAIL.no_auto_walk, "ram-rail must not auto-Walk");
         assert!(!PATCHES[0].no_auto_walk, "west-shelf keeps auto-Walk");
         assert!(!RAM_PREVENT.no_auto_walk);

@@ -286,6 +286,15 @@ class RefuseTests(unittest.TestCase):
         from d_live_driver import RESTART
         self.assertIn("reset-failed", RESTART)
 
+    def test_fixa_uses_recipe_id(self):
+        drv, ctl, _ = _driver()
+        drv.recipe = dict(drv.recipe)
+        drv.recipe["id"] = "haz1462-k1"
+        drv.identity()
+        self.assertTrue(any(c.startswith("fixa haz1462-k1") for c in ctl.cmds), ctl.cmds)
+        drv.apply()
+        self.assertTrue(any("fixa haz1462-k1 apply" in c for c in ctl.cmds), ctl.cmds)
+
 
 class SequenceTests(unittest.TestCase):
     def test_t0_teleport_is_rest(self):

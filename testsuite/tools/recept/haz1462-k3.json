@@ -1,0 +1,20 @@
+{
+  "id": "haz1462-k3",
+  "map": "dm3",
+  "taxonomy_class": "slapp_lank",
+  "evidence": "HAZ-1462 k3: retype Walk 10447 (1416→1461, z=264) to Drop. Class is slapp_lank (fable-qa attested leave-link), not lagg_lank — Drop 10444 1416→1417 already exists; this is a kind-variant of the same slack walk, not a missing drop. Not ignorera_avsett (that class is scoring, not mesh mutation). Same-z Drop is the kantsemantikbyte. ON-expected null until pinning. deepseek-haz1462-diagnos.md; grok2-haz1462-diagnos-dom.md §4.",
+  "off": {
+    "cells": 5977,
+    "links": 48207,
+    "rj_links": 0,
+    "graph_stamp": "906595427771298736",
+    "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"
+  },
+  "on_expected": null,
+  "on_expected_note": "null until the pinning step measures live after-stamp. Never copy observed into expected.",
+  "retype_links": [
+    {"id": 10447, "from": 1416, "to": 1461, "old_kind": "walk", "new_kind": "drop"}
+  ],
+  "source": {"cell": 1416, "origin": [288.0, -844.0, 264.0]},
+  "target": {"cell": 1461, "origin": [328.0, -800.0, 264.0]}
+}
