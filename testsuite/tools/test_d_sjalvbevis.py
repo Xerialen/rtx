@@ -182,7 +182,7 @@ class DrillTests(unittest.TestCase):
         self.assertIn("RA/main", runner.preflight()[0])
 
     def test_perfect_t0_and_heldout(self):
-        def exec_trial(stratum_id, arm, spec, seq):
+        def exec_trial(stratum_id, arm, spec, seq, match_vel=None):
             if stratum_id == "T0":
                 vel = [0, 0, 0]
                 if arm == "off":
@@ -238,7 +238,7 @@ class DrillTests(unittest.TestCase):
         self.assertFalse(any(i.startswith("T0-") and "A1" in i for i in ids))
 
     def test_bad_stratum_not_counted(self):
-        def exec_trial(stratum_id, arm, spec, seq):
+        def exec_trial(stratum_id, arm, spec, seq, match_vel=None):
             return {"vel": [0, 0, 0], "events": [], "samples": []}  # T0 ok, heldout |vh|=0 fail
 
         runner = drill.DrillRunner(
@@ -438,7 +438,7 @@ class GateLocusTests(unittest.TestCase):
         self.assertTrue(any("heldout_stratum_at" in r for r in reasons), reasons)
 
     def test_pair_mismatch_is_replaced_not_counted(self):
-        def exec_trial(stratum_id, arm, spec, seq):
+        def exec_trial(stratum_id, arm, spec, seq, match_vel=None):
             if stratum_id == "T0":
                 vel = [0, 0, 0]
                 if arm == "off":
@@ -490,7 +490,7 @@ class GateLocusTests(unittest.TestCase):
         self.assertFalse(score_heldout(rep.attempts))
 
     def test_pair_mismatch_then_valid_replacement_counts(self):
-        def exec_trial(stratum_id, arm, spec, seq):
+        def exec_trial(stratum_id, arm, spec, seq, match_vel=None):
             if stratum_id == "T0":
                 vel = [0, 0, 0]
                 if arm == "off":
@@ -539,6 +539,106 @@ class GateLocusTests(unittest.TestCase):
         self.assertTrue(any(a.attempt_id == "A1-OFF-06" for a in a1_valid))
         self.assertTrue(rep.valid)
         self.assertTrue(score_heldout(rep.attempts))
+
+    def test_off_stamp_fail_skips_on(self):
+        calls = []
+
+        def exec_trial(stratum_id, arm, spec, seq, match_vel=None):
+            calls.append((stratum_id, arm, seq, match_vel is not None))
+            if stratum_id == "T0":
+                vel = [0, 0, 0]
+                if arm == "off":
+                    return {
+                        "vel": vel,
+                        "measured_vel": vel,
+                        "events": [{"ev": "bot_stall", "cell": 9001, "origin": [-865.0, -48.0, 90.0]}],
+                        "samples": [{"z": 90.0, "on_ground": True}],
+                    }
+                return {
+                    "vel": vel,
+                    "measured_vel": vel,
+                    "events": [{"ev": "arrived"}],
+                    "samples": [{"z": -16.0, "on_ground": True}],
+                    "t_arrive": 0.4,
+                }
+            return {
+                "vel": [0, 0, 0],
+                "measured_vel": [0, 0, 0],
+                "stamp_ok": False,
+                "stamp_reason": "start-vel out of stratum",
+                "events": [],
+                "samples": [],
+            }
+
+        runner = drill.DrillRunner(
+            recipe=_recipe_with_on(),
+            gates=_gates(stratum_at="start"),
+            exec_trial=exec_trial,
+            ctl_port=27996,
+            game_port=27591,
+            off_profile={"rtx_nav_patch": "0"},
+            on_profile={"rtx_nav_patch": "1"},
+        )
+        rep = runner.run()
+        heldout_on = [c for c in calls if c[0] != "T0" and c[1] == "on"]
+        self.assertEqual(heldout_on, [])
+        self.assertFalse(score_heldout(rep.attempts))
+
+    def test_on_stamp_exhaustion_replaces_without_watch(self):
+        def exec_trial(stratum_id, arm, spec, seq, match_vel=None):
+            if stratum_id == "T0":
+                vel = [0, 0, 0]
+                if arm == "off":
+                    return {
+                        "vel": vel,
+                        "measured_vel": vel,
+                        "events": [{"ev": "bot_stall", "cell": 9001, "origin": [-865.0, -48.0, 90.0]}],
+                        "samples": [{"z": 90.0, "on_ground": True}],
+                    }
+                return {
+                    "vel": vel,
+                    "measured_vel": vel,
+                    "events": [{"ev": "arrived"}],
+                    "samples": [{"z": -16.0, "on_ground": True}],
+                    "t_arrive": 0.4,
+                }
+            sign = -1.0 if spec["goal"][0] < spec["start"][0] else 1.0
+            mid = spec["vh_lo"] + 10
+            vel = [sign * mid, 0.0, 0.0]
+            extra = {
+                "vel": vel,
+                "measured_vel": vel,
+                "samples": [{"z": 0.0, "on_ground": True}],
+            }
+            if arm == "off":
+                return {**extra, "events": [], "stamp_ok": True}
+            self.assertIsNotNone(match_vel)
+            return {
+                **extra,
+                "vel": [vel[0] + 40.0, 0.0, 0.0],
+                "measured_vel": [vel[0] + 40.0, 0.0, 0.0],
+                "stamp_ok": False,
+                "stamp_reason": "start-vel stamp exhausted vs partner (8 tries, tol=5.0)",
+                "events": [],
+            }
+
+        runner = drill.DrillRunner(
+            recipe=_recipe_with_on(),
+            gates=_gates(stratum_at="start"),
+            exec_trial=exec_trial,
+            ctl_port=27996,
+            game_port=27591,
+            off_profile={"rtx_nav_patch": "0"},
+            on_profile={"rtx_nav_patch": "1"},
+        )
+        rep = runner.run()
+        ons = [a for a in rep.attempts if a.stratum != "T0" and a.arm == "on"]
+        self.assertTrue(ons)
+        self.assertTrue(all(not a.valid for a in ons))
+        self.assertTrue(all(a.events == [] for a in ons))
+        self.assertTrue(any("stamp" in a.reason for a in ons))
+        self.assertTrue(any("could not assemble" in r for r in rep.invalid_reasons))
+        self.assertFalse(score_heldout(rep.attempts))
 
     def test_missing_stratum_at_classify_fail_closed(self):
         gate = _gates()["gates"]["west-shelf"]

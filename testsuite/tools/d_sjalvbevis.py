@@ -278,11 +278,19 @@ class DrillRunner:
     def _gate(self) -> dict:
         return self.gates["gates"]["west-shelf"]
 
-    def _run_one(self, stratum_id: str, arm: str, seq: int) -> Attempt:
+    def _run_one(
+        self,
+        stratum_id: str,
+        arm: str,
+        seq: int,
+        match_vel: list[float] | None = None,
+    ) -> Attempt:
         spec = STRATA[stratum_id]
         if self.ensure_arm is not None:
             self.ensure_arm(arm)
-        raw = self.exec_trial(stratum_id=stratum_id, arm=arm, spec=spec, seq=seq)
+        raw = self.exec_trial(
+            stratum_id=stratum_id, arm=arm, spec=spec, seq=seq, match_vel=match_vel,
+        )
         locus, _ = heldout_stratum_at(self.gates)
         att = classify_trial(
             stratum_id=stratum_id,
@@ -301,6 +309,9 @@ class DrillRunner:
         att.attempt_id = f"{stratum_id}-{arm.upper()}-{seq:02d}"
         raw_vel = raw.get("measured_vel") if raw.get("measured_vel") is not None else raw.get("vel")
         att.start_vel = list(raw_vel) if raw_vel is not None else None
+        if raw.get("stamp_ok") is False:
+            att.valid = False
+            att.reason = raw.get("stamp_reason") or "start-vel stamp failed"
         return att
 
     def run(self) -> DrillReport:
@@ -329,14 +340,19 @@ class DrillRunner:
                     extra.append(f"{sid}: could not assemble {need} valid pairs ({seq - 1} attempts)")
                     break
                 off_att = self._run_one(sid, "off", seq)
-                on_att = self._run_one(sid, "on", seq)
+                if not off_att.valid:
+                    # Fail-closed at OFF stamp: do not burn an ON watch.
+                    attempts.append(off_att)
+                    continue
+                on_att = self._run_one(sid, "on", seq, match_vel=off_att.start_vel)
                 pok, pwhy = pair_start_vel_ok(off_att.start_vel, on_att.start_vel)
-                if not pok or not off_att.valid or not on_att.valid:
-                    if not pok:
-                        off_att.valid = False
+                if not pok or not on_att.valid:
+                    if not pok and on_att.valid:
                         on_att.valid = False
-                        off_att.reason = pwhy
                         on_att.reason = pwhy
+                    off_att.valid = False
+                    if "stamp" not in (off_att.reason or ""):
+                        off_att.reason = on_att.reason
                     attempts.append(off_att)
                     attempts.append(on_att)
                     continue
@@ -643,8 +659,8 @@ def _run_live(driver, recipe: dict, gates: dict, lock: dict, args) -> int:
         return raw
 
     class _Live(DrillRunner):
-        def _run_one(self, stratum_id: str, arm: str, seq: int):
-            att = super()._run_one(stratum_id, arm, seq)
+        def _run_one(self, stratum_id: str, arm: str, seq: int, match_vel=None):
+            att = super()._run_one(stratum_id, arm, seq, match_vel=match_vel)
             write_one(att, last.get("raw") or {})
             return att
 

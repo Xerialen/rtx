@@ -75,6 +75,8 @@ class MockCtl:
         self.prep_decel_until: float | None = None
         self.prep_decel_vel = [32.4, 0.0, 0.0]
         self.emulate_prep_decel = False
+        self.vel_scale = 1.0
+        self.partner_delta = 0.0
         recipe = load_recipe(HERE / "recept" / "west-shelf.json")
         self.off = dict(recipe["off"])
         self.on = on_expected(recipe)
@@ -175,7 +177,12 @@ class MockCtl:
         if verb == "teleport":
             self.origin = [float(parts[2]), float(parts[3]), float(parts[4])]
             if len(parts) >= 8:
-                self.vel = [float(parts[5]), float(parts[6]), float(parts[7])]
+                raw = [float(parts[5]), float(parts[6]), float(parts[7])]
+                self.vel = [
+                    raw[0] * self.vel_scale + self.partner_delta,
+                    raw[1] * self.vel_scale,
+                    raw[2] * self.vel_scale,
+                ]
             self.on_ground = True
             self._need_first_sample = True
             # A rest-teleport during leftover decel / onto the T0 shelf
@@ -669,19 +676,53 @@ class StartVelTests(unittest.TestCase):
         self.assertTrue(vel_components_within(a["measured_vel"], a["commanded_vel"], VEL_ALIGN))
         self.assertTrue(vel_components_within(b["measured_vel"], b["commanded_vel"], VEL_ALIGN))
 
-    def test_stamp_retries_when_first_sample_misses(self):
+    def test_partner_pairing_converges_with_reshape(self):
+        """Engine reshapes commanded speed (air/friction). Pair against OFF measured."""
+        drv, ctl, _ = _driver(stratum_at="start")
+        ctl.vel_scale = 0.85
+        spec = STRATA["A2"]
+        off = drv.exec_trial(stratum_id="A2", arm="off", spec=spec, seq=1, window_s=0.2)
+        # Old command-align would miss: reshaped vel is >5 from nominal.
+        self.assertGreater(
+            abs(off["measured_vel"][0] - off["commanded_vel"][0]), 5.0,
+        )
+        on = drv.exec_trial(
+            stratum_id="A2", arm="on", spec=spec, seq=1, window_s=0.2,
+            match_vel=off["measured_vel"],
+        )
+        self.assertTrue(on["stamp_ok"], on.get("stamp_reason"))
+        ok, why = pair_start_vel_ok(off["measured_vel"], on["measured_vel"])
+        self.assertTrue(ok, why)
+        self.assertTrue(any(c.startswith("goto ") for c in ctl.cmds))
+
+    def test_stamp_exhaustion_skips_watch(self):
         drv, ctl, _ = _driver(stratum_at="start")
         spec = STRATA["A2"]
-        # wait_ready + land polls, then first vel-stamp's two samples stay at rest.
+        off = drv.exec_trial(stratum_id="A2", arm="off", spec=spec, seq=1, window_s=0.2)
+        ctl.partner_delta = 40.0
+        ctl.cmds.clear()
+        on = drv.exec_trial(
+            stratum_id="A2", arm="on", spec=spec, seq=1, window_s=0.2,
+            match_vel=off["measured_vel"],
+        )
+        self.assertFalse(on["stamp_ok"])
+        self.assertEqual(on["vel_tries"], 8)
+        self.assertEqual(on["events"], [])
+        self.assertFalse(any(c.startswith("goto ") for c in ctl.cmds))
+
+    def test_on_partner_retries_when_first_sample_misses(self):
+        drv, ctl, _ = _driver(stratum_at="start")
+        spec = STRATA["A2"]
+        off = drv.exec_trial(stratum_id="A2", arm="off", spec=spec, seq=1, window_s=0.2)
         ctl.ignore_integrate = 8
-        raw = drv.exec_trial(stratum_id="A2", arm="off", spec=spec, seq=1, window_s=0.2)
-        self.assertGreaterEqual(raw["vel_tries"], 2)
-        self.assertTrue(vel_components_within(raw["measured_vel"], raw["commanded_vel"], VEL_ALIGN))
-        stamped = [
-            c for c in ctl.cmds
-            if c.startswith("teleport ") and not c.rstrip().endswith("0.0 0.0 0.0")
-        ]
-        self.assertGreaterEqual(len(stamped), 2)
+        on = drv.exec_trial(
+            stratum_id="A2", arm="on", spec=spec, seq=1, window_s=0.2,
+            match_vel=off["measured_vel"],
+        )
+        self.assertGreaterEqual(on["vel_tries"], 2)
+        self.assertTrue(on["stamp_ok"], on.get("stamp_reason"))
+        ok, why = pair_start_vel_ok(off["measured_vel"], on["measured_vel"])
+        self.assertTrue(ok, why)
 
     def test_sample_window_is_not_the_divisor(self):
         self.assertAlmostEqual(VEL_SAMPLE_S, 0.04)

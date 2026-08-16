@@ -31,10 +31,12 @@ from d_recipe import on_expected
 from d_strata import (
     FORBIDDEN_CTL,
     FORBIDDEN_GAME,
+    PAIR_VEL_TOL,
     STRATA,
     STRATUM_AT_START,
     FallTracker,
     in_gate,
+    stratum_ok,
     vh,
 )
 from verify_d_kvitto import verify
@@ -48,7 +50,7 @@ T0_SETTLE_S = 0.15
 # time (StatusResp.time), not this constant — R4's nominal-dt regression
 # was v·(actual/nominal−1) on frame-quantized ticks.
 VEL_SAMPLE_S = 0.04
-VEL_ALIGN = 2.5  # retry until |meas-cmd| ≤ this, so a pair is ≤ 5.0
+VEL_ALIGN = 2.5  # leftover: command-align margin (pair rule is PAIR_VEL_TOL)
 VEL_RETRIES = 8
 PREP_CVARS = ("rtx_telemetry", "rtx_bot_pacifist")
 # Telemetry on also emits Pmove at tick rate. Keep stall/arrived/drop only.
@@ -454,28 +456,41 @@ class LiveTrialDriver:
         s1 = self.bot()
         return origin_vel(s0["origin"], s1["origin"], status_dt(s0, s1))
 
-    def stamp_start_vel(self, e: int, start: list[float], cmd_vel: list[float]) -> tuple[list[float], int]:
+    def stamp_start_vel(
+        self,
+        e: int,
+        start: list[float],
+        cmd_vel: list[float],
+        *,
+        align_to: list[float] | None = None,
+    ) -> tuple[list[float], int, bool]:
         """Place at `start` carrying `cmd_vel` and measure on the server clock.
 
-        Divide origin-delta by StatusResp.time (not wall-clock, not the
-        nominal poll window). Frame-quantized actual dt made R4's
-        origin_vel(..., 0.04) report v·(actual/nominal−1).
-
         T0 rest is measured *after* the caller's settle window, in place —
-        a re-teleport here restarts shelf-fall / leftover decel and was
-        why every R4 T0 failed rest ≤ 1 u/s.
+        a re-teleport here restarts shelf-fall / leftover decel.
+
+        Heldout OFF (`align_to is None`): one teleport+measure. Do not
+        retry against the nominal command — the engine reshapes air and
+        friction starts.
+
+        Heldout ON (`align_to` = partner measured): re-stamp until each
+        component is within PAIR_VEL_TOL of the partner. Exhaustion is
+        fail-closed (ok=False) so the caller skips the watch.
         """
         rest = all(abs(float(c)) <= 1e-9 for c in cmd_vel)
         if rest:
-            return self.measure_origin_vel(), 1
+            return self.measure_origin_vel(), 1, True
+        if align_to is None:
+            self._teleport(e, start, cmd_vel)
+            return self.measure_origin_vel(), 1, True
         measured = [0.0, 0.0, 0.0]
         tries = 0
         for tries in range(1, VEL_RETRIES + 1):
             self._teleport(e, start, cmd_vel)
             measured = self.measure_origin_vel()
-            if vel_components_within(measured, cmd_vel, VEL_ALIGN):
-                break
-        return measured, tries
+            if vel_components_within(measured, align_to, PAIR_VEL_TOL):
+                return measured, tries, True
+        return measured, tries, False
 
     def exec_trial(
         self,
@@ -485,6 +500,7 @@ class LiveTrialDriver:
         spec: dict,
         seq: int,
         window_s: float | None = None,
+        match_vel: list[float] | None = None,
     ) -> dict:
         e = self.ent()
         start = spec["start"]
@@ -501,13 +517,43 @@ class LiveTrialDriver:
         # Land first so the vel-stamp is not fighting a fall from the previous trial.
         self._teleport(e, start, [0.0, 0.0, 0.0])
         self.sleep(T0_SETTLE_S if spec.get("kind") == "trap" else 0.05)
-        measured, vel_tries = self.stamp_start_vel(e, start, cmd_vel)
-        if window_s is None:
-            if spec.get("kind") == "trap":
-                window_s = float(spec["off_window_s"] if arm == "off" else spec["budget_s"] + 1.5)
-            else:
-                window_s = float(spec["budget_s"] + 5.0)
-        watched = self.watch(spec, float(window_s))
+        stamp_reason = "ok"
+        if spec.get("kind") == "trap":
+            # T0: rest after settle, always watch. Do not fail-closed here.
+            measured, vel_tries, stamp_ok = self.stamp_start_vel(e, start, cmd_vel)
+            stamp_ok = True
+        else:
+            measured, vel_tries, stamp_ok = self.stamp_start_vel(
+                e, start, cmd_vel, align_to=match_vel,
+            )
+            if stamp_ok and match_vel is None:
+                sok, swhy = stratum_ok(stratum_id, measured, spec["start"], spec["goal"])
+                if not sok:
+                    stamp_ok = False
+                    stamp_reason = swhy
+            elif not stamp_ok:
+                stamp_reason = (
+                    f"start-vel stamp exhausted vs partner ({vel_tries} tries, "
+                    f"tol={PAIR_VEL_TOL})"
+                )
+        empty_watch = {
+            "samples": [],
+            "events": [],
+            "t_arrive": None,
+            "t_stall_gate": None,
+            "gate_velocity": None,
+            "gate_cell": None,
+            "gate_origin": None,
+        }
+        if spec.get("kind") != "trap" and not stamp_ok:
+            watched = empty_watch
+        else:
+            if window_s is None:
+                if spec.get("kind") == "trap":
+                    window_s = float(spec["off_window_s"] if arm == "off" else spec["budget_s"] + 1.5)
+                else:
+                    window_s = float(spec["budget_s"] + 5.0)
+            watched = self.watch(spec, float(window_s))
         if spec.get("kind") == "trap":
             vel = measured
         elif self.stratum_at == STRATUM_AT_START:
@@ -521,6 +567,9 @@ class LiveTrialDriver:
             "commanded_vel": cmd_vel,
             "measured_vel": measured,
             "vel_tries": vel_tries,
+            "stamp_ok": stamp_ok,
+            "stamp_reason": stamp_reason,
+            "match_vel": list(match_vel) if match_vel is not None else None,
             "gate_velocity": watched.get("gate_velocity"),
             "gate_cell": watched.get("gate_cell"),
             "gate_origin": watched.get("gate_origin"),
@@ -593,6 +642,9 @@ class LiveTrialDriver:
                 "commanded_vel": raw.get("commanded_vel"),
                 "measured_vel": raw.get("measured_vel"),
                 "vel_tries": raw.get("vel_tries"),
+                "stamp_ok": raw.get("stamp_ok"),
+                "stamp_reason": raw.get("stamp_reason"),
+                "match_vel": raw.get("match_vel"),
             }
             fh.write(json.dumps(header, sort_keys=True) + "\n")
             for ev in raw.get("events") or []:
