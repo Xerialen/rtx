@@ -1378,6 +1378,11 @@ mod tests {
         ]
     }
 
+    /// Non-zero distinct taxes so a remap miss cannot hide as 0==0.
+    fn priced_edit_graph() -> NavGraph {
+        NavGraph::from_topology_priced(&edit_origins(), &edit_walks(), &[10.0, 20.0, 30.0], &[1.0, 2.0, 3.0])
+    }
+
     fn remove_patch(graph: &NavGraph, specs: &'static [RemoveLink]) -> ShelfPatch {
         ShelfPatch {
             map: "dm3",
@@ -1463,7 +1468,7 @@ mod tests {
 
     #[test]
     fn remove_link_undo_roundtrip_bit_identity() {
-        let mut g = NavGraph::from_topology(&edit_origins(), &edit_walks());
+        let mut g = priced_edit_graph();
         static SPECS: [RemoveLink; 1] = [RemoveLink {
             id: 1,
             from: 0,
@@ -1472,17 +1477,26 @@ mod tests {
         }];
         let patch = remove_patch(&g, &SPECS);
         let before = g.clone();
+        assert_eq!(g.link_hazard_hp(1), 20.0);
+        assert_eq!(g.link_water_extra(1), 2.0);
         let txn = apply_txn(&patch, None, &mut g).expect("remove apply");
         assert_eq!(g.links.len(), 2);
         assert!(!g.links.iter().any(|l| l.from == 0 && l.to == 2));
         assert!(g.links.iter().any(|l| l.from == 0 && l.to == 1));
+        // id 1 is now old id 2 (1→2): tax 30/3, not old id 1's 20/2.
+        assert_eq!(g.link_hazard_hp(0), 10.0);
+        assert_eq!(g.link_water_extra(0), 1.0);
+        assert_eq!(g.link_hazard_hp(1), 30.0);
+        assert_eq!(g.link_water_extra(1), 3.0);
         txn.unapply(&mut g);
         assert!(topology_eq(&g, &before));
+        assert_eq!(g.link_hazard_hp(1), 20.0);
+        assert_eq!(g.link_water_extra(1), 2.0);
     }
 
     #[test]
     fn remove_two_links_undo_roundtrip() {
-        let mut g = NavGraph::from_topology(&edit_origins(), &edit_walks());
+        let mut g = priced_edit_graph();
         static SPECS: [RemoveLink; 2] = [
             RemoveLink {
                 id: 1,
@@ -1502,8 +1516,15 @@ mod tests {
         let txn = apply_txn(&patch, None, &mut g).expect("remove two");
         assert_eq!(g.links.len(), 1);
         assert!(g.links.iter().all(|l| l.from == 1 && l.to == 2));
+        // K2 shift-2: only old id 2 remains, at new index 0. Tax 30/3, not 10/1 or 20/2.
+        assert_eq!(g.link_hazard_hp(0), 30.0);
+        assert_eq!(g.link_water_extra(0), 3.0);
         txn.unapply(&mut g);
         assert!(topology_eq(&g, &before));
+        assert_eq!(g.link_hazard_hp(0), 10.0);
+        assert_eq!(g.link_hazard_hp(1), 20.0);
+        assert_eq!(g.link_hazard_hp(2), 30.0);
+        assert_eq!(g.link_water_extra(2), 3.0);
     }
 
     #[test]

@@ -587,6 +587,19 @@ impl NavGraph {
         graph
     }
 
+    /// Like [`from_topology`], but fills the `links`-parallel tax columns.
+    /// `from_topology` leaves them empty (`link_extra` then reads 0) — fixture
+    /// tests that must catch a remap bug have to go through here with
+    /// **non-zero** distinct values. Lengths must match `links`.
+    pub fn from_topology_priced(origins: &[Vec3], links: &[Link], hazard_hp: &[f32], water_extra: &[f32]) -> NavGraph {
+        assert_eq!(hazard_hp.len(), links.len(), "hazard_hp must be parallel to links");
+        assert_eq!(water_extra.len(), links.len(), "water_extra must be parallel to links");
+        let mut graph = Self::from_topology(origins, links);
+        graph.hazard_hp = hazard_hp.to_vec();
+        graph.water_extra = water_extra.to_vec();
+        graph
+    }
+
     /// Append a free-standing cell and index it. `nav_patch` fixture applies use this when no BSP
     /// is available; production plants go through [`plant_cell`](Self::plant_cell).
     pub fn insert_cell(&mut self, origin: Vec3) -> CellId {
@@ -4910,76 +4923,96 @@ mod tests {
         assert!(hurt > wet, "hazard pricing should add cost: hurt {hurt} !> wet {wet}");
     }
 
-    /// deepseek K1/K3 JUSTERAS: remove_links_by_id used to leave hazard_hp /
-    /// water_extra on the old indices, so ON-graph A* priced the wrong link.
+    fn walk(from: u32, to: u32, cost: f32) -> Link {
+        Link {
+            from,
+            to,
+            kind: LinkKind::Walk,
+            cost,
+        }
+    }
+
+    /// Bare `from_topology` cannot catch a remap bug: columns stay empty and
+    /// `link_extra` reads 0 for every index. grok2 K2 / Fable komplettering.
+    #[test]
+    fn from_topology_leaves_tax_columns_empty() {
+        let g = NavGraph::from_topology(&[Vec3::ZERO, Vec3::new(32.0, 0.0, 0.0)], &[walk(0, 1, 1.0)]);
+        assert!(g.hazard_hp.is_empty());
+        assert!(g.water_extra.is_empty());
+        assert_eq!(g.link_hazard_hp(0), 0.0);
+        assert_eq!(g.link_water_extra(0), 0.0);
+    }
+
+    /// deepseek K1/K3 + grok2 K2: taxes must follow the kept link after
+    /// remove of 1 id *and* of 2 ids (K2 = shift 2). Priced fixture —
+    /// non-zero distinct values — otherwise the test is green without proof.
     #[test]
     fn remove_links_remaps_hazard_hp_and_water_extra() {
-        let origins = [
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(32.0, 0.0, 0.0),
-            Vec3::new(64.0, 0.0, 0.0),
-        ];
-        let links = [
-            Link {
-                from: 0,
-                to: 1,
-                kind: LinkKind::Walk,
-                cost: 1.0,
-            },
-            Link {
-                from: 1,
-                to: 2,
-                kind: LinkKind::Walk,
-                cost: 1.0,
-            },
-            Link {
-                from: 0,
-                to: 2,
-                kind: LinkKind::Walk,
-                cost: 2.0,
-            },
-        ];
-        let mut g = NavGraph::from_topology(&origins, &links);
-        g.hazard_hp = vec![10.0, 20.0, 30.0];
-        g.water_extra = vec![1.0, 2.0, 3.0];
-        let snapshot = g.clone();
-
-        g.remove_links_by_id(&[1]).expect("remove middle");
-        assert_eq!(g.links.len(), 2);
-        assert_eq!(g.links[0].from, 0);
-        assert_eq!(g.links[0].to, 1);
-        assert_eq!(g.links[1].from, 0);
-        assert_eq!(g.links[1].to, 2);
-        assert_eq!(g.hazard_hp, vec![10.0, 30.0], "hazard_hp must follow kept links");
-        assert_eq!(g.water_extra, vec![1.0, 3.0], "water_extra must follow kept links");
-
         let costs = LinkCosts {
             hazard: Some(HazardPrice::new(100.0)),
             ..LinkCosts::default()
         };
-        // link 1 is now old link 2 (0→2): water 3 + hazard 30, not old link 1's 2/20.
-        let extra1 = g.link_extra(1, &costs);
-        let extra_old2 = snapshot.link_extra(2, &costs);
+        let origins3 = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(32.0, 0.0, 0.0),
+            Vec3::new(64.0, 0.0, 0.0),
+        ];
+        let links3 = [walk(0, 1, 1.0), walk(1, 2, 1.0), walk(0, 2, 2.0)];
+        let mut g = NavGraph::from_topology_priced(&origins3, &links3, &[10.0, 20.0, 30.0], &[1.0, 2.0, 3.0]);
         assert!(
-            (extra1 - extra_old2).abs() < 1e-5,
-            "link_extra after remove must match the kept link's old price ({extra1} vs {extra_old2})"
+            g.hazard_hp.iter().all(|&x| x > 0.0) && g.water_extra.iter().all(|&x| x > 0.0),
+            "fixture must carry non-zero taxes"
         );
-        let extra0 = g.link_extra(0, &costs);
-        let extra_old0 = snapshot.link_extra(0, &costs);
-        assert!((extra0 - extra_old0).abs() < 1e-5);
+        let snap1 = g.clone();
 
-        g = snapshot.clone();
+        g.remove_links_by_id(&[1]).expect("remove 1 id");
+        assert_eq!(g.links.len(), 2);
+        assert_eq!((g.links[0].from, g.links[0].to), (0, 1));
+        assert_eq!((g.links[1].from, g.links[1].to), (0, 2));
+        assert_eq!(g.hazard_hp, vec![10.0, 30.0]);
+        assert_eq!(g.water_extra, vec![1.0, 3.0]);
+        assert!((g.link_extra(0, &costs) - snap1.link_extra(0, &costs)).abs() < 1e-5);
+        assert!(
+            (g.link_extra(1, &costs) - snap1.link_extra(2, &costs)).abs() < 1e-5,
+            "after 1-id remove, new[1] must be old[2]'s tax, not old[1]'s"
+        );
+
+        g = snap1.clone();
         assert_eq!(g.hazard_hp, vec![10.0, 20.0, 30.0]);
         assert_eq!(g.water_extra, vec![1.0, 2.0, 3.0]);
-        assert_eq!(g.links.len(), 3);
 
-        // Empty columns stay empty (no panic, still read as 0).
-        let mut dry = snapshot;
+        // K2 = two ids (10447+10446) ⇒ shift 2. Four links, drop the first two.
+        let origins4 = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(32.0, 0.0, 0.0),
+            Vec3::new(64.0, 0.0, 0.0),
+            Vec3::new(96.0, 0.0, 0.0),
+        ];
+        let links4 = [walk(0, 1, 1.0), walk(1, 2, 1.0), walk(2, 3, 1.0), walk(0, 3, 2.0)];
+        let mut g2 =
+            NavGraph::from_topology_priced(&origins4, &links4, &[11.0, 22.0, 33.0, 44.0], &[1.0, 2.0, 3.0, 4.0]);
+        let snap2 = g2.clone();
+        g2.remove_links_by_id(&[0, 1]).expect("remove 2 ids");
+        assert_eq!(g2.links.len(), 2);
+        assert_eq!((g2.links[0].from, g2.links[0].to), (2, 3));
+        assert_eq!((g2.links[1].from, g2.links[1].to), (0, 3));
+        assert_eq!(g2.hazard_hp, vec![33.0, 44.0], "shift-2: new[0]=old[2], new[1]=old[3]");
+        assert_eq!(g2.water_extra, vec![3.0, 4.0]);
+        assert!((g2.link_extra(0, &costs) - snap2.link_extra(2, &costs)).abs() < 1e-5);
+        assert!(
+            (g2.link_extra(1, &costs) - snap2.link_extra(3, &costs)).abs() < 1e-5,
+            "after 2-id remove, new[1] must be old[3]'s tax, not old[1]'s"
+        );
+
+        g2 = snap2.clone();
+        assert_eq!(g2.hazard_hp, vec![11.0, 22.0, 33.0, 44.0]);
+        assert_eq!(g2.water_extra, vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(g2.links.len(), 4);
+
+        let mut dry = snap1;
         dry.hazard_hp.clear();
         dry.water_extra.clear();
-        dry.remove_links_by_id(&[1]).expect("remove on empty columns");
-        assert!(dry.hazard_hp.is_empty());
-        assert!(dry.water_extra.is_empty());
-        assert_eq!(dry.links.len(), 2);
+        dry.remove_links_by_id(&[1]).expect("empty columns");
+        assert!(dry.hazard_hp.is_empty() && dry.water_extra.is_empty());
     }
 }
