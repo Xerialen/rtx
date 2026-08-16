@@ -705,8 +705,10 @@ class ScoringTests(unittest.TestCase):
             )
             runner.app_routes = []
             runner.run()
-            files = sorted(Path(td).glob("*.json"))
-            self.assertTrue(files, "kvitto-dir must receive per-attempt receipts")
+            files = sorted((Path(td) / "haz1462-k1").glob("*.json"))
+            self.assertTrue(files, "kvitto-dir must receive per-attempt receipts under candidate subdir")
+            self.assertFalse(list(Path(td).glob("*.json")), "receipts must not land flat in --kvitto-dir")
+            self.assertTrue(any(p.with_suffix(".jsonl").is_file() for p in files), "mock must write raw JSONL")
             landings = []
             for path in files:
                 doc = json.loads(path.read_text(encoding="utf-8"))

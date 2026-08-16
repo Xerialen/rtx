@@ -27,7 +27,14 @@ from typing import Any, Callable
 
 import json
 
-from d_kvitto import astar_from_route_resp, astar_path, make_kvitto, recipe_cvars, write_exclusive, write_kvitto
+from d_kvitto import (  # noqa: E402
+    astar_from_route_resp,
+    astar_path,
+    make_kvitto,
+    recipe_cvars,
+    write_attempt_raw_file,
+    write_kvitto,
+)
 from d_recipe import on_expected
 from d_strata import (
     FORBIDDEN_CTL,
@@ -40,7 +47,6 @@ from d_strata import (
     stratum_ok,
     vh,
 )
-from verify_d_kvitto import verify
 
 DEFAULT_QWPROGS = Path.home() / ".local/share/qw-fasttrack/runtime-tbx-d/qw/qwprogs.so"
 DEFAULT_MVDSV = Path.home() / ".local/share/qw-fasttrack/runtime-tbx-d/mvdsv"
@@ -834,37 +840,7 @@ class LiveTrialDriver:
 
     def write_attempt_raw(self, path: Path, raw: dict, *, exclusive: bool = False) -> Path:
         """Per-attempt events/samples as JSONL. Pointer is this path."""
-        path = Path(path)
-        header = {
-            "kind": "header",
-            "stratum_id": raw.get("stratum_id"),
-            "arm": raw.get("arm"),
-            "seq": raw.get("seq"),
-            "gate_velocity": raw.get("gate_velocity"),
-            "gate_cell": raw.get("gate_cell"),
-            "gate_origin": raw.get("gate_origin"),
-            "commanded_vel": raw.get("commanded_vel"),
-            "measured_vel": raw.get("measured_vel"),
-            "vel_tries": raw.get("vel_tries"),
-            "stamp_ok": raw.get("stamp_ok"),
-            "stamp_reason": raw.get("stamp_reason"),
-            "match_vel": raw.get("match_vel"),
-        }
-        lines = [json.dumps(header, sort_keys=True)]
-        for ev in raw.get("events") or []:
-            row = dict(ev)
-            row["kind"] = "event"
-            lines.append(json.dumps(row, sort_keys=True))
-        for samp in raw.get("samples") or []:
-            row = dict(samp)
-            row["kind"] = "sample"
-            lines.append(json.dumps(row, sort_keys=True))
-        text = "\n".join(lines) + "\n"
-        if exclusive:
-            return write_exclusive(path, text)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        return path
+        return write_attempt_raw_file(path, raw, exclusive=exclusive)
 
     def write_attempt_kvitto(
         self,
@@ -952,8 +928,5 @@ class LiveTrialDriver:
             "qwprogs_sha256": self.qwprogs_sha,
             "mvdsv_sha256": self.mvdsv_sha,
         }
-        write_kvitto(path, doc, exclusive=exclusive)
-        errors = verify(doc)
-        if errors:
-            raise RuntimeError("kvitto verify failed: " + "; ".join(errors))
+        write_kvitto(path, doc, exclusive=exclusive, verify_first=True)
         return doc

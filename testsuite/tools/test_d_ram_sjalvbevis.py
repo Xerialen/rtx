@@ -327,6 +327,7 @@ class RamKvittoTests(unittest.TestCase):
                 demo_file="qw/demos/ram-prevent.mvd",
                 binaries={"qwprogs_sha256": "ab" * 32, "mvdsv_sha256": "cd" * 32},
                 fixture_sha256=sha256_file(fx),
+                allow_shared=True,
             )
             report = runner.run()
             self.assertTrue(report.as_dict()["godkand"], report.as_dict())
@@ -335,9 +336,11 @@ class RamKvittoTests(unittest.TestCase):
             self.assertEqual(rail_jsonl.read_text(encoding="utf-8"), "rail-raw\n")
             prev_json, _ = recipe_kvitto_paths(root, "ram-prevent", "H1-OFF-01")
             self.assertTrue(prev_json.is_file(), prev_json)
+            self.assertTrue(prev_json.with_suffix(".jsonl").is_file(), "mock must write the raw JSONL the pointer names")
             self.assertNotEqual(prev_json, rail_json)
             prev_doc = json.loads(prev_json.read_text(encoding="utf-8"))
             self.assertEqual(prev_doc["candidate"], "ram-prevent")
+            self.assertTrue(Path(prev_doc["raw_pointer"]).is_file(), prev_doc["raw_pointer"])
             self.assertFalse((root / "H1-OFF-01.json").exists())
 
             with self.assertRaises(FileExistsError):

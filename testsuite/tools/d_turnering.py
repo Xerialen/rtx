@@ -31,7 +31,14 @@ from d_strata import (  # noqa: E402
     PAIR_VEL_TOL,
     pair_start_vel_ok,
 )
-from d_kvitto import astar_path, make_kvitto, write_kvitto  # noqa: E402
+from d_kvitto import (  # noqa: E402
+    astar_path,
+    make_kvitto,
+    recipe_kvitto_paths,
+    refuse_shared_kvitto_dir,
+    write_attempt_raw_file,
+    write_kvitto,
+)
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_GATES = HERE / "recept" / "haz1462-gates.json"
@@ -529,6 +536,7 @@ class TournamentRunner:
         kvitto_dir: Path | None = None,
         demo_file: str | None = None,
         binaries: dict[str, str] | None = None,
+        allow_shared: bool = False,
     ) -> None:
         self.recipe = recipe
         self.gates = gates
@@ -540,6 +548,10 @@ class TournamentRunner:
         self.ensure_arm = ensure_arm
         self.on_attempt = on_attempt
         self.kvitto_dir = Path(kvitto_dir) if kvitto_dir else None
+        if self.kvitto_dir is not None:
+            refuse_shared_kvitto_dir(
+                self.kvitto_dir, str(recipe.get("id") or ""), allow_shared=allow_shared,
+            )
         self.demo_file = demo_file
         self.binaries = dict(binaries or {})
         self.repro = reproduction_routes(gates)
@@ -665,7 +677,8 @@ class TournamentRunner:
         """d-kvitto per attempt. kvitto-dir is the contract, not an unused flag."""
         if self.kvitto_dir is None:
             raise RuntimeError("kvitto_dir is not set")
-        path = self.kvitto_dir / f"{att.attempt_id}.json"
+        rid = str(self.recipe.get("id") or "")
+        path, raw_path = recipe_kvitto_paths(self.kvitto_dir, rid, att.attempt_id)
         empty = astar_path(found=False)
         after = raw.get("astar_after") or empty
         before = raw.get("astar_before") or empty
@@ -710,7 +723,7 @@ class TournamentRunner:
             },
             seed=0,
             stratum={"id": att.route_id, "attempt": att.attempt_id},
-            raw_pointer=str((self.kvitto_dir / f"{att.attempt_id}.jsonl").resolve()),
+            raw_pointer=str(raw_path.resolve()),
             astar_before=before if isinstance(before, dict) else empty,
             astar_after=after if isinstance(after, dict) else empty,
             astar_next_best=nb if isinstance(nb, dict) else empty,
@@ -721,7 +734,8 @@ class TournamentRunner:
             selected_link=int(selected) if isinstance(selected, int) else None,
         )
         doc["binaries"] = {"qwprogs_sha256": qw, "mvdsv_sha256": mv}
-        write_kvitto(path, doc)
+        write_attempt_raw_file(raw_path, raw, exclusive=True)
+        write_kvitto(path, doc, exclusive=True, verify_first=True)
         return path
 
     def _run_one(self, spec: dict, arm: str, seq: int, match_vel=None) -> TAttempt:
@@ -823,6 +837,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--appendix", type=Path, default=DEFAULT_APPENDIX)
     ap.add_argument("--out", type=Path)
     ap.add_argument("--kvitto-dir", type=Path)
+    ap.add_argument(
+        "--allow-shared",
+        action="store_true",
+        help="permit a non-empty --kvitto-dir that already holds another candidate",
+    )
     ap.add_argument("--lock", type=Path)
     ap.add_argument("--commit", default="")
     ap.add_argument("--smoke", action="store_true")
@@ -889,6 +908,7 @@ def main(argv: list[str] | None = None) -> int:
             n_heldout=0 if n_heldout is None and not args.run else n_heldout,
             kvitto_dir=args.kvitto_dir,
             demo_file="qw/demos/unrun.mvd",
+            allow_shared=args.allow_shared,
         )
         report = runner.run()
         text = json.dumps(report.as_dict(), indent=2, sort_keys=True)
@@ -966,10 +986,10 @@ def main(argv: list[str] | None = None) -> int:
             if not args.kvitto_dir:
                 return
             started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            raw_path = args.kvitto_dir / f"{att.attempt_id}.jsonl"
-            driver.write_attempt_raw(raw_path, raw)
+            rec_path, raw_path = recipe_kvitto_paths(args.kvitto_dir, cand, att.attempt_id)
+            driver.write_attempt_raw(raw_path, raw, exclusive=True)
             driver.write_attempt_kvitto(
-                args.kvitto_dir / f"{att.attempt_id}.json",
+                rec_path,
                 attempt_id=att.attempt_id,
                 stratum_id=att.route_id,
                 raw_pointer=str(raw_path),
@@ -987,6 +1007,7 @@ def main(argv: list[str] | None = None) -> int:
                 candidate=cand,
                 landing_cell=raw.get("landing_cell"),
                 selected_link=raw.get("selected_link"),
+                exclusive=True,
             )
 
         runner = TournamentRunner(
@@ -1004,6 +1025,7 @@ def main(argv: list[str] | None = None) -> int:
             kvitto_dir=args.kvitto_dir,
             demo_file=driver.demo_file,
             binaries=binaries,
+            allow_shared=args.allow_shared,
         )
         report = runner.run()
         payload = report.as_dict()

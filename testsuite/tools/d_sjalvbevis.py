@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from d_kvitto import astar_path, make_kvitto  # noqa: E402
+from d_kvitto import astar_path, make_kvitto, recipe_kvitto_paths, refuse_shared_kvitto_dir  # noqa: E402
 from d_recipe import (  # noqa: E402
     avsett_drop_registered,
     gates_registered,
@@ -434,6 +434,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--avsett-drop", type=Path)
     ap.add_argument("--out", type=Path)
     ap.add_argument("--kvitto-dir", type=Path)
+    ap.add_argument(
+        "--allow-shared",
+        action="store_true",
+        help="permit a non-empty --kvitto-dir that already holds another recipe",
+    )
     ap.add_argument("--lock", type=Path)
     ap.add_argument(
         "--commit",
@@ -448,6 +453,12 @@ def main(argv: list[str] | None = None) -> int:
     recipe = load_recipe(args.fixture)
     gates = load_gates(args.gates)
     rid = recipe.get("id") or "west-shelf"
+    if args.kvitto_dir:
+        try:
+            refuse_shared_kvitto_dir(args.kvitto_dir, rid, allow_shared=args.allow_shared)
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            return 2
     try:
         avsett = load_avsett_drop(args.avsett_drop, recipe_id=rid)
     except (OSError, ValueError, json.JSONDecodeError):
@@ -595,8 +606,8 @@ def _run_smoke_body(driver, args, ident: dict, spec: dict, rows: list, started: 
         kvitto_path = None
         raw_path = None
         if args.kvitto_dir:
-            raw_path = args.kvitto_dir / f"{att.attempt_id}.jsonl"
-            driver.write_attempt_raw(raw_path, raw)
+            _, raw_path = recipe_kvitto_paths(args.kvitto_dir, "west-shelf", att.attempt_id)
+            driver.write_attempt_raw(raw_path, raw, exclusive=True)
             # Smoke never applies — refuse to invent ON-observed from expected.
         rows.append({
             "id": att.attempt_id,
@@ -657,14 +668,16 @@ def _run_live_body(driver, recipe: dict, gates: dict, lock: dict, args) -> int:
     def write_one(att, raw):
         if not args.kvitto_dir:
             return
-        jsonl = args.kvitto_dir / f"{att.attempt_id}.jsonl"
-        driver.write_attempt_raw(jsonl, raw)
+        rec_path, jsonl = recipe_kvitto_paths(
+            args.kvitto_dir, recipe.get("id") or "west-shelf", att.attempt_id,
+        )
+        driver.write_attempt_raw(jsonl, raw, exclusive=True)
         origin = raw.get("gate_origin")
         _, how = gate_passage(
             driver.gate, gate_cell=raw.get("gate_cell"), origin=origin
         )
         driver.write_attempt_kvitto(
-            args.kvitto_dir / f"{att.attempt_id}.json",
+            rec_path,
             attempt_id=att.attempt_id,
             stratum_id=att.stratum,
             raw_pointer=str(jsonl),
@@ -675,6 +688,7 @@ def _run_live_body(driver, recipe: dict, gates: dict, lock: dict, args) -> int:
             gate_velocity=raw.get("gate_velocity"),
             gate_cell=raw.get("gate_cell"),
             gate_aim_hit=how == "aim",
+            exclusive=True,
         )
 
     def exec_trial(**k):

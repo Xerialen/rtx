@@ -1,0 +1,143 @@
+{
+  "astar": {
+    "after": {
+      "cells": [
+        1416,
+        1459,
+        1461
+      ],
+      "cost": 0.22438815236091614,
+      "found": true,
+      "links": [
+        10446,
+        10767
+      ],
+      "mask_links": []
+    },
+    "before": {
+      "cells": [
+        1416,
+        1461
+      ],
+      "cost": 0.18582585453987122,
+      "found": true,
+      "links": [
+        10447
+      ],
+      "mask_links": []
+    },
+    "next_best": {
+      "cells": [
+        1416,
+        1457,
+        1507,
+        1461
+      ],
+      "cost": 0.3843461275100708,
+      "found": true,
+      "links": [
+        10445,
+        10751,
+        11136
+      ],
+      "mask_links": [
+        10446,
+        10767
+      ]
+    }
+  },
+  "binaries": {
+    "mvdsv_sha256": "858465007c7bea52c5c790cdfdd07c0d65cce17b48110b327595bb8c2e051f15",
+    "qwprogs_sha256": "56cc6b22409f755b322a129c2bc0f97bf870f2af330488a2cf60b01ab6d79886"
+  },
+  "binary_sha256": "56cc6b22409f755b322a129c2bc0f97bf870f2af330488a2cf60b01ab6d79886",
+  "candidate": "haz1462-k1",
+  "commit": "c548f6e",
+  "demo_file": "qw/demos/c548f6e0_20260816T183610Z.mvd",
+  "endpoint": {
+    "ctl_port": 27996,
+    "game_port": 27592,
+    "host": "127.0.0.1"
+  },
+  "fixture_sha256": "33b59dcd84721138044f97b903ebf884edaefd0bc2ffbf2f70e75dce6f2a3ed8",
+  "gate": {
+    "aim_hit": false,
+    "cell": null,
+    "velocity": null
+  },
+  "map": "dm3",
+  "raw_pointer": "/home/xerial/lab/turnering-k1-r3b/1416-1461-ON-01.jsonl",
+  "recipe": {
+    "evidence": "HAZ-1462: remove Walk 10447 (1416\u21921461). Pinned ON 5977/48206.",
+    "id": "haz1462-k1",
+    "taxonomy_class": "slapp_lank"
+  },
+  "riglock": {
+    "issued_at": "2026-08-16T16:57:27Z",
+    "owner": "fable",
+    "path": "/home/xerial/lab/.rig-lock",
+    "valid_from": "2026-08-16T16:57:27Z",
+    "valid_to": "2026-08-16T19:35:00Z"
+  },
+  "run": {
+    "ended_at": "2026-08-16T19:35:00Z",
+    "started_at": "2026-08-16T19:35:00Z"
+  },
+  "schema": "verktygslada/d-kvitto/1",
+  "seed": 0,
+  "selected_link": 10446,
+  "stamps": {
+    "off": {
+      "expected": {
+        "cells": 5977,
+        "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+        "graph_stamp": "906595427771298736",
+        "links": 48207,
+        "rj_links": 0
+      },
+      "observed": {
+        "cells": 5977,
+        "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+        "graph_stamp": "906595427771298736",
+        "links": 48207,
+        "rj_links": 0
+      }
+    },
+    "on": {
+      "expected": {
+        "cells": 5977,
+        "graph_content_hash": "969819561b51cc6aa562219abc3820fa447635286b3f1b5eaa21b9bef91fad1c",
+        "graph_stamp": "2907815051556140081",
+        "links": 48206,
+        "rj_links": 0
+      },
+      "observed": {
+        "cells": 5977,
+        "graph_content_hash": "969819561b51cc6aa562219abc3820fa447635286b3f1b5eaa21b9bef91fad1c",
+        "graph_stamp": "2907815051556140081",
+        "links": 48206,
+        "rj_links": 0
+      }
+    },
+    "undo": {
+      "expected": {
+        "cells": 5977,
+        "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+        "graph_stamp": "906595427771298736",
+        "links": 48207,
+        "rj_links": 0
+      },
+      "observed": {
+        "cells": 5977,
+        "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+        "graph_stamp": "906595427771298736",
+        "links": 48207,
+        "rj_links": 0
+      }
+    }
+  },
+  "stratum": {
+    "attempt": "1416-1461-ON-01",
+    "id": "1416-1461"
+  }
+}

@@ -21,7 +21,15 @@ from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from d_kvitto import astar_path, make_kvitto, recipe_cvars, write_kvitto  # noqa: E402
+from d_kvitto import (  # noqa: E402
+    astar_path,
+    make_kvitto,
+    recipe_cvars,
+    recipe_kvitto_paths,
+    refuse_shared_kvitto_dir,
+    write_attempt_raw_file,
+    write_kvitto,
+)
 from d_recipe import load_recipe, on_expected  # noqa: E402
 from d_strata import (  # noqa: E402
     FORBIDDEN_CTL,
@@ -54,25 +62,6 @@ def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     h.update(Path(path).read_bytes())
     return h.hexdigest()
-
-
-def safe_recipe_id(recipe_id: str) -> str:
-    rid = str(recipe_id or "").strip()
-    if not rid or rid in {".", ".."} or "/" in rid or "\\" in rid:
-        raise ValueError(f"refusing unsafe recipe id for kvitto path: {recipe_id!r}")
-    return rid
-
-
-def recipe_kvitto_paths(kvitto_dir: Path, recipe_id: str, attempt_id: str) -> tuple[Path, Path]:
-    """Per-recipe subdirectory so ram-prevent cannot clobber ram-rail heldout.
-
-    `--kvitto-dir/ram-rail-v2/H1-OFF-01.json`  (not a flat H1-OFF-01.json)
-    """
-    root = Path(kvitto_dir) / safe_recipe_id(recipe_id)
-    stem = str(attempt_id)
-    if not stem or "/" in stem or "\\" in stem or stem in {".", ".."}:
-        raise ValueError(f"refusing unsafe attempt id for kvitto path: {attempt_id!r}")
-    return root / f"{stem}.json", root / f"{stem}.jsonl"
 
 
 def default_knockback_zone() -> dict:
@@ -722,6 +711,7 @@ class RamRunner:
         demo_file: str | None = None,
         binaries: dict[str, str] | None = None,
         fixture_sha256: str | None = None,
+        allow_shared: bool = False,
     ) -> None:
         self.recipe = recipe
         self.rail_gates = rail_gates
@@ -733,6 +723,10 @@ class RamRunner:
         self.ensure_arm = ensure_arm
         self.on_attempt = on_attempt
         self.kvitto_dir = Path(kvitto_dir) if kvitto_dir else None
+        if self.kvitto_dir is not None:
+            refuse_shared_kvitto_dir(
+                self.kvitto_dir, str(recipe.get("id") or ""), allow_shared=allow_shared,
+            )
         self.demo_file = demo_file
         self.binaries = dict(binaries or {})
         self.fixture_sha256 = fixture_sha256 or ""
@@ -966,7 +960,8 @@ class RamRunner:
             cvars=recipe_cvars(self.recipe),
         )
         doc["binaries"] = {"qwprogs_sha256": qw, "mvdsv_sha256": mv}
-        write_kvitto(path, doc, exclusive=True)
+        write_attempt_raw_file(raw_path, raw, exclusive=True)
+        write_kvitto(path, doc, exclusive=True, verify_first=True)
         return path
 
     def run(self) -> RamReport:
@@ -1109,6 +1104,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lock", type=Path)
     ap.add_argument("--commit", default="")
     ap.add_argument("--kvitto-dir", type=Path)
+    ap.add_argument(
+        "--allow-shared",
+        action="store_true",
+        help="permit a non-empty --kvitto-dir that already holds another recipe",
+    )
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--run", action="store_true")
     args = ap.parse_args(argv)
@@ -1157,6 +1157,7 @@ def main(argv: list[str] | None = None) -> int:
             kvitto_dir=args.kvitto_dir,
             demo_file="qw/demos/unrun.mvd",
             fixture_sha256=fx_sha,
+            allow_shared=args.allow_shared,
         )
         report = runner.run()
         text = json.dumps(report.as_dict(), indent=2, sort_keys=True)
@@ -1292,6 +1293,7 @@ def main(argv: list[str] | None = None) -> int:
             demo_file=driver.demo_file,
             binaries=binaries,
             fixture_sha256=fx_sha,
+            allow_shared=args.allow_shared,
         )
         report = runner.run()
         payload = report.as_dict()

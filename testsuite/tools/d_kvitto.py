@@ -206,7 +206,19 @@ def write_exclusive(path: str | Path, text: str) -> Path:
     return path
 
 
-def write_kvitto(path: str | Path, doc: dict, *, exclusive: bool = False) -> None:
+def write_kvitto(
+    path: str | Path,
+    doc: dict,
+    *,
+    exclusive: bool = False,
+    verify_first: bool = False,
+) -> None:
+    if verify_first:
+        from verify_d_kvitto import verify  # lazy: verify_d_kvitto does not import us
+
+        errors = verify(doc)
+        if errors:
+            raise RuntimeError("kvitto verify failed: " + "; ".join(errors))
     text = json.dumps(doc, indent=2, sort_keys=True) + "\n"
     if exclusive:
         write_exclusive(path, text)
@@ -214,3 +226,101 @@ def write_kvitto(path: str | Path, doc: dict, *, exclusive: bool = False) -> Non
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def safe_recipe_id(owner_id: str) -> str:
+    return safe_owner_id(owner_id)
+
+
+def safe_owner_id(owner_id: str) -> str:
+    rid = str(owner_id or "").strip()
+    if not rid or rid in {".", ".."} or "/" in rid or "\\" in rid:
+        raise ValueError(f"refusing unsafe kvitto owner id: {owner_id!r}")
+    return rid
+
+
+def recipe_kvitto_paths(kvitto_dir: Path, owner_id: str, attempt_id: str) -> tuple[Path, Path]:
+    """Per-owner subdirectory: `--kvitto-dir/<recipe-or-candidate>/<attempt>.json`.
+
+    Same attempt id (H1-OFF-01, 1416-1124-ON-01) must not collide across
+    recipes or tournament candidates.
+    """
+    root = Path(kvitto_dir) / safe_owner_id(owner_id)
+    stem = str(attempt_id)
+    if not stem or "/" in stem or "\\" in stem or stem in {".", ".."}:
+        raise ValueError(f"refusing unsafe attempt id for kvitto path: {attempt_id!r}")
+    return root / f"{stem}.json", root / f"{stem}.jsonl"
+
+
+def foreign_kvitto_entries(kvitto_dir: Path, owner_id: str) -> list[str]:
+    """Entries in --kvitto-dir that are not this owner's subdirectory."""
+    root = Path(kvitto_dir)
+    if not root.is_dir():
+        return []
+    owner = safe_owner_id(owner_id)
+    out: list[str] = []
+    for p in sorted(root.iterdir(), key=lambda x: x.name):
+        if p.name.startswith("."):
+            continue
+        if p.name == owner and p.is_dir():
+            continue
+        out.append(p.name)
+    return out
+
+
+def refuse_shared_kvitto_dir(
+    kvitto_dir: Path | None,
+    owner_id: str,
+    *,
+    allow_shared: bool = False,
+) -> None:
+    """Fail-closed: a non-empty shared --kvitto-dir needs --allow-shared."""
+    if allow_shared or kvitto_dir is None:
+        return
+    root = Path(kvitto_dir)
+    foreign = foreign_kvitto_entries(root, owner_id)
+    if foreign:
+        shown = foreign[:8]
+        raise RuntimeError(
+            f"refuse non-empty shared --kvitto-dir {root} "
+            f"(foreign={shown!r}) without --allow-shared"
+        )
+
+
+def format_attempt_raw(raw: dict) -> str:
+    """JSONL text for one attempt (header + events + samples)."""
+    header = {
+        "kind": "header",
+        "stratum_id": raw.get("stratum_id"),
+        "arm": raw.get("arm"),
+        "seq": raw.get("seq"),
+        "gate_velocity": raw.get("gate_velocity"),
+        "gate_cell": raw.get("gate_cell"),
+        "gate_origin": raw.get("gate_origin"),
+        "commanded_vel": raw.get("commanded_vel"),
+        "measured_vel": raw.get("measured_vel"),
+        "vel_tries": raw.get("vel_tries"),
+        "stamp_ok": raw.get("stamp_ok"),
+        "stamp_reason": raw.get("stamp_reason"),
+        "match_vel": raw.get("match_vel"),
+    }
+    lines = [json.dumps(header, sort_keys=True)]
+    for ev in raw.get("events") or []:
+        row = dict(ev)
+        row["kind"] = "event"
+        lines.append(json.dumps(row, sort_keys=True))
+    for samp in raw.get("samples") or []:
+        row = dict(samp)
+        row["kind"] = "sample"
+        lines.append(json.dumps(row, sort_keys=True))
+    return "\n".join(lines) + "\n"
+
+
+def write_attempt_raw_file(path: Path, raw: dict, *, exclusive: bool = False) -> Path:
+    text = format_attempt_raw(raw)
+    if exclusive:
+        return write_exclusive(path, text)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
