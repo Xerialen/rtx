@@ -76,6 +76,10 @@ pub struct ShelfPatch {
     pub snap_z: f32,
     /// Graph this recipe was measured against. Apply refuses any other identity.
     pub pin: GraphPin,
+    /// When true, BSP `plant_cell` skips auto-Walk to same-z neighbours
+    /// (ram-rail: slots are 32 u apart, inside the 48 u search). False for
+    /// west-shelf, which must keep its Walk neighbours.
+    pub no_auto_walk: bool,
 }
 
 /// Look up a table recipe by short name. Unknown names are a hard error for `fixa` — the table
@@ -140,6 +144,7 @@ pub const PATCHES: &[ShelfPatch] = &[ShelfPatch {
     ],
     snap_z: 88.03125,
     pin: WEST_SHELF_PIN,
+    no_auto_walk: false,
 }];
 
 /// Rail Y coordinates (facit-ram-paket §1). 32 u GRID, y=−784..−624.
@@ -169,6 +174,7 @@ pub const RAM_RAIL: ShelfPatch = ShelfPatch {
     ],
     snap_z: 128.03125,
     pin: WEST_SHELF_PIN,
+    no_auto_walk: true,
 };
 
 /// Prevention Drops (trajektorieprov + grok-dom): 733→669 and 734→670.
@@ -183,6 +189,7 @@ pub const RAM_PREVENT: ShelfPatch = ShelfPatch {
     ],
     snap_z: 128.03125,
     pin: WEST_SHELF_PIN,
+    no_auto_walk: false,
 };
 
 /// Ram package. Not walked by [`apply_for_map`].
@@ -461,7 +468,12 @@ fn apply_one(patch: &ShelfPatch, bsp: Option<&Bsp>, graph: &mut NavGraph) -> Out
         let planted = match bsp {
             Some(bsp) => {
                 let cells_before = graph.cells.len();
-                let Some((id, _)) = graph.plant_cell(bsp, v(c)) else {
+                let planted = if patch.no_auto_walk {
+                    graph.plant_cell_isolated(bsp, v(c))
+                } else {
+                    graph.plant_cell(bsp, v(c))
+                };
+                let Some((id, _)) = planted else {
                     return Outcome::Failed(format!("no standable floor at {c:?}"));
                 };
                 let existed = graph.cells.len() == cells_before;
@@ -577,6 +589,9 @@ mod tests {
         assert!(patch_by_name("ram-prevent").is_some());
         assert!(patch_by_name("west-shelf").is_some());
         assert!(patch_by_name("no-such").is_none());
+        assert!(RAM_RAIL.no_auto_walk, "ram-rail must not auto-Walk");
+        assert!(!PATCHES[0].no_auto_walk, "west-shelf keeps auto-Walk");
+        assert!(!RAM_PREVENT.no_auto_walk);
         for (i, &y) in RAM_RAIL_YS.iter().enumerate() {
             assert_eq!(RAM_RAIL.cells[i][0], -360.0);
             assert_eq!(RAM_RAIL.cells[i][1], y);
@@ -706,6 +721,7 @@ mod tests {
             drops: PATCHES[0].drops,
             snap_z: PATCHES[0].snap_z,
             pin: pin_for(graph),
+            no_auto_walk: false,
         }
     }
 
@@ -889,6 +905,7 @@ mod tests {
             drops: RAM_RAIL.drops,
             snap_z: RAM_RAIL.snap_z,
             pin: pin_for(graph),
+            no_auto_walk: true,
         }
     }
 
@@ -900,6 +917,7 @@ mod tests {
             drops: RAM_PREVENT.drops,
             snap_z: RAM_PREVENT.snap_z,
             pin: pin_for(graph),
+            no_auto_walk: false,
         }
     }
 
@@ -1087,5 +1105,86 @@ mod tests {
     fn apply_for_map_does_not_include_ram_recipes() {
         assert!(PATCHES.iter().all(|p| p.name == "west-shelf"));
         assert!(RAM_RECIPES.iter().all(|p| p.name.starts_with("ram-")));
+    }
+
+    fn load_dm3_bsp() -> Bsp {
+        let mut paths = Vec::new();
+        if let Ok(p) = std::env::var("RTX_TEST_BSP") {
+            paths.push(p);
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            paths.push(format!(
+                "{home}/.local/share/qw-fasttrack/runtime-tbx-d/qw/maps/dm3.bsp"
+            ));
+            paths.push(format!("{home}/.local/share/route-lab/nav-ab/qw/maps/dm3.bsp"));
+        }
+        for p in paths {
+            if let Ok(bytes) = std::fs::read(&p) {
+                if let Some(bsp) = Bsp::parse(&bytes) {
+                    return bsp;
+                }
+            }
+        }
+        panic!(
+            "need dm3.bsp (RTX_TEST_BSP or runtime-tbx-d/qw/maps) \
+             to prove plant_cell live path"
+        );
+    }
+
+    #[test]
+    fn ram_rail_live_plant_cell_path_has_no_walk() {
+        let bsp = load_dm3_bsp();
+        let mut g = NavGraph::from_topology(&[landing_origin()], &[]);
+        let patch = ram_rail_patch(&g);
+        apply_txn(&patch, Some(&bsp), &mut g).expect("ram-rail live apply");
+        assert_eq!(g.cells.len(), 7, "landing + 6 rail");
+        let drops: Vec<_> = g.links.iter().filter(|l| l.kind == LinkKind::Drop).collect();
+        let walks: Vec<_> = g.links.iter().filter(|l| l.kind == LinkKind::Walk).collect();
+        assert_eq!(drops.len(), 6);
+        assert!(
+            walks.is_empty(),
+            "ram-rail live path must not grow Walk (got {})",
+            walks.len()
+        );
+        for &aim in RAM_RAIL.cells {
+            let id = g
+                .cell_within(v(aim), ALREADY_XY, ALREADY_Z)
+                .expect("rail planted via plant_cell_isolated");
+            assert!(incoming(&g, id).is_empty());
+            let out = outgoing(&g, id);
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].kind, LinkKind::Drop);
+        }
+    }
+
+    #[test]
+    fn west_shelf_live_plant_cell_keeps_walk_neighbors() {
+        let bsp = load_dm3_bsp();
+        let mut g = NavGraph::from_topology(&dest_origins(), &[]);
+        let patch = fixture_patch(&g);
+        assert!(!patch.no_auto_walk);
+        apply_txn(&patch, Some(&bsp), &mut g).expect("west-shelf live apply");
+        let walks = g
+            .links
+            .iter()
+            .filter(|l| l.kind == LinkKind::Walk)
+            .count();
+        assert!(
+            walks > 0,
+            "west-shelf plant_cell must still auto-Walk same-z shelf neighbours"
+        );
+        // The four shelf cells exist and at least one pair is Walk-linked.
+        let shelf_ids: Vec<_> = PATCHES[0]
+            .cells
+            .iter()
+            .map(|&c| g.cell_within(v(c), ALREADY_XY, ALREADY_Z).expect("shelf cell"))
+            .collect();
+        let inter_shelf_walk = g.links.iter().any(|l| {
+            l.kind == LinkKind::Walk && shelf_ids.contains(&l.from) && shelf_ids.contains(&l.to)
+        });
+        assert!(
+            inter_shelf_walk,
+            "west-shelf cells must Walk to each other (flag must not leak)"
+        );
     }
 }

@@ -1786,7 +1786,22 @@ impl NavGraph {
     /// build's own `classify_grounded`, so where such neighbours exist the planner may route through it.
     /// A shelf with nothing at its own height gets none, and is then reachable only by whatever the
     /// caller plants — but do not mistake that special case for a guarantee.
+    ///
+    /// Isolated cells (escape rails that must stay indegree-0) use
+    /// [`plant_cell_isolated`](Self::plant_cell_isolated): same snap/grounded
+    /// checks, no neighbour Walk.
     pub fn plant_cell(&mut self, bsp: &Bsp, pos: Vec3) -> Option<(CellId, usize)> {
+        self.plant_cell_ex(bsp, pos, true)
+    }
+
+    /// Same snap / grounded / same-spot / ledge as [`plant_cell`], but does
+    /// **not** run `classify_grounded` against nearby cells. Only links the
+    /// caller plants afterwards (the declared Drops) will exist.
+    pub fn plant_cell_isolated(&mut self, bsp: &Bsp, pos: Vec3) -> Option<(CellId, usize)> {
+        self.plant_cell_ex(bsp, pos, false)
+    }
+
+    fn plant_cell_ex(&mut self, bsp: &Bsp, pos: Vec3, wire_neighbors: bool) -> Option<(CellId, usize)> {
         const TRACE_UP: f32 = 8.0;
         const TRACE_DOWN: f32 = GRID * 4.0;
         /// How close an existing cell has to be to count as "already planted here".
@@ -1821,14 +1836,16 @@ impl NavGraph {
             self.ledge[id as usize] = ledge_beside(&|p| bsp.is_solid(p), origin);
         }
         let mut links_created = 0;
-        for other in existing {
-            if (self.cells[other as usize].origin.z - origin.z).abs() > STEP_HEIGHT {
-                continue;
-            }
-            for (from, to) in [(other, id), (id, other)] {
-                if let Some(link) = self.classify_grounded(bsp, from, to) {
-                    self.push_link(link);
-                    links_created += 1;
+        if wire_neighbors {
+            for other in existing {
+                if (self.cells[other as usize].origin.z - origin.z).abs() > STEP_HEIGHT {
+                    continue;
+                }
+                for (from, to) in [(other, id), (id, other)] {
+                    if let Some(link) = self.classify_grounded(bsp, from, to) {
+                        self.push_link(link);
+                        links_created += 1;
+                    }
                 }
             }
         }
@@ -2531,6 +2548,75 @@ mod tests {
             g.find_path(shelf, floor, &LinkCosts::default()).is_some(),
             "a bot on the shelf can now path down"
         );
+    }
+
+    fn load_test_bsp() -> Option<Bsp> {
+        let mut paths = Vec::new();
+        if let Ok(p) = std::env::var("RTX_TEST_BSP") {
+            paths.push(p);
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            paths.push(format!(
+                "{home}/.local/share/qw-fasttrack/runtime-tbx-d/qw/maps/dm3.bsp"
+            ));
+            paths.push(format!("{home}/.local/share/route-lab/nav-ab/qw/maps/dm3.bsp"));
+        }
+        for p in paths {
+            if let Ok(bytes) = std::fs::read(&p) {
+                if let Some(bsp) = Bsp::parse(&bytes) {
+                    return Some(bsp);
+                }
+            }
+        }
+        None
+    }
+
+    /// Rail slots are 32 u apart on the same z. Default `plant_cell` wires Walk
+    /// to those neighbours; `plant_cell_isolated` must not.
+    #[test]
+    fn plant_cell_isolated_skips_neighbor_walk() {
+        let Some(bsp) = load_test_bsp() else {
+            panic!(
+                "need dm3.bsp (set RTX_TEST_BSP or place it under \
+                 ~/.local/share/qw-fasttrack/runtime-tbx-d/qw/maps/) \
+                 to prove plant_cell_isolated skips auto-Walk"
+            );
+        };
+        let a = Vec3::new(-360.0, -784.0, 128.0);
+        let b = Vec3::new(-360.0, -752.0, 128.0);
+
+        let mut wired = NavGraph::from_topology(&[], &[]);
+        wired
+            .plant_cell(&bsp, a)
+            .expect("rail slot a is standable");
+        let (_, wired_n) = wired
+            .plant_cell(&bsp, b)
+            .expect("rail slot b is standable");
+        let wired_walks = wired
+            .links
+            .iter()
+            .filter(|l| l.kind == LinkKind::Walk)
+            .count();
+        assert!(
+            wired_n > 0 || wired_walks > 0,
+            "plant_cell (live) must auto-Walk 32u same-z rail slots; \
+             got links_created={wired_n} walks={wired_walks}"
+        );
+
+        let mut iso = NavGraph::from_topology(&[], &[]);
+        let (_, i0) = iso
+            .plant_cell_isolated(&bsp, a)
+            .expect("isolated a");
+        let (_, i1) = iso
+            .plant_cell_isolated(&bsp, b)
+            .expect("isolated b");
+        assert_eq!(i0, 0, "isolated plant creates no neighbour links");
+        assert_eq!(i1, 0, "isolated plant creates no neighbour links");
+        assert!(
+            !iso.links.iter().any(|l| l.kind == LinkKind::Walk),
+            "plant_cell_isolated must not emit Walk"
+        );
+        assert_eq!(iso.cells.len(), 2);
     }
 
     /// Build the navmesh from a real map (`RTX_TEST_BSP`) and sanity-check it: cells and links
