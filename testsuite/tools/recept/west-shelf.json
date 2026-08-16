@@ -1,0 +1,14 @@
+{
+  "id": "west-shelf",
+  "map": "dm3",
+  "taxonomy_class": "carve_origin",
+  "evidence": "dm3 machinery shelf west of SNG: walkable strip narrower than the column-carve GRID and out of phase with it; plant_cell + plant_drop restore an honest standing cell and a north-lip Drop. See nav_patch::PATCHES west-shelf.",
+  "off": {
+    "cells": 5977,
+    "links": 48207,
+    "rj_links": 0,
+    "graph_stamp": "906595427771298736",
+    "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"
+  },
+  "on_expected": null
+}

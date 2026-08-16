@@ -1,0 +1,18 @@
+{
+  "recipe": "west-shelf",
+  "graph_stamp": "906595427771298736",
+  "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+  "gates": {
+    "west-shelf": {
+      "cell_ids": [],
+      "aim_points": [
+        [-920.0, -48.0, 90.0],
+        [-895.0, -48.0, 90.0],
+        [-865.0, -48.0, 90.0],
+        [-845.0, -48.0, 90.0]
+      ],
+      "tolerance_xy": 24.0,
+      "tolerance_z": 16.0
+    }
+  }
+}
