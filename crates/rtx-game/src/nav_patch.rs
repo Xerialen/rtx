@@ -252,8 +252,36 @@ pub const HAZ1462_K1: ShelfPatch = ShelfPatch {
     retype_links: &[],
 };
 
+/// HAZ-1462 k2: drop Walk 10447 *and* the next high walk 10446 (1416→1459).
+/// grok2: live-A* against high goals takes 10446→10768 if only 10447 is cut.
+/// Named `fixa` only. ON-expected null until pinning.
+pub const HAZ1462_K2: ShelfPatch = ShelfPatch {
+    map: "dm3",
+    name: "haz1462-k2",
+    cells: &[],
+    drops: &[],
+    snap_z: 264.0,
+    pin: WEST_SHELF_PIN,
+    no_auto_walk: false,
+    remove_links: &[
+        RemoveLink {
+            id: 10447,
+            from: 1416,
+            to: 1461,
+            kind: LinkKind::Walk,
+        },
+        RemoveLink {
+            id: 10446,
+            from: 1416,
+            to: 1459,
+            kind: LinkKind::Walk,
+        },
+    ],
+    retype_links: &[],
+};
+
 /// HAZ-1462 tournament recipes. Not walked by [`apply_for_map`].
-pub const HAZ1462_RECIPES: &[ShelfPatch] = &[HAZ1462_K1];
+pub const HAZ1462_RECIPES: &[ShelfPatch] = &[HAZ1462_K1, HAZ1462_K2];
 
 /// Endpoint resolution bounds for a drop's `to` point — same rationale and values as the control
 /// channel's `PlanDrop`: a target with nothing near it must be an error, not a silent snap to
@@ -748,6 +776,7 @@ mod tests {
         assert!(patch_by_name("ram-prevent").is_some());
         assert!(patch_by_name("west-shelf").is_some());
         assert!(patch_by_name("haz1462-k1").is_some());
+        assert!(patch_by_name("haz1462-k2").is_some());
         assert!(patch_by_name("no-such").is_none());
         assert_eq!(HAZ1462_K1.remove_links.len(), 1);
         assert_eq!(HAZ1462_K1.remove_links[0].id, 10447);
@@ -756,6 +785,12 @@ mod tests {
         assert_eq!(HAZ1462_K1.remove_links[0].kind, LinkKind::Walk);
         assert!(HAZ1462_K1.retype_links.is_empty());
         assert!(HAZ1462_K1.cells.is_empty() && HAZ1462_K1.drops.is_empty());
+        assert_eq!(HAZ1462_K2.remove_links.len(), 2);
+        assert_eq!(HAZ1462_K2.remove_links[0].id, 10447);
+        assert_eq!(HAZ1462_K2.remove_links[1].id, 10446);
+        assert_eq!(HAZ1462_K2.remove_links[1].from, 1416);
+        assert_eq!(HAZ1462_K2.remove_links[1].to, 1459);
+        assert_eq!(HAZ1462_K2.remove_links[1].kind, LinkKind::Walk);
         assert!(RAM_RAIL.no_auto_walk, "ram-rail must not auto-Walk");
         assert!(!PATCHES[0].no_auto_walk, "west-shelf keeps auto-Walk");
         assert!(!RAM_PREVENT.no_auto_walk);
@@ -1414,6 +1449,32 @@ mod tests {
         assert_eq!(g.links.len(), 2);
         assert!(!g.links.iter().any(|l| l.from == 0 && l.to == 2));
         assert!(g.links.iter().any(|l| l.from == 0 && l.to == 1));
+        txn.unapply(&mut g);
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn remove_two_links_undo_roundtrip() {
+        let mut g = NavGraph::from_topology(&edit_origins(), &edit_walks());
+        static SPECS: [RemoveLink; 2] = [
+            RemoveLink {
+                id: 1,
+                from: 0,
+                to: 2,
+                kind: LinkKind::Walk,
+            },
+            RemoveLink {
+                id: 0,
+                from: 0,
+                to: 1,
+                kind: LinkKind::Walk,
+            },
+        ];
+        let patch = remove_patch(&g, &SPECS);
+        let before = g.clone();
+        let txn = apply_txn(&patch, None, &mut g).expect("remove two");
+        assert_eq!(g.links.len(), 1);
+        assert!(g.links.iter().all(|l| l.from == 1 && l.to == 2));
         txn.unapply(&mut g);
         assert!(topology_eq(&g, &before));
     }
