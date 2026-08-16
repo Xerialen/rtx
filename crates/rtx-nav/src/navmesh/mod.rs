@@ -504,6 +504,21 @@ fn ledge_beside(is_solid: &impl Fn(Vec3) -> bool, origin: Vec3) -> bool {
     })
 }
 
+/// Compact a `links`-parallel f32 column after some ids were dropped.
+/// Empty stays empty (`link_extra` treats a missing slot as 0).
+fn compact_per_link_f32(old: &[f32], old_to_new: &[Option<u32>]) -> Vec<f32> {
+    if old.is_empty() {
+        return Vec::new();
+    }
+    let mut new = Vec::with_capacity(old_to_new.iter().filter(|m| m.is_some()).count());
+    for (i, mapped) in old_to_new.iter().enumerate() {
+        if mapped.is_some() {
+            new.push(old.get(i).copied().unwrap_or(0.0));
+        }
+    }
+    new
+}
+
 impl NavGraph {
     /// Build the graph from a parsed BSP's player hull. Pure; safe to run at load time.
     pub fn build(bsp: &Bsp) -> NavGraph {
@@ -616,6 +631,15 @@ impl NavGraph {
         for link in kept {
             self.push_link(link);
         }
+        // Per-link columns (not SideTable): compact in the same old→new order.
+        // Inventory of NavGraph index-parallel state:
+        //   links, adjacency          — rebuilt above
+        //   hazard_hp, water_extra    — these two Vecs (deepseek K1/K3 JUSTERAS)
+        //   gates/hooks/speed_jumps/rocket_jumps/plats — SideTable, remapped below
+        //   water/breathable/hazard/under_plat/ledge   — per-cell, leave alone
+        //   tele_volumes, sj_k, reach, lod, grid       — not per-link
+        self.hazard_hp = compact_per_link_f32(&self.hazard_hp, &old_to_new);
+        self.water_extra = compact_per_link_f32(&self.water_extra, &old_to_new);
         self.gates.remap_after_remove(&old_to_new);
         self.hooks.remap_after_remove(&old_to_new);
         self.speed_jumps.remap_after_remove(&old_to_new);
@@ -4884,5 +4908,78 @@ mod tests {
         };
         let hurt = g.coarse_costs(0, &hazcosts, false).cost_to(12);
         assert!(hurt > wet, "hazard pricing should add cost: hurt {hurt} !> wet {wet}");
+    }
+
+    /// deepseek K1/K3 JUSTERAS: remove_links_by_id used to leave hazard_hp /
+    /// water_extra on the old indices, so ON-graph A* priced the wrong link.
+    #[test]
+    fn remove_links_remaps_hazard_hp_and_water_extra() {
+        let origins = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(32.0, 0.0, 0.0),
+            Vec3::new(64.0, 0.0, 0.0),
+        ];
+        let links = [
+            Link {
+                from: 0,
+                to: 1,
+                kind: LinkKind::Walk,
+                cost: 1.0,
+            },
+            Link {
+                from: 1,
+                to: 2,
+                kind: LinkKind::Walk,
+                cost: 1.0,
+            },
+            Link {
+                from: 0,
+                to: 2,
+                kind: LinkKind::Walk,
+                cost: 2.0,
+            },
+        ];
+        let mut g = NavGraph::from_topology(&origins, &links);
+        g.hazard_hp = vec![10.0, 20.0, 30.0];
+        g.water_extra = vec![1.0, 2.0, 3.0];
+        let snapshot = g.clone();
+
+        g.remove_links_by_id(&[1]).expect("remove middle");
+        assert_eq!(g.links.len(), 2);
+        assert_eq!(g.links[0].from, 0);
+        assert_eq!(g.links[0].to, 1);
+        assert_eq!(g.links[1].from, 0);
+        assert_eq!(g.links[1].to, 2);
+        assert_eq!(g.hazard_hp, vec![10.0, 30.0], "hazard_hp must follow kept links");
+        assert_eq!(g.water_extra, vec![1.0, 3.0], "water_extra must follow kept links");
+
+        let costs = LinkCosts {
+            hazard: Some(HazardPrice::new(100.0)),
+            ..LinkCosts::default()
+        };
+        // link 1 is now old link 2 (0→2): water 3 + hazard 30, not old link 1's 2/20.
+        let extra1 = g.link_extra(1, &costs);
+        let extra_old2 = snapshot.link_extra(2, &costs);
+        assert!(
+            (extra1 - extra_old2).abs() < 1e-5,
+            "link_extra after remove must match the kept link's old price ({extra1} vs {extra_old2})"
+        );
+        let extra0 = g.link_extra(0, &costs);
+        let extra_old0 = snapshot.link_extra(0, &costs);
+        assert!((extra0 - extra_old0).abs() < 1e-5);
+
+        g = snapshot.clone();
+        assert_eq!(g.hazard_hp, vec![10.0, 20.0, 30.0]);
+        assert_eq!(g.water_extra, vec![1.0, 2.0, 3.0]);
+        assert_eq!(g.links.len(), 3);
+
+        // Empty columns stay empty (no panic, still read as 0).
+        let mut dry = snapshot;
+        dry.hazard_hp.clear();
+        dry.water_extra.clear();
+        dry.remove_links_by_id(&[1]).expect("remove on empty columns");
+        assert!(dry.hazard_hp.is_empty());
+        assert!(dry.water_extra.is_empty());
+        assert_eq!(dry.links.len(), 2);
     }
 }
