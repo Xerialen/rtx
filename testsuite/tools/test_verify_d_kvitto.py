@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Fixture tests for verify_d_kvitto / d_kvitto (no rig)."""
+
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+from d_kvitto import (  # noqa: E402
+    SCHEMA,
+    WEST_SHELF_OFF,
+    WEST_SHELF_RECIPE,
+    astar_from_route_resp,
+    astar_path,
+    make_kvitto,
+    write_kvitto,
+)
+from verify_d_kvitto import verify  # noqa: E402
+
+
+def _valid(**overrides) -> dict:
+    path = {
+        "found": True,
+        "cells": [10, 11],
+        "links": [3],
+        "cost": 1.25,
+        "mask_links": [],
+    }
+    next_best = {
+        "found": True,
+        "cells": [10, 12, 11],
+        "links": [4, 5],
+        "cost": 2.0,
+        "mask_links": [3],
+    }
+    kwargs = dict(
+        riglock_owner="fable",
+        riglock_issued_at="2026-08-16T08:00:00+00:00",
+        riglock_valid_from="2026-08-16T08:00:00+00:00",
+        riglock_valid_to="2026-08-16T12:00:00+00:00",
+        riglock_path="/home/xerial/lab/.rig-lock",
+        run_started_at="2026-08-16T08:05:00+00:00",
+        run_ended_at="2026-08-16T08:20:00+00:00",
+        endpoint_host="127.0.0.1",
+        endpoint_ctl_port=27996,
+        endpoint_game_port=27591,
+        map_name="dm3",
+        binary_sha256="ab" * 32,
+        commit="4403dc4a1e3043b44490dc4f69aa8091e9065696",
+        stamps_off_expected=WEST_SHELF_OFF,
+        stamps_off_observed=WEST_SHELF_OFF,
+        stamps_on_expected={
+            **WEST_SHELF_OFF,
+            "cells": 5981,
+            "links": 48215,
+            "graph_stamp": "1",
+            "graph_content_hash": "cd" * 32,
+        },
+        stamps_on_observed={
+            **WEST_SHELF_OFF,
+            "cells": 5981,
+            "links": 48215,
+            "graph_stamp": "1",
+            "graph_content_hash": "cd" * 32,
+        },
+        stamps_undo_expected=WEST_SHELF_OFF,
+        stamps_undo_observed=WEST_SHELF_OFF,
+        recipe=WEST_SHELF_RECIPE,
+        seed=20260816,
+        stratum={"id": "T0", "start": [-865.0, -48.0, 90.0], "goal": [-864.0, -96.0, -16.0]},
+        raw_pointer="/tmp/trap-repro.jsonl#T0",
+        astar_before=path,
+        astar_after=path,
+        astar_next_best=next_best,
+    )
+    kwargs.update(overrides)
+    return make_kvitto(**kwargs)
+
+
+class VerifyTests(unittest.TestCase):
+    def test_valid_receipt_is_green(self):
+        doc = _valid()
+        self.assertEqual(doc["schema"], SCHEMA)
+        self.assertEqual(verify(doc), [])
+
+    def test_write_roundtrip(self):
+        doc = _valid()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kvitto.json"
+            write_kvitto(path, doc)
+            loaded = json.loads(path.read_text())
+        self.assertEqual(verify(loaded), [])
+
+    def test_missing_field_fails(self):
+        doc = _valid()
+        del doc["raw_pointer"]
+        errs = verify(doc)
+        self.assertTrue(any("raw_pointer" in e for e in errs), errs)
+
+    def test_after_the_fact_lock_fails(self):
+        doc = _valid(
+            riglock_issued_at="2026-08-16T09:00:00+00:00",
+            run_started_at="2026-08-16T08:05:00+00:00",
+        )
+        errs = verify(doc)
+        self.assertTrue(any("after-the-fact" in e for e in errs), errs)
+
+    def test_forbidden_ra_port_fails(self):
+        doc = _valid(endpoint_ctl_port=27990, endpoint_game_port=27540)
+        errs = verify(doc)
+        self.assertTrue(any("27990" in e for e in errs), errs)
+        self.assertTrue(any("27540" in e for e in errs), errs)
+
+    def test_stamp_mismatch_fails(self):
+        observed = dict(WEST_SHELF_OFF)
+        observed["cells"] = 1
+        doc = _valid(stamps_off_observed=observed)
+        errs = verify(doc)
+        self.assertTrue(any("stamps.off" in e and "cells" in e for e in errs), errs)
+
+    def test_stamp_as_number_fails(self):
+        bad = dict(WEST_SHELF_OFF)
+        bad["graph_stamp"] = 906595427771298736
+        doc = _valid(stamps_off_expected=bad, stamps_off_observed=bad)
+        errs = verify(doc)
+        self.assertTrue(any("decimal string" in e for e in errs), errs)
+
+    def test_undo_must_match_off(self):
+        on_like = {
+            **WEST_SHELF_OFF,
+            "cells": 5981,
+            "graph_stamp": "1",
+            "graph_content_hash": "cd" * 32,
+        }
+        doc = _valid(stamps_undo_expected=on_like, stamps_undo_observed=on_like)
+        errs = verify(doc)
+        self.assertTrue(any("undo.expected must equal" in e for e in errs), errs)
+
+    def test_west_shelf_wrong_off_pin_fails(self):
+        other = dict(WEST_SHELF_OFF)
+        other["cells"] = 5978
+        other["links"] = 48208
+        other["graph_stamp"] = "13090435456435551592"
+        doc = _valid(stamps_off_expected=other, stamps_off_observed=other)
+        errs = verify(doc)
+        self.assertTrue(any("OFF expected must be the facit" in e for e in errs), errs)
+
+    def test_missing_next_best_fails(self):
+        doc = _valid()
+        del doc["astar"]["next_best"]
+        errs = verify(doc)
+        self.assertTrue(any("next_best" in e for e in errs), errs)
+
+    def test_wrong_schema_fails(self):
+        doc = _valid()
+        doc["schema"] = "verktygslada/d-kvitto/0"
+        errs = verify(doc)
+        self.assertTrue(any("schema" in e for e in errs), errs)
+
+    def test_astar_from_route_resp(self):
+        dumped = astar_from_route_resp(
+            {
+                "legs": [
+                    {"link": 7, "src_cell": 1, "tgt_cell": 2},
+                    {"link": 8, "src_cell": 2, "tgt_cell": 3},
+                ],
+                "astar": {"found": True, "cost": 4.5, "mask_links": [9]},
+            }
+        )
+        self.assertEqual(dumped["cells"], [1, 2, 3])
+        self.assertEqual(dumped["links"], [7, 8])
+        self.assertEqual(dumped["cost"], 4.5)
+        self.assertEqual(dumped["mask_links"], [9])
+        empty = astar_path(found=False)
+        self.assertFalse(empty["found"])
+        self.assertEqual(empty["links"], [])
+
+
+class TrapReproGuardTests(unittest.TestCase):
+    def test_refuse_ra_port_before_connect(self):
+        import trap_repro
+
+        with self.assertRaises(SystemExit) as ctx:
+            trap_repro.require_riglock(27990)
+        self.assertIn("RA/main", str(ctx.exception))
+
+    def test_refuse_missing_lock(self):
+        import trap_repro
+
+        trap_repro.RIG_LOCK = Path("/tmp/definitely-missing-d-rig-lock")
+        with self.assertRaises(SystemExit) as ctx:
+            trap_repro.require_riglock(27996)
+        self.assertIn("hold the lock", str(ctx.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()

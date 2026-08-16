@@ -7,7 +7,12 @@ stalls until the window closes (``stuck``). The drill is the paired on/off accep
 `nav_patch` entry — run it twice against the same binary, once with the patch applied and once
 with the server started under `rtx_nav_patch 0`:
 
-    python3 tools/trap_repro.py --port 27994 --trials 8
+    python3 testsuite/tools/trap_repro.py --port <DEDICATED_D_CTL> --trials 8
+
+`--port` is required. Never point it at RA (`:27990` / game `:27540`) or
+main-test (`:27993` / game `:27570`). The D self-proof runs on a dedicated
+instance of *this* binary under `~/lab/.rig-lock`. There is no default
+`:27994` — that port is not on today's map.
 
 Exit status is non-zero when any trial sticks, so `patch on` is a green run and `patch off` is the
 control that proves the trap still exists without it. The drill never touches `rtx_nav_patch`
@@ -36,6 +41,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from runner.control import Control, ControlError  # noqa: E402
 
+FORBIDDEN_CTL = {27990, 27993}
+RIG_LOCK = Path.home() / "lab" / ".rig-lock"
+
+
+def require_riglock(port: int) -> None:
+    """GAP 6: lock before Control(); refuse RA/main endpoints."""
+    if port in FORBIDDEN_CTL:
+        sys.exit(
+            f"port {port} is RA/main — trap_repro runs only on a dedicated D instance"
+        )
+    if not RIG_LOCK.is_file():
+        sys.exit(f"no {RIG_LOCK} — hold the lock before opening Control()")
+    body = RIG_LOCK.read_text(encoding="utf-8", errors="replace").strip()
+    if not body:
+        sys.exit(f"{RIG_LOCK} is empty")
+
 
 def hdist(a, b) -> float:
     return math.hypot(a[0] - b[0], a[1] - b[1])
@@ -60,6 +81,7 @@ def main() -> None:
     ap.add_argument("--out", default="/tmp/trap-repro.jsonl")
     args = ap.parse_args()
 
+    require_riglock(args.port)
     ctl = Control(args.host, args.port)
 
     surf = list(args.surf)
@@ -72,7 +94,7 @@ def main() -> None:
         for name, value in [("rtx_telemetry", "1"), ("rtx_bot_pacifist", "1"),
                             ("rtx_bot_count", "1")]:
             try:
-                saved[name] = str(ctl.request(f"get {name}")["data"].get("value"))
+                saved[name] = str(ctl.request(f"get {name}")["data"]["string"])
             except (ControlError, AttributeError, KeyError):
                 saved[name] = None
             ctl.request(f"set {name} {value}")
