@@ -771,4 +771,29 @@ mod tests {
         }
         assert!(topology_eq(&g, &after));
     }
+
+    #[test]
+    fn apply_undo_stale_on_link_does_not_panic() {
+        // GAP 4 grind: a bot held ON-link 48216 after undo to 48207 links → query.rs:480 panic.
+        let mut g = NavGraph::from_topology(&dest_origins(), &[]);
+        let n0 = g.links.len() as u32;
+        let patch = fixture_patch(&g);
+        let txn = apply_txn(&patch, None, &mut g).expect("apply");
+        let n1 = g.links.len() as u32;
+        assert!(n1 > n0, "apply must add links so there is an ON-only id");
+        let stale = n1 - 1;
+        assert!(g.has_link(stale));
+        let mut route = vec![stale];
+        assert!(g.route_in_bounds(&route));
+        txn.unapply(&mut g);
+        assert!(!g.has_link(stale));
+        assert!(!g.route_in_bounds(&route));
+        let _ = g.link_kind(stale);
+        let _ = g.link_target(stale);
+        let _ = g.link_source(stale);
+        let _ = g.link_cost(stale);
+        let _ = g.cell_origin(n1); // planted cell id, also gone
+        route.clear(); // replan
+        assert!(g.route_in_bounds(&route));
+    }
 }

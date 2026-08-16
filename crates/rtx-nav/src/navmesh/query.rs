@@ -459,31 +459,57 @@ impl NavGraph {
         while cell != start {
             let li = came_from[cell as usize];
             route.push(li);
-            cell = self.links[li as usize].from;
+            let Some(link) = self.get_link(li) else {
+                break;
+            };
+            cell = link.from;
         }
         route.reverse();
         route
     }
 
+    /// Link `idx` if it is in range of the live graph. Stale route legs after apply/undo miss.
+    pub fn get_link(&self, idx: u32) -> Option<&super::Link> {
+        self.links.get(idx as usize)
+    }
+
+    pub fn has_link(&self, idx: u32) -> bool {
+        (idx as usize) < self.links.len()
+    }
+
+    pub fn has_cell(&self, cell: CellId) -> bool {
+        (cell as usize) < self.cells.len()
+    }
+
+    /// Every id in `route` is a live link. False after undo shrinks the graph under a held route.
+    pub fn route_in_bounds(&self, route: &[u32]) -> bool {
+        route.iter().all(|&li| self.has_link(li))
+    }
+
     /// The cell a link points at (its destination).
+    ///
+    /// Missing id (stale route after a graph swap) returns 0 — never panics. Callers that
+    /// still hold a route must [`route_in_bounds`] and replan.
     pub fn link_target(&self, link_idx: u32) -> CellId {
-        self.links[link_idx as usize].to
+        self.get_link(link_idx).map(|l| l.to).unwrap_or(0)
     }
 
     /// The cell a link departs from.
     pub fn link_source(&self, link_idx: u32) -> CellId {
-        self.links[link_idx as usize].from
+        self.get_link(link_idx).map(|l| l.from).unwrap_or(0)
     }
 
     /// How a link is traversed (walk/step/drop/jump).
     pub fn link_kind(&self, link_idx: u32) -> LinkKind {
-        self.links[link_idx as usize].kind
+        self.get_link(link_idx).map(|l| l.kind).unwrap_or(LinkKind::Walk)
     }
 
     /// A link's static travel-time cost in seconds. Liquid risk is **not** in here — see
     /// [`link_hazard_hp`](Self::link_hazard_hp) and [`link_water_extra`](Self::link_water_extra).
+    ///
+    /// A missing id costs `+∞` so a stale ON-leg is never the cheapest choice.
     pub fn link_cost(&self, link_idx: u32) -> f32 {
-        self.links[link_idx as usize].cost
+        self.get_link(link_idx).map(|l| l.cost).unwrap_or(f32::INFINITY)
     }
 
     /// The health a bot expects to lose taking this link (lava/slime contact, or the risk premium on
@@ -506,12 +532,16 @@ impl NavGraph {
     /// on identical terms. Comparing static `link_cost` alone would ignore the surcharges that made
     /// the planner choose differently in the first place.
     pub fn priced_link_cost(&self, link_idx: u32, costs: &LinkCosts) -> f32 {
-        self.links[link_idx as usize].cost + self.link_extra(link_idx, costs) + self.chained_block(link_idx)
+        match self.get_link(link_idx) {
+            Some(l) => l.cost + self.link_extra(link_idx, costs) + self.chained_block(link_idx),
+            None => f32::INFINITY,
+        }
     }
 
     /// The standing player-origin position of a cell (the point a bot steers toward).
+    /// Missing cell id (planted ON-cell after undo) returns ZERO — never panics.
     pub fn cell_origin(&self, cell: CellId) -> Vec3 {
-        self.cells[cell as usize].origin
+        self.cells.get(cell as usize).map(|c| c.origin).unwrap_or(Vec3::ZERO)
     }
 
     /// Whether a bot standing on this cell is under water (its origin is submerged, so pmove swims).
@@ -568,5 +598,41 @@ impl NavGraph {
             }
         }
         c
+    }
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::*;
+    use crate::navmesh::{Link, NavGraph};
+
+    fn tiny() -> NavGraph {
+        NavGraph::from_topology(
+            &[Vec3::new(0.0, 0.0, 0.0), Vec3::new(32.0, 0.0, 0.0)],
+            &[Link {
+                from: 0,
+                to: 1,
+                kind: LinkKind::Walk,
+                cost: 1.0,
+            }],
+        )
+    }
+
+    #[test]
+    fn stale_link_id_does_not_panic() {
+        let g = tiny();
+        assert!(g.has_link(0));
+        assert!(!g.has_link(1));
+        assert!(!g.has_link(48216));
+        let _ = g.link_kind(48216);
+        let _ = g.link_target(48216);
+        let _ = g.link_source(48216);
+        let _ = g.link_cost(48216);
+        let _ = g.cell_origin(99);
+        assert!(!g.route_in_bounds(&[0, 48216]));
+        assert!(g.route_in_bounds(&[0]));
+        assert!(g.route_in_bounds(&[]));
+        assert!(g.get_link(48216).is_none());
+        assert!(g.link_cost(48216).is_infinite());
     }
 }

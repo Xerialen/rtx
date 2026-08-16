@@ -1197,11 +1197,14 @@ impl NavGraph {
                 break;
             }
         }
+        let Some(link) = self.links.get(li as usize) else {
+            return extra;
+        };
         if costs.jitter_seed != 0 {
             let h = hash32(costs.jitter_seed ^ li.wrapping_mul(0x9e37_79b1));
-            extra += (h as f32 / u32::MAX as f32) * JITTER_FRAC * self.links[li as usize].cost;
+            extra += (h as f32 / u32::MAX as f32) * JITTER_FRAC * link.cost;
         }
-        if costs.rocket_jump_extra > 0.0 && self.links[li as usize].kind == LinkKind::RocketJump {
+        if costs.rocket_jump_extra > 0.0 && link.kind == LinkKind::RocketJump {
             extra += costs.rocket_jump_extra;
         }
         extra += self.water_extra.get(li as usize).copied().unwrap_or(0.0);
