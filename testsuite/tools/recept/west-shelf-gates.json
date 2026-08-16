@@ -3,7 +3,7 @@
   "graph_stamp": "906595427771298736",
   "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
   "on_graph_stamp": "17645347086516095554",
-  "heldout_stratum_at": "gate",
+  "heldout_stratum_at": "start",
   "gates": {
     "west-shelf": {
       "cell_ids": [5977, 5978, 5979, 5980],

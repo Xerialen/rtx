@@ -26,7 +26,15 @@ import json
 
 from d_kvitto import astar_from_route_resp, astar_path, make_kvitto, write_kvitto
 from d_recipe import on_expected
-from d_strata import FORBIDDEN_CTL, FORBIDDEN_GAME, STRATA, FallTracker, in_gate, vh
+from d_strata import (
+    FORBIDDEN_CTL,
+    FORBIDDEN_GAME,
+    STRATA,
+    STRATUM_AT_START,
+    FallTracker,
+    in_gate,
+    vh,
+)
 from verify_d_kvitto import verify
 
 DEFAULT_QWPROGS = Path.home() / ".local/share/qw-fasttrack/runtime-tbx-d/qw/qwprogs.so"
@@ -131,6 +139,7 @@ class LiveTrialDriver:
         lock_path: Path = DEFAULT_LOCK,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.monotonic,
+        stratum_at: str | None = None,
     ) -> None:
         why = refuse_ra(ctl_port, game_port)
         if why:
@@ -148,6 +157,7 @@ class LiveTrialDriver:
         self.lock_path = lock_path
         self.sleep = sleep
         self.now = now
+        self.stratum_at = stratum_at or gate.get("heldout_stratum_at")
         self.arm = "off"
         self._ent: int | None = None
         self.last_stamps: dict[str, dict] = {}
@@ -421,8 +431,10 @@ class LiveTrialDriver:
         watched = self.watch(spec, float(window_s))
         if spec.get("kind") == "trap":
             vel = measured
+        elif self.stratum_at == STRATUM_AT_START:
+            vel = measured
         else:
-            # Heldout: never fall back to start-vel. classify_trial invalidates a miss.
+            # locus=gate: never fall back to start-vel. classify_trial invalidates a miss.
             vel = watched.get("gate_velocity")
         start_cell = self.cell_at([float(x) for x in o0])
         return {

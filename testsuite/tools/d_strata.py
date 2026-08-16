@@ -28,7 +28,7 @@ STRATA: dict[str, dict[str, Any]] = {
         "n_off": 5,
         "n_on": 5,
         "vh_lo": 80.0,
-        "vh_hi": 180.0,
+        "vh_hi": 160.0,
         "vh_hi_inclusive": False,
         "dir_min": 0.8,
         "budget_s": 25.0,
@@ -40,8 +40,8 @@ STRATA: dict[str, dict[str, Any]] = {
         "goal": [-593.0, -677.0, -16.0],
         "n_off": 5,
         "n_on": 5,
-        "vh_lo": 180.0,
-        "vh_hi": 320.0,
+        "vh_lo": 160.0,
+        "vh_hi": 260.0,
         "vh_hi_inclusive": True,
         "dir_min": 0.8,
         "budget_s": 25.0,
@@ -54,7 +54,7 @@ STRATA: dict[str, dict[str, Any]] = {
         "n_off": 5,
         "n_on": 5,
         "vh_lo": 80.0,
-        "vh_hi": 180.0,
+        "vh_hi": 160.0,
         "vh_hi_inclusive": False,
         "dir_min": 0.8,
         "budget_s": 25.0,
@@ -66,8 +66,8 @@ STRATA: dict[str, dict[str, Any]] = {
         "goal": [256.0, -704.0, 328.0],
         "n_off": 5,
         "n_on": 5,
-        "vh_lo": 180.0,
-        "vh_hi": 320.0,
+        "vh_lo": 160.0,
+        "vh_hi": 260.0,
         "vh_hi_inclusive": True,
         "dir_min": 0.8,
         "budget_s": 25.0,
@@ -79,6 +79,8 @@ HELDOUT_IDS = ("A1", "A2", "A3", "A4")
 FORBIDDEN_CTL = {27990, 27993}
 FORBIDDEN_GAME = {27540, 27570}
 PEAK_DROP = 150.0
+# r2 §2 / Fable: ON/OFF pair start-vel within ±5 u/s per component.
+PAIR_VEL_TOL = 5.0
 # Terra facit revision (ongoing): (i) "gate" = |vh| at west-shelf-gate;
 # (ii) "start" = |vh| at teleport start. Missing key is fail-closed.
 STRATUM_AT_GATE = "gate"
@@ -205,6 +207,24 @@ class FallTracker:
         if z > self.peak:
             self.peak = z
         return (self.peak - z) > PEAK_DROP
+
+
+def pair_start_vel_ok(
+    off_vel: Iterable[float] | None,
+    on_vel: Iterable[float] | None,
+    *,
+    tol: float = PAIR_VEL_TOL,
+) -> tuple[bool, str]:
+    """r2 pair rule: same start profile, ±tol u/s per component."""
+    if off_vel is None or on_vel is None:
+        return False, "pair missing start velocity"
+    a = list(off_vel) + [0.0, 0.0, 0.0]
+    b = list(on_vel) + [0.0, 0.0, 0.0]
+    for i, axis in enumerate("xyz"):
+        delta = abs(float(a[i]) - float(b[i]))
+        if delta > tol:
+            return False, f"pair v{axis} delta {delta:.2f} > {tol} u/s"
+    return True, "ok"
 
 
 def profiles_ok(off: dict[str, str], on: dict[str, str]) -> str | None:

@@ -30,6 +30,7 @@ from d_strata import (  # noqa: E402
     gate_passage,
     heldout_stratum_at,
     is_trap,
+    pair_start_vel_ok,
     profiles_ok,
     stratum_ok,
 )
@@ -48,6 +49,7 @@ class Attempt:
     fall: bool = False
     arrived: bool = False
     events: list[dict] = field(default_factory=list)
+    start_vel: list[float] | None = None
 
 
 @dataclass
@@ -250,6 +252,8 @@ class DrillRunner:
             stratum_at=locus,
         )
         att.attempt_id = f"{stratum_id}-{arm.upper()}-{seq:02d}"
+        raw_vel = raw.get("measured_vel") if raw.get("measured_vel") is not None else raw.get("vel")
+        att.start_vel = list(raw_vel) if raw_vel is not None else None
         return att
 
     def run(self) -> DrillReport:
@@ -267,8 +271,16 @@ class DrillRunner:
         # Heldout: 5 OFF/ON pairs per stratum, kedjad only. New ids, no T0 teleport start.
         for sid in HELDOUT_IDS:
             for i in range(1, STRATA[sid]["n_on"] + 1):
-                attempts.append(self._run_one(sid, "off", i))
-                attempts.append(self._run_one(sid, "on", i))
+                off_att = self._run_one(sid, "off", i)
+                on_att = self._run_one(sid, "on", i)
+                pok, pwhy = pair_start_vel_ok(off_att.start_vel, on_att.start_vel)
+                if not pok:
+                    off_att.valid = False
+                    off_att.reason = pwhy
+                    on_att.valid = False
+                    on_att.reason = pwhy
+                attempts.append(off_att)
+                attempts.append(on_att)
 
         # Incomplete / invalid trials make the whole run invalid (facit §4).
         wanted = 4 + 8 + 40
@@ -397,6 +409,7 @@ def main(argv: list[str] | None = None) -> int:
     from datetime import datetime, timezone
 
     ctl = Control(args.host, args.port)
+    locus, _ = heldout_stratum_at(gates)
     driver = LiveTrialDriver(
         ctl,
         gate=gates["gates"]["west-shelf"],
@@ -409,6 +422,7 @@ def main(argv: list[str] | None = None) -> int:
         ctl_port=args.port,
         game_port=args.game_port,
         lock_path=lock_path,
+        stratum_at=locus,
     )
     try:
         driver.prepare()

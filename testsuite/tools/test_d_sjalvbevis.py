@@ -14,6 +14,7 @@ from d_strata import (
     STRATA,
     direction_dot,
     is_trap,
+    pair_start_vel_ok,
     profiles_ok,
     stratum_ok,
 )
@@ -37,7 +38,7 @@ def _recipe_with_on() -> dict:
     }
 
 
-def _gates(cells=None, stratum_at="gate") -> dict:
+def _gates(cells=None, stratum_at="start") -> dict:
     doc = {
         "recipe": "west-shelf",
         "graph_stamp": WEST_SHELF_OFF["graph_stamp"],
@@ -71,10 +72,24 @@ class StratumTests(unittest.TestCase):
         self.assertGreaterEqual(direction_dot(vel, start, goal), 0.8)
         ok, _ = stratum_ok("A1", vel, start, goal)
         self.assertTrue(ok)
-        ok, _ = stratum_ok("A1", [-200.0, 0, 0], start, goal)  # 200 is A2
+        ok, _ = stratum_ok("A1", [-200.0, 0, 0], start, goal)  # 200 is A2 (r2 160-260)
+        self.assertFalse(ok)
+        ok, _ = stratum_ok("A1", [-170.0, 0, 0], start, goal)  # 170 is A2 in r2
         self.assertFalse(ok)
         ok, _ = stratum_ok("A1", [120.0, 0, 0], start, goal)  # opposite
         self.assertFalse(ok)
+        ok, _ = stratum_ok("A2", [-200.0, 0, 0], start, STRATA["A2"]["goal"])
+        self.assertTrue(ok)
+
+    def test_r2_shipped_locus_is_start(self):
+        from d_recipe import load_gates
+        from d_strata import heldout_stratum_at
+        locus, err = heldout_stratum_at(load_gates())
+        self.assertIsNone(err)
+        self.assertEqual(locus, "start")
+        self.assertEqual(STRATA["A1"]["vh_hi"], 160.0)
+        self.assertEqual(STRATA["A2"]["vh_lo"], 160.0)
+        self.assertEqual(STRATA["A2"]["vh_hi"], 260.0)
 
     def test_heldout_is_kedjad_not_teleport(self):
         self.assertEqual(STRATA["T0"]["population"], "teleport_drill")
@@ -102,6 +117,15 @@ class StratumTests(unittest.TestCase):
     def test_timeout_is_not_trap(self):
         gate = _gates()["gates"]["west-shelf"]
         self.assertFalse(is_trap([{"ev": "timeout"}], gate, arrived_after_stall=False))
+
+    def test_pair_start_vel_tol(self):
+        ok, _ = pair_start_vel_ok([-120.0, 4.0, 0.0], [-119.0, 1.0, 3.0])
+        self.assertTrue(ok)
+        ok, why = pair_start_vel_ok([-120.0, 0.0, 0.0], [-114.0, 0.0, 0.0])
+        self.assertFalse(ok)
+        self.assertIn("vx", why)
+        ok, why = pair_start_vel_ok([-120.0, 0.0, 0.0], None)
+        self.assertFalse(ok)
 
     def test_cvar_profile(self):
         self.assertIsNone(profiles_ok({"rtx_nav_patch": "0", "sv_gravity": "800"}, {"rtx_nav_patch": "1", "sv_gravity": "800"}))
@@ -373,6 +397,54 @@ class GateLocusTests(unittest.TestCase):
         )
         reasons = runner.preflight()
         self.assertTrue(any("heldout_stratum_at" in r for r in reasons), reasons)
+
+    def test_pair_mismatch_invalidates_both(self):
+        def exec_trial(stratum_id, arm, spec, seq):
+            if stratum_id == "T0":
+                vel = [0, 0, 0]
+                if arm == "off":
+                    return {
+                        "vel": vel,
+                        "measured_vel": vel,
+                        "events": [{"ev": "bot_stall", "cell": 9001, "origin": [-865.0, -48.0, 90.0]}],
+                        "samples": [{"z": 90.0, "on_ground": True}],
+                    }
+                return {
+                    "vel": vel,
+                    "measured_vel": vel,
+                    "events": [{"ev": "arrived"}],
+                    "samples": [{"z": -16.0, "on_ground": True}],
+                    "t_arrive": 0.4,
+                }
+            sign = -1.0 if spec["goal"][0] < spec["start"][0] else 1.0
+            mid = spec["vh_lo"] + 10
+            vel = [sign * mid, 0.0, 0.0]
+            if arm == "on" and stratum_id == "A1":
+                vel = [sign * mid - 8.0, 0.0, 0.0]  # > 5 u/s off
+            extra = {
+                "vel": vel,
+                "measured_vel": vel,
+                "samples": [{"z": 0.0, "on_ground": True}],
+            }
+            if arm == "on":
+                return {**extra, "events": [{"ev": "arrived"}], "t_arrive": 1.0}
+            return {**extra, "events": []}
+
+        runner = drill.DrillRunner(
+            recipe=_recipe_with_on(),
+            gates=_gates(stratum_at="start"),
+            exec_trial=exec_trial,
+            ctl_port=27996,
+            game_port=27591,
+            off_profile={"rtx_nav_patch": "0"},
+            on_profile={"rtx_nav_patch": "1"},
+        )
+        rep = runner.run()
+        a1 = [a for a in rep.attempts if a.stratum == "A1"]
+        self.assertTrue(a1)
+        self.assertTrue(all(not a.valid for a in a1))
+        self.assertTrue(any("delta" in a.reason for a in a1))
+        self.assertFalse(score_heldout(rep.attempts))
 
     def test_missing_stratum_at_classify_fail_closed(self):
         gate = _gates()["gates"]["west-shelf"]

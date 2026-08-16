@@ -165,11 +165,13 @@ class MockCtl:
         raise RuntimeError(f"unsupported mock cmd {cmd!r}")
 
 
-def _driver(ctl=None, token="fable", port=27996, game=27592) -> tuple[LiveTrialDriver, MockCtl, FakeClock]:
+def _driver(ctl=None, token="fable", port=27996, game=27592, stratum_at=None) -> tuple[LiveTrialDriver, MockCtl, FakeClock]:
     ctl = ctl or MockCtl()
     clock = FakeClock()
     recipe = load_recipe(HERE / "recept" / "west-shelf.json")
     gates = load_gates(HERE / "recept" / "west-shelf-gates.json")
+    from d_strata import heldout_stratum_at
+    locus = stratum_at if stratum_at is not None else heldout_stratum_at(gates)[0]
     drv = LiveTrialDriver(
         ctl,
         gate=gates["gates"]["west-shelf"],
@@ -182,6 +184,7 @@ def _driver(ctl=None, token="fable", port=27996, game=27592) -> tuple[LiveTrialD
         game_port=game,
         sleep=clock.sleep,
         now=clock.now,
+        stratum_at=locus,
     )
     return drv, ctl, clock
 
@@ -251,10 +254,10 @@ class SequenceTests(unittest.TestCase):
         tele = [c for c in ctl.cmds if c.startswith("teleport")][0].split()
         cmd = [float(x) for x in tele[5:8]]
         self.assertGreaterEqual(vh(cmd), 80.0)
-        self.assertLess(vh(cmd), 180.0)
+        self.assertLess(vh(cmd), 160.0)
         self.assertGreaterEqual(direction_dot(cmd, spec["start"], spec["goal"]), 0.8)
         self.assertGreaterEqual(vh(raw["measured_vel"]), 80.0)
-        self.assertLess(vh(raw["measured_vel"]), 180.0)
+        self.assertLess(vh(raw["measured_vel"]), 160.0)
         self.assertGreaterEqual(
             direction_dot(raw["measured_vel"], spec["start"], spec["goal"]), 0.8
         )
@@ -262,8 +265,8 @@ class SequenceTests(unittest.TestCase):
     def test_a2_high_band(self):
         spec = STRATA["A2"]
         v = heading_vel(spec["start"], spec["goal"], mid_band_speed(spec))
-        self.assertGreaterEqual(vh(v), 180.0)
-        self.assertLessEqual(vh(v), 320.0)
+        self.assertGreaterEqual(vh(v), 160.0)
+        self.assertLessEqual(vh(v), 260.0)
 
     def test_arrived_carries_budget_time(self):
         drv, ctl, _ = _driver()
@@ -482,13 +485,22 @@ class KvittoTests(unittest.TestCase):
             self.assertTrue(doc2["astar"]["before"]["found"])
 
     def test_exec_trial_heldout_no_start_vel_fallback(self):
-        drv, ctl, _ = _driver()
+        drv, ctl, _ = _driver(stratum_at="gate")
         spec = STRATA["A1"]
         ctl.origin = list(spec["start"])
         raw = drv.exec_trial(stratum_id="A1", arm="off", spec=spec, seq=1, window_s=0.3)
         self.assertIsNone(raw["gate_velocity"])
         self.assertIsNone(raw["vel"])
         self.assertIsNotNone(raw["measured_vel"])
+
+    def test_exec_trial_start_locus_uses_measured(self):
+        drv, ctl, _ = _driver(stratum_at="start")
+        spec = STRATA["A1"]
+        ctl.origin = list(spec["start"])
+        ctl._goto = True
+        raw = drv.exec_trial(stratum_id="A1", arm="off", spec=spec, seq=1, window_s=0.3)
+        self.assertEqual(raw["vel"], raw["measured_vel"])
+        self.assertIsNotNone(raw["vel"])
 
 
 class CellVerbTests(unittest.TestCase):
