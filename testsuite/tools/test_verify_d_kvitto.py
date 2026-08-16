@@ -103,6 +103,24 @@ class VerifyTests(unittest.TestCase):
         errs = verify(doc)
         self.assertTrue(any("raw_pointer" in e for e in errs), errs)
 
+    def test_missing_taxonomy_class_fails(self):
+        doc = _valid()
+        del doc["recipe"]["taxonomy_class"]
+        errs = verify(doc)
+        self.assertTrue(any("taxonomy_class" in e for e in errs), errs)
+        doc = _valid()
+        doc["recipe"]["taxonomy_class"] = None
+        errs = verify(doc)
+        self.assertTrue(any("taxonomy_class" in e for e in errs), errs)
+        doc = _valid()
+        doc["recipe"]["taxonomy_class"] = ""
+        errs = verify(doc)
+        self.assertTrue(any("taxonomy_class" in e for e in errs), errs)
+        doc = _valid()
+        doc["recipe"]["taxonomy_class"] = "   "
+        errs = verify(doc)
+        self.assertTrue(any("taxonomy_class" in e for e in errs), errs)
+
     def test_after_the_fact_lock_fails(self):
         doc = _valid(
             riglock_issued_at="2026-08-16T09:00:00+00:00",

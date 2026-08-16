@@ -64,7 +64,7 @@ def _require(doc: Any, path: str, errors: list[str]) -> Any:
             errors.append(f"missing field {path}")
             return None
         cur = cur[part]
-    if cur is None or cur == "":
+    if cur is None or (isinstance(cur, str) and not cur.strip()):
         errors.append(f"empty field {path}")
         return None
     return cur
