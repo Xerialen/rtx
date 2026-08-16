@@ -131,6 +131,12 @@ impl NavGraph {
         self.find_path_filtered(start, goal, costs, None, Some(mask))
     }
 
+    /// Next-best A*: re-search with *every* link of the chosen path treated as absent.
+    /// Masking a single hop is not the counterfactual (that path can rejoin the original).
+    pub fn find_next_best(&self, start: CellId, goal: CellId, costs: &LinkCosts, chosen: &[u32]) -> Option<Vec<u32>> {
+        self.find_path_masked(start, goal, costs, chosen)
+    }
+
     /// Whether `cell` may be expanded under an optional cluster window (`None` ⇒ unrestricted; a cell
     /// with no LOD cluster, or a cluster past the slice, defaults to allowed).
     #[inline]

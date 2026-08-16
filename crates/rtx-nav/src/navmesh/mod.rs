@@ -3279,6 +3279,52 @@ mod tests {
         assert!(g.find_path_masked(0, 3, &costs, &[0, 1, 2, 3]).is_none());
     }
 
+    /// A one-link mask can rejoin the chosen path. The counterfactual must hide the
+    /// *entire* chosen route (find_next_best).
+    #[test]
+    fn next_best_masks_entire_chosen_path_not_one_link() {
+        let cell = |x: f32, y: f32| Cell {
+            origin: Vec3::new(x, y, 0.0),
+            gx: 0,
+            gy: 0,
+        };
+        let link = |from: CellId, to: CellId, cost: f32| Link {
+            from,
+            to,
+            kind: LinkKind::Walk,
+            cost,
+        };
+        // 0 -1-> 1 -1-> 2 -1-> 3          best [0,1,2]
+        //         \-10-> 3                 rejoins after first hop
+        // 0 -5-> 4 -5-> 3                  edge-disjoint alternative
+        let g = NavGraph::test_graph(
+            vec![
+                cell(0.0, 0.0),
+                cell(50.0, 0.0),
+                cell(100.0, 0.0),
+                cell(150.0, 0.0),
+                cell(75.0, 50.0),
+            ],
+            vec![
+                link(0, 1, 1.0),
+                link(1, 2, 1.0),
+                link(2, 3, 1.0),
+                link(1, 3, 4.0),
+                link(0, 4, 6.0),
+                link(4, 3, 6.0),
+            ],
+        );
+        let costs = LinkCosts::default();
+        let best = g.find_path(0, 3, &costs).unwrap();
+        assert_eq!(best, vec![0, 1, 2]);
+        let one = g.find_path_masked(0, 3, &costs, &[2]).unwrap();
+        assert_eq!(one, vec![0, 3], "masking only the last hop rejoins via 0->1");
+        let next = g.find_next_best(0, 3, &costs, &best).unwrap();
+        assert_eq!(next, vec![4, 5]);
+        assert_ne!(next, one, "full-path mask must not equal a one-link mask");
+        assert_eq!(g.find_path(0, 3, &costs).unwrap(), best, "must not mutate");
+    }
+
     /// The rocket-jump fitness gate surcharges *only* RocketJump links: a bot unfit to rocket-jump
     /// diverts around a cheap-branch RJ leg, and a fit bot (no surcharge) still takes it.
     #[test]

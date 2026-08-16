@@ -170,6 +170,17 @@ class VerifyTests(unittest.TestCase):
         errs = verify(doc)
         self.assertTrue(any("next_best" in e for e in errs), errs)
 
+    def test_next_best_must_mask_entire_chosen_path(self):
+        doc = _valid()
+        doc["astar"]["before"]["links"] = [3, 8]
+        doc["astar"]["after"]["links"] = [3, 8]
+        doc["astar"]["next_best"]["mask_links"] = [3]  # one hop, not the path
+        errs = verify(doc)
+        self.assertTrue(any("entire chosen path" in e for e in errs), errs)
+        doc["astar"]["next_best"]["mask_links"] = []
+        errs = verify(doc)
+        self.assertTrue(any("entire chosen path" in e for e in errs), errs)
+
     def test_wrong_schema_fails(self):
         doc = _valid()
         doc["schema"] = "verktygslada/d-kvitto/0"

@@ -544,6 +544,18 @@ fn do_fixa(
     }
 }
 
+fn fixa_next_best(g: &crate::navmesh::NavGraph, start: u32, goal: u32, chosen: &[u32]) -> proto::FixaPath {
+    let costs = crate::navmesh::LinkCosts::default();
+    _fixa_path_from(
+        g,
+        &costs,
+        start,
+        goal,
+        g.find_next_best(start, goal, &costs, chosen),
+        chosen,
+    )
+}
+
 fn fixa_path(g: &crate::navmesh::NavGraph, start: u32, goal: u32, mask: &[u32]) -> proto::FixaPath {
     let costs = crate::navmesh::LinkCosts::default();
     let path = if mask.is_empty() {
@@ -551,6 +563,17 @@ fn fixa_path(g: &crate::navmesh::NavGraph, start: u32, goal: u32, mask: &[u32]) 
     } else {
         g.find_path_masked(start, goal, &costs, mask)
     };
+    _fixa_path_from(g, &costs, start, goal, path, mask)
+}
+
+fn _fixa_path_from(
+    g: &crate::navmesh::NavGraph,
+    costs: &crate::navmesh::LinkCosts,
+    start: u32,
+    _goal: u32,
+    path: Option<Vec<u32>>,
+    mask: &[u32],
+) -> proto::FixaPath {
     match path {
         None => proto::FixaPath {
             found: false,
@@ -560,7 +583,7 @@ fn fixa_path(g: &crate::navmesh::NavGraph, start: u32, goal: u32, mask: &[u32]) 
             mask_links: mask.to_vec(),
         },
         Some(links) => {
-            let cost: f32 = links.iter().map(|&li| g.priced_link_cost(li, &costs)).sum();
+            let cost: f32 = links.iter().map(|&li| g.priced_link_cost(li, costs)).sum();
             let mut cells = Vec::new();
             if let Some(&first) = links.first() {
                 cells.push(g.link_source(first));
@@ -592,7 +615,7 @@ fn fixa_paths(
         (Some(s), Some(t)) => {
             let before = fixa_path(g, s, t, &[]);
             let next = if before.found {
-                Some(fixa_path(g, s, t, &before.links))
+                Some(fixa_next_best(g, s, t, &before.links))
             } else {
                 Some(proto::FixaPath {
                     found: false,
@@ -680,7 +703,7 @@ fn fixa_apply(
                     _ => None,
                 };
                 let next = match (from, to, after.as_ref()) {
-                    (Some(s), Some(t), Some(a)) if a.found => Some(fixa_path(g, s, t, &a.links)),
+                    (Some(s), Some(t), Some(a)) if a.found => Some(fixa_next_best(g, s, t, &a.links)),
                     (Some(_), Some(_), _) => Some(proto::FixaPath {
                         found: false,
                         cost: 0.0,

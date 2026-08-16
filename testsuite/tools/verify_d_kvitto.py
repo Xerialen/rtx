@@ -115,6 +115,33 @@ def _astar_ok(block: Any, label: str, errors: list[str]) -> None:
             errors.append(f"{label}: found=true but cells/links empty")
 
 
+
+def _chosen_path_links(astar: dict) -> list | None:
+    """The path that next_best must mask: after if found, else before."""
+    after = astar.get("after") if isinstance(astar.get("after"), dict) else {}
+    before = astar.get("before") if isinstance(astar.get("before"), dict) else {}
+    if after.get("found"):
+        return list(after.get("links") or [])
+    if before.get("found"):
+        return list(before.get("links") or [])
+    return None
+
+
+def _next_best_masks_entire_chosen(astar: dict, errors: list[str]) -> None:
+    """Counterfactual: mask_links must be the entire chosen path, not a single hop."""
+    nb = astar.get("next_best")
+    if not isinstance(nb, dict):
+        return
+    chosen = _chosen_path_links(astar)
+    if chosen is None:
+        return
+    mask = list(nb.get("mask_links") or [])
+    if mask != chosen:
+        errors.append(
+            "astar.next_best.mask_links must equal the entire chosen path "
+            f"(got {mask!r}, want {chosen!r})"
+        )
+
 def verify(doc: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(doc, dict):
@@ -194,6 +221,7 @@ def verify(doc: Any) -> list[str]:
             errors.append("astar.next_best: missing")
         else:
             _astar_ok(astar.get("next_best"), "astar.next_best", errors)
+            _next_best_masks_entire_chosen(astar, errors)
 
     return errors
 
