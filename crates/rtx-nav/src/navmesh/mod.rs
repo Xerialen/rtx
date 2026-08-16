@@ -4943,9 +4943,8 @@ mod tests {
         assert_eq!(g.link_water_extra(0), 0.0);
     }
 
-    /// deepseek K1/K3 + grok2 K2: taxes must follow the kept link after
-    /// remove of 1 id *and* of 2 ids (K2 = shift 2). Priced fixture —
-    /// non-zero distinct values — otherwise the test is green without proof.
+    /// Shift-1: remove one id. Taxes must follow the kept link.
+    /// Priced fixture — non-zero distinct values.
     #[test]
     fn remove_links_remaps_hazard_hp_and_water_extra() {
         let costs = LinkCosts {
@@ -4981,38 +4980,56 @@ mod tests {
         assert_eq!(g.hazard_hp, vec![10.0, 20.0, 30.0]);
         assert_eq!(g.water_extra, vec![1.0, 2.0, 3.0]);
 
-        // K2 = two ids (10447+10446) ⇒ shift 2. Four links, drop the first two.
-        let origins4 = [
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(32.0, 0.0, 0.0),
-            Vec3::new(64.0, 0.0, 0.0),
-            Vec3::new(96.0, 0.0, 0.0),
-        ];
-        let links4 = [walk(0, 1, 1.0), walk(1, 2, 1.0), walk(2, 3, 1.0), walk(0, 3, 2.0)];
-        let mut g2 =
-            NavGraph::from_topology_priced(&origins4, &links4, &[11.0, 22.0, 33.0, 44.0], &[1.0, 2.0, 3.0, 4.0]);
-        let snap2 = g2.clone();
-        g2.remove_links_by_id(&[0, 1]).expect("remove 2 ids");
-        assert_eq!(g2.links.len(), 2);
-        assert_eq!((g2.links[0].from, g2.links[0].to), (2, 3));
-        assert_eq!((g2.links[1].from, g2.links[1].to), (0, 3));
-        assert_eq!(g2.hazard_hp, vec![33.0, 44.0], "shift-2: new[0]=old[2], new[1]=old[3]");
-        assert_eq!(g2.water_extra, vec![3.0, 4.0]);
-        assert!((g2.link_extra(0, &costs) - snap2.link_extra(2, &costs)).abs() < 1e-5);
-        assert!(
-            (g2.link_extra(1, &costs) - snap2.link_extra(3, &costs)).abs() < 1e-5,
-            "after 2-id remove, new[1] must be old[3]'s tax, not old[1]'s"
-        );
-
-        g2 = snap2.clone();
-        assert_eq!(g2.hazard_hp, vec![11.0, 22.0, 33.0, 44.0]);
-        assert_eq!(g2.water_extra, vec![1.0, 2.0, 3.0, 4.0]);
-        assert_eq!(g2.links.len(), 4);
-
         let mut dry = snap1;
         dry.hazard_hp.clear();
         dry.water_extra.clear();
         dry.remove_links_by_id(&[1]).expect("empty columns");
         assert!(dry.hazard_hp.is_empty() && dry.water_extra.is_empty());
+    }
+
+    /// K2 pattern: two ids removed (10447+10446) ⇒ compact shift 2.
+    /// Priced fixture — a remap miss would leave new[0]=11, new[1]=22.
+    #[test]
+    fn remove_two_links_shift2_taxes_follow_kept_links() {
+        let costs = LinkCosts {
+            hazard: Some(HazardPrice::new(100.0)),
+            ..LinkCosts::default()
+        };
+        let origins = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(32.0, 0.0, 0.0),
+            Vec3::new(64.0, 0.0, 0.0),
+            Vec3::new(96.0, 0.0, 0.0),
+        ];
+        let links = [walk(0, 1, 1.0), walk(1, 2, 1.0), walk(2, 3, 1.0), walk(0, 3, 2.0)];
+        let mut g = NavGraph::from_topology_priced(&origins, &links, &[11.0, 22.0, 33.0, 44.0], &[1.0, 2.0, 3.0, 4.0]);
+        assert!(g.hazard_hp.iter().all(|&x| x > 0.0) && g.water_extra.iter().all(|&x| x > 0.0));
+        let snap = g.clone();
+
+        g.remove_links_by_id(&[0, 1]).expect("remove two ids");
+        assert_eq!(g.links.len(), 2);
+        assert_eq!((g.links[0].from, g.links[0].to), (2, 3));
+        assert_eq!((g.links[1].from, g.links[1].to), (0, 3));
+        assert_eq!(
+            g.hazard_hp,
+            vec![33.0, 44.0],
+            "shift-2 compact: new[0]=old[2], new[1]=old[3]"
+        );
+        assert_eq!(g.water_extra, vec![3.0, 4.0]);
+        assert!(
+            (g.link_extra(0, &costs) - snap.link_extra(2, &costs)).abs() < 1e-5,
+            "new[0] link_extra must be old[2]'s tax, not old[0]"
+        );
+        assert!(
+            (g.link_extra(1, &costs) - snap.link_extra(3, &costs)).abs() < 1e-5,
+            "new[1] link_extra must be old[3]'s tax, not old[1]"
+        );
+
+        g = snap;
+        assert_eq!(g.links.len(), 4);
+        assert_eq!(g.hazard_hp, vec![11.0, 22.0, 33.0, 44.0]);
+        assert_eq!(g.water_extra, vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(g.link_hazard_hp(0), 11.0);
+        assert_eq!(g.link_hazard_hp(3), 44.0);
     }
 }
