@@ -18,6 +18,20 @@ SCHEMA = "verktygslada/d-kvitto/1"
 FORBIDDEN_CTL = {27990, 27993}
 FORBIDDEN_GAME = {27540, 27570}
 
+
+def _port_num(value):
+    """Accept int or decimal string so RA/main cannot slip through as "27990"."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
+            return int(s)
+    return None
+
+
 WEST_SHELF_OFF = {
     "cells": 5977,
     "links": 48207,
@@ -135,10 +149,11 @@ def verify(doc: Any) -> list[str]:
     _require(doc, "endpoint.host", errors)
     ctl = _require(doc, "endpoint.ctl_port", errors)
     game = _require(doc, "endpoint.game_port", errors)
-    if isinstance(ctl, int) and ctl in FORBIDDEN_CTL:
-        errors.append(f"endpoint.ctl_port {ctl} is RA/main — dedicated D instance only")
-    if isinstance(game, int) and game in FORBIDDEN_GAME:
-        errors.append(f"endpoint.game_port {game} is RA/main — dedicated D instance only")
+    ctl_n, game_n = _port_num(ctl), _port_num(game)
+    if ctl_n is not None and ctl_n in FORBIDDEN_CTL:
+        errors.append(f"endpoint.ctl_port {ctl!r} is RA/main — dedicated D instance only")
+    if game_n is not None and game_n in FORBIDDEN_GAME:
+        errors.append(f"endpoint.game_port {game!r} is RA/main — dedicated D instance only")
 
     map_name = _require(doc, "map", errors)
     digest = _require(doc, "binary_sha256", errors)

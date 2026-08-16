@@ -117,6 +117,19 @@ class VerifyTests(unittest.TestCase):
         self.assertTrue(any("27990" in e for e in errs), errs)
         self.assertTrue(any("27540" in e for e in errs), errs)
 
+    def test_forbidden_ra_port_as_string_fails(self):
+        # Regression: RA/main contact must fail even when the port is a string.
+        doc = _valid()
+        doc["endpoint"]["ctl_port"] = "27990"
+        doc["endpoint"]["game_port"] = "27540"
+        errs = verify(doc)
+        self.assertTrue(any("27990" in e for e in errs), errs)
+        self.assertTrue(any("27540" in e for e in errs), errs)
+        doc2 = _valid()
+        doc2["endpoint"]["ctl_port"] = "27993"
+        errs2 = verify(doc2)
+        self.assertTrue(any("27993" in e for e in errs2), errs2)
+
     def test_stamp_mismatch_fails(self):
         observed = dict(WEST_SHELF_OFF)
         observed["cells"] = 1
