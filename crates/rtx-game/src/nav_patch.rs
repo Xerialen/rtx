@@ -21,11 +21,21 @@
 //! patch mutates a clone that only replaces the live graph when everything validated. The outcome
 //! is one unambiguous console line per patch: `applied` / `skipped (...)` / `failed (...)`. A
 //! skipped or failed patch leaves the graph bit-for-bit what the build produced.
+//!
+//! Graph identity (GAP 1): the recipe is also pinned to a nivå-1 `graph_stamp` (FNV-1a-64 over
+//! map + cell/link/rj counts, [`WORK_LOGS/graphstamp-kontrakt.md`]) and, when the pin carries one,
+//! a nivå-2 SHA-256 content hash. A foreign carve is `Failed`, never a silent apply. `snap_z`
+//! remains the local floor check; the stamp is the graph check.
+//!
+//! Undo (GAP 2): [`apply_txn`] keeps the pre-apply graph and [`AppliedTxn::unapply`] restores it
+//! bit-identically without process death. Build-time [`apply_for_map`] does not keep a snapshot
+//! (the default-on production path). Audit lines carry `applied`/`unapplied` plus the stamps.
 
 use glam::Vec3;
+use sha2::{Digest, Sha256};
 
 use crate::bsp::Bsp;
-use crate::navmesh::{LinkKind, NavGraph};
+use crate::navmesh::{Link, LinkKind, NavGraph};
 
 /// Tolerance around [`ShelfPatch::snap_z`] for the floor-snap fingerprint. Standing heights come
 /// out of the hull trace at exact model coordinates, so a correct BSP matches to well under a unit;
@@ -36,6 +46,19 @@ const SNAP_TOL: f32 = 0.5;
 /// mirrors `plant_cell`'s own same-spot test, so the answer agrees with what planting would do.
 const ALREADY_XY: f32 = 8.0;
 const ALREADY_Z: f32 = 8.0;
+
+/// Graph identity a recipe may apply against. Counts + FNV are required; content hash is optional
+/// (nivå 2 — pin it when the golden inventory is known).
+#[derive(Clone, Copy, Debug)]
+pub struct GraphPin {
+    pub cells: u32,
+    pub links: u32,
+    pub rj_links: u32,
+    /// Precomputed FNV-1a-64 of `(map, cells, links, rj_links)`. Must equal [`graph_stamp`].
+    pub stamp: u64,
+    /// SHA-256 hex of the canonical inventory, or `None` when nivå 2 is not pinned.
+    pub content_hash: Option<&'static str>,
+}
 
 /// One un-carved standable surface: the cells that give it honest positions and the drops that give
 /// it a way off. Positions are aim points (a couple of units above the surface); `plant_cell` snaps
@@ -51,7 +74,19 @@ pub struct ShelfPatch {
     pub drops: &'static [([f32; 3], [f32; 3])],
     /// Standing height every planted cell must snap to on the shipped BSP.
     pub snap_z: f32,
+    /// Graph this recipe was measured against. Apply refuses any other identity.
+    pub pin: GraphPin,
 }
+
+/// dm3 west-shelf was measured on upstream main (`cc5fa8e`) — the **base** carve, not arm A's
+/// V296-plant (5978/48208). Nivå 1 + 2 goldens: `WORK_LOGS/graphstamp-kontrakt.md` §5 / §8.4.
+const WEST_SHELF_PIN: GraphPin = GraphPin {
+    cells: 5977,
+    links: 48207,
+    rj_links: 0,
+    stamp: 906_595_427_771_298_736,
+    content_hash: Some("58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"),
+};
 
 /// The pinned patch table. One entry so far.
 ///
@@ -78,6 +113,7 @@ pub const PATCHES: &[ShelfPatch] = &[ShelfPatch {
         ([-845.0, -48.0, 90.0], [-845.0, 0.0, -16.0]),
     ],
     snap_z: 88.03125,
+    pin: WEST_SHELF_PIN,
 }];
 
 /// Endpoint resolution bounds for a drop's `to` point — same rationale and values as the control
@@ -87,9 +123,15 @@ const REACH_XY: f32 = 48.0;
 const REACH_Z: f32 = 48.0;
 
 /// What applying one patch did. Rendered into the console status line by the caller.
+#[derive(Debug)]
 pub enum Outcome {
     /// New topology went in (counts are the *new* cells/drops; pre-existing ones are not counted).
-    Applied { cells: usize, drops: usize },
+    Applied {
+        cells: usize,
+        drops: usize,
+        stamp_before: u64,
+        stamp_after: u64,
+    },
     /// Every cell **and every drop** the patch asks for is already in the graph — a future carve
     /// that genuinely sees the whole surface makes the patch a no-op rather than a conflict. A
     /// carve that finds the cells but still misses the way off does *not* qualify; the missing
@@ -100,6 +142,174 @@ pub enum Outcome {
     Failed(String),
 }
 
+/// Pre-apply snapshot so [`unapply`](AppliedTxn::unapply) can restore the graph without a restart.
+/// `fixa` (GAP 7) is the production consumer; cluster 1 only exposes the API.
+#[allow(dead_code)]
+pub struct AppliedTxn {
+    pub name: &'static str,
+    pub stamp_before: u64,
+    pub stamp_after: u64,
+    snapshot: NavGraph,
+}
+
+impl AppliedTxn {
+    /// Restore the graph to the pre-apply snapshot. Returns the restored stamp for the audit line.
+    #[allow(dead_code)]
+    pub fn unapply(self, graph: &mut NavGraph) -> u64 {
+        *graph = self.snapshot;
+        self.stamp_before
+    }
+}
+
+/// FNV-1a-64 over `map_utf8 ++ LE32(cells) ++ LE32(links) ++ LE32(rj_links)`.
+pub fn graph_stamp(map: &str, cells: u32, links: u32, rj_links: u32) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in map
+        .as_bytes()
+        .iter()
+        .copied()
+        .chain(cells.to_le_bytes())
+        .chain(links.to_le_bytes())
+        .chain(rj_links.to_le_bytes())
+    {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+fn stamp_of(map: &str, graph: &NavGraph) -> u64 {
+    graph_stamp(
+        map,
+        graph.cells.len() as u32,
+        graph.links.len() as u32,
+        graph.summary().rocket_jump,
+    )
+}
+
+fn kind_token(kind: LinkKind) -> &'static str {
+    match kind {
+        LinkKind::Walk => "walk",
+        LinkKind::Step => "step",
+        LinkKind::Drop => "drop",
+        LinkKind::JumpGap => "jump",
+        LinkKind::DoubleJump => "doublejump",
+        LinkKind::SpeedJump => "speedjump",
+        LinkKind::Plat => "plat",
+        LinkKind::Teleport => "teleport",
+        LinkKind::Hook => "hook",
+        LinkKind::RocketJump => "rocketjump",
+        LinkKind::Swim => "swim",
+    }
+}
+
+/// Canonical inventory bytes (kontrakt §8.2, no per-kind params — matches the dm3 golden dump).
+fn canonical_inventory(graph: &NavGraph) -> String {
+    let mut lines: Vec<String> = graph
+        .cells
+        .iter()
+        .enumerate()
+        .map(|(id, c)| {
+            format!(
+                "C\t{id}\t{}\t{}\t{}",
+                c.origin.x as i32, c.origin.y as i32, c.origin.z as i32
+            )
+        })
+        .collect();
+    let in_adj: std::collections::HashSet<u32> = graph.adjacency.iter().flatten().copied().collect();
+    let mut lrecs: Vec<(u32, u32, &'static str, u8)> = graph
+        .links
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let t = if in_adj.contains(&(i as u32)) { 1 } else { 0 };
+            (l.from, l.to, kind_token(l.kind), t)
+        })
+        .collect();
+    lrecs.sort_unstable();
+    for (src, dst, kind, t) in lrecs {
+        lines.push(format!("L\t{src}\t{dst}\t{kind}\t{t}"));
+    }
+    lines.join("\n")
+}
+
+/// Nivå-2 SHA-256 hex of [`canonical_inventory`].
+pub fn graph_content_hash(graph: &NavGraph) -> String {
+    let mut h = Sha256::new();
+    h.update(canonical_inventory(graph).as_bytes());
+    format!("{:x}", h.finalize())
+}
+
+/// Console / audit line for one apply outcome (includes stamps on `applied`).
+pub fn console_line(name: &str, outcome: &Outcome) -> String {
+    match outcome {
+        Outcome::Applied {
+            cells,
+            drops,
+            stamp_before,
+            stamp_after,
+        } => format!(
+            "rtx: navpatch {name}: applied ({cells} cells, {drops} drops) \
+             stamp_before={stamp_before} stamp_after={stamp_after}\n"
+        ),
+        Outcome::AlreadyMeshed => format!("rtx: navpatch {name}: skipped (already meshed)\n"),
+        Outcome::Failed(why) => format!("rtx: navpatch {name}: failed ({why})\n"),
+    }
+}
+
+/// Audit line after a successful undo.
+#[allow(dead_code)] // GAP 7 consumer
+pub fn console_unapplied(name: &str, stamp: u64) -> String {
+    format!("rtx: navpatch {name}: unapplied stamp={stamp}\n")
+}
+
+fn v(a: [f32; 3]) -> Vec3 {
+    Vec3::new(a[0], a[1], a[2])
+}
+
+fn fully_meshed(patch: &ShelfPatch, graph: &NavGraph) -> bool {
+    patch
+        .cells
+        .iter()
+        .all(|&c| graph.cell_within(v(c), ALREADY_XY, ALREADY_Z).is_some())
+        && patch.drops.iter().all(|&(from, to)| {
+            let Some(from_cell) = graph.cell_within(v(from), ALREADY_XY, ALREADY_Z) else {
+                return false;
+            };
+            let Some(to_cell) = graph.cell_within(v(to), REACH_XY, REACH_Z) else {
+                return false;
+            };
+            graph
+                .links
+                .iter()
+                .any(|l| l.from == from_cell && l.to == to_cell && l.kind == LinkKind::Drop)
+        })
+}
+
+fn pin_matches(patch: &ShelfPatch, map: &str, graph: &NavGraph) -> Result<u64, String> {
+    if map != patch.map {
+        return Err(format!("map mismatch: graph map={map:?}, pin map={:?}", patch.map));
+    }
+    let cells = graph.cells.len() as u32;
+    let links = graph.links.len() as u32;
+    let rj = graph.summary().rocket_jump;
+    let stamp = graph_stamp(map, cells, links, rj);
+    if cells != patch.pin.cells || links != patch.pin.links || rj != patch.pin.rj_links || stamp != patch.pin.stamp {
+        return Err(format!(
+            "stamp mismatch: graph cells={cells} links={links} rj={rj} stamp={stamp}, \
+             pin cells={} links={} rj={} stamp={}",
+            patch.pin.cells, patch.pin.links, patch.pin.rj_links, patch.pin.stamp
+        ));
+    }
+    if let Some(want) = patch.pin.content_hash {
+        let got = graph_content_hash(graph);
+        if got != want {
+            return Err(format!("content_hash mismatch: graph={got}, pin={want}"));
+        }
+    }
+    Ok(stamp)
+}
+
 /// Apply every patch pinned to `map`, in table order — transactionally: each patch mutates a
 /// clone, which replaces `graph` (derived tables rebuilt) only when the whole patch validated.
 /// A `Failed` patch therefore cannot leave partial topology or stale reachability/LOD behind.
@@ -107,7 +317,7 @@ pub fn apply_for_map(map: &str, bsp: &Bsp, graph: &mut NavGraph) -> Vec<(&'stati
     let mut out = Vec::new();
     for patch in PATCHES.iter().filter(|p| p.map == map) {
         let mut candidate = graph.clone();
-        let outcome = apply_one(patch, bsp, &mut candidate);
+        let outcome = apply_one(patch, Some(bsp), &mut candidate);
         if let Outcome::Applied { .. } = outcome {
             candidate.rebuild_derived();
             *graph = candidate;
@@ -117,28 +327,81 @@ pub fn apply_for_map(map: &str, bsp: &Bsp, graph: &mut NavGraph) -> Vec<(&'stati
     out
 }
 
-fn apply_one(patch: &ShelfPatch, bsp: &Bsp, graph: &mut NavGraph) -> Outcome {
-    let v = |a: [f32; 3]| Vec3::new(a[0], a[1], a[2]);
+/// Undoable apply: on `Applied` the live graph is replaced and the pre-apply snapshot is returned.
+/// `Failed` / `AlreadyMeshed` leave `graph` untouched (the latter is `Err` so the caller can log it).
+#[allow(dead_code)] // GAP 7 consumer
+pub fn apply_txn(patch: &ShelfPatch, bsp: Option<&Bsp>, graph: &mut NavGraph) -> Result<AppliedTxn, Outcome> {
+    let snapshot = graph.clone();
+    let mut candidate = graph.clone();
+    let outcome = apply_one(patch, bsp, &mut candidate);
+    match outcome {
+        Outcome::Applied {
+            stamp_before,
+            stamp_after,
+            ..
+        } => {
+            candidate.rebuild_derived();
+            *graph = candidate;
+            Ok(AppliedTxn {
+                name: patch.name,
+                stamp_before,
+                stamp_after,
+                snapshot,
+            })
+        }
+        other => Err(other),
+    }
+}
+
+fn apply_one(patch: &ShelfPatch, bsp: Option<&Bsp>, graph: &mut NavGraph) -> Outcome {
+    // Already-meshed is decided before the pin: a second apply on the *post*-plant graph must stay
+    // idempotent. The pin describes the *pre*-apply carve; checking it first would turn a re-apply
+    // into a false stamp-mismatch.
+    if fully_meshed(patch, graph) {
+        return Outcome::AlreadyMeshed;
+    }
+
+    let stamp_before = match pin_matches(patch, patch.map, graph) {
+        Ok(s) => s,
+        Err(why) => return Outcome::Failed(why),
+    };
 
     let mut new_cells = 0;
     for &c in patch.cells {
-        // "New" is judged by what `plant_cell` actually did (its dedup runs against the *snapped*
-        // position, which an aim point can sit further from than any pre-check here would use) —
-        // the cell count grows exactly when a cell was genuinely planted.
-        let cells_before = graph.cells.len();
-        let Some((id, _)) = graph.plant_cell(bsp, v(c)) else {
-            return Outcome::Failed(format!("no standable floor at {c:?}"));
-        };
-        let existed = graph.cells.len() == cells_before;
-        let z = graph.cell_origin(id).z;
-        if (z - patch.snap_z).abs() > SNAP_TOL {
-            return Outcome::Failed(format!(
-                "cell at {c:?} snapped to z={z}, expected {} ± {SNAP_TOL} — the floor here is not \
-                 the one this patch was measured on",
-                patch.snap_z
-            ));
+        if let Some(id) = graph.cell_within(v(c), ALREADY_XY, ALREADY_Z) {
+            let z = graph.cell_origin(id).z;
+            if (z - patch.snap_z).abs() > SNAP_TOL {
+                return Outcome::Failed(format!(
+                    "cell at {c:?} snapped to z={z}, expected {} ± {SNAP_TOL} — the floor here is not \
+                     the one this patch was measured on",
+                    patch.snap_z
+                ));
+            }
+            continue;
         }
-        if !existed {
+        let planted = match bsp {
+            Some(bsp) => {
+                let cells_before = graph.cells.len();
+                let Some((id, _)) = graph.plant_cell(bsp, v(c)) else {
+                    return Outcome::Failed(format!("no standable floor at {c:?}"));
+                };
+                let existed = graph.cells.len() == cells_before;
+                let z = graph.cell_origin(id).z;
+                if (z - patch.snap_z).abs() > SNAP_TOL {
+                    return Outcome::Failed(format!(
+                        "cell at {c:?} snapped to z={z}, expected {} ± {SNAP_TOL} — the floor here is not \
+                         the one this patch was measured on",
+                        patch.snap_z
+                    ));
+                }
+                !existed
+            }
+            None => {
+                graph.insert_cell(Vec3::new(c[0], c[1], patch.snap_z));
+                true
+            }
+        };
+        if planted {
             new_cells += 1;
         }
     }
@@ -151,8 +414,6 @@ fn apply_one(patch: &ShelfPatch, bsp: &Bsp, graph: &mut NavGraph) -> Outcome {
         let Some(to_cell) = graph.cell_within(v(to), REACH_XY, REACH_Z) else {
             return Outcome::Failed(format!("drop to {to:?} resolves to no cell"));
         };
-        // `plant_drop` does not deduplicate; an equivalent drop already in the graph (an earlier
-        // patch run, or a carve that learned the lip) is simply kept.
         if graph
             .links
             .iter()
@@ -160,8 +421,18 @@ fn apply_one(patch: &ShelfPatch, bsp: &Bsp, graph: &mut NavGraph) -> Outcome {
         {
             continue;
         }
-        if graph.plant_drop(bsp, from_cell, to_cell).is_none() {
-            return Outcome::Failed(format!("drop {from:?} -> {to:?} is not one the build would emit"));
+        match bsp {
+            Some(bsp) => {
+                if graph.plant_drop(bsp, from_cell, to_cell).is_none() {
+                    return Outcome::Failed(format!("drop {from:?} -> {to:?} is not one the build would emit"));
+                }
+            }
+            None => graph.insert_link(Link {
+                from: from_cell,
+                to: to_cell,
+                kind: LinkKind::Drop,
+                cost: 1.0,
+            }),
         }
         new_drops += 1;
     }
@@ -169,9 +440,12 @@ fn apply_one(patch: &ShelfPatch, bsp: &Bsp, graph: &mut NavGraph) -> Outcome {
     if new_cells == 0 && new_drops == 0 {
         return Outcome::AlreadyMeshed;
     }
+    let stamp_after = stamp_of(patch.map, graph);
     Outcome::Applied {
         cells: new_cells,
         drops: new_drops,
+        stamp_before,
+        stamp_after,
     }
 }
 
@@ -201,6 +475,273 @@ mod tests {
                     p.name
                 );
             }
+            assert_eq!(
+                p.pin.stamp,
+                graph_stamp(p.map, p.pin.cells, p.pin.links, p.pin.rj_links),
+                "{}: pin.stamp must equal FNV of the pin counts",
+                p.name
+            );
+            if let Some(h) = p.pin.content_hash {
+                assert_eq!(h.len(), 64, "{}: content_hash is SHA-256 hex", p.name);
+                assert!(h.chars().all(|c| c.is_ascii_hexdigit()), "{}: hex", p.name);
+            }
         }
+    }
+
+    #[test]
+    fn fnv_matches_contract_vectors_and_dm3_goldens() {
+        // kontrakt §3
+        let empty = graph_stamp("", 0, 0, 0);
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        assert_eq!(h, 0xcbf2_9ce4_8422_2325);
+        h ^= b'a' as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        assert_eq!(h, 0xaf63_dc4c_8601_ec8c);
+        h = 0xcbf2_9ce4_8422_2325;
+        for b in b"foobar" {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        assert_eq!(h, 0x8594_4171_f739_67e8);
+        // empty message is the offset basis; graph_stamp("") still appends three LE32 zeros.
+        assert_ne!(empty, 0xcbf2_9ce4_8422_2325);
+        // kontrakt §5 + STATUS bas-graf
+        assert_eq!(graph_stamp("dm3", 5978, 48208, 0), 13_090_435_456_435_551_592);
+        assert_eq!(graph_stamp("dm3", 5977, 48207, 0), 906_595_427_771_298_736);
+        assert_eq!(WEST_SHELF_PIN.stamp, graph_stamp("dm3", 5977, 48207, 0));
+    }
+
+    #[test]
+    fn content_hash_matches_contract_minifixtures() {
+        fn sha(s: &str) -> String {
+            let mut h = Sha256::new();
+            h.update(s.as_bytes());
+            format!("{:x}", h.finalize())
+        }
+        assert_eq!(
+            sha("C\t10\t0\t0\t0\nC\t11\t32\t0\t0\nL\t10\t11\twalk\t1\nL\t11\t10\twalk\t1"),
+            "6d8af07e9580a26c19959861e21d295b95995d903fada013c4c4e54e142beeaf"
+        );
+        assert_eq!(
+            sha("C\t10\t0\t0\t0\nC\t11\t32\t0\t0\nL\t10\t11\twalk\t1\nL\t11\t10\twalk\t0"),
+            "6819c5bea29a4d690db502c8ef3186154dacb254548de82aa7a5ecd883a76c02"
+        );
+
+        let mut g = NavGraph::from_topology(
+            &[Vec3::new(0.0, 0.0, 0.0), Vec3::new(32.0, 0.0, 0.0)],
+            &[Link {
+                from: 0,
+                to: 1,
+                kind: LinkKind::Walk,
+                cost: 1.0,
+            }],
+        );
+        g.insert_pruned_link(Link {
+            from: 1,
+            to: 0,
+            kind: LinkKind::Walk,
+            cost: 1.0,
+        });
+        assert_eq!(
+            canonical_inventory(&g),
+            "C\t0\t0\t0\t0\nC\t1\t32\t0\t0\nL\t0\t1\twalk\t1\nL\t1\t0\twalk\t0"
+        );
+        let hashed = graph_content_hash(&g);
+        assert_eq!(hashed.len(), 64);
+        // T=1 vs T=0 must not collide.
+        let both_live = NavGraph::from_topology(
+            &[Vec3::new(0.0, 0.0, 0.0), Vec3::new(32.0, 0.0, 0.0)],
+            &[
+                Link {
+                    from: 0,
+                    to: 1,
+                    kind: LinkKind::Walk,
+                    cost: 1.0,
+                },
+                Link {
+                    from: 1,
+                    to: 0,
+                    kind: LinkKind::Walk,
+                    cost: 1.0,
+                },
+            ],
+        );
+        assert_ne!(graph_content_hash(&both_live), hashed);
+    }
+
+    fn dest_origins() -> Vec<Vec3> {
+        PATCHES[0].drops.iter().map(|&(_, to)| v(to)).collect()
+    }
+
+    fn shelf_origins_at(z: f32) -> Vec<Vec3> {
+        PATCHES[0].cells.iter().map(|&c| Vec3::new(c[0], c[1], z)).collect()
+    }
+
+    fn drop_links(shelf_start: u32) -> Vec<Link> {
+        (0..4)
+            .map(|i| Link {
+                from: shelf_start + i,
+                to: i,
+                kind: LinkKind::Drop,
+                cost: 1.0,
+            })
+            .collect()
+    }
+
+    fn pin_for(graph: &NavGraph) -> GraphPin {
+        let cells = graph.cells.len() as u32;
+        let links = graph.links.len() as u32;
+        let rj = graph.summary().rocket_jump;
+        GraphPin {
+            cells,
+            links,
+            rj_links: rj,
+            stamp: graph_stamp("dm3", cells, links, rj),
+            content_hash: None,
+        }
+    }
+
+    fn fixture_patch(graph: &NavGraph) -> ShelfPatch {
+        ShelfPatch {
+            map: "dm3",
+            name: "west-shelf-fixture",
+            cells: PATCHES[0].cells,
+            drops: PATCHES[0].drops,
+            snap_z: PATCHES[0].snap_z,
+            pin: pin_for(graph),
+        }
+    }
+
+    fn topology_eq(a: &NavGraph, b: &NavGraph) -> bool {
+        a.cells.len() == b.cells.len()
+            && a.links.len() == b.links.len()
+            && a.cells
+                .iter()
+                .zip(&b.cells)
+                .all(|(x, y)| x.origin == y.origin && x.gx == y.gx && x.gy == y.gy)
+            && a.links.iter().zip(&b.links).all(|(x, y)| {
+                x.from == y.from && x.to == y.to && x.kind == y.kind && x.cost.to_bits() == y.cost.to_bits()
+            })
+            && a.adjacency == b.adjacency
+    }
+
+    #[test]
+    fn stamp_mismatch_fails_closed() {
+        let mut g = NavGraph::from_topology(&dest_origins(), &[]);
+        let before = g.clone();
+        let outcome = apply_one(&PATCHES[0], None, &mut g);
+        match outcome {
+            Outcome::Failed(why) => assert!(why.contains("stamp mismatch"), "{why}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(topology_eq(&g, &before), "Failed must not mutate");
+    }
+
+    #[test]
+    fn content_hash_mismatch_fails_closed() {
+        let mut g = NavGraph::from_topology(&dest_origins(), &[]);
+        let before = g.clone();
+        let mut patch = fixture_patch(&g);
+        patch.pin.content_hash = Some("0000000000000000000000000000000000000000000000000000000000000000");
+        let outcome = apply_one(&patch, None, &mut g);
+        match outcome {
+            Outcome::Failed(why) => assert!(why.contains("content_hash mismatch"), "{why}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn already_meshed_is_idempotent() {
+        let mut origins = dest_origins();
+        origins.extend(shelf_origins_at(PATCHES[0].snap_z));
+        let drops = drop_links(4);
+        let mut g = NavGraph::from_topology(&origins, &drops);
+        let patch = fixture_patch(&g);
+        let before = g.clone();
+        match apply_one(&patch, None, &mut g) {
+            Outcome::AlreadyMeshed => {}
+            other => panic!("expected AlreadyMeshed, got {other:?}"),
+        }
+        assert!(topology_eq(&g, &before));
+        match apply_one(&patch, None, &mut g) {
+            Outcome::AlreadyMeshed => {}
+            other => panic!("second apply: {other:?}"),
+        }
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn snap_z_mismatch_fails_without_publish() {
+        let mut origins = dest_origins();
+        origins.extend(shelf_origins_at(PATCHES[0].snap_z + 1.0));
+        let mut g = NavGraph::from_topology(&origins, &[]);
+        let patch = fixture_patch(&g);
+        let before = g.clone();
+        match apply_txn(&patch, None, &mut g) {
+            Err(Outcome::Failed(why)) => assert!(why.contains("snapped to z="), "{why}"),
+            Err(other) => panic!("expected snap_z Failed, got {other:?}"),
+            Ok(_) => panic!("expected snap_z Failed, got Applied"),
+        }
+        assert!(topology_eq(&g, &before));
+    }
+
+    #[test]
+    fn failed_rollback_discards_partial_plant() {
+        // First shelf cell missing (would plant); second sits at a bad z → fail after a mutation
+        // on the candidate. The live graph must stay bit-identical.
+        let mut origins = dest_origins();
+        let second = PATCHES[0].cells[1];
+        origins.push(Vec3::new(second[0], second[1], PATCHES[0].snap_z + 1.0));
+        let mut g = NavGraph::from_topology(&origins, &[]);
+        let patch = fixture_patch(&g);
+        let before = g.clone();
+        match apply_txn(&patch, None, &mut g) {
+            Err(Outcome::Failed(why)) => assert!(why.contains("snapped to z="), "{why}"),
+            Err(other) => panic!("expected Failed, got {other:?}"),
+            Ok(_) => panic!("expected Failed, got Applied"),
+        }
+        assert!(topology_eq(&g, &before), "partial plant must roll back");
+    }
+
+    #[test]
+    fn undo_roundtrip_restores_bit_identity() {
+        let mut g = NavGraph::from_topology(&dest_origins(), &[]);
+        let patch = fixture_patch(&g);
+        let before = g.clone();
+        let txn = apply_txn(&patch, None, &mut g).expect("fixture apply");
+        assert!(g.cells.len() > before.cells.len());
+        assert!(g.links.len() > before.links.len());
+        assert_eq!(txn.stamp_before, stamp_of("dm3", &before));
+        assert_eq!(txn.stamp_after, stamp_of("dm3", &g));
+        assert_ne!(txn.stamp_before, txn.stamp_after);
+        let line = console_line(
+            txn.name,
+            &Outcome::Applied {
+                cells: 4,
+                drops: 4,
+                stamp_before: txn.stamp_before,
+                stamp_after: txn.stamp_after,
+            },
+        );
+        assert!(line.contains("stamp_before="));
+        let stamp = txn.unapply(&mut g);
+        assert_eq!(stamp, stamp_of("dm3", &before));
+        assert!(topology_eq(&g, &before));
+        assert!(console_unapplied("west-shelf-fixture", stamp).contains("unapplied stamp="));
+    }
+
+    #[test]
+    fn apply_then_reapply_is_already_meshed() {
+        let mut g = NavGraph::from_topology(&dest_origins(), &[]);
+        let patch = fixture_patch(&g);
+        apply_txn(&patch, None, &mut g).expect("first apply");
+        // Pin still describes the *pre*-apply graph; already-meshed must win so re-apply is a no-op.
+        let after = g.clone();
+        match apply_one(&patch, None, &mut g) {
+            Outcome::AlreadyMeshed => {}
+            other => panic!("re-apply: {other:?}"),
+        }
+        assert!(topology_eq(&g, &after));
     }
 }

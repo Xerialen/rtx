@@ -537,6 +537,58 @@ impl NavGraph {
         graph
     }
 
+    /// Topology-only graph: cells + links, spatial index filled so [`cell_within`](Self::cell_within)
+    /// works. Side tables stay empty (dry, ungated). Used by `nav_patch` fixture tests — not a
+    /// substitute for [`build`](Self::build).
+    pub fn from_topology(origins: &[Vec3], links: &[Link]) -> NavGraph {
+        let mut graph = NavGraph {
+            adjacency: Vec::new(),
+            cells: Vec::new(),
+            links: Vec::new(),
+            water: Vec::new(),
+            breathable: Vec::new(),
+            water_extra: Vec::new(),
+            hazard: Vec::new(),
+            hazard_hp: Vec::new(),
+            under_plat: Vec::new(),
+            ledge: Vec::new(),
+            grid: HashMap::new(),
+            gates: SideTable::default(),
+            tele_volumes: Vec::new(),
+            hooks: SideTable::default(),
+            speed_jumps: SideTable::default(),
+            rocket_jumps: SideTable::default(),
+            plats: SideTable::default(),
+            sj_k: bhop_k(10.0, MAX_SPEED),
+            reach: None,
+            lod: None,
+        };
+        for &origin in origins {
+            graph.add_cell(origin);
+        }
+        for &link in links {
+            graph.push_link(link);
+        }
+        graph
+    }
+
+    /// Append a free-standing cell and index it. `nav_patch` fixture applies use this when no BSP
+    /// is available; production plants go through [`plant_cell`](Self::plant_cell).
+    pub fn insert_cell(&mut self, origin: Vec3) -> CellId {
+        self.add_cell(origin)
+    }
+
+    /// Append a directed link and tag it in the adjacency. Fixture-apply counterpart of
+    /// [`plant_drop`](Self::plant_drop).
+    pub fn insert_link(&mut self, link: Link) {
+        self.push_link(link);
+    }
+
+    /// Append a link that is *not* in the adjacency (pruned / T=0). Only for inventory-hash tests.
+    pub fn insert_pruned_link(&mut self, link: Link) {
+        self.links.push(link);
+    }
+
     /// A bare graph for the unit tests: `cells` + `links`, adjacency derived from the links, every
     /// optional column empty (so it reads as dry, unhazardous and gate-free) and stock bhop physics.
     /// Exists so that adding a column doesn't mean editing eight field-by-field literals — the friction

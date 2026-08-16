@@ -243,18 +243,7 @@ impl GameState {
         if self.rtx_cvar_bool("rtx_nav_patch") {
             if let Some(bsp) = self.nav.bsp.clone() {
                 for (name, outcome) in crate::nav_patch::apply_for_map(&self.level.mapname, &bsp, &mut graph) {
-                    let line = match outcome {
-                        crate::nav_patch::Outcome::Applied { cells, drops } => {
-                            format!("rtx: navpatch {name}: applied ({cells} cells, {drops} drops)\n")
-                        }
-                        crate::nav_patch::Outcome::AlreadyMeshed => {
-                            format!("rtx: navpatch {name}: skipped (already meshed)\n")
-                        }
-                        crate::nav_patch::Outcome::Failed(why) => {
-                            format!("rtx: navpatch {name}: failed ({why})\n")
-                        }
-                    };
-                    self.host.dprint(&cstring(&line));
+                    self.host.dprint(&cstring(&crate::nav_patch::console_line(name, &outcome)));
                 }
             }
         }
