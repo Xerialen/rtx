@@ -1,0 +1,31 @@
+{
+  "astar": {
+    "after": {
+      "cells": [],
+      "cost": null,
+      "found": false,
+      "links": [],
+      "mask_links": []
+    },
+    "before": {
+      "cells": [],
+      "cost": null,
+      "found": false,
+      "links": [],
+      "mask_links": []
+    },
+    "next_best": {
+      "cells": [],
+      "cost": null,
+      "found": false,
+      "links": [],
+      "mask_links": []
+    }
+  },
+  "candidate": "ram-rail-v2",
+  "landing_cell": null,
+  "stratum": {
+    "attempt": "K3-OFF-01",
+    "id": "K3"
+  }
+}

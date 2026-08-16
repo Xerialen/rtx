@@ -350,6 +350,134 @@ def recipe_drop_pairs(recipe: dict) -> set[tuple[int, int]]:
     return pairs
 
 
+HARDKATALOG_SHA256 = "55a608426226522c45dd217c3741c9b9ff13d2d302e84511ffd810be506ad1fe"
+HARDKATALOG_PATH = HERE / "recept" / "ram-hardkatalog.jsonl"
+KLASS_TO_EV = {"fall": "peak_drop_150", "fastnad": "bot_stall"}
+
+
+def load_hardkatalog(
+    path: Path | None = None,
+    *,
+    expected_sha: str | None = HARDKATALOG_SHA256,
+) -> tuple[list[dict] | None, str]:
+    """Load the pinned RAM härdkatalog. SHA mismatch ⇒ unusable (M1 only)."""
+    p = Path(path or HARDKATALOG_PATH)
+    if not p.is_file():
+        return None, "missing"
+    digest = sha256_file(p)
+    if expected_sha and digest != expected_sha:
+        return None, "sha_mismatch"
+    rows: list[dict] = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        rows.append(json.loads(line))
+    return rows, "ok"
+
+
+def _catalog_falt(row: dict) -> dict:
+    ev = row.get("evidens") if isinstance(row, dict) else None
+    falt = (ev or {}).get("falt") if isinstance(ev, dict) else None
+    return falt if isinstance(falt, dict) else {}
+
+
+def _catalog_cell(falt: dict) -> int | None:
+    c = falt.get("cell")
+    if c is None or c == "":
+        return None
+    try:
+        return int(c)
+    except (TypeError, ValueError):
+        return None
+
+
+def _catalog_locus(falt: dict) -> list[float] | None:
+    loc = falt.get("locus")
+    if not isinstance(loc, (list, tuple)) or len(loc) < 3:
+        return None
+    return [float(x) for x in loc[:3]]
+
+
+def _route_first_last_ok(falt: dict, live_cells: list[int] | None) -> bool:
+    rc = [int(x) for x in (falt.get("rutt_celler") or []) if str(x).lstrip("-").isdigit()]
+    if not rc or not live_cells:
+        return False
+    return rc[0] == int(live_cells[0]) and rc[-1] == int(live_cells[-1])
+
+
+def _route_goal_ok(falt: dict, live_goal: list[float] | None) -> bool:
+    mal = falt.get("rutt_mal")
+    if not isinstance(mal, (list, tuple)) or len(mal) < 3 or not live_goal or len(live_goal) < 3:
+        return False
+    return dist3([float(x) for x in mal[:3]], [float(x) for x in live_goal[:3]]) <= 1e-6
+
+
+def _route_exact_ok(falt: dict, live_cells: list[int] | None, live_goal: list[float] | None) -> bool:
+    rc = [int(x) for x in (falt.get("rutt_celler") or []) if str(x).lstrip("-").isdigit()]
+    if list(live_cells or []) != rc:
+        return False
+    return _route_goal_ok(falt, live_goal)
+
+
+def catalog_corroborate(
+    rows: list[dict] | None,
+    *,
+    recipe_id: str,
+    stratum: str,
+    off_ev: dict | None,
+    on_ev: dict | None,
+    live_cells: list[int] | None,
+    live_goal: list[float] | None,
+) -> dict | None:
+    """LED III via härdkatalogen. Fail-closed on every listed prohibition."""
+    if not rows:
+        return None
+    if str(stratum or "").startswith("K"):
+        return None
+    if recipe_id in RAIL_IDS or recipe_id != "ram-prevent":
+        return None
+    if not isinstance(off_ev, dict) or not isinstance(on_ev, dict):
+        return None
+    ev_name = on_ev.get("ev")
+    if ev_name != off_ev.get("ev"):
+        return None
+    off_cell = off_ev.get("cell") if isinstance(off_ev.get("cell"), int) else None
+    on_cell = on_ev.get("cell") if isinstance(on_ev.get("cell"), int) else None
+    off_o = _origin_of(off_ev)
+    on_o = _origin_of(on_ev)
+
+    for row in rows:
+        falt = _catalog_falt(row)
+        if str(falt.get("arm") or "").strip().lower() != "mixed":
+            continue
+        if KLASS_TO_EV.get(str(falt.get("handelse_klass") or "")) != ev_name:
+            continue
+        cat_cell = _catalog_cell(falt)
+        cat_loc = _catalog_locus(falt)
+
+        if off_cell is None and on_cell is None:
+            if cat_loc is None or off_o is None or on_o is None:
+                continue
+            if dist3(off_o, cat_loc) > 16.0 or dist3(on_o, cat_loc) > 16.0:
+                continue
+            if not _route_exact_ok(falt, live_cells, live_goal):
+                continue
+            return {"id": row.get("id"), "cell": cat_cell, "via": "catalog_cell_unknown"}
+
+        if off_cell is None or on_cell is None:
+            continue
+        if off_cell != on_cell or cat_cell != on_cell:
+            continue
+        if cat_loc is None or on_o is None or dist3(on_o, cat_loc) > LOCUS_TOL:
+            continue
+        if off_o is not None and dist3(off_o, cat_loc) > LOCUS_TOL:
+            continue
+        if not _route_first_last_ok(falt, live_cells) or not _route_goal_ok(falt, live_goal):
+            continue
+        return {"id": row.get("id"), "cell": cat_cell, "via": "catalog"}
+    return None
+
+
 def astar_blob(raw: dict, receipt: dict | None = None) -> tuple[dict, dict]:
     before = raw.get("astar_before") or {}
     after = raw.get("astar_after") or {}
@@ -375,6 +503,8 @@ def attribute_pair(
     off_receipt: dict | None = None,
     on_receipt: dict | None = None,
     gate_tol: float = GATE_TOL,
+    catalog: list[dict] | None = None,
+    live_goal: list[float] | None = None,
 ) -> dict:
     """§4a four-leg test. All four required. Missing field → not attributed."""
     legs = {"same_zone": False, "no_route_effect": False, "m1": False, "separated": False}
@@ -441,8 +571,18 @@ def attribute_pair(
         if episode_cell is not None and cl.get("cell") == episode_cell:
             hit = cl
             break
-    if hit is None:
-        reasons.append("no M1/baseline cluster within 32 u")
+    live_cells = path_cells(after) or path_cells(before)
+    cat_hit = catalog_corroborate(
+        catalog,
+        recipe_id=str(recipe.get("id") or ""),
+        stratum=stratum,
+        off_ev=off_sig[0] if off_sig else None,
+        on_ev=on_sig[0] if on_sig else None,
+        live_cells=live_cells,
+        live_goal=live_goal,
+    )
+    if hit is None and cat_hit is None:
+        reasons.append("no M1/baseline cluster or catalog mixed row within 32 u")
     else:
         legs["m1"] = True
 
@@ -508,6 +648,7 @@ def attribute_pair(
         "path_links": la or lb,
         "path_cost": ca if ca is not None else cb,
         "m1_cluster": hit,
+        "catalog_row": cat_hit,
         "min_distance": None if min_d == float("inf") else min_d,
         "legs": dict(legs),
         "attributed": ok,
@@ -712,6 +853,8 @@ class RamRunner:
         binaries: dict[str, str] | None = None,
         fixture_sha256: str | None = None,
         allow_shared: bool = False,
+        catalog_path: Path | None = None,
+        catalog_sha: str | None = HARDKATALOG_SHA256,
     ) -> None:
         self.recipe = recipe
         self.rail_gates = rail_gates
@@ -741,6 +884,9 @@ class RamRunner:
             or (rail_gates.get("baseline_clusters") if rail_gates else None)
             or []
         )
+        self.catalog, self.catalog_status = load_hardkatalog(
+            catalog_path, expected_sha=catalog_sha,
+        )
         self.kb = knockback_points(rail_gates)
         self.p = prevention_specs(self.prevent_gates) if recipe.get("id") == "ram-prevent" else []
         self.h = heldout_specs() if recipe.get("id") in {"ram-rail", "ram-rail-v2", "ram-prevent"} else []
@@ -752,6 +898,11 @@ class RamRunner:
         if n_chain is not None:
             for s in self.p + self.h:
                 s["n_pairs"] = int(n_chain)
+        self.live_goals = {
+            s["id"]: list(s.get("goal") or [])
+            for s in (self.p + self.h)
+            if s.get("id")
+        }
         self._raw_by_id: dict[str, dict] = {}
         self.hazard_posts: list[dict] = []
 
@@ -1066,6 +1217,8 @@ class RamRunner:
                 recipe=self.recipe,
                 avsett=self.avsett,
                 clusters=self.clusters,
+                catalog=self.catalog,
+                live_goal=self.live_goals.get(stratum),
             )
             posts.append(result["post"])
             if result["ok"]:

@@ -1,0 +1,1 @@
+{"arm": "on", "commanded_vel": [0.0, -80.0, 0.0], "gate_cell": null, "gate_origin": null, "gate_velocity": null, "kind": "header", "match_vel": null, "measured_vel": [0.0, -80.0, 0.0], "seq": 1, "stamp_ok": true, "stamp_reason": "ok", "stratum_id": "K3", "vel_tries": 1}
