@@ -4,7 +4,7 @@
   "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
   "heldout_stratum_at": "start",
   "t0_budget_s": 1.1,
-  "facit_sha256": "ce0e886e3dd49c52e935a36fbec700c1397d6249d95743f87b6ee2b252624649",
+  "facit_sha256": "e4b24f0814785876c354a4294c1621bc78f9ca57267034a27b773c2e0ce0905b",
   "leave_link": 10447,
   "next_high_walk": 10446,
   "parallel_drop": 10444,
@@ -368,7 +368,8 @@
     "cells": [
       1122,
       1090,
-      1123
+      1123,
+      1124
     ],
     "origins": [
       [
@@ -385,11 +386,37 @@
         64.0,
         -844.0,
         168.0
+      ],
+      [
+        64.0,
+        -800.0,
+        -16.0
       ]
     ],
-    "note": "pre-registered drop corridor for 1416-1124 actual route (facit r2; K1-R3B raw evidence)"
+    "pinned_selected_links": {
+      "1416-1124": [
+        10441,
+        10076,
+        9679,
+        9254,
+        8931,
+        8734,
+        8521
+      ],
+      "1461-1124": [
+        10780,
+        10449,
+        10086,
+        9690,
+        9265,
+        8941,
+        8741,
+        8527
+      ]
+    },
+    "note": "facit r3: physical landing union measured from all observed high-drop telemetry (1123 dominant 7/10, K1-R4) + pinned plain-A* selected paths from deepseek-34419-astar-bevis; arrival without peak_drop_150 is valid only on the pinned path"
   },
-  "sj_obligation": {
+  "direct_1461_1124": {
     "id": "1461-1124",
     "start": {
       "cell": 1461,
@@ -407,7 +434,8 @@
         -16.0
       ]
     },
-    "note": "separate mandatory SpeedJump 34419 obligation (facit r2)"
+    "note": "facit r3: ordinary seventeenth destination obligation; the r2 SpeedJump 34419 attest is struck by the cost-dominance proof (2.2397 one-edge > 2.1617 full drop path)"
   },
+  "off_bank_1416_1124": 4,
   "reproduction_min_off_hearth_campaign": 1
 }

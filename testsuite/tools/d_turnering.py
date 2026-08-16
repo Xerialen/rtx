@@ -290,6 +290,10 @@ def heldout_obligations(gates: dict) -> list[dict]:
     budget = float(gates.get("heldout_budget_s") or 25.0)
     n_pairs = int(gates.get("n_heldout_pairs") or 5)
     sj = int(gates.get("speedjump") or SPEEDJUMP)
+    corr = gates.get("route_1124_avsett_drop") or {}
+    union_cells = [int(c) for c in corr.get("cells") or []]
+    pinned = corr.get("pinned_selected_links") or {}
+    bank_n = int(gates.get("off_bank_1416_1124") or 0)
     out = []
     for dest in gates.get("heldout_from_1416") or []:
         cid = int(dest["cell"])
@@ -305,23 +309,26 @@ def heldout_obligations(gates: dict) -> list[dict]:
             "vh_lo": 80.0,
             "vh_hi": 160.0,
             "dir_min": 0.8,
-            # facit r2: 1416-1124 attests its ACTUAL pre-registered drop
-            # corridor; the SpeedJump attest lives on the separate
-            # 1461-1124 obligation below.
+            # facit r3: no speedjump attestation exists anywhere (34419 is
+            # cost-dominated and never selected by plain A*); both 1124
+            # obligations attest the physical landing union instead.
             "require_speedjump": False,
             "speedjump": sj,
-            "avsett_drop_cells": (
-                [int(c) for c in (gates.get("route_1124_avsett_drop") or {}).get("cells") or []]
-                if cid == 1124 else []
-            ),
+            "avsett_drop_cells": list(union_cells) if cid == 1124 else [],
             "require_corridor": cid == 1124,
+            "pinned_selected_links": (
+                [int(x) for x in pinned.get("1416-1124") or []] if cid == 1124 else []
+            ),
+            # facit r3: heading-specific pre-ON OFF bank for the west
+            # command; every bank row is a durable receipt.
+            "off_bank": bank_n if cid == 1124 else 0,
             "population": "kedjad",
         })
-    sj_ob = gates.get("sj_obligation") or {}
-    if sj_ob:
-        src, tgt = sj_ob.get("start") or {}, sj_ob.get("goal") or {}
+    direct = gates.get("direct_1461_1124") or {}
+    if direct:
+        src, tgt = direct.get("start") or {}, direct.get("goal") or {}
         out.append({
-            "id": str(sj_ob.get("id") or "1461-1124"),
+            "id": str(direct.get("id") or "1461-1124"),
             "kind": "heldout",
             "start": list(src.get("origin") or []),
             "goal": list(tgt.get("origin") or []),
@@ -332,10 +339,14 @@ def heldout_obligations(gates: dict) -> list[dict]:
             "vh_lo": 80.0,
             "vh_hi": 160.0,
             "dir_min": 0.8,
-            "require_speedjump": True,
+            # facit r3: ordinary seventeenth destination obligation; the
+            # former 34419 attest is struck by the cost-dominance proof.
+            "require_speedjump": False,
             "speedjump": sj,
-            "avsett_drop_cells": [],
-            "require_corridor": False,
+            "avsett_drop_cells": list(union_cells),
+            "require_corridor": True,
+            "pinned_selected_links": [int(x) for x in pinned.get("1461-1124") or []],
+            "off_bank": 0,
             "population": "kedjad",
         })
     for ms in gates.get("must_starters") or []:
@@ -398,6 +409,10 @@ class TAttempt:
     next_best_links: list[int] = field(default_factory=list)
     sj_ok: bool = True
     next_best_ok: bool = True
+    # facit r3 OFF bank: subattempt letter ("a".."d") for bank members,
+    # and True on the deterministically selected scored partner.
+    bank_member: str = ""
+    bank_selected: bool = False
 
 
 @dataclass
@@ -439,6 +454,8 @@ class TournamentReport:
                     "arrived": a.arrived,
                     "sj_ok": a.sj_ok,
                     "next_best_ok": a.next_best_ok,
+                    "bank_member": a.bank_member,
+                    "bank_selected": a.bank_selected,
                 }
                 for a in self.attempts
             ],
@@ -583,10 +600,28 @@ class TournamentRunner:
             reasons.append(str(exc))
         if not self.repro or {s["id"] for s in self.repro} != {"in_vast", "in_tunnel"}:
             reasons.append("gates.reproduction missing in_vast/in_tunnel")
-        if len(self.heldout) != 17:  # facit r2: 12 dests + 4 must-starters + 1461-1124
+        if len(self.heldout) != 17:  # facit r3: 12 dests + 4 must-starters + direct 1461-1124
             reasons.append(f"heldout obligations {len(self.heldout)} != 17")
-        if not any(s.get("require_speedjump") for s in self.heldout):
-            reasons.append("heldout missing 1416-1124 speedjump obligation")
+        if any(s.get("require_speedjump") for s in self.heldout):
+            # facit r3: 34419 is cost-dominated; no speedjump attestation is
+            # required or accepted as evidence. A stale fixture re-arming it
+            # is a preflight failure, not a scoring rule.
+            reasons.append("facit r3 forbids speedjump attestation on any obligation")
+        union = {int(c) for c in (self.gates.get("route_1124_avsett_drop") or {}).get("cells") or []}
+        if union != {1122, 1090, 1123, 1124}:
+            reasons.append(f"avsett_drop union {sorted(union)} != [1090, 1122, 1123, 1124]")
+        for oid in ("1416-1124", "1461-1124"):
+            spec = next((s for s in self.heldout if s["id"] == oid), None)
+            if spec is None:
+                reasons.append(f"heldout missing {oid} obligation")
+                continue
+            if not spec.get("require_corridor") or set(spec.get("avsett_drop_cells") or []) != union:
+                reasons.append(f"{oid} must attest the r3 landing union")
+            if not spec.get("pinned_selected_links"):
+                reasons.append(f"{oid} missing pinned selected-path links")
+        ob = next((s for s in self.heldout if s["id"] == "1416-1124"), None)
+        if ob is not None and int(ob.get("off_bank") or 0) != 4:
+            reasons.append("1416-1124 must use the four-measurement OFF bank")
         hearth = (self.gates.get("reproduction") or {}).get("hearth")
         if not isinstance(hearth, dict) or hearth.get("cell") != 1462:
             reasons.append("reproduction.hearth cell must be 1462")
@@ -613,26 +648,38 @@ class TournamentRunner:
             # facit r2: 1461-1124 must select and attest 34419 in BOTH arms.
             sj_ok = attests_speedjump(links, int(spec.get("speedjump") or SPEEDJUMP))
         corridor_ok = True
+        corridor_why = ""
         if ran and spec.get("require_corridor") and arm == "on":
-            # facit r2: attest the ACTUAL route — at least one peak_drop_150
-            # inside the pre-registered avsett_drop corridor; EVERY other
-            # drop remains a failure. Fail-closed: an unstamped drop
-            # (cell=None) counts as outside; the goal cell is NOT exempt.
-            # Stamp-exhausted arms never watched — do not score the corridor.
+            # facit r3: a peak_drop_150 landing inside the pre-registered
+            # physical union is avsett_drop; EVERY such event outside it is a
+            # failure (unstamped cell=None counts as outside, fail-closed).
+            # Arrival with NO peak_drop_150 is valid only when the pinned
+            # plain-A* selected path holds — a physical descent may stay
+            # below the 150-u event threshold; the event is telemetry, not
+            # an obligation to manufacture a fall. Stamp-exhausted arms
+            # never watched — do not score the corridor.
             allowed = set(int(c) for c in spec.get("avsett_drop_cells") or [])
             drops = [
                 ev for ev in (raw.get("events") or [])
                 if ev.get("ev") == "peak_drop_150"
             ]
-            in_corr = [
-                ev for ev in drops
-                if ev.get("cell") is not None and int(ev["cell"]) in allowed
-            ]
             outside = [
                 ev for ev in drops
                 if ev.get("cell") is None or int(ev["cell"]) not in allowed
             ]
-            corridor_ok = bool(in_corr) and not outside
+            if drops:
+                corridor_ok = not outside
+                corridor_why = (
+                    f"{spec['id']} peak_drop_150 outside the pre-registered "
+                    f"landing union {sorted(allowed)}"
+                )
+            else:
+                pinned = [int(x) for x in spec.get("pinned_selected_links") or []]
+                corridor_ok = bool(pinned) and links == pinned
+                corridor_why = (
+                    f"{spec['id']} arrived without peak_drop_150 but the "
+                    f"selected path does not match the pinned plain-A* path"
+                )
         nb_ok = True
         cid = str(self.recipe.get("id") or "")
         nb_mask = astar_mask(nb)
@@ -664,10 +711,7 @@ class TournamentRunner:
             att.reason = f"{spec['id']} must attest SpeedJump {int(spec.get('speedjump') or SPEEDJUMP)}"
         elif not corridor_ok:
             att.valid = False
-            att.reason = (
-                f"{spec['id']} must attest the pre-registered avsett_drop "
-                f"corridor {sorted(set(int(c) for c in spec.get('avsett_drop_cells') or []))}"
-            )
+            att.reason = corridor_why
         elif not nb_ok:
             att.valid = False
             att.reason = next_best_fail_reason(
@@ -740,7 +784,7 @@ class TournamentRunner:
         write_kvitto(path, doc, exclusive=True, verify_first=True)
         return path
 
-    def _run_one(self, spec: dict, arm: str, seq: int, match_vel=None) -> TAttempt:
+    def _run_one(self, spec: dict, arm: str, seq: int, match_vel=None, sub: str = "") -> TAttempt:
         if self.ensure_arm is not None:
             self.ensure_arm(arm)
         raw = self.exec_trial(
@@ -753,22 +797,69 @@ class TournamentRunner:
         )
         self.last_raw = raw
         att = self._classify(spec, arm, seq, raw)
+        if sub:
+            att.attempt_id = f"{att.attempt_id}{sub}"
+            att.bank_member = sub
         if self.on_attempt is not None:
             self.on_attempt(att, raw)
         elif self.kvitto_dir is not None:
             self._write_attempt_kvitto(att, raw)
         return att
 
+    def _run_bank_pair(self, spec: dict, seq: int, attempts: list[TAttempt]) -> bool:
+        """facit r3, 1416-1124 only: four blind pre-ON OFF launch measurements
+        with the identical pre-pinned command; ON must match at least one bank
+        member within PAIR_VEL_TOL per component. The closest qualifying
+        member, by deterministic (component-delta, bank-index) order, is the
+        scored OFF partner. Every bank row is a durable receipt; no ON result
+        may choose or discard a member after the fact (selection is computed
+        from measured vectors only)."""
+        bank_n = int(spec.get("off_bank") or 0)
+        bank: list[TAttempt] = []
+        for i in range(bank_n):
+            bank.append(self._run_one(spec, "off", seq, sub=chr(ord("a") + i)))
+        members = [(i, b) for i, b in enumerate(bank) if b.valid and b.start_vel is not None]
+        attempts.extend(bank)
+        if not members:
+            return False
+        on_att = self._run_one(
+            spec, "on", seq, match_vel=[list(b.start_vel) for _, b in members],
+        )
+        qualified: list[tuple[float, int]] = []
+        if on_att.start_vel is not None:
+            for idx, b in members:
+                deltas = [abs(float(x) - float(y)) for x, y in zip(b.start_vel, on_att.start_vel)]
+                if len(deltas) == 3 and max(deltas) <= PAIR_VEL_TOL:
+                    qualified.append((round(max(deltas), 6), idx))
+        if not on_att.valid or not qualified:
+            if on_att.valid:
+                on_att.valid = False
+                on_att.reason = (
+                    f"{spec['id']} ON start-vel matches no OFF bank member "
+                    f"(tol={PAIR_VEL_TOL})"
+                )
+            attempts.append(on_att)
+            return False
+        _, sel_idx = min(qualified)
+        bank[sel_idx].bank_selected = True
+        attempts.append(on_att)
+        return True
+
     def _run_pairs(self, spec: dict, attempts: list[TAttempt], extra: list[str]) -> None:
         need = int(spec["n_pairs"])
         got = 0
         seq = 0
         cap = need + int(HELDOUT_PAIR_REPLACE_CAP)
+        use_bank = int(spec.get("off_bank") or 0) > 0
         while got < need:
             seq += 1
             if seq > cap:
                 extra.append(f"{spec['id']}: could not assemble {need} valid pairs")
                 break
+            if use_bank:
+                if self._run_bank_pair(spec, seq, attempts):
+                    got += 1
+                continue
             off_att = self._run_one(spec, "off", seq)
             if not off_att.valid:
                 attempts.append(off_att)

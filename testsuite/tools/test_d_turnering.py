@@ -72,6 +72,29 @@ def _clean_on(**extra):
     return raw
 
 
+# facit r3: measured plain-A* selected paths (deepseek-34419-astar-bevis).
+PINNED_1416_1124 = [10441, 10076, 9679, 9254, 8931, 8734, 8521]
+PINNED_1461_1124 = [10780, 10449, 10086, 9690, 9265, 8941, 8741, 8527]
+
+
+def _r3_1461_ok(raw):
+    """1461-1124 as the ordinary seventeenth obligation: the measured drop
+    path (never 34419) with a landing inside the pre-registered union."""
+    raw["astar_after"] = {
+        "found": True, "cells": [1461, 1417, 1124],
+        "links": list(PINNED_1461_1124), "cost": 2.1617, "mask_links": [],
+    }
+    raw["astar_next_best"] = {
+        "found": True, "cells": [1461, 1416, 1124],
+        "links": [10779, 10441], "cost": 2.4,
+        "mask_links": list(PINNED_1461_1124),
+    }
+    raw["events"] = list(raw.get("events") or []) + [
+        {"ev": "peak_drop_150", "cell": 1090, "origin": [74.77, -783.04, 105.57]},
+    ]
+    return raw
+
+
 class PredicateTests(unittest.TestCase):
     def test_hearth_requires_1462_and_15u(self):
         hearth = _gates()["reproduction"]["hearth"]
@@ -142,16 +165,24 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(repro[0]["budget_s"], 25.0)
         self.assertEqual(repro[1]["budget_s"], 23.0)
         held = heldout_obligations(g)
-        # facit r2: 12 dests + 4 must-starters + separate 1461-1124 = 17
+        # facit r3: 12 dests + 4 must-starters + direct 1461-1124 = 17
         self.assertEqual(len(held), 17)
-        sj = [h for h in held if h.get("require_speedjump")]
-        self.assertEqual(len(sj), 1)
-        self.assertEqual(sj[0]["id"], "1461-1124")
-        self.assertEqual(sj[0]["speedjump"], SPEEDJUMP)
+        # facit r3: no speedjump attestation anywhere (34419 cost-dominated).
+        self.assertFalse([h for h in held if h.get("require_speedjump")])
         h1124 = next(h for h in held if h["id"] == "1416-1124")
-        self.assertFalse(h1124["require_speedjump"])
         self.assertTrue(h1124["require_corridor"])
-        self.assertEqual(sorted(h1124["avsett_drop_cells"]), [1090, 1122, 1123])
+        self.assertEqual(sorted(h1124["avsett_drop_cells"]), [1090, 1122, 1123, 1124])
+        self.assertEqual(h1124["pinned_selected_links"], PINNED_1416_1124)
+        self.assertEqual(h1124["off_bank"], 4)
+        h1461 = next(h for h in held if h["id"] == "1461-1124")
+        self.assertTrue(h1461["require_corridor"])
+        self.assertEqual(sorted(h1461["avsett_drop_cells"]), [1090, 1122, 1123, 1124])
+        self.assertEqual(h1461["pinned_selected_links"], PINNED_1461_1124)
+        self.assertEqual(h1461["off_bank"], 0)
+        self.assertEqual(
+            g["facit_sha256"],
+            "e4b24f0814785876c354a4294c1621bc78f9ca57267034a27b773c2e0ce0905b",
+        )
 
     def test_k2_appendix_is_49(self):
         app = json.loads((HERE / "recept" / "haz1462-k2-appendix.json").read_text())
@@ -181,10 +212,7 @@ class ScoringTests(unittest.TestCase):
                     {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
                 ]
             if sid == "1461-1124":
-                raw["astar_after"] = {
-                    "found": True, "cells": [1461, 1124],
-                    "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
-                }
+                _r3_1461_ok(raw)
             if arm == "on":
                 sel = list((raw.get("astar_after") or {}).get("links") or [])
                 if cid == "haz1462-k2":
@@ -293,8 +321,9 @@ class ScoringTests(unittest.TestCase):
         self.assertFalse(report.heldout_on_ok)
         self.assertTrue(any("10444" in a.reason for a in report.attempts if not a.valid))
 
-    def test_1461_1124_without_34419_is_invalid(self):
-        # facit r2: the SpeedJump attest lives on 1461-1124, not 1416-1124.
+    def test_1461_1124_needs_no_speedjump(self):
+        # facit r3: 34419 is struck — a 1461-1124 that takes the measured
+        # drop path with a union landing is VALID without any speedjump.
         def exec_trial(**k):
             if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
                 return _hearth_raw()
@@ -304,10 +333,7 @@ class ScoringTests(unittest.TestCase):
                     {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
                 ]
             if k["stratum_id"] == "1461-1124":
-                raw["astar_after"] = {
-                    "found": True, "cells": [1461, 1124],
-                    "links": [1, 2], "cost": 1.0, "mask_links": [],
-                }
+                _r3_1461_ok(raw)
             return raw
 
         runner = TournamentRunner(
@@ -322,9 +348,26 @@ class ScoringTests(unittest.TestCase):
         )
         runner.app_routes = []
         report = runner.run()
-        bad = [a for a in report.attempts if not a.valid and "34419" in a.reason]
-        self.assertTrue(bad)
-        self.assertTrue(all(a.route_id == "1461-1124" for a in bad))
+        r1461 = [a for a in report.attempts if a.route_id == "1461-1124"]
+        self.assertTrue(r1461)
+        self.assertTrue(all(a.valid for a in r1461), [a.reason for a in r1461])
+        self.assertFalse([a for a in report.attempts if "34419" in (a.reason or "")])
+
+    def test_stale_speedjump_fixture_fails_preflight(self):
+        # facit r3 forbids re-arming the struck attest via a stale fixture.
+        runner = TournamentRunner(
+            recipe=_recipe(),
+            gates=_gates(),
+            exec_trial=lambda **k: _clean_on(),
+            ctl_port=0,
+            game_port=27592,
+            fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+            n_repro=1,
+            n_heldout=1,
+        )
+        next(s for s in runner.heldout if s["id"] == "1461-1124")["require_speedjump"] = True
+        reasons = runner.preflight()
+        self.assertTrue(any("forbids speedjump" in r for r in reasons), reasons)
 
     def test_1416_1124_drop_route_passes_and_outside_corridor_fails(self):
         # facit r2 live-shaped: the K1-R3B raw evidence (drop corridor
@@ -342,10 +385,7 @@ class ScoringTests(unittest.TestCase):
                          "origin": [64.0, -844.0, 60.0]},
                     ]
                 if k["stratum_id"] == "1461-1124":
-                    raw["astar_after"] = {
-                        "found": True, "cells": [1461, 1124],
-                        "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
-                    }
+                    _r3_1461_ok(raw)
                 return raw
             return exec_trial
 
@@ -370,11 +410,12 @@ class ScoringTests(unittest.TestCase):
         bad = [a for a in bad_report.attempts
                if a.route_id == "1416-1124" and not a.valid]
         self.assertTrue(bad)
-        self.assertIn("avsett_drop", bad[0].reason)
+        self.assertIn("landing union", bad[0].reason)
 
-    def test_corridor_goal_cell_drop_and_unstamped_drop_fail(self):
-        # deepseek FYND 1a/1b: a >150-drop in the GOAL cell (1124) or an
-        # UNSTAMPED drop (cell=None) is "every other drop" — fail-closed.
+    def test_corridor_union_1124_passes_and_unstamped_fails(self):
+        # facit r3, live-shaped on K1-R4 ON-10: a >150-drop in the GOAL cell
+        # 1124 is inside the measured landing union and PASSES; an UNSTAMPED
+        # drop (cell=None) remains outside — fail-closed.
         def make_exec(extra_drop: dict):
             def exec_trial(**k):
                 if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
@@ -387,17 +428,11 @@ class ScoringTests(unittest.TestCase):
                         dict(extra_drop),
                     ]
                 if k["stratum_id"] == "1461-1124":
-                    raw["astar_after"] = {
-                        "found": True, "cells": [1461, 1124],
-                        "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
-                    }
+                    _r3_1461_ok(raw)
                 return raw
             return exec_trial
 
-        for extra in (
-            {"ev": "peak_drop_150", "cell": 1124, "origin": [64.0, -800.0, 40.0]},
-            {"ev": "peak_drop_150", "cell": None, "origin": [64.0, -820.0, 40.0]},
-        ):
+        def run_with(extra):
             runner = TournamentRunner(
                 recipe=_recipe(),
                 gates=_gates(),
@@ -409,15 +444,77 @@ class ScoringTests(unittest.TestCase):
                 n_heldout=1,
             )
             runner.app_routes = []
-            report = runner.run()
-            bad = [a for a in report.attempts
-                   if a.route_id == "1416-1124" and not a.valid]
-            self.assertTrue(bad, f"extra={extra}")
-            self.assertIn("avsett_drop", bad[0].reason)
+            return runner.run()
 
-    def test_1461_1124_off_arm_also_requires_34419(self):
-        # deepseek FYND 2: facit r2 says "both arms" — an OFF substitute
-        # path on 1461-1124 must fail too.
+        # ON-10 shape: drop landing stamped 1124 — in the r3 union, valid.
+        ok = run_with({"ev": "peak_drop_150", "cell": 1124, "origin": [57.26, -806.11, 24.59]})
+        r1124 = [a for a in ok.attempts if a.route_id == "1416-1124"]
+        self.assertTrue(all(a.valid for a in r1124), [a.reason for a in r1124])
+        # Unstamped drop stays fail-closed.
+        bad_rep = run_with({"ev": "peak_drop_150", "cell": None, "origin": [64.0, -820.0, 40.0]})
+        bad = [a for a in bad_rep.attempts
+               if a.route_id == "1416-1124" and not a.valid]
+        self.assertTrue(bad)
+        self.assertIn("landing union", bad[0].reason)
+
+    def test_no_drop_arrival_valid_only_on_pinned_path(self):
+        # facit r3, 07/09-shaped: arrived ~1.4 s with NO peak_drop_150 —
+        # valid only when the selected path equals the pinned plain-A* path.
+        def make_exec(links: list[int]):
+            def exec_trial(**k):
+                if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
+                    return _hearth_raw()
+                raw = _clean_on()
+                if k["stratum_id"] == "1416-1124":
+                    raw["t_arrive"] = 1.5
+                    raw["astar_after"] = {
+                        "found": True, "cells": [1416, 1124],
+                        "links": list(links), "cost": 2.0271, "mask_links": [],
+                    }
+                    raw["astar_next_best"] = {
+                        "found": True, "cells": [1416, 1091],
+                        "links": [10440, 10059], "cost": 2.4,
+                        "mask_links": list(links),
+                    }
+                if k["stratum_id"] == "1461-1124":
+                    _r3_1461_ok(raw)
+                return raw
+            return exec_trial
+
+        def run_with(links):
+            runner = TournamentRunner(
+                recipe=_recipe(),
+                gates=_gates(),
+                exec_trial=make_exec(links),
+                ctl_port=0,
+                game_port=27592,
+                fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+                n_repro=1,
+                n_heldout=1,
+            )
+            runner.app_routes = []
+            return runner.run()
+
+        ok = run_with(PINNED_1416_1124)
+        r1124 = [a for a in ok.attempts if a.route_id == "1416-1124"]
+        self.assertTrue(all(a.valid for a in r1124), [a.reason for a in r1124])
+        bad_rep = run_with([10441, 10076, 9679])
+        bad = [a for a in bad_rep.attempts
+               if a.route_id == "1416-1124" and a.arm == "on" and not a.valid]
+        self.assertTrue(bad)
+        self.assertIn("pinned plain-A*", bad[0].reason)
+
+    def test_off_bank_selects_deterministic_member(self):
+        # facit r3: four blind pre-ON OFF launches; the closest qualifying
+        # member by (component-delta, bank-index) is the scored partner.
+        off_vels = [
+            [-100.91, 23.0, 0.0],  # a: delta 4.0 vs ON — qualifies
+            [-122.04, 23.0, 0.0],  # b: delta 25.1 — no
+            [-93.9, 23.0, 0.0],    # c: delta 3.0 — qualifies, closest
+            [-122.04, 23.0, 0.0],  # d: no
+        ]
+        state = {"off_i": 0}
+
         def exec_trial(**k):
             if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
                 return _hearth_raw()
@@ -426,17 +523,17 @@ class ScoringTests(unittest.TestCase):
                 raw["events"] = list(raw.get("events") or []) + [
                     {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
                 ]
-            if k["stratum_id"] == "1461-1124":
                 if k["arm"] == "off":
-                    raw["astar_after"] = {
-                        "found": True, "cells": [1461, 1124],
-                        "links": [1, 2], "cost": 1.0, "mask_links": [],
-                    }
+                    v = off_vels[state["off_i"] % 4]
+                    state["off_i"] += 1
+                    raw["vel"] = list(v)
+                    raw["measured_vel"] = list(v)
                 else:
-                    raw["astar_after"] = {
-                        "found": True, "cells": [1461, 1124],
-                        "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
-                    }
+                    self.assertEqual(len(k["match_vel"]), 4)  # bank passed to driver
+                    raw["vel"] = [-96.9, 23.0, 0.0]
+                    raw["measured_vel"] = [-96.9, 23.0, 0.0]
+            if k["stratum_id"] == "1461-1124":
+                _r3_1461_ok(raw)
             return raw
 
         runner = TournamentRunner(
@@ -451,10 +548,54 @@ class ScoringTests(unittest.TestCase):
         )
         runner.app_routes = []
         report = runner.run()
-        bad = [a for a in report.attempts
-               if a.route_id == "1461-1124" and a.arm == "off" and not a.valid]
-        self.assertTrue(bad)
-        self.assertIn("34419", bad[0].reason)
+        self.assertTrue(report.valid, report.invalid_reasons)
+        bank = [a for a in report.attempts
+                if a.route_id == "1416-1124" and a.arm == "off" and a.bank_member]
+        self.assertEqual([a.bank_member for a in bank], ["a", "b", "c", "d"])
+        self.assertTrue(bank[0].attempt_id.endswith("01a"))
+        selected = [a for a in bank if a.bank_selected]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].bank_member, "c")
+
+    def test_off_bank_no_match_is_fail_closed(self):
+        # ON that matches no bank member exhausts the pair; the replacement
+        # cap keeps it fail-closed ("could not assemble").
+        def exec_trial(**k):
+            if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
+                return _hearth_raw()
+            raw = _clean_on()
+            if k["stratum_id"] == "1416-1124":
+                raw["events"] = list(raw.get("events") or []) + [
+                    {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
+                ]
+                if k["arm"] == "off":
+                    raw["vel"] = [-122.04, 23.0, 0.0]
+                    raw["measured_vel"] = [-122.04, 23.0, 0.0]
+                else:
+                    raw["vel"] = [-89.24, 23.0, 0.0]  # grok §2: the ON basin
+                    raw["measured_vel"] = [-89.24, 23.0, 0.0]
+            if k["stratum_id"] == "1461-1124":
+                _r3_1461_ok(raw)
+            return raw
+
+        runner = TournamentRunner(
+            recipe=_recipe(),
+            gates=_gates(),
+            exec_trial=exec_trial,
+            ctl_port=0,
+            game_port=27592,
+            fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+            n_repro=1,
+            n_heldout=1,
+        )
+        runner.app_routes = []
+        report = runner.run()
+        self.assertFalse(report.valid)
+        self.assertTrue(any("1416-1124" in r for r in report.invalid_reasons))
+        ons = [a for a in report.attempts
+               if a.route_id == "1416-1124" and a.arm == "on"]
+        self.assertTrue(ons)
+        self.assertTrue(all("no OFF bank member" in a.reason for a in ons))
 
     def test_campaign_off_hearth_survives_one_zero_route(self):
         # facit r2: >=1 OFF hearth across the COMBINED campaign; a single
@@ -468,10 +609,7 @@ class ScoringTests(unittest.TestCase):
                     {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
                 ]
             if k["stratum_id"] == "1461-1124":
-                raw["astar_after"] = {
-                    "found": True, "cells": [1461, 1124],
-                    "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
-                }
+                _r3_1461_ok(raw)
             return raw
 
         runner = TournamentRunner(
@@ -617,10 +755,7 @@ class ScoringTests(unittest.TestCase):
                     {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
                 ]
             if k["stratum_id"] == "1461-1124":
-                raw["astar_after"] = {
-                    "found": True, "cells": [1461, 1124],
-                    "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
-                }
+                _r3_1461_ok(raw)
             sel = list((raw.get("astar_after") or {}).get("links") or [])
             raw["astar_next_best"] = {
                 "found": True, "cells": [1416, 1461],
@@ -832,20 +967,24 @@ class ReasonPriorityTests(unittest.TestCase):
             self.assertIn("stamp", att.reason, (seq, att.reason))
             self.assertNotIn("avsett_drop", att.reason, (seq, att.reason))
 
-    def test_on10_spread_into_1124_is_still_corridor(self):
+    def test_on10_spread_into_1124_is_in_r3_union(self):
+        # facit r3: the K1-R4 ON-10 landing (stamped 1124) is INSIDE the
+        # measured union — no longer a corridor failure.
         spec, runner = self._spec_and_runner()
         raw = raw_from_jsonl(_r4_1124_jsonl("1416-1124-ON-10"))
         self.assertIsNot(raw.get("stamp_ok"), False)
         drops = [e for e in raw["events"] if e.get("ev") == "peak_drop_150"]
         self.assertEqual(drops[0].get("cell"), 1124)
         att = runner._classify(spec, "on", 10, raw)
-        self.assertFalse(att.valid)
-        self.assertIn("avsett_drop", att.reason)
+        self.assertNotIn("landing union", att.reason)
+        self.assertNotIn("avsett_drop", att.reason)
         self.assertNotIn("exhausted", att.reason)
 
-    def test_on07_on09_ran_without_drop_stay_corridor(self):
+    def test_on07_on09_no_drop_fail_closed_without_pinned_path(self):
         # Raw K1-R4: ON-07/09 have stamp_ok=true and only `arrived` — they ran.
-        # Deepseek's FYND B list lumped them with stamp-exhausted; the jsonl does not.
+        # facit r3: a no-drop arrival is valid ONLY on the pinned plain-A*
+        # path; these extracts carry no matching path — fail-closed with the
+        # pinned-path reason, never a stamp reason.
         spec, runner = self._spec_and_runner()
         for seq in (7, 9):
             raw = raw_from_jsonl(_r4_1124_jsonl(f"1416-1124-ON-{seq:02d}"))
@@ -855,7 +994,8 @@ class ReasonPriorityTests(unittest.TestCase):
             self.assertNotIn("peak_drop_150", evs, seq)
             att = runner._classify(spec, "on", seq, raw)
             self.assertFalse(att.valid, seq)
-            self.assertIn("avsett_drop", att.reason, (seq, att.reason))
+            self.assertIn("pinned plain-A*", att.reason, (seq, att.reason))
+            self.assertNotIn("exhausted", att.reason, (seq, att.reason))
 
     def test_validity_unchanged_stamp_still_invalid(self):
         spec, runner = self._spec_and_runner()

@@ -566,6 +566,10 @@ class LiveTrialDriver:
         Heldout ON (`align_to` = partner measured): re-stamp until each
         component is within PAIR_VEL_TOL of the partner. Exhaustion is
         fail-closed (ok=False) so the caller skips the watch.
+
+        facit r3: `align_to` may be a BANK (list of measured vectors, the
+        four pre-ON OFF launches on 1416-1124); a stamp that matches any
+        member is ok. A single vector keeps the r2 behaviour.
         """
         rest = all(abs(float(c)) <= 1e-9 for c in cmd_vel)
         if rest:
@@ -573,12 +577,16 @@ class LiveTrialDriver:
         if align_to is None:
             self._teleport(e, start, cmd_vel)
             return self.measure_origin_vel(), 1, True
+        if align_to and isinstance(align_to[0], (list, tuple)):
+            targets = [list(v) for v in align_to]
+        else:
+            targets = [list(align_to)]
         measured = [0.0, 0.0, 0.0]
         tries = 0
         for tries in range(1, VEL_RETRIES + 1):
             self._teleport(e, start, cmd_vel)
             measured = self.measure_origin_vel()
-            if vel_components_within(measured, align_to, PAIR_VEL_TOL):
+            if any(vel_components_within(measured, t, PAIR_VEL_TOL) for t in targets):
                 return measured, tries, True
         return measured, tries, False
 
