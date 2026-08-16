@@ -4,7 +4,7 @@
   "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
   "heldout_stratum_at": "start",
   "t0_budget_s": 1.1,
-  "facit_sha256": "68f4c2ffc22d44213609f42cdb4fe0e4839adb95b1052ee1c293ecb37e123e4b",
+  "facit_sha256": "261a5c86ad929b57913ce0295f8bf118ea0cac1638206af024e9e077e9ea0999",
   "leave_link": 10447,
   "next_high_walk": 10446,
   "parallel_drop": 10444,
@@ -434,7 +434,15 @@
         -16.0
       ]
     },
-    "note": "facit r3: ordinary seventeenth destination obligation; the r2 SpeedJump 34419 attest is struck by the cost-dominance proof (2.2397 one-edge > 2.1617 full drop path)"
+    "avsett_drop_cells": [
+      1156,
+      1366,
+      1090,
+      1089,
+      1123,
+      1415
+    ],
+    "note": "facit r5: ordinary seventeenth destination obligation with its OWN measured landing union (78 events over two rounds, 1156 dominant 26/48 — deepseek-1461-landningsunion); the r2 SpeedJump 34419 attest remains struck (cost-dominance proof)"
   },
   "off_bank_1416_1124": 4,
   "reproduction_min_off_hearth_campaign": 1

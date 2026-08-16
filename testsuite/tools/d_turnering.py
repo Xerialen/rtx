@@ -339,11 +339,12 @@ def heldout_obligations(gates: dict) -> list[dict]:
             "vh_lo": 80.0,
             "vh_hi": 160.0,
             "dir_min": 0.8,
-            # facit r3: ordinary seventeenth destination obligation; the
-            # former 34419 attest is struck by the cost-dominance proof.
+            # facit r5: ordinary seventeenth destination obligation with its
+            # OWN measured landing union (the 1461 drop path has different
+            # ballistic spread than 1416's); 34419 attest remains struck.
             "require_speedjump": False,
             "speedjump": sj,
-            "avsett_drop_cells": list(union_cells),
+            "avsett_drop_cells": [int(c) for c in direct.get("avsett_drop_cells") or []],
             "require_corridor": True,
             "pinned_selected_links": [int(x) for x in pinned.get("1461-1124") or []],
             "off_bank": 0,
@@ -631,16 +632,18 @@ class TournamentRunner:
             # required or accepted as evidence. A stale fixture re-arming it
             # is a preflight failure, not a scoring rule.
             reasons.append("facit r3 forbids speedjump attestation on any obligation")
-        union = {int(c) for c in (self.gates.get("route_1124_avsett_drop") or {}).get("cells") or []}
-        if union != {1122, 1090, 1123, 1124}:
-            reasons.append(f"avsett_drop union {sorted(union)} != [1090, 1122, 1123, 1124]")
-        for oid in ("1416-1124", "1461-1124"):
+        # facit r5: per-obligation landing unions from measured spread.
+        unions = {
+            "1416-1124": {1122, 1090, 1123, 1124},
+            "1461-1124": {1156, 1366, 1090, 1089, 1123, 1415},
+        }
+        for oid, union in unions.items():
             spec = next((s for s in self.heldout if s["id"] == oid), None)
             if spec is None:
                 reasons.append(f"heldout missing {oid} obligation")
                 continue
             if not spec.get("require_corridor") or set(spec.get("avsett_drop_cells") or []) != union:
-                reasons.append(f"{oid} must attest the r3 landing union")
+                reasons.append(f"{oid} must attest its r5 landing union {sorted(union)}")
             if not spec.get("pinned_selected_links"):
                 reasons.append(f"{oid} missing pinned selected-path links")
         ob = next((s for s in self.heldout if s["id"] == "1416-1124"), None)

@@ -176,12 +176,13 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(h1124["off_bank"], 4)
         h1461 = next(h for h in held if h["id"] == "1461-1124")
         self.assertTrue(h1461["require_corridor"])
-        self.assertEqual(sorted(h1461["avsett_drop_cells"]), [1090, 1122, 1123, 1124])
+        # facit r5: 1461's OWN measured union (1156 dominant), not 1416's.
+        self.assertEqual(sorted(h1461["avsett_drop_cells"]), [1089, 1090, 1123, 1156, 1366, 1415])
         self.assertEqual(h1461["pinned_selected_links"], PINNED_1461_1124)
         self.assertEqual(h1461["off_bank"], 0)
         self.assertEqual(
             g["facit_sha256"],
-            "68f4c2ffc22d44213609f42cdb4fe0e4839adb95b1052ee1c293ecb37e123e4b",
+            "261a5c86ad929b57913ce0295f8bf118ea0cac1638206af024e9e077e9ea0999",
         )
 
     def test_k2_appendix_is_49(self):
@@ -352,6 +353,49 @@ class ScoringTests(unittest.TestCase):
         self.assertTrue(r1461)
         self.assertTrue(all(a.valid for a in r1461), [a.reason for a in r1461])
         self.assertFalse([a for a in report.attempts if "34419" in (a.reason or "")])
+
+    def test_1461_union_is_route_specific(self):
+        # facit r5: 1156 (1461's dominant measured landing) passes; 1122
+        # (1416's union cell, NOT in 1461's) fails — unions are per route.
+        def make_exec(cell: int, origin: list[float]):
+            def exec_trial(**k):
+                if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
+                    return _hearth_raw()
+                raw = _clean_on()
+                if k["stratum_id"] == "1416-1124":
+                    raw["events"] = list(raw.get("events") or []) + [
+                        {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
+                    ]
+                if k["stratum_id"] == "1461-1124":
+                    _r3_1461_ok(raw)
+                    raw["events"] = [
+                        ev for ev in raw["events"] if ev.get("ev") != "peak_drop_150"
+                    ] + [{"ev": "peak_drop_150", "cell": cell, "origin": list(origin)}]
+                return raw
+            return exec_trial
+
+        def run_with(cell, origin):
+            runner = TournamentRunner(
+                recipe=_recipe(),
+                gates=_gates(),
+                exec_trial=make_exec(cell, origin),
+                ctl_port=0,
+                game_port=27592,
+                fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+                n_repro=1,
+                n_heldout=1,
+            )
+            runner.app_routes = []
+            return runner.run()
+
+        ok = run_with(1156, [85.6, -759.8, 86.6])
+        r1461 = [a for a in ok.attempts if a.route_id == "1461-1124"]
+        self.assertTrue(all(a.valid for a in r1461), [a.reason for a in r1461])
+        bad_rep = run_with(1122, [58.65, -807.58, 30.12])
+        bad = [a for a in bad_rep.attempts
+               if a.route_id == "1461-1124" and a.arm == "on" and not a.valid]
+        self.assertTrue(bad)
+        self.assertIn("landing union", bad[0].reason)
 
     def test_stale_speedjump_fixture_fails_preflight(self):
         # facit r3 forbids re-arming the struck attest via a stale fixture.
