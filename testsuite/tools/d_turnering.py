@@ -596,19 +596,16 @@ class TournamentRunner:
         links = path_links(after)
         nb_links = path_links(nb)
         sj_ok = True
-        if spec.get("require_speedjump") and arm == "on":
+        if spec.get("require_speedjump"):
+            # facit r2: 1461-1124 must select and attest 34419 in BOTH arms.
             sj_ok = attests_speedjump(links, int(spec.get("speedjump") or SPEEDJUMP))
         corridor_ok = True
         if spec.get("require_corridor") and arm == "on":
             # facit r2: attest the ACTUAL route — at least one peak_drop_150
-            # inside the pre-registered avsett_drop corridor, and none outside
-            # corridor ∪ {goal}. Drops there are intended, not falls.
+            # inside the pre-registered avsett_drop corridor; EVERY other
+            # drop remains a failure. Fail-closed: an unstamped drop
+            # (cell=None) counts as outside; the goal cell is NOT exempt.
             allowed = set(int(c) for c in spec.get("avsett_drop_cells") or [])
-            goal_cell = spec.get("goal_cell")
-            if goal_cell is not None:
-                allowed_landing = allowed | {int(goal_cell)}
-            else:
-                allowed_landing = set(allowed)
             drops = [
                 ev for ev in (raw.get("events") or [])
                 if ev.get("ev") == "peak_drop_150"
@@ -619,7 +616,7 @@ class TournamentRunner:
             ]
             outside = [
                 ev for ev in drops
-                if ev.get("cell") is not None and int(ev["cell"]) not in allowed_landing
+                if ev.get("cell") is None or int(ev["cell"]) not in allowed
             ]
             corridor_ok = bool(in_corr) and not outside
         nb_ok = True

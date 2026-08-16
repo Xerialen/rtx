@@ -180,7 +180,7 @@ class ScoringTests(unittest.TestCase):
                 raw["events"] = list(raw.get("events") or []) + [
                     {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
                 ]
-            if sid == "1461-1124" and arm == "on":
+            if sid == "1461-1124":
                 raw["astar_after"] = {
                     "found": True, "cells": [1461, 1124],
                     "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
@@ -372,6 +372,90 @@ class ScoringTests(unittest.TestCase):
         self.assertTrue(bad)
         self.assertIn("avsett_drop", bad[0].reason)
 
+    def test_corridor_goal_cell_drop_and_unstamped_drop_fail(self):
+        # deepseek FYND 1a/1b: a >150-drop in the GOAL cell (1124) or an
+        # UNSTAMPED drop (cell=None) is "every other drop" — fail-closed.
+        def make_exec(extra_drop: dict):
+            def exec_trial(**k):
+                if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
+                    return _hearth_raw()
+                raw = _clean_on()
+                if k["stratum_id"] == "1416-1124":
+                    raw["events"] = list(raw.get("events") or []) + [
+                        {"ev": "peak_drop_150", "cell": 1122,
+                         "origin": [64.0, -844.0, 60.0]},
+                        dict(extra_drop),
+                    ]
+                if k["stratum_id"] == "1461-1124":
+                    raw["astar_after"] = {
+                        "found": True, "cells": [1461, 1124],
+                        "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
+                    }
+                return raw
+            return exec_trial
+
+        for extra in (
+            {"ev": "peak_drop_150", "cell": 1124, "origin": [64.0, -800.0, 40.0]},
+            {"ev": "peak_drop_150", "cell": None, "origin": [64.0, -820.0, 40.0]},
+        ):
+            runner = TournamentRunner(
+                recipe=_recipe(),
+                gates=_gates(),
+                exec_trial=make_exec(extra),
+                ctl_port=0,
+                game_port=27592,
+                fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+                n_repro=1,
+                n_heldout=1,
+            )
+            runner.app_routes = []
+            report = runner.run()
+            bad = [a for a in report.attempts
+                   if a.route_id == "1416-1124" and not a.valid]
+            self.assertTrue(bad, f"extra={extra}")
+            self.assertIn("avsett_drop", bad[0].reason)
+
+    def test_1461_1124_off_arm_also_requires_34419(self):
+        # deepseek FYND 2: facit r2 says "both arms" — an OFF substitute
+        # path on 1461-1124 must fail too.
+        def exec_trial(**k):
+            if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
+                return _hearth_raw()
+            raw = _clean_on()
+            if k["stratum_id"] == "1416-1124":
+                raw["events"] = list(raw.get("events") or []) + [
+                    {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
+                ]
+            if k["stratum_id"] == "1461-1124":
+                if k["arm"] == "off":
+                    raw["astar_after"] = {
+                        "found": True, "cells": [1461, 1124],
+                        "links": [1, 2], "cost": 1.0, "mask_links": [],
+                    }
+                else:
+                    raw["astar_after"] = {
+                        "found": True, "cells": [1461, 1124],
+                        "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
+                    }
+            return raw
+
+        runner = TournamentRunner(
+            recipe=_recipe(),
+            gates=_gates(),
+            exec_trial=exec_trial,
+            ctl_port=0,
+            game_port=27592,
+            fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+            n_repro=1,
+            n_heldout=1,
+        )
+        runner.app_routes = []
+        report = runner.run()
+        bad = [a for a in report.attempts
+               if a.route_id == "1461-1124" and a.arm == "off" and not a.valid]
+        self.assertTrue(bad)
+        self.assertIn("34419", bad[0].reason)
+
     def test_campaign_off_hearth_survives_one_zero_route(self):
         # facit r2: >=1 OFF hearth across the COMBINED campaign; a single
         # stochastically zeroed route must not fail reproduction.
@@ -532,7 +616,7 @@ class ScoringTests(unittest.TestCase):
                 raw["events"] = list(raw.get("events") or []) + [
                     {"ev": "peak_drop_150", "cell": 1122, "origin": [64.0, -844.0, 60.0]},
                 ]
-            if k["stratum_id"] == "1461-1124" and k["arm"] == "on":
+            if k["stratum_id"] == "1461-1124":
                 raw["astar_after"] = {
                     "found": True, "cells": [1461, 1124],
                     "links": [SPEEDJUMP, 9003], "cost": 2.0, "mask_links": [],
