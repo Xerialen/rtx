@@ -469,6 +469,7 @@ class LiveTrialDriver:
                     "peak": fall.peak,
                     "drop_dz": fall.episode_dz,
                     "origin": o,
+                    "cell": self.cell_at(o),
                 })
             if prev is not None:
                 v = vel_from_pair(prev, samp)
@@ -617,6 +618,9 @@ class LiveTrialDriver:
             "gate_cell": None,
             "gate_origin": None,
         }
+        # A* is graph-only; snapshot before watch so raw always carries
+        # before/after/next-best even if the window is skipped.
+        blob = self.snapshot_astar(spec, stratum_id)
         if spec.get("kind") != "trap" and not stamp_ok:
             watched = empty_watch
         else:
@@ -634,6 +638,25 @@ class LiveTrialDriver:
             # locus=gate: never fall back to start-vel. classify_trial invalidates a miss.
             vel = watched.get("gate_velocity")
         start_cell = self.cell_at([float(x) for x in start])
+        off_blob = self.astar_by.get((stratum_id, "off")) or {}
+        on_blob = self.astar_by.get((stratum_id, "on")) or {}
+        empty = astar_path(found=False)
+        after = blob.get("path") or empty
+        if self.arm == "on" and on_blob.get("path"):
+            after = on_blob["path"]
+        before = off_blob.get("path") or (after if self.arm == "off" else empty)
+        next_best = blob.get("next_best") or on_blob.get("next_best") or off_blob.get("next_best") or empty
+        landing_cell = None
+        for ev in watched["events"]:
+            if ev.get("ev") != "peak_drop_150":
+                continue
+            if ev.get("cell") is None and ev.get("origin"):
+                ev["cell"] = self.cell_at(ev["origin"])
+            if isinstance(ev.get("cell"), int):
+                landing_cell = ev["cell"]
+        selected = None
+        if after.get("links"):
+            selected = int(after["links"][0])
         return {
             "vel": vel,
             "commanded_vel": cmd_vel,
@@ -646,6 +669,11 @@ class LiveTrialDriver:
             "gate_cell": watched.get("gate_cell"),
             "gate_origin": watched.get("gate_origin"),
             "start_cell": start_cell,
+            "landing_cell": landing_cell,
+            "selected_link": selected,
+            "astar_before": before,
+            "astar_after": after,
+            "astar_next_best": next_best,
             "events": watched["events"],
             "samples": watched["samples"],
             "t_arrive": watched.get("t_arrive"),
@@ -697,6 +725,7 @@ class LiveTrialDriver:
                     "rel_t": t,
                     "origin": o,
                     "z": o[2],
+                    "cell": self.cell_at(o),
                 })
             if (
                 abs(o[0] - land[0]) <= 32.0

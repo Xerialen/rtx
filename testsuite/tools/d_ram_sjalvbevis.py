@@ -344,9 +344,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", type=int, default=0)
     ap.add_argument("--game-port", type=int, default=27595)
+    ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--recipe", default="ram-rail", choices=("ram-rail", "ram-prevent"))
     ap.add_argument("--fixture", type=Path)
     ap.add_argument("--out", type=Path)
+    ap.add_argument("--lock", type=Path)
+    ap.add_argument("--commit", default="")
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--run", action="store_true")
     args = ap.parse_args(argv)
@@ -379,27 +382,130 @@ def main(argv: list[str] | None = None) -> int:
             "samples": [],
         }
 
-    runner = RamRunner(
+    if not args.port:
+        runner = RamRunner(
+            recipe=recipe,
+            rail_gates=rail,
+            prevent_gates=prev,
+            exec_knockback=stub_kb,
+            exec_trial=stub_trial,
+            ctl_port=args.port,
+            game_port=args.game_port,
+            n_knock=n_knock,
+            n_chain=n_chain,
+        )
+        report = runner.run()
+        text = json.dumps(report.as_dict(), indent=2, sort_keys=True)
+        if args.out:
+            args.out.write_text(text + "\n", encoding="utf-8")
+        print(text)
+        return 0 if report.as_dict().get("godkand") else 1
+
+    # Live path. Never stub against a real ctl port (P5 was false-green).
+    from d_live_driver import (  # noqa: E402
+        DEFAULT_LOCK,
+        DEFAULT_MVDSV,
+        DEFAULT_QWPROGS,
+        LiveTrialDriver,
+        file_sha256,
+        parse_lock,
+        refuse_ra,
+    )
+
+    why = refuse_ra(args.port, args.game_port)
+    if why:
+        print(why, file=sys.stderr)
+        return 2
+    if args.port in FORBIDDEN_CTL or args.game_port in FORBIDDEN_GAME:
+        print("RA/main endpoint", file=sys.stderr)
+        return 2
+    lock_path = args.lock or DEFAULT_LOCK
+    if not lock_path.is_file():
+        print(f"no {lock_path} — refuse --port without lock; never stub", file=sys.stderr)
+        return 2
+    lock = parse_lock(lock_path)
+    qw = file_sha256(DEFAULT_QWPROGS) if DEFAULT_QWPROGS.is_file() else "00" * 32
+    mv = file_sha256(DEFAULT_MVDSV) if DEFAULT_MVDSV.is_file() else "00" * 32
+    commit = (args.commit or "").strip()
+    if args.run and not commit:
+        print("judged --run requires --commit", file=sys.stderr)
+        return 2
+
+    sys.path.insert(0, str(HERE.parent))
+    from runner.control import Control  # noqa: E402
+
+    ctl = Control(args.host, args.port)
+    gate = (rail.get("gates") or {}).get(args.recipe) or (rail.get("gates") or {}).get("ram-rail") or {}
+    driver = LiveTrialDriver(
+        ctl,
+        gate=gate,
         recipe=recipe,
-        rail_gates=rail,
-        prevent_gates=prev,
-        exec_knockback=stub_kb,
-        exec_trial=stub_trial,
+        lock_token=lock["token"],
+        qwprogs_sha=qw,
+        mvdsv_sha=mv,
+        commit=commit or "unrun",
+        host=args.host,
         ctl_port=args.port,
         game_port=args.game_port,
-        n_knock=n_knock,
-        n_chain=n_chain,
+        lock_path=lock_path,
     )
-    if args.port:
-        print("live ram --run is fable-qa; use mock/--port 0 or the live driver wiring", file=sys.stderr)
-        if args.port in FORBIDDEN_CTL:
-            return 2
-    report = runner.run()
-    text = json.dumps(report.as_dict(), indent=2, sort_keys=True)
-    if args.out:
-        args.out.write_text(text + "\n", encoding="utf-8")
-    print(text)
-    return 0 if report.as_dict().get("godkand") else 1
+    try:
+        driver.prepare()
+        ident = driver.confirm("off")
+        if not args.smoke and not args.run:
+            payload = {
+                "live": True,
+                "identity": ident,
+                "recipe": args.recipe,
+                "binaries": {"qwprogs_sha256": qw, "mvdsv_sha256": mv},
+                "hint": "pass --smoke or --run (judged, fable-qa)",
+            }
+            text = json.dumps(payload, indent=2, sort_keys=True)
+            if args.out:
+                args.out.write_text(text + "\n", encoding="utf-8")
+            print(text)
+            return 0
+        if args.smoke:
+            driver.start_demo(smoke=True)
+        else:
+            driver.start_demo(smoke=False)
+        runner = RamRunner(
+            recipe=recipe,
+            rail_gates=rail,
+            prevent_gates=prev,
+            exec_knockback=driver.exec_knockback,
+            exec_trial=driver.exec_trial,
+            ctl_port=args.port,
+            game_port=args.game_port,
+            ensure_arm=driver.ensure_arm,
+            n_knock=n_knock,
+            n_chain=n_chain,
+        )
+        report = runner.run()
+        payload = report.as_dict()
+        payload["binaries"] = {"qwprogs_sha256": qw, "mvdsv_sha256": mv}
+        payload["demo_file"] = driver.demo_file
+        payload["stamps"] = driver.last_stamps
+        text = json.dumps(payload, indent=2, sort_keys=True)
+        if args.out:
+            args.out.write_text(text + "\n", encoding="utf-8")
+        print(text)
+        return 0 if payload.get("godkand") else 1
+    finally:
+        try:
+            driver.stop_demo()
+        except Exception:
+            pass
+        if driver.arm == "on":
+            try:
+                driver.undo()
+            except Exception as exc:
+                print(f"undo-on-exit failed: {exc}", file=sys.stderr)
+        try:
+            driver.restore()
+        except Exception:
+            pass
+        ctl.close()
 
 
 if __name__ == "__main__":

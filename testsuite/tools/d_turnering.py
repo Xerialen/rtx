@@ -17,6 +17,7 @@ import json
 import math
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -30,13 +31,16 @@ from d_strata import (  # noqa: E402
     PAIR_VEL_TOL,
     pair_start_vel_ok,
 )
-from d_kvitto import astar_path  # noqa: E402
+from d_kvitto import astar_path, make_kvitto, write_kvitto  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_GATES = HERE / "recept" / "haz1462-gates.json"
 DEFAULT_APPENDIX = HERE / "recept" / "haz1462-k2-appendix.json"
 FLOOR_DROP = 10444
 NEXT_HIGH = (10446, 10768)
+# After K2 cuts 10447+10446 the remaining high first-walks from 1416.
+# Hop-SP 1416→1461 is 10441+10084. Floor Drop 10444 is never next-best.
+K2_NEXT_HIGH_FIRST = frozenset({10440, 10441, 10443, 10445})
 SPEEDJUMP = 34419
 CANDIDATES = ("haz1462-k1", "haz1462-k2", "haz1462-k3")
 
@@ -100,6 +104,52 @@ def path_links(blob: dict | None) -> list[int]:
 def next_best_is_floor_drop(links: list[int]) -> bool:
     """10444→10453 is the floor Drop, not the next high walk."""
     return bool(links) and int(links[0]) == FLOOR_DROP
+
+
+def links_contain_seq(links: list[int], seq: list[int] | tuple[int, ...]) -> bool:
+    want = [int(x) for x in seq]
+    have = [int(x) for x in links]
+    n = len(want)
+    if n == 0 or len(have) < n:
+        return False
+    for i in range(len(have) - n + 1):
+        if have[i : i + n] == want:
+            return True
+    return False
+
+
+def next_best_ok(links: list[int], candidate: str) -> bool:
+    """Candidate-aware next-best grind. Empty and 10444-first both fail.
+
+    K1/K3 must actually be the high walk 10446→10768 (not merely ¬10444).
+    K2 cut 10446; remaining high first-walks are 10440/10441/10443/10445.
+    """
+    have = [int(x) for x in (links or [])]
+    if not have or have[0] == FLOOR_DROP:
+        return False
+    cid = str(candidate or "")
+    if cid in {"haz1462-k1", "haz1462-k3", "k1", "k3"}:
+        return links_contain_seq(have, NEXT_HIGH)
+    if cid in {"haz1462-k2", "k2"}:
+        return have[0] in K2_NEXT_HIGH_FIRST
+    return False
+
+
+def next_best_fail_reason(links: list[int], candidate: str) -> str:
+    have = [int(x) for x in (links or [])]
+    cid = str(candidate or "")
+    if not have:
+        if cid in {"haz1462-k2", "k2"}:
+            return "next-best empty — want remaining high first-walk 10440/10441/10443/10445"
+        return "next-best empty — want 10446→10768"
+    if have[0] == FLOOR_DROP:
+        return "next-best is floor Drop 10444 — want 10446→10768"
+    if cid in {"haz1462-k2", "k2"}:
+        return (
+            f"next-best is not a remaining high first-walk "
+            f"(10440/10441/10443/10445) — got {have}"
+        )
+    return f"next-best is not 10446→10768 — got {have}"
 
 
 def attests_speedjump(links: list[int], sj: int = SPEEDJUMP) -> bool:
@@ -305,11 +355,9 @@ def score_migrate(attempts: list[TAttempt], routes: list[dict]) -> bool:
     return True
 
 
-def score_side_by_side(reports: dict[str, TournamentReport]) -> dict:
-    """§5: candidates side by side. No borrowed stamps/outcomes."""
-    out = {"kind": "haz1462-side-by-side", "candidates": {}}
-    for cid, rep in reports.items():
-        out["candidates"][cid] = {
+def _side_by_side_view(rep: TournamentReport | dict) -> dict:
+    if isinstance(rep, TournamentReport):
+        return {
             "godkand": bool(rep.valid and rep.pass_ok),
             "valid": rep.valid,
             "fixture_sha256": rep.fixture_sha256,
@@ -318,6 +366,28 @@ def score_side_by_side(reports: dict[str, TournamentReport]) -> dict:
             "heldout_on": rep.heldout_on_ok,
             "appendix_on": rep.appendix_on_ok,
         }
+    repro = rep.get("reproduction") or {}
+    held = rep.get("heldout") or {}
+    app = rep.get("appendix") or {}
+    return {
+        "godkand": bool(rep.get("godkand")),
+        "valid": bool(rep.get("valid", True)),
+        "fixture_sha256": str(rep.get("fixture_sha256") or ""),
+        "reproduction_off": bool(repro.get("off_ok", False)),
+        "reproduction_on": bool(repro.get("on_ok", False)),
+        "heldout_on": bool(held.get("on_ok", False)),
+        "appendix_on": bool(app.get("on_ok", True)),
+    }
+
+
+def score_side_by_side(reports: dict[str, TournamentReport | dict]) -> dict:
+    """§5: candidates side by side. No borrowed stamps/outcomes.
+
+    Accepts TournamentReport objects or as_dict()/CLI-report JSON.
+    """
+    out = {"kind": "haz1462-side-by-side", "candidates": {}}
+    for cid, rep in reports.items():
+        out["candidates"][cid] = _side_by_side_view(rep)
     winners = [c for c, b in out["candidates"].items() if b["godkand"]]
     out["winner"] = winners[0] if len(winners) == 1 else None
     out["tournament"] = "GODKAND" if winners else "UNDERKAND"
@@ -338,6 +408,10 @@ class TournamentRunner:
         ensure_arm: Callable[[str], None] | None = None,
         n_repro: int | None = None,
         n_heldout: int | None = None,
+        on_attempt: Callable[[TAttempt, dict], None] | None = None,
+        kvitto_dir: Path | None = None,
+        demo_file: str | None = None,
+        binaries: dict[str, str] | None = None,
     ) -> None:
         self.recipe = recipe
         self.gates = gates
@@ -347,6 +421,10 @@ class TournamentRunner:
         self.game_port = game_port
         self.fixture_sha256 = fixture_sha256
         self.ensure_arm = ensure_arm
+        self.on_attempt = on_attempt
+        self.kvitto_dir = Path(kvitto_dir) if kvitto_dir else None
+        self.demo_file = demo_file
+        self.binaries = dict(binaries or {})
         self.repro = reproduction_routes(gates)
         self.heldout = heldout_obligations(gates)
         start_1416 = [288.0, -844.0, 264.0]
@@ -404,8 +482,9 @@ class TournamentRunner:
         if spec.get("require_speedjump") and arm == "on":
             sj_ok = attests_speedjump(links, int(spec.get("speedjump") or SPEEDJUMP))
         nb_ok = True
+        cid = str(self.recipe.get("id") or "")
         if arm == "on" and spec.get("kind") == "heldout":
-            nb_ok = not next_best_is_floor_drop(nb_links)
+            nb_ok = next_best_ok(nb_links, cid)
         vel = raw.get("measured_vel") if raw.get("measured_vel") is not None else raw.get("vel")
         att = TAttempt(
             attempt_id=f"{spec['id']}-{arm.upper()}-{seq:02d}",
@@ -430,8 +509,71 @@ class TournamentRunner:
             att.reason = f"1416-1124 must attest SpeedJump {SPEEDJUMP}"
         if not nb_ok:
             att.valid = False
-            att.reason = "next-best is floor Drop 10444 — want 10446→10768"
+            att.reason = next_best_fail_reason(nb_links, cid)
         return att
+
+    def _write_attempt_kvitto(self, att: TAttempt, raw: dict) -> Path:
+        """d-kvitto per attempt. kvitto-dir is the contract, not an unused flag."""
+        if self.kvitto_dir is None:
+            raise RuntimeError("kvitto_dir is not set")
+        path = self.kvitto_dir / f"{att.attempt_id}.json"
+        empty = astar_path(found=False)
+        after = raw.get("astar_after") or empty
+        before = raw.get("astar_before") or empty
+        nb = raw.get("astar_next_best") or empty
+        off = dict(self.recipe.get("off") or {})
+        try:
+            on = on_expected(self.recipe)
+        except ValueError:
+            on = dict(off)
+        qw = self.binaries.get("qwprogs_sha256") or "00" * 32
+        mv = self.binaries.get("mvdsv_sha256") or "00" * 32
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        landing = raw.get("landing_cell")
+        selected = raw.get("selected_link")
+        if selected is None and att.astar_links:
+            selected = int(att.astar_links[0])
+        demo = self.demo_file or "qw/demos/unrun.mvd"
+        doc = make_kvitto(
+            riglock_owner="fable",
+            riglock_issued_at=now,
+            riglock_valid_from=now,
+            riglock_valid_to=now,
+            riglock_path="lab/.rig-lock",
+            run_started_at=now,
+            run_ended_at=now,
+            endpoint_host="127.0.0.1",
+            endpoint_ctl_port=self.ctl_port,
+            endpoint_game_port=self.game_port,
+            map_name="dm3",
+            binary_sha256=qw,
+            commit="unrun",
+            stamps_off_expected=off,
+            stamps_off_observed=off,
+            stamps_on_expected=on,
+            stamps_on_observed=on,
+            stamps_undo_expected=off,
+            stamps_undo_observed=off,
+            recipe={
+                "id": self.recipe["id"],
+                "taxonomy_class": self.recipe.get("taxonomy_class") or "carve_origin",
+                "evidence": self.recipe.get("evidence") or "haz1462 tournament attempt",
+            },
+            seed=0,
+            stratum={"id": att.route_id, "attempt": att.attempt_id},
+            raw_pointer=str((self.kvitto_dir / f"{att.attempt_id}.jsonl").resolve()),
+            astar_before=before if isinstance(before, dict) else empty,
+            astar_after=after if isinstance(after, dict) else empty,
+            astar_next_best=nb if isinstance(nb, dict) else empty,
+            demo_file=demo,
+            fixture_sha256=self.fixture_sha256,
+            candidate=str(self.recipe.get("id")),
+            landing_cell=int(landing) if isinstance(landing, int) else None,
+            selected_link=int(selected) if isinstance(selected, int) else None,
+        )
+        doc["binaries"] = {"qwprogs_sha256": qw, "mvdsv_sha256": mv}
+        write_kvitto(path, doc)
+        return path
 
     def _run_one(self, spec: dict, arm: str, seq: int, match_vel=None) -> TAttempt:
         if self.ensure_arm is not None:
@@ -445,7 +587,12 @@ class TournamentRunner:
             window_s=float(spec["budget_s"]),
         )
         self.last_raw = raw
-        return self._classify(spec, arm, seq, raw)
+        att = self._classify(spec, arm, seq, raw)
+        if self.on_attempt is not None:
+            self.on_attempt(att, raw)
+        elif self.kvitto_dir is not None:
+            self._write_attempt_kvitto(att, raw)
+        return att
 
     def _run_pairs(self, spec: dict, attempts: list[TAttempt], extra: list[str]) -> None:
         need = int(spec["n_pairs"])
@@ -533,7 +680,27 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--n-repro", type=int)
     ap.add_argument("--n-heldout", type=int)
     ap.add_argument("--run", action="store_true")
+    ap.add_argument(
+        "--side-by-side",
+        nargs="+",
+        type=Path,
+        metavar="REPORT",
+        help="score_side_by_side on saved tournament report JSON files (post-process)",
+    )
     args = ap.parse_args(argv)
+
+    if args.side_by_side:
+        reports: dict[str, dict] = {}
+        for path in args.side_by_side:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            cid = str(data.get("candidate") or Path(path).stem)
+            reports[cid] = data
+        table = score_side_by_side(reports)
+        text = json.dumps(table, indent=2, sort_keys=True)
+        if args.out:
+            args.out.write_text(text + "\n", encoding="utf-8")
+        print(text)
+        return 0 if table.get("tournament") == "GODKAND" else 1
 
     cand = args.candidate or "k1"
     if not cand.startswith("haz"):
@@ -571,6 +738,8 @@ def main(argv: list[str] | None = None) -> int:
             fixture_sha256=fx_sha,
             n_repro=n_repro,
             n_heldout=0 if n_heldout is None and not args.run else n_heldout,
+            kvitto_dir=args.kvitto_dir,
+            demo_file="qw/demos/unrun.mvd",
         )
         report = runner.run()
         text = json.dumps(report.as_dict(), indent=2, sort_keys=True)
@@ -638,6 +807,39 @@ def main(argv: list[str] | None = None) -> int:
         def exec_trial(**k):
             return driver.exec_trial(**k)
 
+        binaries = {"qwprogs_sha256": qw, "mvdsv_sha256": mv}
+        if args.kvitto_dir:
+            # Receipts refuse to invent ON observed — stamp both arms first.
+            driver.measure_both_stamps()
+            args.kvitto_dir.mkdir(parents=True, exist_ok=True)
+
+        def on_attempt(att, raw):
+            if not args.kvitto_dir:
+                return
+            started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            raw_path = args.kvitto_dir / f"{att.attempt_id}.jsonl"
+            driver.write_attempt_raw(raw_path, raw)
+            driver.write_attempt_kvitto(
+                args.kvitto_dir / f"{att.attempt_id}.json",
+                attempt_id=att.attempt_id,
+                stratum_id=att.route_id,
+                raw_pointer=str(raw_path),
+                started_at=started,
+                ended_at=started,
+                lock_owner=lock.get("owner") or lock["token"],
+                lock_issued=lock.get("issued") or started,
+                gate_velocity=raw.get("gate_velocity"),
+                gate_cell=raw.get("gate_cell"),
+                astar_before=raw.get("astar_before"),
+                astar_after=raw.get("astar_after"),
+                astar_next_best=raw.get("astar_next_best"),
+                demo_file=driver.demo_file,
+                fixture_sha256=fx_sha,
+                candidate=cand,
+                landing_cell=raw.get("landing_cell"),
+                selected_link=raw.get("selected_link"),
+            )
+
         runner = TournamentRunner(
             recipe=recipe,
             gates=gates,
@@ -649,6 +851,10 @@ def main(argv: list[str] | None = None) -> int:
             ensure_arm=driver.ensure_arm,
             n_repro=n_repro,
             n_heldout=n_heldout,
+            on_attempt=on_attempt if args.kvitto_dir else None,
+            kvitto_dir=args.kvitto_dir,
+            demo_file=driver.demo_file,
+            binaries=binaries,
         )
         report = runner.run()
         payload = report.as_dict()

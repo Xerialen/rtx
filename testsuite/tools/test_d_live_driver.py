@@ -405,6 +405,48 @@ class SequenceTests(unittest.TestCase):
         self.assertIn("t", drops[0])
         self.assertGreater(drops[0]["t"], 0.0)
         self.assertGreater(drops[0]["drop_dz"], 150.0)
+        self.assertIn("cell", drops[0])
+
+    def test_p1_peak_drop_cell_and_exec_trial_astar(self):
+        """P1: live watch writes cell on peak_drop; exec_trial raw carries landing + A*."""
+        from d_turnering import hearth_hit
+
+        drv, ctl, _ = _driver()
+        ctl.cell_id = 1462
+        ctl.origin = [317.64, -758.40, -15.97]
+        ctl.drop_after_goto = True
+        ctl.on_ground = False
+        raw = drv.exec_trial(stratum_id="in_vast", arm="off", spec=STRATA["A1"], seq=1, window_s=1.0)
+        drops = [e for e in raw["events"] if e["ev"] == "peak_drop_150"]
+        self.assertTrue(drops, raw["events"])
+        self.assertEqual(drops[0]["cell"], 1462)
+        self.assertEqual(raw["landing_cell"], 1462)
+        self.assertIn("astar_before", raw)
+        self.assertIn("astar_after", raw)
+        self.assertIn("astar_next_best", raw)
+        self.assertEqual(raw["astar_after"]["links"], [3])
+        self.assertEqual(raw["selected_link"], 3)
+        self.assertTrue(any(c.startswith("route query") for c in ctl.cmds), ctl.cmds)
+        # Live-shaped hearth (origin at centroid + cell) is a hit. After the
+        # mock drop the origin has left the 15 u sphere — use the event as emitted.
+        live_shaped = {
+            "events": [{
+                "ev": "peak_drop_150",
+                "origin": [317.64, -758.40, -15.97],
+                "cell": drops[0]["cell"],
+            }],
+            "landing_cell": raw["landing_cell"],
+        }
+        hearth = load_gates(HERE / "recept" / "haz1462-gates.json")["reproduction"]["hearth"]
+        self.assertTrue(hearth_hit(live_shaped, hearth))
+        # Same shape without cell (pre-fix live) is not a hearth.
+        no_cell = {
+            "events": [{
+                "ev": "peak_drop_150",
+                "origin": [317.64, -758.40, -15.97],
+            }],
+        }
+        self.assertFalse(hearth_hit(no_cell, hearth))
 
 
 class ArmTests(unittest.TestCase):

@@ -15,6 +15,8 @@ from d_recipe import load_recipe, on_expected  # noqa: E402
 from d_turnering import (  # noqa: E402
     CANDIDATES,
     FLOOR_DROP,
+    K2_NEXT_HIGH_FIRST,
+    NEXT_HIGH,
     SPEEDJUMP,
     TournamentRunner,
     appendix_obligations,
@@ -22,7 +24,9 @@ from d_turnering import (  # noqa: E402
     file_sha256,
     hearth_hit,
     heldout_obligations,
+    next_best_fail_reason,
     next_best_is_floor_drop,
+    next_best_ok,
     reproduction_routes,
     score_side_by_side,
 )
@@ -81,6 +85,20 @@ class PredicateTests(unittest.TestCase):
         self.assertFalse(next_best_is_floor_drop([10446, 10768]))
         self.assertFalse(next_best_is_floor_drop([]))
 
+    def test_next_best_ok_is_candidate_aware(self):
+        high = list(NEXT_HIGH)
+        hop = [10441, 10084]
+        self.assertTrue(next_best_ok(high, "haz1462-k1"))
+        self.assertTrue(next_best_ok(high, "haz1462-k3"))
+        self.assertFalse(next_best_ok(high, "haz1462-k2"))
+        self.assertTrue(next_best_ok(hop, "haz1462-k2"))
+        self.assertIn(hop[0], K2_NEXT_HIGH_FIRST)
+        self.assertFalse(next_best_ok(hop, "haz1462-k1"))
+        self.assertFalse(next_best_ok([], "haz1462-k1"))
+        self.assertFalse(next_best_ok([FLOOR_DROP, 10453], "haz1462-k1"))
+        self.assertFalse(next_best_ok([FLOOR_DROP], "haz1462-k2"))
+        self.assertIn("10446", next_best_fail_reason(hop, "haz1462-k1"))
+
     def test_speedjump_attested(self):
         self.assertTrue(attests_speedjump([10446, SPEEDJUMP, 1]))
         self.assertFalse(attests_speedjump([10446, 10768]))
@@ -122,10 +140,17 @@ class ScoringTests(unittest.TestCase):
                     "found": True, "cells": [1416, 1461, 1124],
                     "links": [10447, SPEEDJUMP], "cost": 2.0, "mask_links": [],
                 }
-                raw["astar_next_best"] = {
-                    "found": True, "cells": [1416, 1459],
-                    "links": [10446, 10768], "cost": 3.0, "mask_links": [10447],
-                }
+            if arm == "on":
+                if cid == "haz1462-k2":
+                    raw["astar_next_best"] = {
+                        "found": True, "cells": [1416, 1461],
+                        "links": [10441, 10084], "cost": 3.0, "mask_links": [10447, 10446],
+                    }
+                else:
+                    raw["astar_next_best"] = {
+                        "found": True, "cells": [1416, 1459],
+                        "links": [10446, 10768], "cost": 3.0, "mask_links": [10447],
+                    }
             return raw
 
         rec = _recipe(cid)
@@ -291,6 +316,159 @@ class ScoringTests(unittest.TestCase):
         for cid in CANDIDATES:
             on = on_expected(_recipe(cid))
             self.assertEqual(len(on["graph_content_hash"]), 64)
+
+    def test_p3_live_shaped_on_hearth_fails_repro(self):
+        """P3: ON peak_drop at 1462 with live cell must fail reproduction_on."""
+        def exec_trial(**k):
+            if k["arm"] == "off":
+                return _hearth_raw()
+            return _hearth_raw()  # live-shaped ON fall at 1462
+
+        runner = TournamentRunner(
+            recipe=_recipe(),
+            gates=_gates(),
+            exec_trial=exec_trial,
+            ctl_port=0,
+            game_port=27592,
+            fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+            n_repro=1,
+            n_heldout=0,
+        )
+        runner.app_routes = []
+        report = runner.run()
+        self.assertTrue(report.repro_off_ok)
+        self.assertFalse(report.repro_on_ok)
+        self.assertFalse(report.as_dict()["godkand"])
+
+    def test_p4_k2_hop_fails_k1_next_best(self):
+        """P4: [10441,10084] is K2 hop-SP, not K1's 10446→10768."""
+        def exec_trial(**k):
+            if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
+                return _hearth_raw()
+            raw = _clean_on()
+            raw["astar_next_best"] = {
+                "found": True, "cells": [1416, 1461],
+                "links": [10441, 10084], "cost": 2.0, "mask_links": [10447],
+            }
+            if k["stratum_id"] == "1416-1124" and k["arm"] == "on":
+                raw["astar_after"] = {
+                    "found": True, "cells": [1416, 1461, 1124],
+                    "links": [10447, SPEEDJUMP], "cost": 2.0, "mask_links": [],
+                }
+            return raw
+
+        k1 = TournamentRunner(
+            recipe=_recipe("haz1462-k1"),
+            gates=_gates(),
+            exec_trial=exec_trial,
+            ctl_port=0,
+            game_port=27592,
+            fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+            n_repro=1,
+            n_heldout=1,
+        )
+        k1.app_routes = []
+        r1 = k1.run()
+        self.assertFalse(r1.heldout_on_ok)
+        self.assertTrue(any("10446" in a.reason for a in r1.attempts if not a.valid), [a.reason for a in r1.attempts])
+
+        k2 = TournamentRunner(
+            recipe=_recipe("haz1462-k2"),
+            gates=_gates(),
+            appendix=json.loads((HERE / "recept" / "haz1462-k2-appendix.json").read_text()),
+            exec_trial=exec_trial,
+            ctl_port=0,
+            game_port=27592,
+            fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k2.json"),
+            n_repro=1,
+            n_heldout=1,
+        )
+        r2 = k2.run()
+        self.assertTrue(r2.heldout_on_ok, [a.reason for a in r2.attempts if not a.valid])
+
+    def test_empty_next_best_fails_heldout(self):
+        def exec_trial(**k):
+            if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
+                return _hearth_raw()
+            raw = _clean_on()
+            raw["astar_next_best"] = {"found": False, "cells": [], "links": [], "cost": None, "mask_links": []}
+            return raw
+
+        runner = TournamentRunner(
+            recipe=_recipe(),
+            gates=_gates(),
+            exec_trial=exec_trial,
+            ctl_port=0,
+            game_port=27592,
+            fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+            n_repro=1,
+            n_heldout=1,
+        )
+        runner.app_routes = []
+        report = runner.run()
+        self.assertFalse(report.heldout_on_ok)
+        self.assertTrue(any("empty" in a.reason for a in report.attempts if not a.valid))
+
+    def test_p6_kvitto_dir_writes_per_attempt(self):
+        import tempfile
+        from verify_d_kvitto import verify
+
+        with tempfile.TemporaryDirectory() as td:
+            def exec_trial(**k):
+                if k["arm"] == "off" and k["stratum_id"] in {"in_vast", "in_tunnel"}:
+                    return _hearth_raw()
+                return _clean_on()
+
+            runner = TournamentRunner(
+                recipe=_recipe(),
+                gates=_gates(),
+                exec_trial=exec_trial,
+                ctl_port=0,
+                game_port=27592,
+                fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k1.json"),
+                n_repro=1,
+                n_heldout=0,
+                kvitto_dir=Path(td),
+                demo_file="qw/demos/e967900_20260816T160000Z.mvd",
+                binaries={"qwprogs_sha256": "ab" * 32, "mvdsv_sha256": "cd" * 32},
+            )
+            runner.app_routes = []
+            runner.run()
+            files = sorted(Path(td).glob("*.json"))
+            self.assertTrue(files, "kvitto-dir must receive per-attempt receipts")
+            landings = []
+            for path in files:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(len(doc["fixture_sha256"]), 64)
+                self.assertEqual(doc["candidate"], "haz1462-k1")
+                self.assertEqual(doc["demo_file"], "qw/demos/e967900_20260816T160000Z.mvd")
+                self.assertEqual(doc["binaries"]["qwprogs_sha256"], "ab" * 32)
+                self.assertEqual(doc["binaries"]["mvdsv_sha256"], "cd" * 32)
+                self.assertEqual(verify(doc), [])
+                landings.append(doc.get("landing_cell"))
+            self.assertTrue(any(c in {1462, 1372} for c in landings), landings)
+
+    def test_p6_side_by_side_cli(self):
+        import tempfile
+        from d_turnering import main as turn_main
+
+        ok, _ = self._perfect("haz1462-k1")
+        bad, _ = self._perfect("haz1462-k2")
+        bad.pass_ok = False
+        bad.repro_on_ok = False
+        with tempfile.TemporaryDirectory() as td:
+            p1 = Path(td) / "k1.json"
+            p2 = Path(td) / "k2.json"
+            p1.write_text(json.dumps(ok.as_dict()), encoding="utf-8")
+            p2.write_text(json.dumps(bad.as_dict()), encoding="utf-8")
+            out = Path(td) / "table.json"
+            rc = turn_main(["--side-by-side", str(p1), str(p2), "--out", str(out)])
+            self.assertEqual(rc, 0)
+            table = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(table["kind"], "haz1462-side-by-side")
+            self.assertEqual(table["winner"], "haz1462-k1")
+            self.assertTrue(table["candidates"]["haz1462-k1"]["godkand"])
+            self.assertFalse(table["candidates"]["haz1462-k2"]["godkand"])
 
 
 class KvittoFieldTests(unittest.TestCase):

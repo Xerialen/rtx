@@ -112,6 +112,24 @@ class RamScoringTests(unittest.TestCase):
         why = runner.preflight()
         self.assertTrue(any("RA/main" in w for w in why), why)
 
+    def test_p5_port_without_lock_is_rc2_never_stub_green(self):
+        """P5: --port against a real ctl must not stub-GODKAND."""
+        from d_ram_sjalvbevis import main as ram_main
+
+        rc = ram_main([
+            "--port", "27999",
+            "--recipe", "ram-rail",
+            "--smoke",
+            "--lock", "/tmp/rtx-no-such-rig-lock",
+        ])
+        self.assertEqual(rc, 2)
+
+    def test_p5_ra_port_refused(self):
+        from d_ram_sjalvbevis import main as ram_main
+
+        rc = ram_main(["--port", "27990", "--recipe", "ram-rail", "--smoke"])
+        self.assertEqual(rc, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
