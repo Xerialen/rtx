@@ -291,6 +291,22 @@ class VerifyTests(unittest.TestCase):
         errs = verify(doc)
         self.assertTrue(any("candidate" in e for e in errs), errs)
 
+    def test_knockback_fields_shape(self):
+        kb = {
+            "point": "K1",
+            "incoming_velocity": [0.0, 60.0, 0.0],
+            "land_hit": True,
+            "t_land": 0.7,
+        }
+        doc = _valid(knockback=kb)
+        self.assertEqual(verify(doc), [])
+        doc = _valid()
+        doc["knockback"] = {"point": "", "incoming_velocity": [0, 1], "land_hit": "yes"}
+        errs = verify(doc)
+        self.assertTrue(any("knockback.point" in e for e in errs), errs)
+        self.assertTrue(any("incoming_velocity" in e for e in errs), errs)
+        self.assertTrue(any("land_hit" in e for e in errs), errs)
+
 
 class TrapReproGuardTests(unittest.TestCase):
     def test_refuse_ra_port_before_connect(self):

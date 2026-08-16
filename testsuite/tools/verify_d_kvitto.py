@@ -269,6 +269,25 @@ def verify(doc: Any) -> list[str]:
         if not isinstance(doc["selected_link"], int) or isinstance(doc["selected_link"], bool):
             errors.append("selected_link: must be int")
 
+    if "knockback" in doc:
+        kb = doc.get("knockback")
+        if not isinstance(kb, dict):
+            errors.append("knockback: must be an object")
+        else:
+            point = kb.get("point")
+            if not isinstance(point, str) or not point.strip():
+                errors.append("knockback.point: K-punkt-id required")
+            vel = kb.get("incoming_velocity")
+            if not (isinstance(vel, list) and len(vel) == 3):
+                errors.append("knockback.incoming_velocity: need 3-vector")
+            elif any(not isinstance(x, (int, float)) or isinstance(x, bool) for x in vel):
+                errors.append("knockback.incoming_velocity: numeric 3-vector")
+            if "land_hit" not in kb or not isinstance(kb.get("land_hit"), bool):
+                errors.append("knockback.land_hit: must be bool")
+            t_land = kb.get("t_land")
+            if t_land is not None and not isinstance(t_land, (int, float)):
+                errors.append("knockback.t_land: number or null (marknivåtid)")
+
     return errors
 
 

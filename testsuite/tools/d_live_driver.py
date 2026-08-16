@@ -861,6 +861,7 @@ class LiveTrialDriver:
         candidate: str | None = None,
         landing_cell: int | None = None,
         selected_link: int | None = None,
+        knockback: dict | None = None,
     ) -> dict:
         if "off" not in self.last_stamps:
             raise RuntimeError("OFF stamp not confirmed")
@@ -914,6 +915,7 @@ class LiveTrialDriver:
             candidate=candidate,
             landing_cell=landing_cell,
             selected_link=selected_link,
+            knockback=knockback,
         )
         # Facit §1 "binärens SHA-256" = qwprogs.so (spellogik). mvdsv carried explicitly too.
         doc["binaries"] = {

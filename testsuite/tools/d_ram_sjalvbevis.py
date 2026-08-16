@@ -9,14 +9,17 @@ budget. OFF must bot_stall on the rail; ON must stand on the pinned land
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from d_kvitto import astar_path, make_kvitto, write_kvitto  # noqa: E402
 from d_recipe import load_recipe, on_expected  # noqa: E402
 from d_strata import FORBIDDEN_CTL, FORBIDDEN_GAME, pair_start_vel_ok  # noqa: E402
 
@@ -25,6 +28,24 @@ RAIL_GATES = HERE / "recept" / "ram-rail-gates.json"
 PREVENT_GATES = HERE / "recept" / "ram-prevent-gates.json"
 RAIL_CELLS = {5977, 5978, 5979, 5980, 5981, 5982}
 LAND = [-352.0, -672.0, -16.0]
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    h.update(Path(path).read_bytes())
+    return h.hexdigest()
+
+
+def knockback_fields(spec: dict, raw: dict, land_hit: bool) -> dict:
+    """K-punkt-id, inkommande velocity, land_hit, marknivåtid."""
+    t_land = raw.get("t_arrive") if land_hit else None
+    vel = raw.get("commanded_vel") or raw.get("vel") or spec.get("velocity") or []
+    return {
+        "point": str(spec.get("id") or ""),
+        "incoming_velocity": [float(x) for x in vel[:3]] if vel else list(spec.get("velocity") or []),
+        "land_hit": bool(land_hit),
+        "t_land": None if t_land is None else float(t_land),
+    }
 
 
 def knockback_points(gates: dict) -> list[dict]:
@@ -117,6 +138,8 @@ class RAttempt:
     arrived: bool = False
     land_hit: bool = False
     start_vel: list[float] | None = None
+    t_land: float | None = None
+    incoming_vel: list[float] | None = None
 
 
 @dataclass
@@ -171,6 +194,11 @@ class RamRunner:
         ensure_arm: Callable[[str], None] | None = None,
         n_knock: int | None = None,
         n_chain: int | None = None,
+        on_attempt: Callable[[RAttempt, dict], None] | None = None,
+        kvitto_dir: Path | None = None,
+        demo_file: str | None = None,
+        binaries: dict[str, str] | None = None,
+        fixture_sha256: str | None = None,
     ) -> None:
         self.recipe = recipe
         self.rail_gates = rail_gates
@@ -180,6 +208,12 @@ class RamRunner:
         self.ctl_port = ctl_port
         self.game_port = game_port
         self.ensure_arm = ensure_arm
+        self.on_attempt = on_attempt
+        self.kvitto_dir = Path(kvitto_dir) if kvitto_dir else None
+        self.demo_file = demo_file
+        self.binaries = dict(binaries or {})
+        self.fixture_sha256 = fixture_sha256 or ""
+        self.last_raw: dict = {}
         self.kb = knockback_points(rail_gates)
         self.p = prevention_specs(self.prevent_gates) if recipe.get("id") == "ram-prevent" else []
         self.h = heldout_specs() if recipe.get("id") in {"ram-rail", "ram-prevent"} else []
@@ -237,6 +271,8 @@ class RamRunner:
             arrived=land_hit,
             land_hit=land_hit,
             start_vel=list(spec["velocity"]),
+            t_land=None if not land_hit else (None if raw.get("t_arrive") is None else float(raw["t_arrive"])),
+            incoming_vel=list(spec["velocity"]),
         )
         if arm == "off":
             if not stall:
@@ -252,6 +288,10 @@ class RamRunner:
             elif not planned:
                 att.valid = False
                 att.reason = "unplanned peak_drop (not the rail Drop to 638)"
+        raw = dict(raw)
+        raw["knockback"] = knockback_fields(spec, raw, land_hit)
+        self.last_raw = raw
+        self._emit(att, raw)
         return att
 
     def _run_chain(self, spec: dict, arm: str, seq: int, match_vel=None) -> RAttempt:
@@ -275,12 +315,92 @@ class RamRunner:
             stall=stall,
             arrived=arrived,
             start_vel=list(raw.get("measured_vel") or raw.get("vel") or []),
+            t_land=None if raw.get("t_arrive") is None else float(raw["t_arrive"]),
         )
         if arm == "on" and att.valid:
             if not arrived or stall or rail_entry:
                 att.valid = False
                 att.reason = "ON chain must arrive, no stall, no rail entry"
+        self.last_raw = raw
+        self._emit(att, raw)
         return att
+
+    def _emit(self, att: RAttempt, raw: dict) -> None:
+        if self.on_attempt is not None:
+            self.on_attempt(att, raw)
+        elif self.kvitto_dir is not None:
+            self._write_attempt_kvitto(att, raw)
+
+    def _write_attempt_kvitto(self, att: RAttempt, raw: dict) -> Path:
+        """Same make_kvitto path as the tournament runner. kvitto-dir is the contract."""
+        if self.kvitto_dir is None:
+            raise RuntimeError("kvitto_dir is not set")
+        path = self.kvitto_dir / f"{att.attempt_id}.json"
+        empty = astar_path(found=False)
+        after = raw.get("astar_after") or empty
+        before = raw.get("astar_before") or empty
+        nb = raw.get("astar_next_best") or empty
+        off = dict(self.recipe.get("off") or {})
+        try:
+            on = on_expected(self.recipe)
+        except ValueError:
+            on = dict(off)
+        qw = self.binaries.get("qwprogs_sha256") or "00" * 32
+        mv = self.binaries.get("mvdsv_sha256") or "00" * 32
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        landing = raw.get("landing_cell")
+        selected = raw.get("selected_link")
+        kb = raw.get("knockback") if att.stratum.startswith("K") else None
+        gate_vel = None
+        if kb and kb.get("incoming_velocity"):
+            gate_vel = list(kb["incoming_velocity"])
+        elif att.incoming_vel:
+            gate_vel = list(att.incoming_vel)
+        elif raw.get("gate_velocity"):
+            gate_vel = list(raw["gate_velocity"])
+        doc = make_kvitto(
+            riglock_owner="fable",
+            riglock_issued_at=now,
+            riglock_valid_from=now,
+            riglock_valid_to=now,
+            riglock_path="lab/.rig-lock",
+            run_started_at=now,
+            run_ended_at=now,
+            endpoint_host="127.0.0.1",
+            endpoint_ctl_port=self.ctl_port,
+            endpoint_game_port=self.game_port,
+            map_name="dm3",
+            binary_sha256=qw,
+            commit="unrun",
+            stamps_off_expected=off,
+            stamps_off_observed=off,
+            stamps_on_expected=on,
+            stamps_on_observed=on,
+            stamps_undo_expected=off,
+            stamps_undo_observed=off,
+            recipe={
+                "id": self.recipe["id"],
+                "taxonomy_class": self.recipe.get("taxonomy_class") or "carve_origin",
+                "evidence": self.recipe.get("evidence") or "ram self-proof attempt",
+            },
+            seed=0,
+            stratum={"id": att.stratum, "attempt": att.attempt_id},
+            raw_pointer=str((self.kvitto_dir / f"{att.attempt_id}.jsonl").resolve()),
+            astar_before=before if isinstance(before, dict) else empty,
+            astar_after=after if isinstance(after, dict) else empty,
+            astar_next_best=nb if isinstance(nb, dict) else empty,
+            gate_velocity=gate_vel,
+            gate_cell=raw.get("gate_cell"),
+            demo_file=self.demo_file or "qw/demos/unrun.mvd",
+            fixture_sha256=self.fixture_sha256 or None,
+            candidate=str(self.recipe.get("id")),
+            landing_cell=int(landing) if isinstance(landing, int) else None,
+            selected_link=int(selected) if isinstance(selected, int) else None,
+            knockback=kb if isinstance(kb, dict) else None,
+        )
+        doc["binaries"] = {"qwprogs_sha256": qw, "mvdsv_sha256": mv}
+        write_kvitto(path, doc)
+        return path
 
     def run(self) -> RamReport:
         reasons = self.preflight()
@@ -350,11 +470,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path)
     ap.add_argument("--lock", type=Path)
     ap.add_argument("--commit", default="")
+    ap.add_argument("--kvitto-dir", type=Path)
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--run", action="store_true")
     args = ap.parse_args(argv)
     fixture = args.fixture or (HERE / "recept" / f"{args.recipe}.json")
     recipe = load_recipe(fixture)
+    fx_sha = sha256_file(Path(fixture))
     rail = json.loads(RAIL_GATES.read_text(encoding="utf-8"))
     prev = json.loads(PREVENT_GATES.read_text(encoding="utf-8")) if PREVENT_GATES.is_file() else {}
     n_knock = 1 if args.smoke else None
@@ -393,6 +515,9 @@ def main(argv: list[str] | None = None) -> int:
             game_port=args.game_port,
             n_knock=n_knock,
             n_chain=n_chain,
+            kvitto_dir=args.kvitto_dir,
+            demo_file="qw/demos/unrun.mvd",
+            fixture_sha256=fx_sha,
         )
         report = runner.run()
         text = json.dumps(report.as_dict(), indent=2, sort_keys=True)
@@ -407,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
         DEFAULT_MVDSV,
         DEFAULT_QWPROGS,
         LiveTrialDriver,
-        file_sha256,
+        file_sha256 as sha_file,
         parse_lock,
         refuse_ra,
     )
@@ -424,8 +549,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no {lock_path} — refuse --port without lock; never stub", file=sys.stderr)
         return 2
     lock = parse_lock(lock_path)
-    qw = file_sha256(DEFAULT_QWPROGS) if DEFAULT_QWPROGS.is_file() else "00" * 32
-    mv = file_sha256(DEFAULT_MVDSV) if DEFAULT_MVDSV.is_file() else "00" * 32
+    qw = sha_file(DEFAULT_QWPROGS) if DEFAULT_QWPROGS.is_file() else "00" * 32
+    mv = sha_file(DEFAULT_MVDSV) if DEFAULT_MVDSV.is_file() else "00" * 32
     commit = (args.commit or "").strip()
     if args.run and not commit:
         print("judged --run requires --commit", file=sys.stderr)
@@ -469,6 +594,47 @@ def main(argv: list[str] | None = None) -> int:
             driver.start_demo(smoke=True)
         else:
             driver.start_demo(smoke=False)
+        binaries = {"qwprogs_sha256": qw, "mvdsv_sha256": mv}
+        if args.kvitto_dir:
+            driver.measure_both_stamps()
+            args.kvitto_dir.mkdir(parents=True, exist_ok=True)
+
+        def on_attempt(att, raw):
+            if not args.kvitto_dir:
+                return
+            started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            raw_path = args.kvitto_dir / f"{att.attempt_id}.jsonl"
+            driver.write_attempt_raw(raw_path, raw)
+            kb = raw.get("knockback") if att.stratum.startswith("K") else None
+            if kb is None and att.stratum.startswith("K"):
+                kb = {
+                    "point": att.stratum,
+                    "incoming_velocity": list(att.incoming_vel or raw.get("commanded_vel") or raw.get("vel") or []),
+                    "land_hit": bool(att.land_hit),
+                    "t_land": att.t_land,
+                }
+            driver.write_attempt_kvitto(
+                args.kvitto_dir / f"{att.attempt_id}.json",
+                attempt_id=att.attempt_id,
+                stratum_id=att.stratum,
+                raw_pointer=str(raw_path),
+                started_at=started,
+                ended_at=started,
+                lock_owner=lock.get("owner") or lock["token"],
+                lock_issued=lock.get("issued") or started,
+                gate_velocity=raw.get("gate_velocity") or (kb or {}).get("incoming_velocity"),
+                gate_cell=raw.get("gate_cell"),
+                astar_before=raw.get("astar_before"),
+                astar_after=raw.get("astar_after"),
+                astar_next_best=raw.get("astar_next_best"),
+                demo_file=driver.demo_file,
+                fixture_sha256=fx_sha,
+                candidate=args.recipe,
+                landing_cell=raw.get("landing_cell"),
+                selected_link=raw.get("selected_link"),
+                knockback=kb,
+            )
+
         runner = RamRunner(
             recipe=recipe,
             rail_gates=rail,
@@ -480,6 +646,11 @@ def main(argv: list[str] | None = None) -> int:
             ensure_arm=driver.ensure_arm,
             n_knock=n_knock,
             n_chain=n_chain,
+            on_attempt=on_attempt if args.kvitto_dir else None,
+            kvitto_dir=args.kvitto_dir,
+            demo_file=driver.demo_file,
+            binaries=binaries,
+            fixture_sha256=fx_sha,
         )
         report = runner.run()
         payload = report.as_dict()

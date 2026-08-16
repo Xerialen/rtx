@@ -113,6 +113,7 @@ def make_kvitto(
     candidate: str | None = None,
     landing_cell: int | None = None,
     selected_link: int | None = None,
+    knockback: dict | None = None,
 ) -> dict[str, Any]:
     """Assemble a §4-complete receipt. Missing kwargs are a TypeError (fail closed).
 
@@ -172,6 +173,8 @@ def make_kvitto(
         doc["landing_cell"] = int(landing_cell)
     if selected_link is not None:
         doc["selected_link"] = int(selected_link)
+    if knockback is not None:
+        doc["knockback"] = dict(knockback)
     return doc
 
 
