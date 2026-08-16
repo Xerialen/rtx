@@ -102,6 +102,11 @@ def _parse_verb(command: str) -> Any:
                     }
                 }
             return {"Route": {"bot": int(tokens[1])}}
+        if verb == "cell":
+            # cell <x> <y> <z>  |  cell id <n>
+            if len(tokens) >= 2 and tokens[1].lower() == "id":
+                return {"CellById": {"cell": int(tokens[2])}}
+            return {"Cell": {"pos": _vec3(tokens, 1)}}
         if verb == "fixa":
             # fixa <recipe> <dry-run|apply|undo> [from to] [lock TOKEN]
             payload = {"recipe": tokens[1], "mode": tokens[2], "lock_token": ""}

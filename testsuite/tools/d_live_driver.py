@@ -1,0 +1,529 @@
+#!/usr/bin/env python3
+"""Live exec_trial driver for the west-shelf self-proof (GAP 4 / cluster 4).
+
+Talks ctlproto on a dedicated D-instance (never RA/main). Does not invent
+ON-expected from observed. Arm switching is fixa apply/undo with lock_token.
+
+RESTART — documented fallback if undo has no AppliedTxn snapshot (this
+process never applied, or the unit was started already-meshed). Restart
+ONLY toolbox-d-test, never RA/main:
+
+  systemctl --user stop toolbox-d-test && systemd-run --user --unit=toolbox-d-test \\
+    -p RuntimeMaxSec=10800 --working-directory=$HOME/.local/share/qw-fasttrack/runtime-tbx-d \\
+    $HOME/.local/share/qw-fasttrack/runtime-tbx-d/mvdsv -port 27592 \\
+    +set rtx_nav_patch 0 +exec fasttrack.cfg
+"""
+
+from __future__ import annotations
+
+import hashlib
+import math
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+from d_kvitto import astar_from_route_resp, astar_path, make_kvitto, write_kvitto
+from d_recipe import on_expected
+from d_strata import FORBIDDEN_CTL, FORBIDDEN_GAME, FallTracker, in_gate, vh
+from verify_d_kvitto import verify
+
+DEFAULT_QWPROGS = Path.home() / ".local/share/qw-fasttrack/runtime-tbx-d/qw/qwprogs.so"
+DEFAULT_MVDSV = Path.home() / ".local/share/qw-fasttrack/runtime-tbx-d/mvdsv"
+DEFAULT_LOCK = Path.home() / "lab/.rig-lock"
+POLL_S = 0.05
+T0_SETTLE_S = 0.15
+VEL_SAMPLE_S = 0.05
+PREP_CVARS = ("rtx_telemetry", "rtx_bot_pacifist")
+# Telemetry on also emits Pmove at tick rate. Keep stall/arrived/drop only.
+KEEP_EVENTS = {"bot_stall", "arrived", "goto_stall", "peak_drop_150"}
+
+RESTART = (
+    "systemctl --user stop toolbox-d-test && systemd-run --user --unit=toolbox-d-test "
+    "-p RuntimeMaxSec=10800 --working-directory=$HOME/.local/share/qw-fasttrack/runtime-tbx-d "
+    "$HOME/.local/share/qw-fasttrack/runtime-tbx-d/mvdsv -port 27592 "
+    "+set rtx_nav_patch 0 +exec fasttrack.cfg"
+)
+
+
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def parse_lock(path: Path) -> dict[str, str]:
+    body = path.read_text(encoding="utf-8", errors="replace").strip()
+    if not body:
+        raise RuntimeError(f"{path} is empty")
+    parts = body.split()
+    issued = next((p for p in parts if "T" in p and p.endswith("Z")), "1970-01-01T00:00:00Z")
+    return {"token": parts[0], "owner": parts[0], "issued": issued, "body": body}
+
+
+def lock_token_from_file(path: Path) -> str:
+    return parse_lock(path)["token"]
+
+
+def heading_vel(start: list[float], goal: list[float], speed: float) -> list[float]:
+    dx, dy = goal[0] - start[0], goal[1] - start[1]
+    n = math.hypot(dx, dy)
+    if n == 0:
+        return [0.0, 0.0, 0.0]
+    return [speed * dx / n, speed * dy / n, 0.0]
+
+
+def mid_band_speed(spec: dict) -> float:
+    if spec.get("kind") == "trap":
+        return 0.0
+    lo, hi = float(spec["vh_lo"]), float(spec["vh_hi"])
+    return 0.5 * (lo + hi)
+
+
+def vel_from_pair(a: dict, b: dict) -> list[float]:
+    dt = float(b["t"]) - float(a["t"])
+    if dt <= 1e-4:
+        return [0.0, 0.0, 0.0]
+    return [
+        (b["x"] - a["x"]) / dt,
+        (b["y"] - a["y"]) / dt,
+        (b["z"] - a["z"]) / dt,
+    ]
+
+
+def refuse_ra(ctl_port: int, game_port: int) -> str | None:
+    if ctl_port in FORBIDDEN_CTL:
+        return f"ctl port {ctl_port} is RA/main — dedicated D instance only"
+    if game_port in FORBIDDEN_GAME:
+        return f"game port {game_port} is RA/main — dedicated D instance only"
+    return None
+
+
+def annotate_event(ev: dict, rel_t: float) -> dict:
+    """Budget grind reads t / rel_t. Engine t is absolute server time — keep as engine_t."""
+    row = dict(ev)
+    if "t" in row:
+        row["engine_t"] = row["t"]
+    row["rel_t"] = float(rel_t)
+    row["t"] = float(rel_t)
+    return row
+
+
+class LiveTrialDriver:
+    """One ctl connection. exec_trial is the DrillRunner hook."""
+
+    def __init__(
+        self,
+        ctl,
+        *,
+        gate: dict,
+        recipe: dict,
+        lock_token: str,
+        qwprogs_sha: str,
+        mvdsv_sha: str,
+        commit: str,
+        host: str = "127.0.0.1",
+        ctl_port: int = 27996,
+        game_port: int = 27592,
+        lock_path: Path = DEFAULT_LOCK,
+        sleep: Callable[[float], None] = time.sleep,
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
+        why = refuse_ra(ctl_port, game_port)
+        if why:
+            raise RuntimeError(why)
+        self.ctl = ctl
+        self.gate = gate
+        self.recipe = recipe
+        self.lock_token = lock_token
+        self.qwprogs_sha = qwprogs_sha
+        self.mvdsv_sha = mvdsv_sha
+        self.commit = commit
+        self.host = host
+        self.ctl_port = ctl_port
+        self.game_port = game_port
+        self.lock_path = lock_path
+        self.sleep = sleep
+        self.now = now
+        self.arm = "off"
+        self._ent: int | None = None
+        self.last_stamps: dict[str, dict] = {}
+        self.astar_cache: dict[str, dict] = {}
+        self.cmds: list[str] = []
+        self._saved_cvars: dict[str, str | None] = {}
+
+    def request(self, cmd: str) -> dict:
+        self.cmds.append(cmd)
+        return self.ctl.request(cmd)
+
+    def wait_ready(self, timeout: float = 90.0) -> dict:
+        deadline = self.now() + timeout
+        last = None
+        while self.now() < deadline:
+            last = self.request("status")["data"]
+            if last.get("navmesh") == "ready" and last.get("bots"):
+                self._ent = last["bots"][0]["ent"]
+                return last
+            self.sleep(0.5)
+        raise RuntimeError("navmesh/bot never ready")
+
+    def ent(self) -> int:
+        if self._ent is None:
+            self.wait_ready()
+        assert self._ent is not None
+        return self._ent
+
+    def bot(self) -> dict:
+        data = self.request("status")["data"]
+        e = self.ent()
+        row = next((b for b in data.get("bots") or [] if b.get("ent") == e), None)
+        if not row:
+            raise RuntimeError(f"bot {e} missing from status")
+        return row
+
+    def get_cvar(self, name: str) -> str | None:
+        try:
+            data = self.request(f"get {name}")["data"]
+        except Exception:
+            return None
+        if isinstance(data, dict) and "string" in data:
+            return str(data["string"])
+        return None
+
+    def prepare(self) -> None:
+        """Enable BotStall/Arrived telemetry. Never touch rtx_nav_patch (fixa owns the arm)."""
+        for name in PREP_CVARS:
+            if name not in self._saved_cvars:
+                self._saved_cvars[name] = self.get_cvar(name)
+            self.request(f"set {name} 1")
+        self.wait_ready()
+
+    def restore(self) -> None:
+        for name, value in self._saved_cvars.items():
+            if value is not None:
+                try:
+                    self.request(f"set {name} {value}")
+                except Exception:
+                    continue
+
+    def identity(self) -> dict:
+        """Counts + both hash levels via dry-run (no mutation)."""
+        d = self.request("fixa west-shelf dry-run")["data"]
+        return {
+            "cells": int(d["cells"]),
+            "links": int(d["links"]),
+            "rj_links": int(d["rj_links"]),
+            "graph_stamp": str(d["stamp"]),
+            "graph_content_hash": str(d["content_hash"]),
+            "outcome": d.get("outcome"),
+        }
+
+    def confirm(self, want: str) -> dict:
+        ident = self.identity()
+        exp = self.recipe["off"] if want == "off" else on_expected(self.recipe)
+        for k in ("cells", "links", "rj_links", "graph_stamp", "graph_content_hash"):
+            if ident[k] != exp[k]:
+                raise RuntimeError(
+                    f"stamp {want} mismatch {k}: live {ident[k]!r} != expected {exp[k]!r}"
+                )
+        self.last_stamps[want] = {k: ident[k] for k in (
+            "cells", "links", "rj_links", "graph_stamp", "graph_content_hash"
+        )}
+        self.arm = want
+        return ident
+
+    def apply(self) -> dict:
+        if not self.lock_token:
+            raise RuntimeError("fixa apply requires lock_token")
+        cmd = f"fixa west-shelf apply lock {self.lock_token}"
+        d = self.request(cmd)["data"]
+        if d.get("outcome") not in {"applied", "already_meshed"}:
+            raise RuntimeError(f"fixa apply failed: {d}")
+        return self.confirm("on")
+
+    def undo(self) -> dict:
+        if not self.lock_token:
+            raise RuntimeError("fixa undo requires lock_token")
+        cmd = f"fixa west-shelf undo lock {self.lock_token}"
+        d = self.request(cmd)["data"]
+        if d.get("outcome") != "undone":
+            raise RuntimeError(
+                f"fixa undo failed ({d.get('outcome')}): {d.get('reason')}. "
+                f"Restart ONLY toolbox-d-test in OFF: {RESTART}"
+            )
+        return self.confirm("off")
+
+    def ensure_arm(self, want: str) -> None:
+        if want not in {"off", "on"}:
+            raise ValueError(want)
+        if self.arm == want:
+            self.confirm(want)
+            return
+        if want == "on":
+            self.apply()
+        else:
+            self.undo()
+
+    def commanded_vel(self, spec: dict) -> list[float]:
+        if spec.get("kind") == "trap":
+            return [0.0, 0.0, 0.0]
+        return heading_vel(spec["start"], spec["goal"], mid_band_speed(spec))
+
+    def cell_at(self, origin: list[float]) -> int | None:
+        try:
+            d = self.request(f"cell {origin[0]} {origin[1]} {origin[2]}")["data"]
+        except Exception:
+            return None
+        if isinstance(d, dict) and isinstance(d.get("cell"), int):
+            return int(d["cell"])
+        return None
+
+    def _clear_events(self) -> None:
+        ev = getattr(self.ctl, "events", None)
+        if ev is not None:
+            ev.clear()
+
+    def _drain_events(self, rel_t: float, bot: int) -> list[dict]:
+        raw = list(getattr(self.ctl, "events", []) or [])
+        if hasattr(self.ctl, "events"):
+            self.ctl.events.clear()
+        out = []
+        for ev in raw:
+            if ev.get("bot") not in (None, bot):
+                continue
+            if ev.get("ev") not in KEEP_EVENTS:
+                continue
+            out.append(annotate_event(ev, rel_t))
+        return out
+
+    def watch(self, spec: dict, window_s: float) -> dict:
+        e = self.ent()
+        target = spec["goal"]
+        t0 = self.now()
+        self._clear_events()
+        self.request(f"goto {e} {target[0]} {target[1]} {target[2]}")
+        samples: list[dict] = []
+        events: list[dict] = []
+        gate_vel: list[float] | None = None
+        gate_cell: int | None = None
+        prev: dict | None = None
+        t_arrive: float | None = None
+        t_stall_gate: float | None = None
+        fall = FallTracker()
+        gate_cells = list(self.gate.get("cell_ids") or [])
+        while self.now() - t0 < window_s:
+            b = self.bot()
+            t = self.now() - t0
+            o = [float(x) for x in b["origin"]]
+            on_ground = bool(b.get("on_ground"))
+            samp = {
+                "t": t,
+                "x": o[0],
+                "y": o[1],
+                "z": o[2],
+                "speed": float(b.get("speed") or 0.0),
+                "on_ground": on_ground,
+            }
+            samples.append(samp)
+            if fall.update(o[2], on_ground):
+                events.append({
+                    "ev": "peak_drop_150",
+                    "t": t,
+                    "rel_t": t,
+                    "z": o[2],
+                    "peak": fall.peak,
+                    "origin": o,
+                })
+            if prev is not None:
+                v = vel_from_pair(prev, samp)
+                near = in_gate(self.gate, origin=o, cell_id=None)
+                cell = None
+                if near or (gate_cells and in_gate(self.gate, origin=o, cell_id=None)):
+                    cell = self.cell_at(o)
+                if in_gate(self.gate, origin=o, cell_id=cell):
+                    gate_vel = v
+                    if isinstance(cell, int) and cell in gate_cells:
+                        gate_cell = cell
+            prev = samp
+            for ev in self._drain_events(t, e):
+                events.append(ev)
+                cell = ev.get("cell")
+                origin = ev.get("origin")
+                if ev.get("ev") == "bot_stall" and in_gate(
+                    self.gate,
+                    origin=origin if isinstance(origin, (list, tuple)) else None,
+                    cell_id=cell if isinstance(cell, int) else None,
+                ):
+                    if t_stall_gate is None:
+                        t_stall_gate = float(ev.get("rel_t", t))
+                    if isinstance(cell, int) and cell in gate_cells:
+                        gate_cell = cell
+                if ev.get("ev") == "arrived" and t_arrive is None:
+                    t_arrive = float(ev.get("rel_t", t))
+            if t_arrive is not None or t_stall_gate is not None:
+                break
+            self.sleep(POLL_S)
+        try:
+            self.request(f"stop {e}")
+        except Exception:
+            pass
+        return {
+            "samples": samples,
+            "events": events,
+            "t_arrive": t_arrive,
+            "t_stall_gate": t_stall_gate,
+            "gate_velocity": gate_vel,
+            "gate_cell": gate_cell,
+        }
+
+    def exec_trial(
+        self,
+        *,
+        stratum_id: str,
+        arm: str,
+        spec: dict,
+        seq: int,
+        window_s: float | None = None,
+    ) -> dict:
+        e = self.ent()
+        start = spec["start"]
+        cmd_vel = self.commanded_vel(spec)
+        self.request(f"prep {e} 100 0")
+        self.request(
+            f"teleport {e} {start[0]} {start[1]} {start[2]} "
+            f"{cmd_vel[0]} {cmd_vel[1]} {cmd_vel[2]}"
+        )
+        self.sleep(T0_SETTLE_S if spec.get("kind") == "trap" else 0.05)
+        s0 = self.bot()
+        t_a = self.now()
+        self.sleep(VEL_SAMPLE_S)
+        s1 = self.bot()
+        t_b = self.now()
+        o0 = s0["origin"]
+        o1 = s1["origin"]
+        measured = vel_from_pair(
+            {"t": 0.0, "x": o0[0], "y": o0[1], "z": o0[2]},
+            {"t": t_b - t_a, "x": o1[0], "y": o1[1], "z": o1[2]},
+        )
+        if window_s is None:
+            if spec.get("kind") == "trap":
+                window_s = float(spec["off_window_s"] if arm == "off" else spec["budget_s"] + 1.5)
+            else:
+                window_s = float(spec["budget_s"] + 5.0)
+        watched = self.watch(spec, float(window_s))
+        if spec.get("kind") == "trap":
+            vel = measured
+        else:
+            vel = watched.get("gate_velocity") if watched.get("gate_velocity") is not None else measured
+        start_cell = self.cell_at([float(x) for x in o0])
+        return {
+            "vel": vel,
+            "commanded_vel": cmd_vel,
+            "measured_vel": measured,
+            "gate_velocity": watched.get("gate_velocity"),
+            "gate_cell": watched.get("gate_cell"),
+            "start_cell": start_cell,
+            "events": watched["events"],
+            "samples": watched["samples"],
+            "t_arrive": watched.get("t_arrive"),
+            "t_stall_gate": watched.get("t_stall_gate"),
+            "vh": vh(vel),
+            "stratum_id": stratum_id,
+            "arm": arm,
+            "seq": seq,
+        }
+
+    def snapshot_astar(self, spec: dict) -> dict:
+        start_cell = self.cell_at(spec["start"])
+        goal_cell = self.cell_at(spec["goal"])
+        empty = astar_path(found=False)
+        if start_cell is None or goal_cell is None:
+            self.astar_cache[self.arm] = {"path": empty, "next_best": empty}
+            return self.astar_cache[self.arm]
+        try:
+            data = self.request(f"route query {start_cell} {goal_cell}")["data"]
+            path = astar_from_route_resp(data)
+        except Exception:
+            path = empty
+        next_best = empty
+        if path.get("found") and path.get("links"):
+            mask = ",".join(str(x) for x in path["links"])
+            try:
+                nb = self.request(
+                    f"route query {start_cell} {goal_cell} mask {mask}"
+                )["data"]
+                next_best = astar_from_route_resp(nb, mask_links=list(path["links"]))
+            except Exception:
+                next_best = astar_path(found=False, mask_links=list(path["links"]))
+        blob = {"path": path, "next_best": next_best}
+        self.astar_cache[self.arm] = blob
+        return blob
+
+    def write_attempt_kvitto(
+        self,
+        path: Path,
+        *,
+        attempt_id: str,
+        stratum_id: str,
+        raw_pointer: str,
+        started_at: str,
+        ended_at: str,
+        lock_owner: str,
+        lock_issued: str,
+        astar_before: dict | None = None,
+        astar_after: dict | None = None,
+        astar_next_best: dict | None = None,
+    ) -> dict:
+        off = dict(self.recipe["off"])
+        on = on_expected(self.recipe)
+        obs_off = self.last_stamps.get("off", off)
+        obs_on = self.last_stamps.get("on", on)
+        cached_off = (self.astar_cache.get("off") or {}).get("path")
+        cached_on = (self.astar_cache.get("on") or {}).get("path")
+        cached_nb = (
+            (self.astar_cache.get("on") or self.astar_cache.get("off") or {}).get("next_best")
+        )
+        empty = astar_path(found=False)
+        doc = make_kvitto(
+            riglock_owner=lock_owner,
+            riglock_issued_at=lock_issued,
+            riglock_valid_from=lock_issued,
+            riglock_valid_to=ended_at,
+            riglock_path=str(self.lock_path),
+            run_started_at=started_at,
+            run_ended_at=ended_at,
+            endpoint_host=self.host,
+            endpoint_ctl_port=self.ctl_port,
+            endpoint_game_port=self.game_port,
+            map_name="dm3",
+            binary_sha256=self.qwprogs_sha,
+            commit=self.commit,
+            stamps_off_expected=off,
+            stamps_off_observed={k: obs_off[k] for k in off},
+            stamps_on_expected=on,
+            stamps_on_observed={k: obs_on[k] for k in on} if all(k in obs_on for k in on) else on,
+            stamps_undo_expected=off,
+            stamps_undo_observed={k: obs_off[k] for k in off},
+            recipe={
+                "id": self.recipe["id"],
+                "taxonomy_class": self.recipe["taxonomy_class"],
+                "evidence": self.recipe["evidence"],
+            },
+            seed=0,
+            stratum={"id": stratum_id, "attempt": attempt_id},
+            raw_pointer=raw_pointer,
+            astar_before=astar_before or cached_off or empty,
+            astar_after=astar_after or cached_on or empty,
+            astar_next_best=astar_next_best or cached_nb or empty,
+        )
+        # Facit §1 "binärens SHA-256" = qwprogs.so (spellogik). mvdsv carried explicitly too.
+        doc["binaries"] = {
+            "qwprogs_sha256": self.qwprogs_sha,
+            "mvdsv_sha256": self.mvdsv_sha,
+        }
+        write_kvitto(path, doc)
+        errors = verify(doc)
+        if errors:
+            raise RuntimeError("kvitto verify failed: " + "; ".join(errors))
+        return doc

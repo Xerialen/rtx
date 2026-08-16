@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """West-shelf self-proof drill (facit-d-sjalvbevis.md §2–§4).
 
-Turnkey for GAP 4. No live run in this cluster — pass a ctl-like object.
+Turnkey for GAP 4. --port 0 is spec-only; --port N uses d_live_driver.
 Heldout consumes the KEDJAD population (A1–A4). T0 stays the teleport drill.
 ON expected is read from the recipe fixture and never copied from observed.
 """
@@ -174,6 +174,7 @@ class DrillRunner:
         game_port: int,
         off_profile: dict[str, str],
         on_profile: dict[str, str],
+        ensure_arm: Callable[[str], None] | None = None,
     ) -> None:
         self.recipe = recipe
         self.gates = gates
@@ -182,6 +183,7 @@ class DrillRunner:
         self.game_port = game_port
         self.off_profile = off_profile
         self.on_profile = on_profile
+        self.ensure_arm = ensure_arm
 
     def preflight(self) -> list[str]:
         reasons: list[str] = []
@@ -204,6 +206,8 @@ class DrillRunner:
 
     def _run_one(self, stratum_id: str, arm: str, seq: int) -> Attempt:
         spec = STRATA[stratum_id]
+        if self.ensure_arm is not None:
+            self.ensure_arm(arm)
         raw = self.exec_trial(stratum_id=stratum_id, arm=arm, spec=spec, seq=seq)
         att = classify_trial(
             stratum_id=stratum_id,
@@ -282,30 +286,264 @@ def receipt_skeleton(recipe: dict, stratum_id: str, attempt_id: str) -> dict:
     )
 
 
+def _git_commit(repo: Path) -> str:
+    import subprocess
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", type=int, default=0, help="ctl port (0 = spec-only / no connect)")
-    ap.add_argument("--game-port", type=int, default=0)
+    ap.add_argument("--game-port", type=int, default=27592)
+    ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--fixture", type=Path)
     ap.add_argument("--gates", type=Path)
     ap.add_argument("--out", type=Path)
+    ap.add_argument("--kvitto-dir", type=Path)
+    ap.add_argument("--lock", type=Path)
+    ap.add_argument("--commit", default="")
+    ap.add_argument("--smoke", action="store_true", help="T0 OFF handful; not a judged run")
+    ap.add_argument("--n-smoke", type=int, default=2)
+    ap.add_argument("--smoke-window", type=float, default=3.0)
+    ap.add_argument("--run", action="store_true", help="full T0+heldout drill (fable-qa)")
     args = ap.parse_args(argv)
     recipe = load_recipe(args.fixture)
     gates = load_gates(args.gates)
+
+    from d_live_driver import (  # local: tools/ is already on sys.path
+        DEFAULT_LOCK,
+        DEFAULT_MVDSV,
+        DEFAULT_QWPROGS,
+        LiveTrialDriver,
+        file_sha256,
+        parse_lock,
+        refuse_ra,
+    )
+
     if args.port:
-        print("live GAP 4 is not this cluster — refusing to connect", file=sys.stderr)
+        why = refuse_ra(args.port, args.game_port)
+        if why:
+            print(why, file=sys.stderr)
+            return 2
+
+    if not args.port:
+        runner = DrillRunner(
+            recipe=recipe,
+            gates=gates,
+            exec_trial=lambda **k: {"vel": [0, 0, 0], "events": [], "samples": []},
+            ctl_port=args.port,
+            game_port=args.game_port,
+            off_profile={"rtx_nav_patch": "0"},
+            on_profile={"rtx_nav_patch": "1"},
+        )
+        report = runner.run()
+        payload = report.as_dict()
+        text = json.dumps(payload, indent=2, sort_keys=True)
+        if args.out:
+            args.out.write_text(text + "\n", encoding="utf-8")
+        print(text)
+        return 0 if payload.get("godkand") else 1
+
+    # Live path. --smoke = T0 OFF röktest. --run = judged drill (fable-qa).
+    # Bare --port prints identity and refuses to start the drill.
+    lock_path = args.lock or DEFAULT_LOCK
+    if not lock_path.is_file():
+        print(f"no {lock_path} — hold the lock before opening Control()", file=sys.stderr)
         return 2
-    runner = DrillRunner(
+    lock = parse_lock(lock_path)
+    qw = file_sha256(DEFAULT_QWPROGS) if DEFAULT_QWPROGS.is_file() else "00" * 32
+    mv = file_sha256(DEFAULT_MVDSV) if DEFAULT_MVDSV.is_file() else "00" * 32
+    commit = args.commit or _git_commit(Path(__file__).resolve().parents[2])
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from runner.control import Control  # noqa: E402
+
+    from datetime import datetime, timezone
+
+    ctl = Control(args.host, args.port)
+    driver = LiveTrialDriver(
+        ctl,
+        gate=gates["gates"]["west-shelf"],
+        recipe=recipe,
+        lock_token=lock["token"],
+        qwprogs_sha=qw,
+        mvdsv_sha=mv,
+        commit=commit,
+        host=args.host,
+        ctl_port=args.port,
+        game_port=args.game_port,
+        lock_path=lock_path,
+    )
+    try:
+        driver.prepare()
+        ident = driver.confirm("off")
+        if args.smoke:
+            return _run_smoke(driver, lock, args, ident)
+        if args.run:
+            return _run_live(driver, recipe, gates, lock, args)
+        payload = {
+            "live": True,
+            "identity": ident,
+            "binaries": {"qwprogs_sha256": qw, "mvdsv_sha256": mv},
+            "commit": commit,
+            "hint": "pass --smoke (T0 OFF roktest) or --run (judged drill, fable-qa)",
+        }
+        text = json.dumps(payload, indent=2, sort_keys=True)
+        if args.out:
+            args.out.write_text(text + "\n", encoding="utf-8")
+        print(text)
+        return 0
+    finally:
+        if driver.arm == "on":
+            try:
+                driver.undo()
+            except Exception as exc:
+                print(f"undo-on-exit failed: {exc}", file=sys.stderr)
+        try:
+            driver.restore()
+        except Exception:
+            pass
+        ctl.close()
+
+
+def _iso_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _run_smoke(driver, lock: dict, args, ident: dict) -> int:
+    """T0 OFF only. Not a judged run. Never apply."""
+    spec = STRATA["T0"]
+    rows = []
+    started = _iso_now()
+    for i in range(1, max(1, args.n_smoke) + 1):
+        t0 = _iso_now()
+        raw = driver.exec_trial(
+            stratum_id="T0", arm="off", spec=spec, seq=i, window_s=args.smoke_window,
+        )
+        att = classify_trial(
+            stratum_id="T0",
+            arm="off",
+            vel=raw.get("vel") or [0, 0, 0],
+            events=raw.get("events") or [],
+            samples=raw.get("samples") or [],
+            gate=driver.gate,
+            t_arrive=raw.get("t_arrive"),
+        )
+        att.attempt_id = f"T0-OFF-{i:02d}"
+        ended = _iso_now()
+        kvitto_path = None
+        if args.kvitto_dir:
+            kvitto_path = args.kvitto_dir / f"{att.attempt_id}.json"
+            driver.write_attempt_kvitto(
+                kvitto_path,
+                attempt_id=att.attempt_id,
+                stratum_id="T0",
+                raw_pointer=f"roktest:{att.attempt_id}",
+                started_at=t0,
+                ended_at=ended,
+                lock_owner=lock["owner"],
+                lock_issued=lock["issued"],
+            )
+        rows.append({
+            "id": att.attempt_id,
+            "valid": att.valid,
+            "reason": att.reason,
+            "trap": att.trap,
+            "arrived": att.arrived,
+            "t_arrive": raw.get("t_arrive"),
+            "t_stall_gate": raw.get("t_stall_gate"),
+            "vel": raw.get("vel"),
+            "measured_vel": raw.get("measured_vel"),
+            "gate_velocity": raw.get("gate_velocity"),
+            "gate_cell": raw.get("gate_cell"),
+            "events": [
+                {k: e.get(k) for k in ("ev", "t", "rel_t", "engine_t", "cell", "reason")}
+                for e in (raw.get("events") or [])
+            ],
+            "kvitto": str(kvitto_path) if kvitto_path else None,
+        })
+    after = driver.confirm("off")
+    payload = {
+        "kind": "roktest",
+        "judged": False,
+        "n": len(rows),
+        "attempts": rows,
+        "identity_before": ident,
+        "identity_after": after,
+        "rtx_nav_patch": driver.get_cvar("rtx_nav_patch"),
+        "binaries": {
+            "qwprogs_sha256": driver.qwprogs_sha,
+            "mvdsv_sha256": driver.mvdsv_sha,
+        },
+        "commit": driver.commit,
+        "started_at": started,
+        "ended_at": _iso_now(),
+    }
+    text = json.dumps(payload, indent=2, sort_keys=True)
+    if args.out:
+        args.out.write_text(text + "\n", encoding="utf-8")
+    print(text)
+    return 0
+
+
+def _run_live(driver, recipe: dict, gates: dict, lock: dict, args) -> int:
+    from datetime import datetime, timezone
+
+    def write_one(att, raw):
+        if not args.kvitto_dir:
+            return
+        try:
+            driver.snapshot_astar(STRATA[att.stratum])
+        except Exception:
+            pass
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        driver.write_attempt_kvitto(
+            args.kvitto_dir / f"{att.attempt_id}.json",
+            attempt_id=att.attempt_id,
+            stratum_id=att.stratum,
+            raw_pointer=f"d_sjalvbevis:{att.attempt_id}",
+            started_at=now,
+            ended_at=now,
+            lock_owner=lock["owner"],
+            lock_issued=lock["issued"],
+        )
+
+    def exec_trial(**k):
+        raw = driver.exec_trial(**k)
+        return raw
+
+    # wrap classify path: DrillRunner has no kvitto hook; write after each _run_one via subclass
+    class _Live(DrillRunner):
+        def _run_one(self, stratum_id: str, arm: str, seq: int):
+            att = super()._run_one(stratum_id, arm, seq)
+            write_one(att, {})
+            return att
+
+    runner = _Live(
         recipe=recipe,
         gates=gates,
-        exec_trial=lambda **k: {"vel": [0, 0, 0], "events": [], "samples": []},
+        exec_trial=exec_trial,
         ctl_port=args.port,
         game_port=args.game_port,
         off_profile={"rtx_nav_patch": "0"},
         on_profile={"rtx_nav_patch": "1"},
+        ensure_arm=driver.ensure_arm,
     )
     report = runner.run()
+    if driver.arm == "on":
+        driver.undo()
     payload = report.as_dict()
+    payload["binaries"] = {
+        "qwprogs_sha256": driver.qwprogs_sha,
+        "mvdsv_sha256": driver.mvdsv_sha,
+    }
+    payload["stamps"] = driver.last_stamps
     text = json.dumps(payload, indent=2, sort_keys=True)
     if args.out:
         args.out.write_text(text + "\n", encoding="utf-8")
