@@ -33,9 +33,19 @@ class FixaTests(unittest.TestCase):
     def test_ram_recipes_are_cli_wired(self):
         """P5: ram-rail / ram-prevent must not die as 'west-shelf is the only recipe'."""
         self.assertIn("ram-rail", REGISTERED_IDS)
+        self.assertIn("ram-rail-v2", REGISTERED_IDS)
         self.assertIn("ram-prevent", REGISTERED_IDS)
         text = Path(fixa.__file__).read_text(encoding="utf-8")
         self.assertNotIn("west-shelf is the only recipe", text)
+
+    def test_ram_rail_v2_drops_east_not_638(self):
+        rec = load_recipe(Path(fixa.__file__).resolve().parent / "recept" / "ram-rail-v2.json")
+        self.assertEqual(rec["id"], "ram-rail-v2")
+        self.assertIsNone(rec.get("on_expected"))
+        self.assertEqual(len(rec["drops"]), 6)
+        for d in rec["drops"]:
+            self.assertEqual(d["to"][0], -288.0)
+            self.assertNotEqual(d["to"], [-352.0, -672.0, -16.0])
 
     def test_ra_port_refused(self):
         self.assertEqual(fixa.main(["--recept", "west-shelf", "--dry-run", "--port", "27990"]), 2)

@@ -840,6 +840,19 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 target == goal
             )));
         }
+        // R1-LITE: only when the repath produced nothing. Cvar default off
+        // keeps this branch dead (parity with pre-rule steer).
+        if route.is_empty() {
+            if let Some(li) = super::r1_lite::escape(
+                graph,
+                bot_cell,
+                false,
+                host.cvar_bool(c"rtx_r1_lite"),
+            ) {
+                route = vec![li];
+                bands = vec![0];
+            }
+        }
         bot.route = route;
         bot.route_bands = bands;
         bot.route_pos = 0;

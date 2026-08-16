@@ -29,6 +29,7 @@ pub(crate) mod perception;
 mod population;
 pub(crate) mod power;
 pub(crate) mod prof;
+mod r1_lite;
 mod rj;
 pub(crate) mod state;
 mod steer;

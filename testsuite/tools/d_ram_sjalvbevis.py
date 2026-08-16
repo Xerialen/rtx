@@ -25,9 +25,11 @@ from d_strata import FORBIDDEN_CTL, FORBIDDEN_GAME, pair_start_vel_ok  # noqa: E
 
 HERE = Path(__file__).resolve().parent
 RAIL_GATES = HERE / "recept" / "ram-rail-gates.json"
+RAIL_V2_GATES = HERE / "recept" / "ram-rail-v2-gates.json"
 PREVENT_GATES = HERE / "recept" / "ram-prevent-gates.json"
 RAIL_CELLS = {5977, 5978, 5979, 5980, 5981, 5982}
 LAND = [-352.0, -672.0, -16.0]
+RAIL_IDS = frozenset({"ram-rail", "ram-rail-v2"})
 
 
 def sha256_file(path: Path) -> str:
@@ -49,8 +51,13 @@ def knockback_fields(spec: dict, raw: dict, land_hit: bool) -> dict:
 
 
 def knockback_points(gates: dict) -> list[dict]:
+    gmap = gates.get("gates") or {}
+    block = gmap.get("ram-rail-v2") or gmap.get("ram-rail") or {}
+    drop_tos = list(block.get("drop_to_origins") or [])
+    default_land = list((block.get("land") or {}).get("origin") or LAND)
     rows = []
-    for kb in gates.get("knockback") or []:
+    for i, kb in enumerate(gates.get("knockback") or []):
+        land = list(drop_tos[i]) if i < len(drop_tos) else default_land
         rows.append({
             "id": str(kb["id"]),
             "y": float(kb["y"]),
@@ -58,7 +65,7 @@ def knockback_points(gates: dict) -> list[dict]:
             "velocity": [float(x) for x in kb["velocity"]],
             "budget_s": float(kb.get("budget_s") or 2.0),
             "pos": [-360.0, float(kb["y"]), 128.03125],
-            "land": list((gates.get("gates") or {}).get("ram-rail", {}).get("land", {}).get("origin") or LAND),
+            "land": land,
             "n_pairs": int(gates.get("n_pairs") or 2),
         })
     return rows
@@ -216,8 +223,8 @@ class RamRunner:
         self.last_raw: dict = {}
         self.kb = knockback_points(rail_gates)
         self.p = prevention_specs(self.prevent_gates) if recipe.get("id") == "ram-prevent" else []
-        self.h = heldout_specs() if recipe.get("id") in {"ram-rail", "ram-prevent"} else []
-        if recipe.get("id") == "ram-rail":
+        self.h = heldout_specs() if recipe.get("id") in {"ram-rail", "ram-rail-v2", "ram-prevent"} else []
+        if recipe.get("id") in RAIL_IDS:
             self.p = []
         if n_knock is not None:
             for s in self.kb:
@@ -231,16 +238,16 @@ class RamRunner:
         if self.ctl_port in FORBIDDEN_CTL or self.game_port in FORBIDDEN_GAME:
             reasons.append("RA/main endpoint")
         rid = self.recipe.get("id")
-        if rid not in {"ram-rail", "ram-prevent"}:
+        if rid not in {"ram-rail", "ram-rail-v2", "ram-prevent"}:
             reasons.append(f"not a ram recipe: {rid!r}")
         try:
             on_expected(self.recipe)
         except ValueError as exc:
             reasons.append(str(exc))
-        if rid == "ram-rail" and len(self.kb) != 6:
+        if rid in RAIL_IDS and len(self.kb) != 6:
             reasons.append(f"knockback points {len(self.kb)} != 6")
         ids = [s["id"] for s in self.kb]
-        if rid == "ram-rail" and ids != ["K1", "K2", "K3", "K4", "K5", "K6"]:
+        if rid in RAIL_IDS and ids != ["K1", "K2", "K3", "K4", "K5", "K6"]:
             reasons.append(f"knockback ids {ids} != K1–K6")
         return reasons
 
@@ -409,7 +416,7 @@ class RamRunner:
             return RamReport(str(self.recipe.get("id")), False, reasons, attempts)
         rid = self.recipe.get("id")
         extra: list[str] = []
-        if rid == "ram-rail":
+        if rid in RAIL_IDS:
             for spec in self.kb:
                 for i in range(1, int(spec["n_pairs"]) + 1):
                     attempts.append(self._run_kb(spec, "off", i))
@@ -439,9 +446,9 @@ class RamRunner:
 
         kb_off = [a for a in attempts if a.stratum.startswith("K") and a.arm == "off" and a.valid]
         kb_on = [a for a in attempts if a.stratum.startswith("K") and a.arm == "on" and a.valid]
-        kb_off_ok = rid != "ram-rail" or (len(kb_off) == 12 and all(a.stall for a in kb_off))
-        kb_on_ok = rid != "ram-rail" or (len(kb_on) == 12 and all(a.land_hit and not a.stall for a in kb_on))
-        if rid == "ram-rail" and (n_knock := self.kb[0]["n_pairs"]) != 2:
+        kb_off_ok = rid not in RAIL_IDS or (len(kb_off) == 12 and all(a.stall for a in kb_off))
+        kb_on_ok = rid not in RAIL_IDS or (len(kb_on) == 12 and all(a.land_hit and not a.stall for a in kb_on))
+        if rid in RAIL_IDS and (n_knock := self.kb[0]["n_pairs"]) != 2:
             kb_off_ok = len(kb_off) == 6 * n_knock and all(a.stall for a in kb_off)
             kb_on_ok = len(kb_on) == 6 * n_knock and all(a.land_hit and not a.stall for a in kb_on)
 
@@ -449,7 +456,7 @@ class RamRunner:
         h_on = [a for a in attempts if a.stratum in {"H1", "H2", "H3", "H4"} and a.arm == "on" and a.valid]
         want_p = sum(s["n_pairs"] for s in self.p)
         want_h = sum(s["n_pairs"] for s in self.h)
-        p_ok = rid == "ram-rail" or (len(p_on) == want_p and all(a.arrived and not a.stall for a in p_on))
+        p_ok = rid in RAIL_IDS or (len(p_on) == want_p and all(a.arrived and not a.stall for a in p_on))
         h_ok = len(h_on) == want_h and all(a.arrived and not a.stall for a in h_on) if want_h else True
         valid = not extra
         pass_ok = valid and kb_off_ok and kb_on_ok and p_ok and h_ok
@@ -465,7 +472,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=0)
     ap.add_argument("--game-port", type=int, default=27595)
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--recipe", default="ram-rail", choices=("ram-rail", "ram-prevent"))
+    ap.add_argument("--recipe", default="ram-rail", choices=("ram-rail", "ram-rail-v2", "ram-prevent"))
     ap.add_argument("--fixture", type=Path)
     ap.add_argument("--out", type=Path)
     ap.add_argument("--lock", type=Path)
@@ -477,7 +484,8 @@ def main(argv: list[str] | None = None) -> int:
     fixture = args.fixture or (HERE / "recept" / f"{args.recipe}.json")
     recipe = load_recipe(fixture)
     fx_sha = sha256_file(Path(fixture))
-    rail = json.loads(RAIL_GATES.read_text(encoding="utf-8"))
+    rail_path = RAIL_V2_GATES if args.recipe == "ram-rail-v2" and RAIL_V2_GATES.is_file() else RAIL_GATES
+    rail = json.loads(rail_path.read_text(encoding="utf-8"))
     prev = json.loads(PREVENT_GATES.read_text(encoding="utf-8")) if PREVENT_GATES.is_file() else {}
     n_knock = 1 if args.smoke else None
     n_chain = 0 if args.smoke else None

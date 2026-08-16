@@ -1,0 +1,40 @@
+{
+  "id": "ram-rail-v2",
+  "map": "dm3",
+  "taxonomy_class": "carve_origin",
+  "evidence": "Six indegree-0 rail cells + Drop each east to the 670/702-line (Xerial path 1: takeoff (-352,-687) land (-291,-685)), not 638. on_expected null until pinning.",
+  "off": {
+    "cells": 5977,
+    "links": 48207,
+    "rj_links": 0,
+    "graph_stamp": "906595427771298736",
+    "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"
+  },
+  "on_expected": null,
+  "on_expected_note": "Pin on dedicated tbx-d4 after deepseek+grok2; never invent from observed.",
+  "facit_sha256": "988a4f77db8c8aa72df0e7387c603d22cf9cef8dc740b982300c8e6d38afbe8b",
+  "source": [
+    {"cell": 5977, "origin": [-360.0, -784.0, 128.03125]},
+    {"cell": 5978, "origin": [-360.0, -752.0, 128.03125]},
+    {"cell": 5979, "origin": [-360.0, -720.0, 128.03125]},
+    {"cell": 5980, "origin": [-360.0, -688.0, 128.03125]},
+    {"cell": 5981, "origin": [-360.0, -656.0, 128.03125]},
+    {"cell": 5982, "origin": [-360.0, -624.0, 128.03125]}
+  ],
+  "target": [
+    {"origin": [-288.0, -800.0, -16.0]},
+    {"origin": [-288.0, -768.0, -16.0]},
+    {"origin": [-288.0, -736.0, -16.0]},
+    {"origin": [-288.0, -672.0, -16.0], "note": "702 — Xerial path 1 landing (-291,-685)"},
+    {"origin": [-288.0, -640.0, -16.0]},
+    {"origin": [-288.0, -608.0, -16.0]}
+  ],
+  "drops": [
+    {"from": [-360.0, -784.0, 128.03125], "to": [-288.0, -800.0, -16.0], "kind": "drop"},
+    {"from": [-360.0, -752.0, 128.03125], "to": [-288.0, -768.0, -16.0], "kind": "drop"},
+    {"from": [-360.0, -720.0, 128.03125], "to": [-288.0, -736.0, -16.0], "kind": "drop"},
+    {"from": [-360.0, -688.0, 128.03125], "to": [-288.0, -672.0, -16.0], "kind": "drop"},
+    {"from": [-360.0, -656.0, 128.03125], "to": [-288.0, -640.0, -16.0], "kind": "drop"},
+    {"from": [-360.0, -624.0, 128.03125], "to": [-288.0, -608.0, -16.0], "kind": "drop"}
+  ]
+}

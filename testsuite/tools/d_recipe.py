@@ -18,6 +18,7 @@ STAMP_KEYS = ("cells", "links", "rj_links", "graph_stamp", "graph_content_hash")
 REGISTERED_IDS = frozenset({
     "west-shelf",
     "ram-rail",
+    "ram-rail-v2",
     "ram-prevent",
     "haz1462-k1",
     "haz1462-k2",

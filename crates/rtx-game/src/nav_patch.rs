@@ -212,6 +212,45 @@ pub const RAM_RAIL: ShelfPatch = ShelfPatch {
     retype_links: &[],
 };
 
+/// Xerial path 1: east off the 7 u band toward the 670/702-line (x=−288),
+/// same-y ballistic at walk speed — not straight down to 638 (x=−352).
+/// Slot y=−688 lands on 702 `[−288,−672,−16]`, matching the demo landing
+/// `(−291,−685)`. Named `fixa` only. `on_expected` is pinned later.
+const RAM_RAIL_V2_LANDINGS: [[f32; 3]; 6] = [
+    [-288.0, -800.0, -16.0],
+    [-288.0, -768.0, -16.0],
+    [-288.0, -736.0, -16.0],
+    [-288.0, -672.0, -16.0],
+    [-288.0, -640.0, -16.0],
+    [-288.0, -608.0, -16.0],
+];
+
+pub const RAM_RAIL_V2: ShelfPatch = ShelfPatch {
+    map: "dm3",
+    name: "ram-rail-v2",
+    cells: &[
+        [-360.0, -784.0, 128.03125],
+        [-360.0, -752.0, 128.03125],
+        [-360.0, -720.0, 128.03125],
+        [-360.0, -688.0, 128.03125],
+        [-360.0, -656.0, 128.03125],
+        [-360.0, -624.0, 128.03125],
+    ],
+    drops: &[
+        ([-360.0, -784.0, 128.03125], [-288.0, -800.0, -16.0]),
+        ([-360.0, -752.0, 128.03125], [-288.0, -768.0, -16.0]),
+        ([-360.0, -720.0, 128.03125], [-288.0, -736.0, -16.0]),
+        ([-360.0, -688.0, 128.03125], [-288.0, -672.0, -16.0]),
+        ([-360.0, -656.0, 128.03125], [-288.0, -640.0, -16.0]),
+        ([-360.0, -624.0, 128.03125], [-288.0, -608.0, -16.0]),
+    ],
+    snap_z: 128.03125,
+    pin: WEST_SHELF_PIN,
+    no_auto_walk: true,
+    remove_links: &[],
+    retype_links: &[],
+};
+
 /// Prevention Drops (trajektorieprov + grok-dom): 733→669 and 734→670.
 /// Existing cells only — no new rail/walk topology. Named `fixa` only.
 pub const RAM_PREVENT: ShelfPatch = ShelfPatch {
@@ -230,7 +269,7 @@ pub const RAM_PREVENT: ShelfPatch = ShelfPatch {
 };
 
 /// Ram package. Not walked by [`apply_for_map`].
-pub const RAM_RECIPES: &[ShelfPatch] = &[RAM_RAIL, RAM_PREVENT];
+pub const RAM_RECIPES: &[ShelfPatch] = &[RAM_RAIL, RAM_RAIL_V2, RAM_PREVENT];
 
 /// HAZ-1462 k1: drop Walk 10447 (1416→1461). Attested leave-link
 /// (`deepseek-haz1462-diagnos.md`, grok2 JUSTERAS: next live walk is 10446).
@@ -794,6 +833,7 @@ mod tests {
         assert_eq!(RAM_PREVENT.cells.len(), 0);
         assert_eq!(RAM_PREVENT.drops.len(), 2);
         assert!(patch_by_name("ram-rail").is_some());
+        assert!(patch_by_name("ram-rail-v2").is_some());
         assert!(patch_by_name("ram-prevent").is_some());
         assert!(patch_by_name("west-shelf").is_some());
         assert!(patch_by_name("haz1462-k1").is_some());
@@ -819,6 +859,7 @@ mod tests {
         assert_eq!(HAZ1462_K3.retype_links[0].old_kind, LinkKind::Walk);
         assert_eq!(HAZ1462_K3.retype_links[0].new_kind, LinkKind::Drop);
         assert!(RAM_RAIL.no_auto_walk, "ram-rail must not auto-Walk");
+        assert!(RAM_RAIL_V2.no_auto_walk, "ram-rail-v2 must not auto-Walk");
         assert!(!PATCHES[0].no_auto_walk, "west-shelf keeps auto-Walk");
         assert!(!RAM_PREVENT.no_auto_walk);
         for (i, &y) in RAM_RAIL_YS.iter().enumerate() {
@@ -826,6 +867,14 @@ mod tests {
             assert_eq!(RAM_RAIL.cells[i][1], y);
             assert_eq!(RAM_RAIL.cells[i][2], 128.03125);
             assert_eq!(RAM_RAIL.drops[i].1, [-352.0, -672.0, -16.0]);
+            assert_eq!(RAM_RAIL_V2.cells[i][1], y);
+            assert_eq!(RAM_RAIL_V2.drops[i].1, RAM_RAIL_V2_LANDINGS[i]);
+            assert_ne!(
+                RAM_RAIL_V2.drops[i].1,
+                [-352.0, -672.0, -16.0],
+                "v2 must not drop onto 638"
+            );
+            assert!((RAM_RAIL_V2.drops[i].1[0] + 288.0).abs() < 1.0);
         }
     }
 
@@ -1191,6 +1240,57 @@ mod tests {
                     .any(|l| { (l.from == id || l.to == id) && l.kind == LinkKind::Walk }),
                 "rail {aim:?} must not grow Walk in or out"
             );
+        }
+    }
+
+    fn ram_rail_v2_patch(graph: &NavGraph) -> ShelfPatch {
+        ShelfPatch {
+            map: "dm3",
+            name: "ram-rail-v2",
+            cells: RAM_RAIL_V2.cells,
+            drops: RAM_RAIL_V2.drops,
+            snap_z: RAM_RAIL_V2.snap_z,
+            pin: pin_for(graph),
+            no_auto_walk: true,
+            remove_links: &[],
+            retype_links: &[],
+        }
+    }
+
+    fn v2_landing_origins() -> Vec<Vec3> {
+        RAM_RAIL_V2_LANDINGS
+            .iter()
+            .map(|&p| Vec3::new(p[0], p[1], p[2]))
+            .collect()
+    }
+
+    #[test]
+    fn ram_rail_v2_drops_east_to_702_line_not_638() {
+        let mut origins = v2_landing_origins();
+        for &y in &RAM_RAIL_YS {
+            origins.push(Vec3::new(-328.0, y, 128.03125));
+        }
+        let mut g = NavGraph::from_topology(&origins, &[]);
+        let patch = ram_rail_v2_patch(&g);
+        apply_txn(&patch, None, &mut g).expect("ram-rail-v2 apply");
+        assert_eq!(g.links.len(), 6);
+        for (i, &aim) in RAM_RAIL_V2.cells.iter().enumerate() {
+            let id = g.cell_within(v(aim), ALREADY_XY, ALREADY_Z).expect("v2 rail");
+            assert!(incoming(&g, id).is_empty(), "v2 rail {aim:?} indegree 0");
+            let out = outgoing(&g, id);
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].kind, LinkKind::Drop);
+            let dest = g.cell_origin(out[0].to);
+            let want = RAM_RAIL_V2_LANDINGS[i];
+            assert!(
+                (dest.x - want[0]).abs() < 1.0 && (dest.y - want[1]).abs() < 1.0,
+                "v2 {aim:?} dest {dest:?} want {want:?}"
+            );
+            assert!((dest.x + 352.0).abs() > 8.0, "v2 must not land on 638 x=−352");
+            assert!(!g
+                .links
+                .iter()
+                .any(|l| (l.from == id || l.to == id) && l.kind == LinkKind::Walk));
         }
     }
 
@@ -1672,6 +1772,30 @@ mod tests {
             let out = outgoing(&g, id);
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].kind, LinkKind::Drop);
+        }
+    }
+
+    #[test]
+    fn ram_rail_v2_live_plant_east_drops() {
+        let bsp = load_dm3_bsp();
+        let mut g = NavGraph::from_topology(&v2_landing_origins(), &[]);
+        let patch = ram_rail_v2_patch(&g);
+        apply_txn(&patch, Some(&bsp), &mut g).expect("ram-rail-v2 live apply");
+        let drops: Vec<_> = g.links.iter().filter(|l| l.kind == LinkKind::Drop).collect();
+        let walks: Vec<_> = g.links.iter().filter(|l| l.kind == LinkKind::Walk).collect();
+        assert_eq!(drops.len(), 6);
+        assert!(walks.is_empty(), "v2 live path must not grow Walk");
+        for (i, &aim) in RAM_RAIL_V2.cells.iter().enumerate() {
+            let id = g
+                .cell_within(v(aim), ALREADY_XY, ALREADY_Z)
+                .expect("v2 rail planted isolated");
+            assert!(incoming(&g, id).is_empty());
+            let out = outgoing(&g, id);
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].kind, LinkKind::Drop);
+            let dest = g.cell_origin(out[0].to);
+            assert!((dest.x - RAM_RAIL_V2_LANDINGS[i][0]).abs() < 8.0);
+            assert!((dest.x + 352.0).abs() > 8.0);
         }
     }
 
