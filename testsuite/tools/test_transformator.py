@@ -464,11 +464,36 @@ class MotBasdumpen(unittest.TestCase):
             "arrayplats och motor-id är olika saker; testet finns för att hålla dem isär",
         )
 
-    def test_kollisionsfallan_5983_48213_traffas_inte(self):
+    def test_inget_komponat_landar_pa_5983_48213_fallan(self):
+        """Den förbjudna fällan: 5983/48213 är rail-ON:s FNV och skulle uppstå ur
+        en felräknad V296 (+0/+0). Ingen av op-listorna får hamna där."""
+        for namn in ("komponat-k2-v296-ram", "komponat-v296-ram"):
+            with self.subTest(namn):
+                recept = json.loads((RECEPT / f"{namn}.json").read_text(encoding="utf-8"))
+                slut = tr.kor_recept(self.bas, recept, self.reg)["slut"]
+                self.assertNotEqual((slut["cells"], slut["links"]), (5983, 48213))
+
+    def test_deploykomponatets_slutbild_ar_ett_eget_namn(self):
+        """Slutbilden får inte dela nivå-1 med någon känd graf i registret."""
+        recept = json.loads((RECEPT / "komponat-v296-ram.json").read_text(encoding="utf-8"))
+        slut = tr.kor_recept(self.bas, recept, self.reg)["slut"]
+        self.assertEqual((slut["cells"], slut["links"]), (5983, 48216))
+        self.assertIsNone(slut["kollision"], "slutbilden får inte landa på ett registrerat ON-namn")
+
+    def test_k2_komponatets_slutbild_ar_registrerad_som_krock(self):
+        """K2-komponatets SLUT delar nivå-1 med deploy-komponatets mellansteg.
+
+        Den krocken hittade transformatorns egen korskontroll; grok2 skrev in den i
+        kollisionsregistret (581e140). Att den nu ger en registerträff är rätt utfall
+        — testet finns för att posten inte ska försvinna igen utan att någon märker det.
+        """
         recept = json.loads((RECEPT / "komponat-k2-v296-ram.json").read_text(encoding="utf-8"))
         slut = tr.kor_recept(self.bas, recept, self.reg)["slut"]
-        self.assertIsNone(slut["kollision"], "slutbilden får inte landa på ett registrerat ON-namn")
-        self.assertNotEqual((slut["cells"], slut["links"]), (5983, 48213))
+        self.assertEqual((slut["cells"], slut["links"]), (5983, 48214))
+        self.assertIsNotNone(slut["kollision"], "krocken måste vara registrerad")
+        alias = " ".join(slut["kollision"].get("aliases") or [])
+        self.assertIn("deploy-v296-ram", alias)
+        self.assertIn("komponat-k2-v296-ram", alias)
 
     def test_deploykomponatet_utan_k2(self):
         """Op-listan Xerial beslutade om efter DOM M1-EFTER-OFF."""

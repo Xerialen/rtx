@@ -226,7 +226,21 @@
         "graph_content_hash": "bb19b9978f555828f7f640ebfe6de494e6fe40cc6b73b3d3a6506b5dafb8bfa9",
         "graph_content_hash_utan_params": "cab98ac22f356bc333bc04909a1ee5610190670c4505ff23bdcd7aeb1d7c33f8",
         "graph_stamp": "15510284848814560699",
-        "kollision": null,
+        "kollision": {
+          "aliases": [
+            "deploy-v296-ram op2 (efter rail, mellansteg)",
+            "komponat-k2-v296-ram SLUT (EJ-DEPLOY)"
+          ],
+          "cells": 5983,
+          "graph_stamp": "15510284848814560699",
+          "links": 48214,
+          "niva2": {
+            "deploy_op2_utan_params": "cab98ac22f356bc3",
+            "k2_slut_utan_params": "7a98d6e93bd8ebc3"
+          },
+          "rj_links": 0,
+          "warn": "VARNING: nivå-1-kollision 5983/48214 (FNV 15510284848814560699) — kända namn: deploy-v296-ram op2 (efter rail, mellansteg), komponat-k2-v296-ram SLUT (EJ-DEPLOY). En counts/FNV-läsare kan inte skilja ett HALVAPPLICERAT deploy-komponat från det färdiga K2-komponatet. Kräv nivå-2 för dom (cab98ac2… vs 7a98d6e9…; opus5 0c8554b)."
+        },
         "links": 48214,
         "map": "dm3",
         "rj_links": 0
@@ -274,6 +288,7 @@
   ],
   "varningar": [
     "VARNING: nivå-1-kollision 5977/48207 (FNV 906595427771298736) — kända namn: bas, K2+prevent, K3-retype. Nivå-1 räcker inte; läs nivå-2.",
+    "efter op 2 (ram-rail-v2): VARNING: nivå-1-kollision 5983/48214 (FNV 15510284848814560699) — kända namn: deploy-v296-ram op2 (efter rail, mellansteg), komponat-k2-v296-ram SLUT (EJ-DEPLOY). En counts/FNV-läsare kan inte skilja ett HALVAPPLICERAT deploy-komponat från det färdiga K2-komponatet. Kräv nivå-2 för dom (cab98ac2… vs 7a98d6e9…; opus5 0c8554b).",
     "VARNING: nivå-1-krock mot haz1462-k2-v296-ram: steg 2 (ram-rail-v2) är 5983/48214 FNV 15510284848814560699 — samma som SLUTSTAMPEN (ram-prevent) där. Olika grafer: nivå-2 cab98ac22f356bc3… mot 7a98d6e93bd8ebc3…. En grind som läser counts/FNV kan inte skilja ett halvapplicerat komponat från ett färdigt."
   ]
 }

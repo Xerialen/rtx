@@ -565,6 +565,62 @@ def check_anchors(recipe: dict[str, Any]) -> None:
         raise FailClosed("anchor", why)
 
 
+#: Enda driftstatusen som får muteras. Allt annat är en vägran.
+DEPLOY_OK = "DEPLOY-KANDIDAT"
+
+#: Artefaktklasser som MÅSTE bära en driftstatus. En komponat-op-lista är en
+#: deploybar sak i sig själv och är därför gated på att någon uttryckligen sagt
+#: att den får köras; de äldre en-op-fixturerna har inget statusfält och styrs av
+#: sina egna sigill (`verify_fixture_seal`), så de gatas bara om de bär ett.
+KOMPONAT_SCHEMAN = ("komponat/1", "komponat-manifest/1")
+
+
+def deploy_status(recipe: Any) -> str | None:
+    """Receptets driftstatus, eller `None` när fältet saknas."""
+    if recipe is None or not hasattr(recipe, "get"):
+        return None
+    status = recipe.get("status")
+    return None if status is None else str(status).strip().upper()
+
+
+def check_deploy_status(recipe: Any) -> None:
+    """Gate: bara `DEPLOY-KANDIDAT` får appliceras.
+
+    Märkningen fanns (opus5 0c8554b) men ingen konsumerade den, så "aldrig
+    deploybar" var en konvention och inte en grind (deepseeks trio-review, flagga
+    ii). Här blir den hård: `EJ-DEPLOY` vägras med domens skäl i klartext, och en
+    komponat-op-lista utan status vägras också — tystnad får inte läsas som
+    godkänd, vilket är hela poängen med att `OKAND` finns som eget värde.
+
+    Avgränsningen är medveten och värd att säga rakt ut: ordern lyder "saknad ⇒
+    FailClosed", men de sju registrerade en-op-fixturerna (west-shelf, ram-*,
+    haz1462-*) bär inget statusfält. En villkorslös läsning hade vägrat varje
+    apply i kedjan från och med nu. Kravet gäller därför artefakter som ÄR
+    komponat, plus alla som bär ett statusfält — och där gäller det utan undantag.
+    """
+    if recipe is None or not hasattr(recipe, "get"):
+        return
+    status = deploy_status(recipe)
+    schema = str(recipe.get("schema") or "")
+    rid = recipe.get("id") or "receptet"
+    if status is None:
+        if schema in KOMPONAT_SCHEMAN:
+            raise FailClosed(
+                "deploy-status",
+                f"{rid} ({schema}) saknar status — en komponat-op-lista måste bära "
+                f"{DEPLOY_OK} för att få appliceras. Tystnad är inte ett godkännande.",
+            )
+        return
+    if status == DEPLOY_OK:
+        return
+    skal = recipe.get("status_skal")
+    svans = f" Skäl: {skal}" if skal else ""
+    raise FailClosed(
+        "deploy-status",
+        f"{rid} har status {status}, inte {DEPLOY_OK} — vägrar applicera.{svans}",
+    )
+
+
 def guard_mutation(
     action: str,
     *,
@@ -588,6 +644,9 @@ def guard_mutation(
     rid = recipe.get("id") if hasattr(recipe, "get") else None
     if isinstance(recipe, SealedRecipe) or rid in REGISTERED_IDS:
         verify_fixture_seal(recipe)
+    # Före ankarvalideringen: ett recept som inte får köras ska vägras på den
+    # grunden, inte på ett ankarfel som råkar hittas först.
+    check_deploy_status(recipe)
     check_anchors(recipe)
     if action in {"apply", "undo"} and require_live:
         check_live_sealed(live, recipe)
