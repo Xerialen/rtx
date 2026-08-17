@@ -86,9 +86,17 @@ def _send_fixa(
     lock_token: str | None = None,
     recipe=None,
     freeze=None,
+    deploy: bool = False,
+    deploy_ctx=None,
 ) -> dict:
     """ENDA muterande ctl-ingången. Frys + stampgrind bor här, inte hos anroparen."""
-    from d_failclosed import FreezeContext, guard_mutation, guard_plant
+    from d_failclosed import (
+        KOMPONAT_SCHEMAN,
+        FreezeContext,
+        guard_mutation,
+        guard_plant,
+        require_deploy_context,
+    )
 
     mode_l = (mode or "").strip().lower()
 
@@ -103,12 +111,18 @@ def _send_fixa(
     if mode_l in {"apply", "undo", "plant"}:
         rec = recipe if recipe is not None else load_recipe(recipe_path(recipe_id))
         ctx = freeze if freeze is not None else FreezeContext.production()
+        schema = str(rec.get("schema") or "") if hasattr(rec, "get") else ""
+        want_deploy = bool(deploy or deploy_ctx is not None)
+        if want_deploy or schema in KOMPONAT_SCHEMAN:
+            require_deploy_context(deploy_ctx)
         if mode_l == "plant":
-            guard_plant(rec, freeze=ctx)
+            guard_plant(rec, freeze=ctx, deploy=want_deploy)
         else:
             ident = _ctl("dry-run", None)
             live = stamp_from_reply(ident)
-            guard_mutation(mode_l, recipe=rec, live=live, freeze=ctx)
+            guard_mutation(
+                mode_l, recipe=rec, live=live, freeze=ctx, deploy=want_deploy
+            )
         return _ctl(mode_l, lock_token)
     return _ctl(mode, lock_token)
 
@@ -123,6 +137,8 @@ def run_fixa(
     lock_token: str | None = None,
     recipe=None,
     freeze=None,
+    deploy: bool = False,
+    deploy_ctx=None,
 ) -> dict:
     """Alias till _send_fixa — ingen ogrindad sändväg."""
     return _send_fixa(
@@ -134,6 +150,8 @@ def run_fixa(
         lock_token=lock_token,
         recipe=recipe,
         freeze=freeze,
+        deploy=deploy,
+        deploy_ctx=deploy_ctx,
     )
 
 

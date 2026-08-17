@@ -89,6 +89,60 @@ class FailClosed(RuntimeError):
         super().__init__(message)
 
 
+@dataclass(frozen=True)
+class DeployContext:
+    """Capability established only after sealed compose preflight.
+
+    Child apply and V296-PlanLink in deploy mode require this object.
+    Callers cannot forge it: activate_deploy_context is the only setter,
+    and only the runner calls it after preflight.
+    """
+
+    token: str
+    manifest_sha256: str
+    recept_sha256: str
+
+
+_active_deploy: DeployContext | None = None
+
+
+def active_deploy_context() -> DeployContext | None:
+    return _active_deploy
+
+
+def activate_deploy_context(ctx: DeployContext) -> None:
+    """Bind the capability. Runner-only. One active context at a time."""
+    global _active_deploy
+    if not isinstance(ctx, DeployContext) or not ctx.token:
+        raise FailClosed("deploy-context", "ogiltig deploy-kontext")
+    if _active_deploy is not None:
+        raise FailClosed("deploy-context", "deploy-kontext redan aktiv")
+    _active_deploy = ctx
+
+
+def clear_deploy_context(token: str) -> None:
+    global _active_deploy
+    if _active_deploy is None:
+        return
+    if token != _active_deploy.token:
+        raise FailClosed("deploy-context", "clear_deploy_context: fel token")
+    _active_deploy = None
+
+
+def require_deploy_context(ctx: DeployContext | None = None) -> DeployContext:
+    active = _active_deploy
+    if active is None:
+        raise FailClosed(
+            "deploy-context",
+            "ingen deploy-kontext — komponat-barn och V296-PlanLink i "
+            "deployläge kräver att runnern etablerat kontexten efter "
+            "förseglad preflight",
+        )
+    if ctx is not None and ctx.token != active.token:
+        raise FailClosed("deploy-context", "deploy-kontext token mismatch")
+    return active
+
+
 def change_freeze_path(ctx: FreezeContext | None = None) -> Path:
     return (ctx or FreezeContext.production()).path
 
@@ -612,6 +666,11 @@ def check_deploy_status(recipe: Any, *, deploy: bool = False) -> None:
     klartext, så den som blir stoppad slipper leta reda på varför.
     """
     if recipe is None or not hasattr(recipe, "get"):
+        if deploy:
+            raise FailClosed(
+                "deploy-status",
+                "deployläge kräver förseglat recept/manifest — recipe=None släpps inte igenom",
+            )
         return
     status = deploy_status(recipe)
     schema = str(recipe.get("schema") or "")
@@ -674,6 +733,11 @@ def guard_mutation(
     if recipe is None:
         if action in {"apply", "undo"}:
             raise FailClosed("anchor", f"{action} kräver recept för ankarvalidering")
+        if action == "plant" and deploy:
+            raise FailClosed(
+                "deploy-status",
+                "plant i deployläge kräver recept/sigill — recipe=None är stängt",
+            )
         return
     rid = recipe.get("id") if hasattr(recipe, "get") else None
     if isinstance(recipe, SealedRecipe) or rid in REGISTERED_IDS:
@@ -697,9 +761,38 @@ def guard_portvakt(*, freeze: FreezeContext | None = None) -> None:
     guard_mutation("portvakt", freeze=freeze)
 
 
-def send_plan_link(ctl: Any, payload: Any, recipe: Any = None, *, freeze: FreezeContext | None = None) -> Any:
-    """Production PlanLink entry: freeze (+anchors) then send."""
-    guard_plant(recipe, freeze=freeze)
+def send_plan_link(
+    ctl: Any,
+    payload: Any,
+    recipe: Any = None,
+    *,
+    freeze: FreezeContext | None = None,
+    deploy: bool = False,
+    deploy_ctx: DeployContext | None = None,
+) -> Any:
+    """Production PlanLink entry. Deploy-läge kräver sigill + DeployContext."""
+    if deploy or deploy_ctx is not None or active_deploy_context() is not None:
+        require_deploy_context(deploy_ctx)
+        if recipe is None or not hasattr(recipe, "get"):
+            raise FailClosed(
+                "deploy-status",
+                "PlanLink i deployläge kräver förseglat recept — recipe=None är stängt",
+            )
+        guard_plant(recipe, freeze=freeze, deploy=True)
+    else:
+        if recipe is None:
+            raise FailClosed(
+                "deploy-status",
+                "PlanLink kräver recept/sigill — recipe=None når inte live "
+                "(labbväg är inte tyst deployersättning för V296)",
+            )
+        schema = str(recipe.get("schema") or "")
+        if schema in KOMPONAT_SCHEMAN and active_deploy_context() is None:
+            raise FailClosed(
+                "deploy-context",
+                "labbväg + komponat-ops vägras — deploy sker bara via runnern",
+            )
+        guard_plant(recipe, freeze=freeze, deploy=False)
     if hasattr(ctl, "request"):
         return ctl.request({"PlanLink": payload} if not isinstance(payload, str) else payload)
     raise FailClosed("plant", "ctl saknar request — plant avbruten")
