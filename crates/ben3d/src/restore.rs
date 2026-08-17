@@ -6,32 +6,38 @@ use serde::Deserialize;
 use std::path::Path;
 
 #[derive(Deserialize)]
-struct DumpLink {
-    from: u32,
+pub(crate) struct DumpLink {
+    pub(crate) from: u32,
     #[serde(rename = "to_cell", alias = "to")]
-    to_cell: u32,
-    kind: String,
+    pub(crate) to_cell: u32,
+    pub(crate) kind: String,
     #[serde(rename = "T", default = "default_t")]
-    t: u8,
+    pub(crate) t: u8,
 }
 
 #[derive(Deserialize)]
-struct Dump {
-    map: String,
-    cells: Vec<[f32; 3]>,
+pub(crate) struct Dump {
+    pub(crate) map: String,
+    #[serde(default = "default_grid")]
+    pub(crate) grid: f32,
+    pub(crate) cells: Vec<[f32; 3]>,
     #[serde(rename = "cell_ids")]
-    cell_ids: Vec<u32>,
-    links: Vec<DumpLink>,
+    #[allow(dead_code)] // cell-id = index för dm3; läses ej, men fältet hör till schemat
+    pub(crate) cell_ids: Vec<u32>,
+    pub(crate) links: Vec<DumpLink>,
     #[serde(rename = "link_ids")]
-    link_ids: Vec<u32>,
+    pub(crate) link_ids: Vec<u32>,
     #[serde(rename = "graph_content_hash")]
-    graph_content_hash: String,
+    pub(crate) graph_content_hash: String,
     #[serde(default = "default_rj")]
-    rj_links: u32,
+    pub(crate) rj_links: u32,
 }
 
 fn default_t() -> u8 {
     1
+}
+fn default_grid() -> f32 {
+    32.0
 }
 fn default_rj() -> u32 {
     0
@@ -54,12 +60,37 @@ fn parse_kind(s: &str) -> Option<LinkKind> {
     })
 }
 
+/// Read and deserialize a `qw-nav-graph/1` dump. Shared by the restore verb and the
+/// fork-derivation (etapp 3).
+pub(crate) fn read_dump(dump_path: &str) -> Result<Dump, String> {
+    let bytes = std::fs::read(Path::new(dump_path))
+        .map_err(|e| format!("kan inte läsa dump {dump_path}: {e}"))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("dump är inte JSON: {e}"))
+}
+
+/// Motor kind string, the reverse of [`parse_kind`] — matches `nav_patch::kind_token`.
+pub(crate) fn kind_token(kind: LinkKind) -> &'static str {
+    match kind {
+        LinkKind::Walk => "walk",
+        LinkKind::Step => "step",
+        LinkKind::Drop => "drop",
+        LinkKind::JumpGap => "jump",
+        LinkKind::DoubleJump => "doublejump",
+        LinkKind::SpeedJump => "speedjump",
+        LinkKind::Plat => "plat",
+        LinkKind::Teleport => "teleport",
+        LinkKind::Hook => "hook",
+        LinkKind::RocketJump => "rocketjump",
+        LinkKind::Swim => "swim",
+    }
+}
+
 /// Restore a NavGraph from a dump, preserving motor link-ids and the T flag.
 ///
 /// `link_ids[i]` is the motor's link-id for `links[i]` (the dump lists links in
 /// cell order). T=1 links go into adjacency; T=0 links stay pruned (present in
 /// `links`, absent from `adjacency`) — exactly the motor's inventory semantics.
-pub fn restore(doc: &Dump) -> Result<(NavGraph, u64, String), String> {
+pub(crate) fn restore(doc: &Dump) -> Result<(NavGraph, u64, String), String> {
     let origins: Vec<glam::Vec3> = doc
         .cells
         .iter()
@@ -113,17 +144,10 @@ pub fn restore(doc: &Dump) -> Result<(NavGraph, u64, String), String> {
 }
 
 pub fn run(dump_path: &str) -> i32 {
-    let bytes = match std::fs::read(Path::new(dump_path)) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("STOPP: kan inte läsa dump {dump_path}: {e}");
-            return 2;
-        }
-    };
-    let doc: Dump = match serde_json::from_slice(&bytes) {
+    let doc: Dump = match read_dump(dump_path) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("STOPP: dump är inte JSON: {e}");
+            eprintln!("STOPP: {e}");
             return 2;
         }
     };

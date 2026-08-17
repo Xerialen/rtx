@@ -1,0 +1,33 @@
+{
+  "dumps": [
+    {
+      "byte_sha256": "1ee4a971f5e03fee3181e5e81b0b5093432b192e5dde160607b39106e5b412bb",
+      "cells": 5983,
+      "graph_content_hash": "cd800200cad72431e0cbfe0a2fc947bd94309e334103d6cc0abd076155ecf051",
+      "graph_stamp": "11908727279900740725",
+      "harledning": {
+        "apply": "rtx::komponat_apply (plant_speed_jump_into + apply_in_chain), bsp=None",
+        "basdump": {
+          "path": "/home/xerial/lab/toolbox/dm3-base-full-graph.json",
+          "sha256": "a04c7ada6a3445a53b0357e86d120d0d909d61908b7f5664eec8a2c0d6cbef6a"
+        },
+        "manifest": {
+          "path": "testsuite/tools/recept/komponat-v296-ram.manifest.json",
+          "sha256": "bcba5897a9af7887d63fcf7466081a52d0bc84885c6d227002ca3d67727bc8e8"
+        },
+        "oplista_recept": {
+          "path": "testsuite/tools/recept/komponat-v296-ram.json",
+          "sha256": "e327251e215a7a459e356fc7fa96e4d3d18f3e2dddb4c72412757614dd0df9ec"
+        },
+        "verifierad_mot": "rokdeploy-kvitto-20260817.json slut_observed"
+      },
+      "id": "dm3-fork-v296-ram",
+      "links": 48216,
+      "map": "dm3",
+      "path": "/home/xerial/ben3d-ut/dm3-fork-full-graph.json",
+      "rj_links": 0
+    }
+  ],
+  "schema": "ben3d-dumpregister/1",
+  "skrivet_utc": "2026-08-17T17:43:16Z"
+}

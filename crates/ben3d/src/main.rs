@@ -43,6 +43,7 @@ struct BenRow {
     meta_sha256: String,
 }
 
+mod fork;
 mod restore;
 
 fn main() {
@@ -50,8 +51,14 @@ fn main() {
     if args.len() == 3 && args[1] == "restore" {
         std::process::exit(restore::run(&args[2]));
     }
+    if args.len() == 7 && args[1] == "fork" {
+        std::process::exit(fork::run(&args[2], &args[3], &args[4], &args[5], &args[6]));
+    }
     if args.len() != 4 || args[1] != "h-index" {
-        eprintln!("usage: ben3d h-index <t1h-manifest> <t20m-manifest> | ben3d restore <dump>");
+        eprintln!(
+            "usage: ben3d h-index <t1h-manifest> <t20m-manifest> | ben3d restore <dump> | \
+             ben3d fork <basdump> <recept> <manifest> <ut-dump> <ut-register>"
+        );
         std::process::exit(2);
     }
     let t1h = &args[2];

@@ -643,17 +643,17 @@ fn ident_matches(observed: &proto::GraphIdent, expected: &proto::GraphIdent, wha
 /// `Ok((published, receipt))` hands back the graph to swap in. `Err(receipt)` means nothing should
 /// be swapped: the candidate is dropped and `live` was never written to in the first place.
 #[allow(clippy::too_many_arguments)]
-fn komponat_apply(
+pub fn komponat_apply(
     map: &str,
-    bsp: Option<&crate::bsp::Bsp>,
+    bsp: Option<&rtx_nav::bsp::Bsp>,
     gravity: f32,
     cvar_gain: f32,
-    live: &crate::navmesh::NavGraph,
+    live: &rtx_nav::navmesh::NavGraph,
     recept_id: &str,
     base: &proto::GraphIdent,
     steps: &[proto::KomponatStep],
     expect_final: &proto::GraphIdent,
-) -> Result<(crate::navmesh::NavGraph, proto::KomponatResp), proto::KomponatResp> {
+) -> Result<(rtx_nav::navmesh::NavGraph, proto::KomponatResp), proto::KomponatResp> {
     let observed_base = graph_ident(map, live);
     let refused = |reason: String, steps: Vec<proto::KomponatStepResult>| proto::KomponatResp {
         recept_id: recept_id.to_string(),

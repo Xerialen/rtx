@@ -46,6 +46,10 @@ mod nav_build;
 mod nav_patch;
 // Offline-extraktorn (ben3d) behöver motorns EGNA stamp, inte en kopia (G1b/G2).
 pub use nav_patch::{graph_content_hash, graph_stamp};
+// Offline fork-derivationen (ben3d etapp 3) kör komponatets EGNA apply-kod
+// (plant_speed_jump_into + apply_in_chain), inte en kopia (72d5733). bsp=None är
+// den dokumenterade offline-vägen; ingen socket/Control/körande instans.
+pub use control::komponat_apply;
 #[cfg(feature = "netclient")]
 pub mod netclient;
 mod obituary;
