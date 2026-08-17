@@ -78,6 +78,29 @@ class StromTests(unittest.TestCase):
                              capture_output=True, text=True)
         self.assertNotEqual(cli.returncode, 0)
 
+    def test_record_efter_end_aterkallar_frysbar_i_bada_lasarna(self):
+        td = Path(tempfile.mkdtemp(prefix="ben3d-strom-"))
+        header, ticks = self._header_ticks(n=2)
+        rot = S.stream_rot(header["proveniens"], [t["payload"] for t in ticks])
+        # duplicate-end: giltigt end + ett andra end efter
+        lines = [header] + ticks + [S.make_end("syn-1", 3, 2, rot), S.make_end("syn-1", 3, 2, rot)]
+        p = td / "dup-end.jsonl"
+        p.write_text("\n".join(json.dumps(r) for r in lines) + "\n")
+        self.assertNotEqual(S.Stream(str(p)).read().status, "FRUSEN")
+        self.assertNotEqual(N.consume(str(p))["status"], "FRUSEN")
+        # tick-after-end: giltigt end + en tick efter
+        lines = [header] + ticks + [S.make_end("syn-1", 3, 2, rot), S.make_tick("syn-1", "b", "3", 4, _payload(3))]
+        p2 = td / "tick-after-end.jsonl"
+        p2.write_text("\n".join(json.dumps(r) for r in lines) + "\n")
+        self.assertNotEqual(S.Stream(str(p2)).read().status, "FRUSEN")
+        self.assertNotEqual(N.consume(str(p2))["status"], "FRUSEN")
+
+    def test_stream_rot_schema_ar_ben3d_strom_rot(self):
+        # R2-a: strömroten är sin EGEN domän, inte ben3d-rot/1
+        rot = S.stream_rot({"a": 1}, [{"t": "0.0"}])
+        self.assertEqual(S.stream_rot({"a": 1}, [{"t": "0.0"}]), rot)  # deterministisk
+        self.assertNotEqual(rot, S.sha(S.canonical({"schema": "ben3d-rot/1", "proveniens": {"a": 1}, "ticks": [{"t": "0.0"}]})))
+
     def test_payload_sha_valideras(self):
         rec = S.make_tick("s", "b", "0", 1, {"x": "1.0"})
         rec["payload_sha256"] = "0" * 64

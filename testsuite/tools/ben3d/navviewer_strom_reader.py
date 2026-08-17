@@ -36,6 +36,9 @@ def consume(path: str) -> dict:
             if out["stream_id"] is not None and rec.get("stream_id") != out["stream_id"]:
                 out["fel"].append("stream_id-byte")
             out["stream_id"] = rec.get("stream_id")
+            if ended:
+                # varje record efter accepterat end återkallar PERMANENT frysbar status (D3)
+                out["status"] = "OGILTIG"
             typ = rec.get("typ")
             if typ == "header":
                 if out["proveniens"] is not None or out["ticks"]:
@@ -57,8 +60,11 @@ def consume(path: str) -> dict:
                 out["ticks"].append({"tick_id": rec["tick_id"], "seq": rec["seq"],
                                      "payload_sha256": rec["payload_sha256"], "payload": rec["payload"]})
             elif typ == "abort":
-                aborted = True
-                out["status"] = "LIVE/OFÖRSEGLAD STRÖM"
+                if ended:
+                    out["fel"].append("abort efter end")
+                else:
+                    aborted = True
+                    out["status"] = "LIVE/OFÖRSEGLAD STRÖM"
             elif typ == "end":
                 if aborted:
                     out["fel"].append("end efter abort — permanent terminal, aldrig frysbar")

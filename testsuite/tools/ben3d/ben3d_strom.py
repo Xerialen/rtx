@@ -46,8 +46,9 @@ def sha(s: str) -> str:
 
 
 def stream_rot(proveniens: dict, tick_payloads: list) -> str:
-    """D2-stil rot ur header/ticks — slutroten som ett giltigt end måste bära."""
-    return sha(canonical({"schema": "ben3d-rot/1", "proveniens": proveniens, "ticks": tick_payloads}))
+    """Strömmens EGNA slutrot (R2-a): ben3d-strom-rot/1, domän = header + tickposter.
+    Får ALDRIG förväxlas med buntarnas D2-rot ben3d-rot/1."""
+    return sha(canonical({"schema": "ben3d-strom-rot/1", "proveniens": proveniens, "ticks": tick_payloads}))
 
 
 def make_header(stream_id, proveniens=None):
@@ -128,6 +129,9 @@ class Stream:
                 if self.stream_id is not None and rec["stream_id"] != self.stream_id:
                     self.errors.append("stream_id-byte")
                 self.stream_id = rec["stream_id"]
+                if self.ended:
+                    # varje record efter accepterat end återkallar PERMANENT frysbar status (D3)
+                    self.status = "OGILTIG"
                 if typ == "header":
                     if self.records:
                         self.errors.append("header ej först/unik")
@@ -147,8 +151,12 @@ class Stream:
                     self.last_seq = s
                     self.ticks.append(rec)
                 elif typ == "abort":
-                    self.aborted = True
-                    self.status = "LIVE/OFÖRSEGLAD STRÖM"
+                    if self.ended:
+                        self.errors.append("abort efter end")
+                        # status redan OGILTIG från topp-checken
+                    else:
+                        self.aborted = True
+                        self.status = "LIVE/OFÖRSEGLAD STRÖM"
                     self.records.append(rec)
                 elif typ == "end":
                     if self.aborted:
