@@ -352,7 +352,7 @@ pub fn run(
 }
 
 /// Serialisera en NavGraph som `qw-nav-graph/1`, i motor-id-ordning (länkindex = motor-id).
-fn serialize_dump(graph: &NavGraph, map: &str, grid: f32) -> serde_json::Value {
+pub(crate) fn serialize_dump(graph: &NavGraph, map: &str, grid: f32) -> serde_json::Value {
     let cells: Vec<[f32; 3]> = graph
         .cells
         .iter()
