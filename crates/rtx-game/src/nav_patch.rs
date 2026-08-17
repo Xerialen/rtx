@@ -131,6 +131,9 @@ pub const TXN_PLAN_CELL: &str = "plan-cell";
 pub const TXN_PLAN_DROP: &str = "plan-drop";
 /// The name a hand-planted speed jump (the V296 class) goes onto the undo chain under.
 pub const TXN_PLAN_LINK: &str = "plan-link";
+/// The name a whole composed recipe goes onto the undo chain under. One entry for the lot: a
+/// komponat is one decision, so it is one thing to take back.
+pub const TXN_KOMPONAT: &str = "komponat";
 
 /// Undo handles for the hand-plant verbs. Not recipes — there is no `ShelfPatch` to look up and
 /// nothing to `--apply`; a plant arrives over `PlanCell` / `PlanDrop` / `PlanLink`. What they need
@@ -149,16 +152,16 @@ pub const PLANT_HANDLES: &[&str] = &[TXN_PLAN_CELL, TXN_PLAN_DROP, TXN_PLAN_LINK
 /// registered recipe nor a plant handle. The `'static` lifetime is what lets the undo chain compare
 /// against what it actually recorded instead of against a caller-supplied string.
 pub fn undoable_name(name: &str) -> Option<&'static str> {
-    PLANT_HANDLES
-        .iter()
-        .copied()
-        .chain(registered_recipe_names())
-        .find(|&n| n == name)
+    undoable_names().find(|&n| n == name)
 }
 
 /// Everything `fixa --undo` accepts, for an error message that lists the real alternatives.
 pub fn undoable_names() -> impl Iterator<Item = &'static str> {
-    PLANT_HANDLES.iter().copied().chain(registered_recipe_names())
+    PLANT_HANDLES
+        .iter()
+        .copied()
+        .chain(std::iter::once(TXN_KOMPONAT))
+        .chain(registered_recipe_names())
 }
 
 /// Every named recipe `fixa` may apply (west-shelf + ram + HAZ-1462 tournament).
@@ -599,6 +602,40 @@ impl TxnStack {
 ///
 /// `mutate` returns the value the caller wants out of the transaction — a link id, a cell id — so
 /// nothing has to be read back off the live graph to find out what happened.
+/// Apply `patch` against a pin the *composed recipe* supplies instead of the patch's own.
+///
+/// A recipe's built-in pin describes the base graph, because that is where it was measured. Chained
+/// into a composed recipe it runs against an intermediate graph, so its own pin cannot hold — the
+/// composed recipe's derived intermediate identity is the pin for that step. This is not skipping
+/// the check; it is checking against the right expectation, which is why the pin is a parameter and
+/// not a flag.
+pub fn apply_in_chain(patch: &ShelfPatch, bsp: Option<&Bsp>, graph: &mut NavGraph, pin: GraphPin) -> Outcome {
+    let chained = ShelfPatch {
+        map: patch.map,
+        name: patch.name,
+        cells: patch.cells,
+        drops: patch.drops,
+        snap_z: patch.snap_z,
+        pin,
+        no_auto_walk: patch.no_auto_walk,
+        remove_links: patch.remove_links,
+        retype_links: patch.retype_links,
+    };
+    apply_one(&chained, bsp, graph)
+}
+
+/// Wrap a finished swap as an undo point: `snapshot` is the graph before it, `published` the graph
+/// after. For a mutation that was assembled on a private clone and swapped in whole — a composed
+/// recipe — there is no `live_txn` to have produced the entry.
+pub fn txn_of(name: &'static str, map: &str, snapshot: NavGraph, published: &NavGraph) -> AppliedTxn {
+    AppliedTxn {
+        name,
+        stamp_before: stamp_of(map, &snapshot),
+        stamp_after: stamp_of(map, published),
+        snapshot,
+    }
+}
+
 pub fn live_txn<T>(
     name: &'static str,
     map: &str,
@@ -2615,12 +2652,15 @@ mod tests {
         for r in registered_recipe_names() {
             assert_eq!(undoable_name(r), Some(r), "recept måste också gå att undo:a");
         }
+        // Ett helt komponat är ETT beslut och kommer av kedjan som en enda post.
+        assert_eq!(undoable_name("komponat"), Some(TXN_KOMPONAT));
+        assert!(patch_by_name(TXN_KOMPONAT).is_none(), "komponat är inget recept");
         // Ett stavfel får inte glida igenom som "någon plantering".
-        for typo in ["plan_link", "planlink", "plan-links", "", "PLAN-LINK"] {
+        for typo in ["plan_link", "planlink", "plan-links", "", "PLAN-LINK", "komponatet"] {
             assert_eq!(undoable_name(typo), None, "{typo:?}");
         }
         let alla: Vec<_> = undoable_names().collect();
-        assert_eq!(alla.len(), PLANT_HANDLES.len() + registered_recipe_names().count());
+        assert_eq!(alla.len(), PLANT_HANDLES.len() + 1 + registered_recipe_names().count());
     }
 
     /// A plant handle is undoable but not appliable: there is no `ShelfPatch` behind it, and

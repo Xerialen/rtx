@@ -525,6 +525,14 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
         Cmd::PlanDrop { from, to, lock_token } => fixa_require_lock("plant", &lock_token)
             .and_then(|()| plant_drop_resp(game, v3(from), v3(to)))
             .map(Resp::PlanDrop),
+        Cmd::Komponat {
+            recept_id,
+            base,
+            steps,
+            expect_final,
+            lock_token,
+        } => fixa_require_lock("apply", &lock_token)
+            .and_then(|()| komponat_resp(game, recept_id, base, steps, expect_final)),
         Cmd::Fixa {
             recipe,
             mode,
@@ -577,6 +585,291 @@ fn do_fixa(
         "apply" => fixa_apply(game, patch, from, to),
         other => Err(format!("fixa mode {other:?} (want dry-run|apply|undo|chain)")),
     }
+}
+
+/// The live graph's identity in the wire's shape.
+fn graph_ident(map: &str, g: &crate::navmesh::NavGraph) -> proto::GraphIdent {
+    let (cells, links, rj_links, graph_stamp, graph_content_hash) = fixa_identity(map, g);
+    proto::GraphIdent {
+        cells,
+        links,
+        rj_links,
+        graph_stamp,
+        graph_content_hash,
+    }
+}
+
+/// Compare an observed identity against what the sealed manifest derived, at both levels.
+///
+/// Nivå-1 alone cannot do this job: 5983/48214 is the deploy komponat's *middle* step and the K2
+/// variant's *final* image at once. Nivå-2 is what tells a half-applied composed recipe from a
+/// finished one, so both are checked and the mismatch says which level fired.
+fn ident_matches(observed: &proto::GraphIdent, expected: &proto::GraphIdent, what: &str) -> Result<(), String> {
+    if (observed.cells, observed.links, observed.rj_links)
+        != (expected.cells, expected.links, expected.rj_links)
+    {
+        return Err(format!(
+            "{what}: counts {}/{}/{} != expected {}/{}/{}",
+            observed.cells,
+            observed.links,
+            observed.rj_links,
+            expected.cells,
+            expected.links,
+            expected.rj_links
+        ));
+    }
+    if observed.graph_stamp != expected.graph_stamp {
+        return Err(format!(
+            "{what}: nivå-1 {} != expected {}",
+            observed.graph_stamp, expected.graph_stamp
+        ));
+    }
+    if observed.graph_content_hash != expected.graph_content_hash {
+        return Err(format!(
+            "{what}: nivå-2 {} != expected {} (same counts, different graph — send the params-FREE hash)",
+            observed.graph_content_hash, expected.graph_content_hash
+        ));
+    }
+    Ok(())
+}
+
+/// The decision half of the composed-recipe verb: run every op on `live`'s clone and verify.
+///
+/// Takes no `GameState`, on purpose. Everything that decides whether a komponat may land — the pin,
+/// the per-step identities, the ops themselves, the final identity — is here, where a unit test can
+/// reach it. The wrapper below only does the plumbing a live server needs (cvars, BSP, the undo
+/// chain, bot invalidation), and plumbing is not where the five interface bugs lived.
+///
+/// `Ok((published, receipt))` hands back the graph to swap in. `Err(receipt)` means nothing should
+/// be swapped: the candidate is dropped and `live` was never written to in the first place.
+#[allow(clippy::too_many_arguments)]
+fn komponat_apply(
+    map: &str,
+    bsp: Option<&crate::bsp::Bsp>,
+    gravity: f32,
+    cvar_gain: f32,
+    live: &crate::navmesh::NavGraph,
+    recept_id: &str,
+    base: &proto::GraphIdent,
+    steps: &[proto::KomponatStep],
+    expect_final: &proto::GraphIdent,
+) -> Result<(crate::navmesh::NavGraph, proto::KomponatResp), proto::KomponatResp> {
+    let observed_base = graph_ident(map, live);
+    let refused = |reason: String, steps: Vec<proto::KomponatStepResult>| proto::KomponatResp {
+        recept_id: recept_id.to_string(),
+        outcome: "refused".into(),
+        reason: Some(reason.clone()),
+        base: base.clone(),
+        observed_final: observed_base.clone(),
+        steps,
+        undo_name: crate::nav_patch::TXN_KOMPONAT.to_string(),
+        audit: format!("rtx: komponat {recept_id}: refused ({reason}) — live graph untouched\n"),
+    };
+
+    if steps.is_empty() {
+        return Err(refused("komponat without steps — nothing to apply".into(), vec![]));
+    }
+
+    // Resolve every recipe name up front. A komponat that names something unknown must not apply
+    // its first half and discover the typo at step three.
+    let mut patches: Vec<Option<&'static crate::nav_patch::ShelfPatch>> = Vec::with_capacity(steps.len());
+    for (i, step) in steps.iter().enumerate() {
+        match &step.op {
+            proto::KomponatOp::Recipe { name } => match crate::nav_patch::patch_by_name(name) {
+                None => {
+                    let known: Vec<&str> = crate::nav_patch::registered_recipe_names().collect();
+                    return Err(refused(
+                        format!("step {} ({}): unknown recipe {name:?}; registered: {known:?}", i + 1, step.name),
+                        vec![],
+                    ));
+                }
+                Some(p) if p.map != map => {
+                    return Err(refused(
+                        format!("step {} ({}): recipe map {} != live map {map}", i + 1, step.name, p.map),
+                        vec![],
+                    ));
+                }
+                Some(p) => patches.push(Some(p)),
+            },
+            proto::KomponatOp::PlanLink { .. } => patches.push(None),
+        }
+    }
+
+    if let Err(why) = ident_matches(&observed_base, base, "pin") {
+        return Err(refused(why, vec![]));
+    }
+
+    let mut cand = live.clone();
+    let mut results: Vec<proto::KomponatStepResult> = Vec::with_capacity(steps.len());
+
+    for (i, step) in steps.iter().enumerate() {
+        macro_rules! stoppa {
+            ($why:expr) => {{
+                let why: String = $why;
+                results.push(proto::KomponatStepResult {
+                    name: step.name.clone(),
+                    outcome: "refused".into(),
+                    reason: Some(why.clone()),
+                    observed: None,
+                    link: None,
+                });
+                return Err(refused(format!("step {} ({}): {why}", i + 1, step.name), results));
+            }};
+        }
+
+        let before = graph_ident(map, &cand);
+        if let Err(why) = ident_matches(&before, &step.expect_before, "expect_before") {
+            stoppa!(why);
+        }
+
+        let mut link = None;
+        match (&step.op, patches[i]) {
+            (proto::KomponatOp::Recipe { .. }, Some(patch)) => {
+                // The step's own derived identity is the pin: a chained recipe cannot satisfy the
+                // base pin it was measured against. Nivå-2 was verified just above, at both levels.
+                let stamp = match step.expect_before.graph_stamp.parse::<u64>() {
+                    Ok(v) => v,
+                    Err(_) => stoppa!(format!(
+                        "expect_before.graph_stamp {:?} is not a u64",
+                        step.expect_before.graph_stamp
+                    )),
+                };
+                let pin = crate::nav_patch::GraphPin {
+                    cells: step.expect_before.cells,
+                    links: step.expect_before.links,
+                    rj_links: step.expect_before.rj_links,
+                    stamp,
+                    content_hash: None,
+                };
+                match crate::nav_patch::apply_in_chain(patch, bsp, &mut cand, pin) {
+                    crate::nav_patch::Outcome::Applied { .. } => {}
+                    other => stoppa!(crate::nav_patch::console_line(patch.name, &other).trim().to_string()),
+                }
+            }
+            (
+                proto::KomponatOp::PlanLink {
+                    from,
+                    takeoff,
+                    tgt,
+                    v_req,
+                    gain,
+                },
+                None,
+            ) => {
+                let curl_gain = gain.filter(|g| *g > 0.0).unwrap_or(cvar_gain);
+                match plant_speed_jump_into(&mut cand, v3(*from), v3(*takeoff), v3(*tgt), *v_req, curl_gain, gravity) {
+                    Ok(r) => link = Some(r.link),
+                    Err(why) => stoppa!(why),
+                }
+            }
+            _ => unreachable!("patches[] is built from steps[] in the same order"),
+        }
+        cand.rebuild_derived();
+
+        let after = graph_ident(map, &cand);
+        if let Err(why) = ident_matches(&after, &step.expect_after, "expect_after") {
+            stoppa!(why);
+        }
+        results.push(proto::KomponatStepResult {
+            name: step.name.clone(),
+            outcome: "ok".into(),
+            reason: None,
+            observed: Some(after),
+            link,
+        });
+    }
+
+    let observed_final = graph_ident(map, &cand);
+    if let Err(why) = ident_matches(&observed_final, expect_final, "final") {
+        return Err(refused(why, results));
+    }
+
+    let audit = format!(
+        "rtx: komponat {recept_id}: applied {} op(s), {}/{} stamp={}\n",
+        results.len(),
+        observed_final.cells,
+        observed_final.links,
+        observed_final.graph_stamp,
+    );
+    let resp = proto::KomponatResp {
+        recept_id: recept_id.to_string(),
+        outcome: "applied".into(),
+        reason: None,
+        base: base.clone(),
+        observed_final,
+        steps: results,
+        undo_name: crate::nav_patch::TXN_KOMPONAT.to_string(),
+        audit,
+    };
+    Ok((cand, resp))
+}
+
+/// Apply a whole composed recipe atomically — see [`proto::Cmd::Komponat`].
+///
+/// Everything runs on a private clone in [`komponat_apply`]. The live graph is replaced once, at the
+/// end, after the final identity has been verified; a refusal at any point simply drops the clone.
+/// That is a stronger promise than rolling an intermediate state back: **no intermediate state ever
+/// exists** where the rig, a bot, or a second connection could observe it. The five interface bugs
+/// the per-step protocol produced all lived in the gaps between those observable states.
+///
+/// On success the whole thing lands on the undo chain as ONE entry, `komponat`, so it comes back off
+/// in one move as well.
+fn komponat_resp(
+    game: &mut GameState,
+    recept_id: String,
+    base: proto::GraphIdent,
+    steps: Vec<proto::KomponatStep>,
+    expect_final: proto::GraphIdent,
+) -> Result<Resp, String> {
+    let map = game.level.mapname.clone();
+    let bsp = game.nav.bsp.clone();
+    if !game.nav_patch_txns.has_room() {
+        return Err(format!(
+            "undo chain is full ({} applies deep) — undo back down or reload the map",
+            game.nav_patch_txns.depth()
+        ));
+    }
+    let gravity = {
+        let g = game.host.cvar(c"sv_gravity");
+        if g > 0.0 { g } else { 800.0 }
+    };
+    let cvar_gain = {
+        let g = game.host.cvar(c"rtx_jump_curl_gain");
+        if g > 0.0 { g } else { 12.0 }
+    };
+
+    let outcome = {
+        let live = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
+        komponat_apply(
+            &map,
+            bsp.as_deref(),
+            gravity,
+            cvar_gain,
+            live,
+            &recept_id,
+            &base,
+            &steps,
+            &expect_final,
+        )
+    };
+    let (published, mut resp) = match outcome {
+        Ok(v) => v,
+        // A refusal is a receipt, not an error: the caller wants the per-step story, and the live
+        // graph is bit-for-bit what it was.
+        Err(resp) => return Ok(Resp::Komponat(Box::new(resp))),
+    };
+
+    let txn = {
+        let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+        let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+        let txn = crate::nav_patch::txn_of(crate::nav_patch::TXN_KOMPONAT, &map, g.clone(), &published);
+        *g = published;
+        txn
+    };
+    nav_txn_push(game, txn)?;
+    invalidate_all_bot_nav(game);
+    resp.audit = format!("{}{}", resp.audit, fixa_chain_line(&game.nav_patch_txns));
+    Ok(Resp::Komponat(Box::new(resp)))
 }
 
 /// Read-only view of the undo chain: how deep it is and what comes off next.
@@ -1924,6 +2217,63 @@ fn plant_drop_resp(game: &mut GameState, from: Vec3, to: Vec3) -> Result<proto::
     Ok(resp)
 }
 
+/// The `PlanLink` mutation itself, against whatever graph it is handed.
+///
+/// Lifted out of [`plant_link_resp`] so the composed-recipe verb runs the *same* code on its private
+/// clone. Two implementations of "what a V296 plant does" would be two answers to the sealed
+/// manifest's expected delta, and only one of them could be right.
+fn plant_speed_jump_into(
+    c: &mut crate::navmesh::NavGraph,
+    from: Vec3,
+    takeoff: Vec3,
+    tgt: Vec3,
+    v_req: f32,
+    curl_gain: f32,
+    gravity: f32,
+) -> Result<proto::PlanLinkResp, String> {
+    use crate::navmesh::SpeedJumpTraversal;
+    let from_cell = c.nearest(from).ok_or("no cell near from")?;
+    let to_cell = c.nearest(tgt).ok_or("no cell near tgt")?;
+    let dz = c.cell_origin(to_cell).z - takeoff.z;
+    // Ballistic flight time to fall back through `dz` after a jump (vz0 = JUMP_VZ): the later root of
+    // dz = JUMP_VZ·t − ½·g·t². Only used for the planner's hot-entry pricing; the flight itself is
+    // driven by v_req + takeoff at runtime.
+    let vz0 = rtx_nav::qphys::JUMP_VZ;
+    let disc = (vz0 * vz0 - 2.0 * gravity * dz).max(0.0);
+    let airtime = (vz0 + disc.sqrt()) / gravity;
+    // Curl-link cost the banded planner now trusts (see `banded_step`): the honest run-up travel +
+    // flight + a JumpGap-grade commitment (a rollout-certified envelope carries less risk than the
+    // +1.0 charged to a modeled speed jump). Run-up is the `from`→lip distance at the mean build speed.
+    let runup = (takeoff.xy() - c.cell_origin(from_cell).xy()).length();
+    let cost = runup / 400.0 + airtime + 0.3;
+    let tr = SpeedJumpTraversal {
+        takeoff,
+        v_req,
+        airtime,
+        chained: false,
+        curl_gain,
+        // A hand-planted link makes no claim about its run-up's width, so it keeps the uncapped
+        // weave — the harness measures the excursion rather than constraining it.
+        ..Default::default()
+    };
+    let li = c.plant_speed_jump(from_cell, to_cell, cost, tr);
+    // Callers rebuild the derived tables before publishing, so the new link is visible to steer's
+    // O(1) reachable() gate and the coarse router — otherwise a `goto` across the plant redirects to
+    // the nearest cell reachable on the pre-plant graph.
+    let (fo, to) = (c.cell_origin(from_cell), c.cell_origin(to_cell));
+    Ok(proto::PlanLinkResp {
+        link: li,
+        from_cell,
+        to_cell,
+        from: a3(fo),
+        tgt: a3(to),
+        takeoff: a3(takeoff),
+        v_req,
+        airtime,
+        cost,
+    })
+}
+
 /// Hand-plant a self-contained `SpeedJump` link into the live graph for takeoff-regime bring-up: the
 /// run-up starts at the cell nearest `from`, the leap is at `takeoff` (the lip), and it lands on the
 /// cell nearest `tgt`, requiring `v_req` ups at the lip. The runtime flies a planted link exactly like
@@ -1943,7 +2293,6 @@ fn plant_link_resp(
     v_req: f32,
     gain: Option<f32>,
 ) -> Result<proto::PlanLinkResp, String> {
-    use crate::navmesh::SpeedJumpTraversal;
     let gravity = {
         let g = game.host.cvar(c"sv_gravity");
         if g > 0.0 {
@@ -1979,47 +2328,7 @@ fn plant_link_resp(
         let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
         let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
         crate::nav_patch::live_txn(crate::nav_patch::TXN_PLAN_LINK, &map, g, |c| {
-            let from_cell = c.nearest(from).ok_or("no cell near from")?;
-            let to_cell = c.nearest(tgt).ok_or("no cell near tgt")?;
-            let dz = c.cell_origin(to_cell).z - takeoff.z;
-            // Ballistic flight time to fall back through `dz` after a jump (vz0 = JUMP_VZ): the later
-            // root of dz = JUMP_VZ·t − ½·g·t². Only used for the planner's hot-entry pricing; the
-            // flight itself is driven by v_req + takeoff at runtime.
-            let vz0 = rtx_nav::qphys::JUMP_VZ;
-            let disc = (vz0 * vz0 - 2.0 * gravity * dz).max(0.0);
-            let airtime = (vz0 + disc.sqrt()) / gravity;
-            // Curl-link cost the banded planner now trusts (see `banded_step`): the honest run-up
-            // travel + flight + a JumpGap-grade commitment (a rollout-certified envelope carries less
-            // risk than the +1.0 charged to a modeled speed jump). Run-up is the `from`→lip distance
-            // at the mean build speed.
-            let runup = (takeoff.xy() - c.cell_origin(from_cell).xy()).length();
-            let cost = runup / 400.0 + airtime + 0.3;
-            let tr = SpeedJumpTraversal {
-                takeoff,
-                v_req,
-                airtime,
-                chained: false,
-                curl_gain,
-                // A hand-planted link makes no claim about its run-up's width, so it keeps the
-                // uncapped weave — the harness measures the excursion rather than constraining it.
-                ..Default::default()
-            };
-            let li = c.plant_speed_jump(from_cell, to_cell, cost, tr);
-            // `live_txn` rebuilds the reachability + LOD tables before publishing, so the new link is
-            // visible to steer's O(1) reachable() gate and the coarse router — otherwise a `goto`
-            // across the plant redirects to the nearest cell reachable on the pre-plant graph.
-            let (fo, to) = (c.cell_origin(from_cell), c.cell_origin(to_cell));
-            Ok(proto::PlanLinkResp {
-                link: li,
-                from_cell,
-                to_cell,
-                from: a3(fo),
-                tgt: a3(to),
-                takeoff: a3(takeoff),
-                v_req,
-                airtime,
-                cost,
-            })
+            plant_speed_jump_into(c, from, takeoff, tgt, v_req, curl_gain, gravity)
         })?
     };
     nav_txn_push(game, txn)?;
@@ -2473,6 +2782,291 @@ mod tests {
         let err = fixa_require_lock_at("apply", "not-the-lock", &p).unwrap_err();
         assert!(err.contains("does not match"), "{err}");
         let _ = std::fs::remove_file(p);
+    }
+
+    // ---- komponat: ett atomärt verb ----------------------------------------------------------
+
+    use crate::navmesh::NavGraph;
+
+    /// Fyra celler: ram-prevents två källor och deras två landningar. Nog för att `ram-prevent`
+    /// ska kunna appliceras utan BSP (`insert_link`-vägen), och nog för en PlanLink.
+    fn kmp_graph() -> NavGraph {
+        NavGraph::from_topology(
+            &[
+                Vec3::new(-248.0, -704.0, 152.0),
+                Vec3::new(-248.0, -672.0, 152.0),
+                Vec3::new(-320.0, -704.0, -16.0),
+                Vec3::new(-320.0, -672.0, -16.0),
+            ],
+            &[],
+        )
+    }
+
+    fn kmp_ident(g: &NavGraph) -> proto::GraphIdent {
+        graph_ident("dm3", g)
+    }
+
+    /// Kör op:en på en klon och läs av vad den ger — så testets förväntningar är motorns egna
+    /// värden och inte handräknade tal.
+    fn kmp_after(g: &NavGraph, op: &proto::KomponatOp) -> proto::GraphIdent {
+        let mut c = g.clone();
+        match op {
+            proto::KomponatOp::Recipe { name } => {
+                let p = crate::nav_patch::patch_by_name(name).expect("registrerat recept");
+                let i = kmp_ident(&c);
+                let pin = crate::nav_patch::GraphPin {
+                    cells: i.cells,
+                    links: i.links,
+                    rj_links: i.rj_links,
+                    stamp: i.graph_stamp.parse().unwrap(),
+                    content_hash: None,
+                };
+                match crate::nav_patch::apply_in_chain(p, None, &mut c, pin) {
+                    crate::nav_patch::Outcome::Applied { .. } => {}
+                    other => panic!("{name}: {other:?}"),
+                }
+            }
+            proto::KomponatOp::PlanLink {
+                from,
+                takeoff,
+                tgt,
+                v_req,
+                gain,
+            } => {
+                plant_speed_jump_into(
+                    &mut c,
+                    v3(*from),
+                    v3(*takeoff),
+                    v3(*tgt),
+                    *v_req,
+                    gain.unwrap_or(12.0),
+                    800.0,
+                )
+                .expect("plant");
+            }
+        }
+        c.rebuild_derived();
+        kmp_ident(&c)
+    }
+
+    fn kmp_planlink() -> proto::KomponatOp {
+        proto::KomponatOp::PlanLink {
+            from: [-248.0, -704.0, 152.0],
+            takeoff: [-250.0, -700.0, 152.0],
+            tgt: [-320.0, -672.0, -16.0],
+            v_req: 320.0,
+            gain: Some(5.5),
+        }
+    }
+
+    /// Bygg en giltig tvåstegs-op-lista med motorns egna mellanidentiteter.
+    fn kmp_steps(g: &NavGraph) -> (Vec<proto::KomponatStep>, proto::GraphIdent) {
+        let ops = [
+            ("v296-vasthoppet", kmp_planlink()),
+            ("ram-prevent", proto::KomponatOp::Recipe { name: "ram-prevent".into() }),
+        ];
+        let mut cur = g.clone();
+        let mut steps = Vec::new();
+        for (name, op) in ops {
+            let before = kmp_ident(&cur);
+            let after = kmp_after(&cur, &op);
+            // Rulla fram arbetsgrafen på samma sätt som transaktionen kommer att göra.
+            let mut nxt = cur.clone();
+            match &op {
+                proto::KomponatOp::Recipe { name } => {
+                    let p = crate::nav_patch::patch_by_name(name).unwrap();
+                    let pin = crate::nav_patch::GraphPin {
+                        cells: before.cells,
+                        links: before.links,
+                        rj_links: before.rj_links,
+                        stamp: before.graph_stamp.parse().unwrap(),
+                        content_hash: None,
+                    };
+                    crate::nav_patch::apply_in_chain(p, None, &mut nxt, pin);
+                }
+                proto::KomponatOp::PlanLink { from, takeoff, tgt, v_req, gain } => {
+                    plant_speed_jump_into(
+                        &mut nxt,
+                        v3(*from),
+                        v3(*takeoff),
+                        v3(*tgt),
+                        *v_req,
+                        gain.unwrap_or(12.0),
+                        800.0,
+                    )
+                    .unwrap();
+                }
+            }
+            nxt.rebuild_derived();
+            cur = nxt;
+            steps.push(proto::KomponatStep {
+                name: name.to_string(),
+                op,
+                expect_before: before,
+                expect_after: after,
+            });
+        }
+        let slut = kmp_ident(&cur);
+        (steps, slut)
+    }
+
+    fn kmp_run(
+        live: &NavGraph,
+        steps: &[proto::KomponatStep],
+        base: &proto::GraphIdent,
+        slut: &proto::GraphIdent,
+    ) -> Result<(NavGraph, proto::KomponatResp), proto::KomponatResp> {
+        komponat_apply("dm3", None, 800.0, 12.0, live, "prov", base, steps, slut)
+    }
+
+    /// `NavGraph` saknar `Debug`, så `expect_err` går inte att använda direkt.
+    fn kmp_refuse(
+        live: &NavGraph,
+        steps: &[proto::KomponatStep],
+        base: &proto::GraphIdent,
+        slut: &proto::GraphIdent,
+    ) -> proto::KomponatResp {
+        match kmp_run(live, steps, base, slut) {
+            Err(r) => r,
+            Ok((_, r)) => panic!("måste vägras, fick {r:?}"),
+        }
+    }
+
+    #[test]
+    fn komponat_applies_every_step_and_publishes_the_final_graph() {
+        let live = kmp_graph();
+        let (steps, slut) = kmp_steps(&live);
+        let base = kmp_ident(&live);
+        let (published, resp) = kmp_run(&live, &steps, &base, &slut).expect("komponat");
+        assert_eq!(resp.outcome, "applied");
+        assert_eq!(resp.steps.len(), 2);
+        assert!(resp.steps.iter().all(|s| s.outcome == "ok"));
+        assert_eq!(resp.steps[0].link, Some(0), "PlanLink-steget rapporterar sitt länk-id");
+        assert_eq!(resp.observed_final, slut);
+        assert_eq!(kmp_ident(&published), slut);
+        assert_eq!(resp.undo_name, crate::nav_patch::TXN_KOMPONAT);
+        // +1 speedjump, +2 drops.
+        assert_eq!(published.links.len(), live.links.len() + 3);
+    }
+
+    /// Ordern i klartext: en avvikelse i op 2 ska lämna basen bit-identisk.
+    ///
+    /// Ingenting publiceras, för ingenting kördes mot den levande grafen — op:arna kördes på en
+    /// privat klon och klonen kastas. Det är starkare än en rollback: det finns inget mellanläge
+    /// att rulla tillbaka FRÅN, och därmed inget fönster där riggen kan observera ett halvläge.
+    #[test]
+    fn komponat_deviation_in_step_two_leaves_the_base_bit_identical() {
+        let live = kmp_graph();
+        let (mut steps, slut) = kmp_steps(&live);
+        let base = kmp_ident(&live);
+        let fore = live.clone();
+
+        // Manifestet säger fel om vad steg 2 ska ge.
+        steps[1].expect_after.links += 1;
+
+        let resp = kmp_refuse(&live, &steps, &base, &slut);
+        assert_eq!(resp.outcome, "refused");
+        assert!(resp.reason.as_deref().unwrap().contains("step 2 (ram-prevent)"), "{resp:?}");
+        assert!(resp.reason.as_deref().unwrap().contains("expect_after"));
+        assert_eq!(resp.steps.len(), 2, "steg 1 lyckades och står kvar i kvittot");
+        assert_eq!(resp.steps[0].outcome, "ok");
+        assert_eq!(resp.steps[1].outcome, "refused");
+        assert!(resp.steps[1].observed.is_none());
+
+        // Basen: oförändrad, och kvittot säger det.
+        assert_eq!(resp.observed_final, base);
+        assert_eq!(live.cells.len(), fore.cells.len());
+        assert_eq!(live.links.len(), fore.links.len());
+        assert_eq!(kmp_ident(&live), base, "nivå-1 OCH nivå-2 identiska");
+    }
+
+    /// En avvikelse i op 1 stoppar innan något ens hunnit lyckas.
+    #[test]
+    fn komponat_deviation_in_step_one_runs_nothing_after_it() {
+        let live = kmp_graph();
+        let (mut steps, slut) = kmp_steps(&live);
+        let base = kmp_ident(&live);
+        steps[0].expect_before.cells += 1;
+        let resp = kmp_refuse(&live, &steps, &base, &slut);
+        assert_eq!(resp.steps.len(), 1, "steg 2 kördes aldrig");
+        assert_eq!(resp.steps[0].outcome, "refused");
+        assert!(resp.reason.as_deref().unwrap().contains("expect_before"));
+        assert_eq!(kmp_ident(&live), base);
+    }
+
+    /// Fel pin ⇒ ingen op körs alls.
+    #[test]
+    fn komponat_refuses_a_bad_pin_before_any_step() {
+        let live = kmp_graph();
+        let (steps, slut) = kmp_steps(&live);
+        let mut base = kmp_ident(&live);
+        base.graph_content_hash = "0".repeat(64);
+        let resp = kmp_refuse(&live, &steps, &base, &slut);
+        assert!(resp.steps.is_empty(), "inga steg fick köra");
+        assert!(resp.reason.as_deref().unwrap().starts_with("pin: nivå-2"));
+    }
+
+    /// Ett okänt receptnamn stoppas innan första op:en, inte vid tredje.
+    #[test]
+    fn komponat_refuses_an_unknown_recipe_before_anything_runs() {
+        let live = kmp_graph();
+        let (mut steps, slut) = kmp_steps(&live);
+        let base = kmp_ident(&live);
+        steps[1].op = proto::KomponatOp::Recipe {
+            name: "ram-prevent-v99".into(),
+        };
+        let resp = kmp_refuse(&live, &steps, &base, &slut);
+        assert!(resp.steps.is_empty(), "namnuppslaget sker före första op:en");
+        assert!(resp.reason.as_deref().unwrap().contains("unknown recipe"));
+    }
+
+    /// Slutstampen är sin egen grind: varje steg kan stämma och slutbilden ändå vara fel förväntad.
+    #[test]
+    fn komponat_refuses_a_wrong_final_identity_even_when_every_step_matched() {
+        let live = kmp_graph();
+        let (steps, mut slut) = kmp_steps(&live);
+        let base = kmp_ident(&live);
+        slut.graph_stamp = "1".into();
+        let resp = kmp_refuse(&live, &steps, &base, &slut);
+        assert!(resp.steps.iter().all(|s| s.outcome == "ok"), "alla steg gick igenom");
+        assert!(resp.reason.as_deref().unwrap().starts_with("final: nivå-1"));
+        assert_eq!(kmp_ident(&live), base);
+    }
+
+    #[test]
+    fn komponat_refuses_an_empty_op_list() {
+        let live = kmp_graph();
+        let base = kmp_ident(&live);
+        let resp = kmp_refuse(&live, &[], &base, &base);
+        assert!(resp.reason.as_deref().unwrap().contains("without steps"));
+    }
+
+    /// Identitetsjämförelsen namnger vilken nivå som föll — och pekar ut params-fällan, som är den
+    /// enda skillnaden mellan manifestets två nivå-2-värden.
+    #[test]
+    fn komponat_ident_mismatch_names_the_level_that_fired() {
+        let a = proto::GraphIdent {
+            cells: 5983,
+            links: 48216,
+            rj_links: 0,
+            graph_stamp: "11908727279900740725".into(),
+            graph_content_hash: "cd800200".into(),
+        };
+        assert!(ident_matches(&a, &a, "x").is_ok());
+
+        let mut b = a.clone();
+        b.cells = 5977;
+        assert!(ident_matches(&a, &b, "pin").unwrap_err().contains("counts"));
+
+        let mut b = a.clone();
+        b.graph_stamp = "1".into();
+        assert!(ident_matches(&a, &b, "pin").unwrap_err().contains("nivå-1"));
+
+        let mut b = a.clone();
+        b.graph_content_hash = "6dba0273".into();
+        let why = ident_matches(&a, &b, "pin").unwrap_err();
+        assert!(why.contains("nivå-2"));
+        assert!(why.contains("params-FREE"), "fällan ska stå i felet: {why}");
     }
 
     // ---- rigglåset: korskontrakt mot runnerns parser -----------------------------------------

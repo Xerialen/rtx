@@ -157,6 +157,31 @@ pub enum Cmd {
         #[serde(default)]
         lock_token: String,
     },
+    /// Apply a whole composed recipe **atomically**: pin, ops in order with per-step identity
+    /// checks, final identity, all or nothing.
+    ///
+    /// Replaces driving `fixa` once per op from the outside. That protocol needed the runner and the
+    /// engine to agree about the graph between every step, and five separate interface bugs came out
+    /// of the places where they could disagree — the last one being the runner's idea of the undo
+    /// chain's top against the engine's actual stack top (DOM MONTERING-V296RAM-2 and the montering-5
+    /// receipt). A composed recipe is one decision; making it one round trip removes the whole class
+    /// rather than fixing its fifth instance.
+    ///
+    /// Every op runs on a private clone. Nothing is published until the last identity has been
+    /// verified, so a refused komponat does not roll an intermediate state back — the intermediate
+    /// state never existed anywhere the rig could see it.
+    Komponat {
+        /// The manifest's `recept_id`, echoed into the receipt.
+        recept_id: String,
+        /// The identity the live graph must have before anything runs.
+        base: GraphIdent,
+        steps: Vec<KomponatStep>,
+        /// The identity the whole thing must produce.
+        expect_final: GraphIdent,
+        /// Rig-lock token — same gate as every other mutating verb.
+        #[serde(default)]
+        lock_token: String,
+    },
     /// Dump the tail of a bot's `rtx_bot_debug` audit ring.
     Audit { bot: u32, lines: u32 },
     /// List generated speed-jump links. Curls (`gain > 0`) *and* straight/chained speed jumps —
@@ -216,6 +241,97 @@ pub enum Cmd {
         #[serde(default)]
         lock_token: String,
     },
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Komponat: one composed recipe, applied atomically
+// ---------------------------------------------------------------------------------------------------
+
+/// A graph identity at both levels, as the sealed manifest writes it.
+///
+/// `graph_stamp` is a decimal string because the nivå-1 FNV is a u64 and can pass 2^53 — the
+/// contract (`WORK_LOGS/graphstamp-kontrakt.md` §4) says decimal string everywhere outside the
+/// engine's own arithmetic.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphIdent {
+    pub cells: u32,
+    pub links: u32,
+    pub rj_links: u32,
+    /// Nivå-1 FNV-1a-64 as a decimal string.
+    pub graph_stamp: String,
+    /// Nivå-2 SHA-256 hex over the canonical inventory — the **params-free** one.
+    ///
+    /// The manifest carries two: params-bearing (the recipe's own derivation, which hashes
+    /// `carried`/`v_req`/`gain`) and params-free. Only the params-free one describes a graph the
+    /// engine can have, because `carried` is fixture metadata that never reaches `Cmd::PlanLink`.
+    /// Sending the wrong one makes every step mismatch.
+    pub graph_content_hash: String,
+}
+
+/// One mutation in a composed recipe.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum KomponatOp {
+    /// A registered recipe from the engine's own table, applied by name.
+    ///
+    /// The payload deliberately is *not* on the wire: `fixa` is the only apply path and the table is
+    /// the only planter. A composed recipe naming `ram-rail-v2` gets the sealed table entry, not
+    /// whatever cells a caller felt like sending.
+    Recipe { name: String },
+    /// A hand-planted speed jump — the V296 class, which has no `ShelfPatch` to name.
+    PlanLink {
+        from: Vec3,
+        takeoff: Vec3,
+        tgt: Vec3,
+        v_req: f32,
+        #[serde(default)]
+        gain: Option<f32>,
+    },
+}
+
+/// One step of a composed recipe, with the identities the manifest derived for it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KomponatStep {
+    /// The manifest's name for this op, echoed into the receipt.
+    pub name: String,
+    pub op: KomponatOp,
+    /// What the graph must be *before* this step. Replaces the recipe's own base pin: a chained op
+    /// runs against an intermediate graph, so its standalone pin cannot hold and the composed
+    /// recipe's own derivation is the pin instead.
+    pub expect_before: GraphIdent,
+    /// What the graph must be *after* it.
+    pub expect_after: GraphIdent,
+}
+
+/// One step's observed outcome.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KomponatStepResult {
+    pub name: String,
+    /// `"ok"`, or `"refused"` for the step that stopped the transaction. Steps after it are absent —
+    /// they never ran.
+    pub outcome: String,
+    pub reason: Option<String>,
+    /// What the graph actually became. `None` when the step was refused before it mutated anything.
+    pub observed: Option<GraphIdent>,
+    /// Link id, for a `PlanLink` step.
+    pub link: Option<u32>,
+}
+
+/// The receipt for a composed recipe.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KomponatResp {
+    pub recept_id: String,
+    /// `"applied"` or `"refused"`. There is no third outcome: a refused komponat leaves the live
+    /// graph bit-for-bit as it was.
+    pub outcome: String,
+    pub reason: Option<String>,
+    /// The identity the live graph had when the transaction started — and still has, if it refused.
+    pub base: GraphIdent,
+    /// The live graph's identity now.
+    pub observed_final: GraphIdent,
+    pub steps: Vec<KomponatStepResult>,
+    /// What `fixa --undo` takes to roll the whole komponat back in one move.
+    pub undo_name: String,
+    pub audit: String,
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -331,6 +447,8 @@ pub enum Resp {
     Cell(CellResp),
     Route(RouteResp),
     Fixa(FixaResp),
+    /// A whole composed recipe's outcome — boxed because the receipt carries every step.
+    Komponat(Box<KomponatResp>),
     Audit(AuditResp),
     Curls(Vec<CurlLink>),
     Probe(ProbeResp),
