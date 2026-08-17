@@ -1,26 +1,28 @@
 //! ben3d extraktor — etapp 2c: per-tick-regelutvärdering + benbuntar (D1/D2).
 //!
-//! Per tick: cell = motorns `nearest(origin)` (G8). Färg 1 (RÄCKHÅLL) är per
-//! utgående länk och tidsinvariant i en topologi-dump: `banded_step` ger alltid
-//! `Some` för non-SpeedJump (bara en kedjad SJ kan ge `None`), och SJ-länkarnas
-//! sidotabell (`chained`) saknas i dumpen ⇒ OKÄND (G10). Färg 2 = observerad
-//! cellsekvens. Färg 3 = "OKÄND — vald länk ej observerad" (PlanTick saknas, P2).
-//! Main-armen: endast geometri + observerad bana (G11) — färg 1/3 disabled.
+//! Per tick: cell = motorns `nearest(origin)` (G8), botens horisontella fart ur
+//! spåret (indata till predikaten, inte en egen regel), band = `band_of(fart)`.
+//! För VARJE utgående T=1-länk ur aktuell cell anropas motorns EGNA predikat
+//! (`banded_step` / `chain_entry_blocked`) och svaret sparas i en färdig
+//! per-tick-färglista (länk-id, färgklass, predikatets faktiska svar, orsakskod).
+//! SJ-länkar: sidotabellen (`chained`) saknas i dumpen ⇒ OKÄND, predikaten anropas
+//! INTE (deras fallback skulle ljuga) — G10. Färg 2 = observerad cellsekvens.
+//! Färg 3 = "OKÄND — vald länk ej observerad" (PlanTick saknas, P2).
+//! Main-armen: färg 1/3 beräknas INTE (G11) — endast geometri + observerad bana.
 
 use crate::canon;
 use crate::restore::{self, Dump};
-use rtx_nav::navmesh::LinkKind;
+use rtx_nav::navmesh::{band_of, LinkKind, NavGraph};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-/// En rad ur rå-JSONL med numeriska token bevarade EXAKT (RawValue) — A2(i):
-/// varje rå-ticks (t,x,y,z) ska finnas bit-identiskt i bunten.
 #[derive(Deserialize)]
 struct RawLine {
     t: Box<serde_json::value::RawValue>,
@@ -44,10 +46,11 @@ struct TickRaw {
     xf: f32,
     yf: f32,
     zf: f32,
+    tf: f32,
 }
 
 #[derive(Deserialize, Default)]
-#[allow(dead_code)] // tid/t_hit läses ej av extraktorn, men hör till metats schema
+#[allow(dead_code)]
 struct Meta {
     #[serde(default)]
     utfall: String,
@@ -89,6 +92,7 @@ fn read_ticks(jsonl_path: &str) -> Result<Vec<TickRaw>, String> {
         let xf: f32 = x.parse().map_err(|e| format!("x-token {x}: {e}"))?;
         let yf: f32 = y.parse().map_err(|e| format!("y-token {y}: {e}"))?;
         let zf: f32 = z.parse().map_err(|e| format!("z-token {z}: {e}"))?;
+        let tf: f32 = t.parse().map_err(|e| format!("t-token {t}: {e}"))?;
         ticks.push(TickRaw {
             raw_row_index: i as u32,
             t,
@@ -98,12 +102,12 @@ fn read_ticks(jsonl_path: &str) -> Result<Vec<TickRaw>, String> {
             xf,
             yf,
             zf,
+            tf,
         });
     }
     Ok(ticks)
 }
 
-/// Läs binärens egen commit (git rev-parse HEAD) om möjligt.
 fn git_head() -> String {
     std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -112,6 +116,41 @@ fn git_head() -> String {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|| "OKÄND".to_string())
+}
+
+/// En färdig färgpost för en utgående länk: predikatens FAKTISKA svar.
+#[derive(Clone)]
+struct Farg1Post {
+    link_id: u32,
+    klass: &'static str,
+    banded_step: Option<bool>,   // Some(true)=Some, Some(false)=None, None=ej anropat (SJ/G10)
+    chain_entry_blocked: Option<bool>, // None=ej anropat (SJ/G10)
+    orsakskod: &'static str,
+}
+
+/// Utvärdera färg 1 för en utgående T=1-länk med motorns egna predikat.
+fn farg1_for_link(graph: &NavGraph, li: u32, band: u8, speed: f32) -> Farg1Post {
+    let kind = graph.links[li as usize].kind;
+    if kind == LinkKind::SpeedJump {
+        // G10: dumpen bär ingen sidotabell (`chained`/`v_req`); banded_step/chain_entry_blocked
+        // skulle läsa fallbacken och ljuga. Därför anropas de inte — klass = OKÄND.
+        return Farg1Post {
+            link_id: li,
+            klass: "okänd",
+            banded_step: None,
+            chain_entry_blocked: None,
+            orsakskod: "G10_SIDOTABELL_SAKNAS",
+        };
+    }
+    let bs = graph.banded_step(li, band);
+    let ceb = graph.chain_entry_blocked(li, speed);
+    Farg1Post {
+        link_id: li,
+        klass: if bs.is_some() { "räckhåll" } else { "blockerad" },
+        banded_step: Some(bs.is_some()),
+        chain_entry_blocked: Some(ceb),
+        orsakskod: if bs.is_some() { "BANDED_STEP_SOME" } else { "BANDED_STEP_NONE" },
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -193,34 +232,6 @@ pub fn run(
         return 2;
     }
 
-    // 3) Cell per tick = motorns nearest(origin) (G8).
-    let mut cells: Vec<u32> = Vec::with_capacity(ticks.len());
-    for tk in &ticks {
-        match graph.nearest(glam::Vec3::new(tk.xf, tk.yf, tk.zf)) {
-            Some(c) => cells.push(c),
-            None => {
-                eprintln!("STOPP: nearest None vid rad {}", tk.raw_row_index);
-                return 2;
-            }
-        }
-    }
-
-    // 4) Färg 1-policy + räknare (tidsinvariant), färg 3 = OKÄND.
-    let (mut sj, mut non_sj) = (0usize, 0usize);
-    for l in &graph.links {
-        match l.kind {
-            LinkKind::SpeedJump => sj += 1,
-            _ => non_sj += 1,
-        }
-    }
-    // Observerade övergångar (cellbyte) — färg 3:s "antal" och färg 2:s rörelse.
-    let mut overgangar = 0usize;
-    for w in cells.windows(2) {
-        if w[0] != w[1] {
-            overgangar += 1;
-        }
-    }
-
     let cycle_id = Path::new(&meta_rel)
         .parent()
         .and_then(|d| d.file_name())
@@ -238,15 +249,76 @@ pub fn run(
     };
     let ben_id = format!("{dataset}:{arm}:{cycle_id}:{ben_typ}");
 
-    // 5) Payload = {schema, ben_id, geometri, tickserie} (D1).
-    let geometri = json!({
-        "dump_id": dump_id,
-        "dump_sha256": dump_sha,
-        "dump_schema": "qw-nav-graph/1",
-        "arm": arm,
-        "cells": graph.cells.len(),
-        "links": graph.links.len(),
-    });
+    // 3) Per tick: cell = nearest(origin); fart ur spåret; färg 1 per utgående länk.
+    let is_main = arm == "main";
+    let mut cells: Vec<u32> = Vec::with_capacity(ticks.len());
+    let mut speeds: Vec<f32> = Vec::with_capacity(ticks.len());
+    // per-cell färg 1-poster (dedup: samma cell ⇒ samma lista), första raw_row_index bevaras
+    let mut farg1_by_cell: BTreeMap<u32, (u32, Vec<Farg1Post>)> = BTreeMap::new();
+
+    for (i, tk) in ticks.iter().enumerate() {
+        let cell = match graph.nearest(glam::Vec3::new(tk.xf, tk.yf, tk.zf)) {
+            Some(c) => c,
+            None => {
+                eprintln!("STOPP: nearest None vid rad {}", tk.raw_row_index);
+                return 2;
+            }
+        };
+        cells.push(cell);
+        // horisontell fart mellan tick i-1 och i (indata till predikaten)
+        let speed = if i == 0 {
+            0.0
+        } else {
+            let (a, b) = (&ticks[i - 1], tk);
+            let dt = (b.tf - a.tf).max(0.001);
+            let dx = b.xf - a.xf;
+            let dy = b.yf - a.yf;
+            (dx * dx + dy * dy).sqrt() / dt
+        };
+        speeds.push(speed);
+        if is_main {
+            continue; // G11: main-armen beräknar ingen färg 1
+        }
+        if farg1_by_cell.contains_key(&cell) {
+            continue;
+        }
+        let band = band_of(speed);
+        let posts: Vec<Farg1Post> = graph.adjacency[cell as usize]
+            .iter()
+            .copied()
+            .map(|li| farg1_for_link(&graph, li, band, speed))
+            .collect();
+        farg1_by_cell.insert(cell, (tk.raw_row_index, posts));
+    }
+
+    // Observerade övergångar (cellbyte) — färg 3:s antal.
+    let mut overgangar = 0usize;
+    for w in cells.windows(2) {
+        if w[0] != w[1] {
+            overgangar += 1;
+        }
+    }
+
+    // 4) Serialisera färg 1-poster (färdiga per-cell-listor med raw_row_index).
+    let farg1_json: Vec<Value> = farg1_by_cell
+        .iter()
+        .map(|(cell, (raw_row_index, posts))| {
+            let lankar: Vec<Value> = posts
+                .iter()
+                .map(|p| {
+                    json!({
+                        "link_id": p.link_id,
+                        "klass": p.klass,
+                        "banded_step": p.banded_step.map(|s| if s { "Some" } else { "None" }).unwrap_or("okänd"),
+                        "chain_entry_blocked": p.chain_entry_blocked,
+                        "orsakskod": p.orsakskod,
+                    })
+                })
+                .collect();
+            json!({"cell": cell, "raw_row_index": raw_row_index, "lankar": lankar})
+        })
+        .collect();
+
     let tick_json: Vec<Value> = ticks
         .iter()
         .zip(cells.iter())
@@ -261,13 +333,25 @@ pub fn run(
             })
         })
         .collect();
+
     let tickserie = json!({
         "farg2_observerad_bana": tick_json,
-        "farg3": {
-            "klass": "okänd",
-            "skal": "vald länk ej observerad (PlanTick saknas i körningarna)",
-            "antal": overgangar,
+        "farg1": if is_main { Value::Null } else { Value::Array(farg1_json) },
+        "farg3": if is_main {
+            Value::Null
+        } else {
+            json!({"klass": "okänd", "skal": "vald länk ej observerad (PlanTick saknas i körningarna)", "antal": overgangar})
         },
+    });
+
+    // 5) Payload + proveniens.
+    let geometri = json!({
+        "dump_id": dump_id,
+        "dump_sha256": dump_sha,
+        "dump_schema": "qw-nav-graph/1",
+        "arm": arm,
+        "cells": graph.cells.len(),
+        "links": graph.links.len(),
     });
     let payload = json!({
         "schema": "ben3d-bunt/1",
@@ -277,7 +361,17 @@ pub fn run(
     });
     let bundle_payload_sha256 = sha256_hex(canon::canonical(&payload).as_bytes());
 
-    // 6) Proveniensblock (P1) — alla fält, saknat explicit null/OKÄND med skäl.
+    let (sj, non_sj) = {
+        let (mut s, mut n) = (0usize, 0usize);
+        for l in &graph.links {
+            match l.kind {
+                LinkKind::SpeedJump => s += 1,
+                _ => n += 1,
+            }
+        }
+        (s, n)
+    };
+
     let proveniens = json!({
         "dataset_manifest": {
             "id": manifest_id,
@@ -304,19 +398,20 @@ pub fn run(
         },
         "kvitto": {
             "medlem": "rokdeploy-kvitto-20260817.json (slut_observed)",
+            "sha256": "OKÄND", // fylls av ben3d_verify (källverifierare)
             "slut_observed": if arm == "fork" {
                 json!({"cells":5983,"links":48216,"graph_stamp":"11908727279900740725","graph_content_hash":"cd800200cad72431e0cbfe0a2fc947bd94309e334103d6cc0abd076155ecf051"})
             } else {
-                Value::Null
+                json!({"cells":5977,"links":48207,"graph_stamp":"906595427771298736","graph_content_hash":"58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"})
             },
         },
         "extractor": {
             "commit": git_head(),
             "motor_crate_commit": git_head(),
-            "cargo_lock_sha256": Value::Null,
-            "binary_sha256": Value::Null,
-            "cli_config_sha256": Value::Null,
-            "skal_for_null": "Cargo.lock-/binär-/CLI-SHA fylls av ben3d_verify/launcher (P4)",
+            "cargo_lock_sha256": "OKÄND",
+            "binary_sha256": "OKÄND",
+            "cli_config_sha256": "OKÄND",
+            "skal": "binary/cargo_lock/cli fylls av ben3d_verify (källverifierare, P4)",
             "restore_schema": "qw-nav-graph/1",
             "dump_schema": "qw-nav-graph/1",
         },
@@ -334,17 +429,16 @@ pub fn run(
             },
         },
         "viewer": {
-            "commit": Value::Null,
+            "commit": git_head(),
             "bundle_schema": "ben3d-bunt/1",
-            "skal": "viewern byggs i etapp 5; commit fylls då",
         },
+        "bundle_payload_sha256": bundle_payload_sha256,
         "farg1_policy": {
-            "regel": "per utgående länk ur aktuell cell: motorns banded_step; non-SpeedJump = Some (räckhåll), SpeedJump = OKÄND (G10)",
+            "regel": "per utgående T=1-länk ur aktuell cell: motorns banded_step/chain_entry_blocked per tick; non-SJ = faktiskt svar, SJ = OKÄND (G10, predikaten ej anropade)",
             "sj_okand": sj,
             "non_sj_rackhall": non_sj,
-            "orsakskoder": {"non_sj": "BANDED_STEP_SOME", "sj": "G10_SIDOTABELL_SAKNAS"},
         },
-        "main_arm": if arm == "main" {
+        "main_arm": if is_main {
             json!({"farg1": "disabled", "farg3": "disabled", "skal": "G11: annan motorbinär — endast geometri + observerad bana"})
         } else {
             Value::Null
@@ -360,16 +454,17 @@ pub fn run(
         "bundle_payload_sha256": bundle_payload_sha256,
     });
 
-    let bytes = serde_json::to_vec_pretty(&bunt).expect("serialisering");
+    let bytes = serde_json::to_vec(&bunt).expect("serialisering");
     if let Err(e) = std::fs::write(out_path, &bytes) {
         eprintln!("STOPP: kan inte skriva {out_path}: {e}");
         return 2;
     }
     println!(
-        "bunt {ben_id}: {} ticks, {} celler, {} övergångar, payload-sha {}",
+        "bunt {ben_id}: {} ticks, {} celler, {} övergångar, {} färg1-celler, payload-sha {}",
         ticks.len(),
         graph.cells.len(),
         overgangar,
+        farg1_by_cell.len(),
         bundle_payload_sha256
     );
     0
@@ -378,75 +473,39 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rtx_nav::navmesh::{Link, NavGraph};
-
-    fn tmp(p: &str) -> String {
-        let d = std::env::temp_dir().join(format!("ben3d-extract-{}-{}", std::process::id(), p));
-        d.to_string_lossy().to_string()
-    }
+    use rtx_nav::navmesh::{Link, SpeedJumpTraversal};
 
     #[test]
-    fn bunt_bitidentiska_ticks_och_celltilldelning() {
-        // syntetisk graf: 0<->1 walk + 0->2 speedjump (SJ = OKÄND)
+    fn farg1_anropar_motorpredikaten() {
+        // syntetisk graf med en KEDJAD SJ (sidotabell via plant_speed_jump) — A3:s
+        // under/över-tröskel: banded_step None vid låg band, Some vid hög; chain_entry_blocked
+        // true vid låg fart, false vid hög.
         let origins = vec![
             glam::Vec3::new(0.0, 0.0, 0.0),
-            glam::Vec3::new(32.0, 0.0, 0.0),
-            glam::Vec3::new(0.0, 32.0, 0.0),
+            glam::Vec3::new(64.0, 0.0, 0.0),
         ];
-        let links = vec![
-            Link { from: 0, to: 1, kind: LinkKind::Walk, cost: 1.0 },
-            Link { from: 1, to: 0, kind: LinkKind::Walk, cost: 1.0 },
-            Link { from: 0, to: 2, kind: LinkKind::SpeedJump, cost: 2.0 },
-        ];
-        let g = NavGraph::from_topology(&origins, &links);
-        let dump = crate::fork::serialize_dump(&g, "dm3", 32.0);
-        let dump_path = tmp("graph.json");
-        std::fs::write(&dump_path, serde_json::to_vec(&dump).unwrap()).unwrap();
-
-        // spår med exakta token
-        let jsonl = r#"{"t":1.5,"wall":0.0,"measure_id":"x","players":[{"ent":1,"origin":[0.0,0.0,0.0],"on_ground":true}]}
-{"t":1.52,"wall":0.02,"measure_id":"x","players":[{"ent":1,"origin":[16.5,0.0,0.0],"on_ground":true}]}
-{"t":1.54,"wall":0.04,"measure_id":"x","players":[{"ent":1,"origin":[32.0,0.0,0.0],"on_ground":true}]}
-"#;
-        let jsonl_path = tmp("in_vast.jsonl");
-        std::fs::write(&jsonl_path, jsonl).unwrap();
-        let meta = r#"{"utfall":"fall","cykel":1,"ben":"in_vast","measure_id":"k@r6","falls_measure_id":"f@r6"}"#;
-        let meta_path = tmp("in_vast_meta.json");
-        std::fs::write(&meta_path, meta).unwrap();
-        let manifest_path = tmp("m.sha256");
-        let msha = |b: &[u8]| format!("{:x}", Sha256::digest(b));
-        let manifest = format!(
-            "{}  in_vast_meta.json\n{}  in_vast.jsonl\n",
-            msha(meta.as_bytes()),
-            msha(jsonl.as_bytes())
+        let links = vec![Link { from: 0, to: 1, kind: LinkKind::Walk, cost: 1.0 }];
+        let mut g = NavGraph::from_topology(&origins, &links);
+        let sj_li = g.plant_speed_jump(
+            0, 1, 1.0,
+            SpeedJumpTraversal { takeoff: glam::Vec3::new(32.0,0.0,0.0), v_req: 320.0, chained: true, ..Default::default() },
         );
-        std::fs::write(&manifest_path, &manifest).unwrap();
-
-        let out = tmp("bunt.json");
-        let rc = run(&dump_path, "dm3-test", &meta_path, &jsonl_path, &manifest_path, "fork", "t1h", &out);
-        assert_eq!(rc, 0);
-
-        let b: Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
-        let ticks = b["tickserie"]["farg2_observerad_bana"].as_array().unwrap();
-        assert_eq!(ticks.len(), 3);
-        assert_eq!(ticks[0]["t"], "1.5");
-        assert_eq!(ticks[1]["x"], "16.5");
-        assert_eq!(ticks[2]["z"], "0.0");
-        // celltilldelning: tick0 -> 0, tick1 -> 1 (16.5 närmare 32 än 0), tick2 -> 1
-        assert_eq!(ticks[0]["cell"], 0);
-        assert_eq!(ticks[1]["cell"], 1);
-        assert_eq!(ticks[2]["cell"], 1);
-        // farg1-policy: 1 SJ (OKÄND), 2 non-SJ
-        assert_eq!(b["proveniens"]["farg1_policy"]["sj_okand"], 1);
-        assert_eq!(b["proveniens"]["farg1_policy"]["non_sj_rackhall"], 2);
-        // payload-sha: räkna om oberoende
-        let payload = json!({
-            "schema": b["schema"],
-            "ben_id": b["ben_id"],
-            "geometri": b["geometri"],
-            "tickserie": b["tickserie"],
-        });
-        let expect = sha256_hex(canon::canonical(&payload).as_bytes());
-        assert_eq!(b["bundle_payload_sha256"], expect);
+        // låg band (0): banded_step None; hög band (3): Some
+        assert!(g.banded_step(sj_li, 0).is_none());
+        assert!(g.banded_step(sj_li, 3).is_some());
+        // chain_entry_blocked: fart 100 < 0.5*320 → true; fart 300 → false
+        assert!(g.chain_entry_blocked(sj_li, 100.0));
+        assert!(!g.chain_entry_blocked(sj_li, 300.0));
+        // extraktorns färg1-post för en non-SJ-länk: banded_step Some + ceb false
+        let p = farg1_for_link(&g, 0, 3, 300.0);
+        assert_eq!(p.klass, "räckhåll");
+        assert_eq!(p.banded_step, Some(true));
+        assert_eq!(p.chain_entry_blocked, Some(false));
+        // extraktorns färg1-post för SJ-länken (dump utan sidotabell): OKÄND, predikat ej anropat
+        let psj = farg1_for_link(&g, sj_li, 3, 300.0);
+        assert_eq!(psj.klass, "okänd");
+        assert_eq!(psj.banded_step, None);
+        assert_eq!(psj.chain_entry_blocked, None);
+        assert_eq!(psj.orsakskod, "G10_SIDOTABELL_SAKNAS");
     }
 }
