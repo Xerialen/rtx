@@ -5,8 +5,10 @@
 3 ⇒ "konstruera om". Newest heading wins (append-only, newest first).
 
 Punkt = DOM-id with trailing -rN / -Rn[B] stripped (protokoll §5 + file
-practice). FAIL = RÖTT / UNDERKÄND / STOPP / EJ KÖRBAR / FAIL / JUSTERAS.
-PASS = GRÖNT / GODKÄND (and not also UNDERKÄND). Other headings are skipped.
+practice). A collection title (slash-variants and " + "-joined names)
+attributes its verdict to each named punkt. FAIL = RÖTT / UNDERKÄND /
+STOPP / EJ KÖRBAR / FAIL / JUSTERAS. PASS = GRÖNT / GODKÄND (and not
+also UNDERKÄND). Other headings are skipped.
 
 Default --domfil is unused here; the buzz-4on4 launcher points at
 WORK_LOGS/kimi-testprotokoll-domar.md. Unit tests feed a tempfile.
@@ -22,9 +24,12 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-HEAD = re.compile(r"^## DOM\s+(\S+)\s+—\s+(.*)$")
+# Title may be a collection: "TURNERING-K1/K2/K3 + RAM-SJALVBEVIS".
+# Capture up to the first emdash so spaces in the title are kept.
+HEAD = re.compile(r"^## DOM\s+(.+?)\s+—\s+(.*)$")
 # First -rN / -Rn… to end-of-token is the revision cluster (R6R4, R6B, r2, r3-beslut).
 REV = re.compile(r"(?i)-r\d+.*$")
+PLUS = re.compile(r"\s+\+\s+")
 
 FAIL_MARKERS = (
     "UNDERKÄND",
@@ -45,6 +50,34 @@ def punkt_id(raw: str) -> str:
     return REV.sub("", raw)
 
 
+def _expand_slash(token: str) -> list[str]:
+    """TURNERING-K1/K2/K3 → [TURNERING-K1, TURNERING-K2, TURNERING-K3]."""
+    parts = [p for p in token.split("/") if p]
+    if len(parts) <= 1:
+        return [token] if token else []
+    first = parts[0]
+    prefix = first.rsplit("-", 1)[0] + "-" if "-" in first else ""
+    names = [first]
+    for part in parts[1:]:
+        names.append(part if part.startswith(prefix) else prefix + part)
+    return names
+
+
+def named_punkter(title: str) -> list[str]:
+    """Split a collection title into each named punkt.
+
+    'TURNERING-K1/K2/K3 + RAM-SJALVBEVIS' →
+    TURNERING-K1, TURNERING-K2, TURNERING-K3, RAM-SJALVBEVIS.
+    A single-name title is returned unchanged.
+    """
+    out: list[str] = []
+    for group in PLUS.split(title.strip()):
+        g = group.strip()
+        if g:
+            out.extend(_expand_slash(g))
+    return out
+
+
 def verdict_of(rest: str) -> str | None:
     """FAIL / PASS / None (skip). UNDERKÄND wins over GODKÄND if both appear."""
     u = rest.upper()
@@ -63,11 +96,23 @@ def parse_domfil(text: str) -> list[dict[str, str]]:
         m = HEAD.match(line.strip())
         if not m:
             continue
-        raw, rest = m.group(1), m.group(2)
+        title, rest = m.group(1), m.group(2)
         verd = verdict_of(rest)
         if verd is None:
             continue
-        rows.append({"raw": raw, "punkt": punkt_id(raw), "verdict": verd, "heading": line.strip()})
+        names = named_punkter(title)
+        if not names:
+            continue
+        heading = line.strip()
+        for raw in names:
+            rows.append(
+                {
+                    "raw": raw,
+                    "punkt": punkt_id(raw),
+                    "verdict": verd,
+                    "heading": heading,
+                }
+            )
     return rows
 
 
@@ -101,7 +146,7 @@ def report(text: str) -> dict[str, Any]:
     live = [s for s in steps if s["action"] == "live-session krävs"]
     rebuild = [s for s in steps if s["action"] == "konstruera om"]
     return {
-        "n_domar": len(rows),
+        "n_domar": len({r["heading"] for r in rows}),
         "n_punkter": len(steps),
         "live_session": [s["punkt"] for s in live],
         "konstruera_om": [s["punkt"] for s in rebuild],

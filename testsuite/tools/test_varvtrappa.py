@@ -83,6 +83,64 @@ class VarvtrappaTests(unittest.TestCase):
         self.assertEqual(vt.main(["--domfil", str(p)]), 0)
         td.cleanup()
 
+    def test_named_punkter_slash_and_plus(self):
+        self.assertEqual(vt.named_punkter("A1"), ["A1"])
+        self.assertEqual(
+            vt.named_punkter("TURNERING-K1/K2/K3 + RAM-SJALVBEVIS"),
+            ["TURNERING-K1", "TURNERING-K2", "TURNERING-K3", "RAM-SJALVBEVIS"],
+        )
+
+    def test_samling_stopp_verbatim_from_domfil(self):
+        # Ordagrant ur WORK_LOGS/kimi-testprotokoll-domar.md (rad 657).
+        heading = (
+            "## DOM TURNERING-K1/K2/K3 + RAM-SJALVBEVIS — STOPP "
+            "(EJ KÖRBARA: turneringsrunnern existerar inte; gäller ALLA fyra armar) "
+            "— 2026-08-16 18:28 CEST (lanister date -u 16:28:14 UTC)"
+        )
+        rows = vt.parse_domfil(heading + "\n")
+        self.assertEqual(
+            [r["punkt"] for r in rows],
+            ["TURNERING-K1", "TURNERING-K2", "TURNERING-K3", "RAM-SJALVBEVIS"],
+        )
+        self.assertTrue(all(r["verdict"] == "FAIL" for r in rows))
+        self.assertTrue(all(r["heading"] == heading for r in rows))
+        doc = vt.report(heading + "\n")
+        self.assertEqual(doc["n_domar"], 1)
+        self.assertEqual(doc["n_punkter"], 4)
+        for name in ("TURNERING-K1", "TURNERING-K2", "TURNERING-K3", "RAM-SJALVBEVIS"):
+            step = next(p for p in doc["punkter"] if p["punkt"] == name)
+            self.assertEqual(step["consecutive_fail"], 1)
+
+    def test_samling_stopp_increments_each_named_punkt(self):
+        heading = (
+            "## DOM TURNERING-K1/K2/K3 + RAM-SJALVBEVIS — STOPP "
+            "(EJ KÖRBARA: turneringsrunnern existerar inte; gäller ALLA fyra armar) "
+            "— 2026-08-16 18:28 CEST (lanister date -u 16:28:14 UTC)"
+        )
+        text = (
+            heading + "\n"
+            "## DOM TURNERING-K1-R2 — JUSTERAS — t\n"
+            "## DOM TURNERING-K2 — RÖTT — t\n"
+        )
+        doc = vt.report(text)
+        self.assertEqual(
+            next(p for p in doc["punkter"] if p["punkt"] == "TURNERING-K1")["consecutive_fail"],
+            2,
+        )
+        self.assertEqual(
+            next(p for p in doc["punkter"] if p["punkt"] == "TURNERING-K2")["consecutive_fail"],
+            2,
+        )
+        self.assertEqual(
+            next(p for p in doc["punkter"] if p["punkt"] == "TURNERING-K3")["consecutive_fail"],
+            1,
+        )
+        self.assertIn("TURNERING-K1", doc["live_session"])
+        self.assertIn("TURNERING-K2", doc["live_session"])
+        self.assertNotIn("TURNERING-K3", doc["live_session"])
+        self.assertNotIn("RAM-SJALVBEVIS", doc["live_session"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
