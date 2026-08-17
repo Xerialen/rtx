@@ -228,6 +228,112 @@ class FacitForeKod(Bas):
         self.assertEqual(row["code_paths"], ["testsuite"], "raden bokför vad som kontrollerades")
 
 
+class Kontrasignatur(Bas):
+    """Variant B: CI producerar sigillet, Sol-sätet verifierar i efterhand."""
+
+    def test_sigillet_ar_deterministiskt_ur_facitbytes_och_head(self):
+        a = sl.sigill("a" * 64, "b" * 40)
+        self.assertEqual(a, sl.sigill("a" * 64, "b" * 40), "samma indata, samma sigill")
+        self.assertNotEqual(a, sl.sigill("c" * 64, "b" * 40), "annat facit")
+        self.assertNotEqual(a, sl.sigill("a" * 64, "d" * 40), "annan HEAD")
+        self.assertEqual(len(a), 64)
+
+    def test_domanetiketten_skiljer_sigillet_fran_andra_hashar(self):
+        """Ett naket sha256(facit||head) hade kunnat förväxlas med vilken annan
+        64-hex som helst i projektet. Etiketten gör värdet självbeskrivande."""
+        import hashlib
+
+        naket = hashlib.sha256(("a" * 64 + "b" * 40).encode()).hexdigest()
+        self.assertNotEqual(sl.sigill("a" * 64, "b" * 40), naket)
+        self.assertIn("forsegling-kontrasignatur/1", sl.SIGILL_ALG)
+
+    def test_blanksteg_runt_indata_andrar_inte_sigillet(self):
+        self.assertEqual(sl.sigill("  " + "a" * 64 + "\n", " " + "b" * 40 + " "), sl.sigill("a" * 64, "b" * 40))
+
+    def test_tom_indata_vagras(self):
+        with self.assertRaises(sl.Vagran):
+            sl.sigill("", "b" * 40)
+        with self.assertRaises(sl.Vagran):
+            sl.sigill("a" * 64, "   ")
+
+    def test_varje_ny_rad_bar_sitt_sigill(self):
+        row = json.loads(self.seal().stdout)
+        self.assertEqual(row["sigill"], sl.sigill(row["facit_sha256"], row["head"]))
+        self.assertEqual(row["sigill_alg"], sl.SIGILL_ALG)
+        # Sigillet ligger innanför radhashen, så det går inte att byta i efterhand
+        # utan att raden faller.
+        self.assertEqual(row["line_sha256"], sl.line_hash(row))
+
+    def test_ci_producerar_samma_sigill_som_raden(self):
+        """CI:s producentsteg och seal.sh måste ge samma värde, annars är
+        kontrasignaturen bara två verktyg som räknar olika."""
+        row = json.loads(self.seal().stdout)
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = sl.main(["sigill", "--facit", str(self.facit), "--head", self.head])
+        self.assertEqual(rc, 0)
+        self.assertEqual(buf.getvalue().strip(), row["sigill"])
+
+    def test_solsatet_instammer_pa_en_hel_liggare(self):
+        self.seal()
+        rows = sl.read_index(self.ledger)
+        avvikelser, okontrasignerade = sl.kontrasignera(rows)
+        self.assertEqual(avvikelser, [])
+        self.assertEqual(okontrasignerade, [])
+
+    def test_solsatet_ser_en_rad_dar_sigillet_inte_hor_ihop(self):
+        self.seal()
+        p = sl.index_path(self.ledger)
+        rad = json.loads(p.read_text(encoding="utf-8"))
+        rad["sigill"] = "f" * 64
+        rad["line_sha256"] = sl.line_hash(rad)  # radhashen "lagas" — sigillet syns ändå
+        p.write_text(sl.kanonisk(rad) + "\n", encoding="utf-8")
+        avvikelser, _ = sl.kontrasignera(sl.read_index(self.ledger))
+        self.assertEqual(len(avvikelser), 1)
+        self.assertIn("hör inte ihop", avvikelser[0])
+
+    def test_rad_utan_sigill_ar_okontrasignerad_inte_fel(self):
+        """Liggaren har rader skrivna före variant B. En verifiering som färgar
+        dem röda hade varit röd för alltid och därmed meningslös."""
+        gammal = sl.build_row(
+            facit=Path("gammalt-facit.md"),
+            facit_sha256="a" * 64,
+            facit_bytes=1,
+            head="b" * 40,
+            head_subject="",
+            code_paths=["crates"],
+            sealed_at="2026-01-01T00:00:00Z",
+            sealed_by="sol",
+            prev=sl.GENESIS,
+            seal_id="gammalt-facit-aaaaaaaaaaaa",
+        )
+        self.assertNotIn("sigill", gammal)
+        avvikelser, okontrasignerade = sl.kontrasignera([gammal])
+        self.assertEqual(avvikelser, [])
+        self.assertEqual(len(okontrasignerade), 1)
+        self.assertIn("före variant B", okontrasignerade[0])
+
+    def test_kontrasignaturen_blockerar_inte(self):
+        """Variant B i klartext: verifieringen rapporterar och returnerar 0."""
+        self.seal()
+        p = sl.index_path(self.ledger)
+        rad = json.loads(p.read_text(encoding="utf-8"))
+        rad["sigill"] = "f" * 64
+        rad["line_sha256"] = sl.line_hash(rad)
+        p.write_text(sl.kanonisk(rad) + "\n", encoding="utf-8")
+
+        self.assertEqual(sl.main(["kontrasignatur", "--ledger", str(self.ledger)]), 0)
+        # --strict finns för den som VILL ha en grind, och då är det ett eget val.
+        self.assertEqual(sl.main(["kontrasignatur", "--ledger", str(self.ledger), "--strict"]), 1)
+
+    def test_strict_pa_en_hel_liggare_ar_gron(self):
+        self.seal()
+        self.assertEqual(sl.main(["kontrasignatur", "--ledger", str(self.ledger), "--strict"]), 0)
+
+
 class Grindar(Bas):
     def test_okand_head_vagras(self):
         r = self.seal(head="0123456789abcdef0123456789abcdef01234567")

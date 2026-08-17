@@ -49,6 +49,36 @@ class Vagran(Exception):
     """Verktyget vägrar hellre än gissar."""
 
 
+#: Kontrasignaturens domänetikett. Projektet är fullt av 64-hex-värden — facitets
+#: sha, grafens nivå-2, radhashen — och ett värde som inte säger vad det är blir
+#: förr eller senare jämfört med fel sak. Etiketten gör frågan "vilken hash är
+#: det här?" besvarbar ur värdet självt.
+KONTRASIGN_DOMAN = "forsegling-kontrasignatur/1"
+SIGILL_ALG = f"sha256({KONTRASIGN_DOMAN} NUL facit_sha256 NUL head)"
+
+
+def sigill(facit_sha256: str, head: str) -> str:
+    """Kontrasignatur variant B: deterministiskt sigill ur facitbytes + HEAD.
+
+    Det är en HÄRLEDNING, inte en signatur, och skillnaden är hela poängen med
+    variant B. Vem som helst som har facitet och kedje-HEAD räknar fram samma
+    värde; Sol-sätet räknar om det i efterhand och säger "instämmer". Ingen nyckel,
+    inget som kan gå förlorat, och ingenting som kan blockera en pipeline — CI
+    producerar sigillet, Sol verifierar det, och verifieringen är aldrig en grind.
+
+    Att det inte bevisar att Sol *såg* något är avsiktligt. Det bevisar att facitet
+    och koden hör ihop på det sätt raden påstår, och det är vad en kontrasignatär
+    behöver för att kunna säga emot.
+    """
+    for namn, v in (("facit_sha256", facit_sha256), ("head", head)):
+        if not isinstance(v, str) or not v.strip():
+            raise Vagran(f"sigill: {namn} saknas")
+    msg = b"\x00".join(
+        [KONTRASIGN_DOMAN.encode("utf-8"), facit_sha256.strip().encode("utf-8"), head.strip().encode("utf-8")]
+    )
+    return hashlib.sha256(msg).hexdigest()
+
+
 def kanonisk(row: dict) -> str:
     """Radens kanoniska form: sorterade nycklar, inga blanksteg."""
     return json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -181,6 +211,35 @@ def verify_chain(rows: list[dict]) -> list[str]:
     return fel
 
 
+def kontrasignera(rows: list[dict]) -> tuple[list[str], list[str]]:
+    """Räkna om varje rads sigill. Returnerar `(avvikelser, okontrasignerade)`.
+
+    En rad utan `sigill` är inte ett fel utan en rad skriven före variant B —
+    okontrasignerad, och det ska stå så. Att behandla frånvaro som avvikelse hade
+    gjort hela den befintliga liggaren röd första gången någon körde verifieringen,
+    och en verifiering som alltid är röd säger ingenting.
+    """
+    avvikelser: list[str] = []
+    okontrasignerade: list[str] = []
+    for i, row in enumerate(rows, start=1):
+        sid = row.get("seal_id", "?")
+        har = row.get("sigill")
+        if not har:
+            okontrasignerade.append(f"rad {i} ({sid}): inget sigill — skriven före variant B")
+            continue
+        try:
+            vantat = sigill(row.get("facit_sha256", ""), row.get("head", ""))
+        except Vagran as exc:
+            avvikelser.append(f"rad {i} ({sid}): går inte att räkna om — {exc}")
+            continue
+        if har != vantat:
+            avvikelser.append(
+                f"rad {i} ({sid}): sigill {har} != omräknat {vantat} — facit_sha256/head "
+                f"i raden hör inte ihop med sigillet"
+            )
+    return avvikelser, okontrasignerade
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="seal_ledger.py",
@@ -200,10 +259,55 @@ def main(argv: list[str] | None = None) -> int:
     v = sub.add_parser("verify", help="kontrollera hela kedjan")
     v.add_argument("--ledger", required=True)
 
+    s = sub.add_parser(
+        "sigill",
+        help="räkna fram kontrasignaturen ur facitbytes + HEAD (CI:s producentsteg)",
+    )
+    s.add_argument("--facit", required=True)
+    s.add_argument("--head", required=True)
+
+    k = sub.add_parser(
+        "kontrasignatur",
+        help="räkna om liggarens sigill (Sol-sätet). Blockerar inte utan --strict.",
+    )
+    k.add_argument("--ledger", required=True)
+    k.add_argument(
+        "--strict",
+        action="store_true",
+        help="returnera 1 vid avvikelse. Variant B är icke-blockerande, så det här är opt-in.",
+    )
+
     args = p.parse_args(argv)
+
+    if args.cmd == "sigill":
+        try:
+            facit = Path(args.facit)
+            if not facit.is_file():
+                raise Vagran(f"facit är ingen fil: {facit}")
+            print(sigill(file_sha256(facit)[0], args.head))
+            return 0
+        except Vagran as exc:
+            print(f"VÄGRAR: {exc}", file=sys.stderr)
+            return 2
+
     ledger = Path(args.ledger)
 
     try:
+        if args.cmd == "kontrasignatur":
+            rows = read_index(ledger)
+            avvikelser, okontrasignerade = kontrasignera(rows)
+            for m in okontrasignerade:
+                print(f"OKONTRASIGNERAD: {m}", file=sys.stderr)
+            for m in avvikelser:
+                print(f"SIGILLAVVIKELSE: {m}", file=sys.stderr)
+            print(
+                f"{len(rows)} rader: {len(rows) - len(avvikelser) - len(okontrasignerade)} instämmer, "
+                f"{len(avvikelser)} avviker, {len(okontrasignerade)} okontrasignerade"
+            )
+            # Variant B: kontrasignatären verifierar i efterhand och blockerar aldrig.
+            # `--strict` finns för den som VILL ha en grind, och då är det ett eget val.
+            return 1 if (avvikelser and args.strict) else 0
+
         if args.cmd == "verify":
             rows = read_index(ledger)
             fel = verify_chain(rows)
@@ -233,6 +337,9 @@ def main(argv: list[str] | None = None) -> int:
             sealed_by=args.sealed_by,
             prev=rows[-1]["line_sha256"] if rows else GENESIS,
             seal_id=seal_id_for(facit, sha),
+            # Kontrasignaturen produceras här, additivt: raden får två fält till
+            # utan schemabump, och en läsare som inte känner igen dem ignorerar dem.
+            extra={"sigill": sigill(sha, args.head), "sigill_alg": SIGILL_ALG},
         )
         kvitto = append_row(ledger, row)
         print(kanonisk(row))
