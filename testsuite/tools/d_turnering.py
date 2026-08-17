@@ -1028,6 +1028,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--n-repro", type=int)
     ap.add_argument("--n-heldout", type=int)
     ap.add_argument("--run", action="store_true")
+    ap.add_argument("--rokdeploy", type=Path, help="R1 rökdeploy-kvitto (required for --run)")
     ap.add_argument(
         "--side-by-side",
         nargs="+",
@@ -1036,7 +1037,12 @@ def main(argv: list[str] | None = None) -> int:
         help="score_side_by_side on saved tournament report JSON files (post-process)",
     )
     args = ap.parse_args(argv)
-
+    if args.run:
+        from r1_vakt import refuse_judged_run
+        why = refuse_judged_run(args.rokdeploy)
+        if why:
+            print(why, file=sys.stderr)
+            return 2
     if args.side_by_side:
         reports: dict[str, dict] = {}
         for path in args.side_by_side:

@@ -457,7 +457,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--n-smoke", type=int, default=2)
     ap.add_argument("--smoke-window", type=float, default=3.0)
     ap.add_argument("--run", action="store_true", help="full T0+heldout drill (fable-qa)")
+    ap.add_argument("--rokdeploy", type=Path, help="R1 rökdeploy-kvitto (required for --run)")
     args = ap.parse_args(argv)
+    if args.run:
+        from r1_vakt import refuse_judged_run
+        why = refuse_judged_run(args.rokdeploy)
+        if why:
+            print(why, file=sys.stderr)
+            return 2
     recipe = load_recipe(args.fixture)
     gates = load_gates(args.gates)
     rid = recipe.get("id") or "west-shelf"

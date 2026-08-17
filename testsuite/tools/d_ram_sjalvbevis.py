@@ -1526,6 +1526,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--run", action="store_true")
+    ap.add_argument("--rokdeploy", type=Path, help="R1 rökdeploy-kvitto (required for --run)")
     ap.add_argument(
         "--rescore",
         action="store_true",
@@ -1537,6 +1538,12 @@ def main(argv: list[str] | None = None) -> int:
         help="O_EXCL attribution ledger path for --rescore",
     )
     args = ap.parse_args(argv)
+    if args.run:
+        from r1_vakt import refuse_judged_run
+        why = refuse_judged_run(args.rokdeploy)
+        if why:
+            print(why, file=sys.stderr)
+            return 2
     if args.rescore:
         if args.run or args.smoke or args.port:
             print("--rescore refuses --run/--smoke/--port (no rig)", file=sys.stderr)

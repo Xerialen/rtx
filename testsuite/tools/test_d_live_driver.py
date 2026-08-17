@@ -292,14 +292,35 @@ class RefuseTests(unittest.TestCase):
         rc = drill.main(["--port", "27996", "--game-port", "27540"])
         self.assertEqual(rc, 2)
 
+    def test_run_refuses_without_rokdeploy(self):
+        import d_sjalvbevis as drill
+        rc = drill.main(["--port", "27996", "--run"])
+        self.assertEqual(rc, 2)
+
     def test_run_requires_commit_when_git_missing(self):
         import d_sjalvbevis as drill
+        from r1_vakt import write_rokdeploy_kvitto
+        import tempfile
+        from pathlib import Path as P
+        td = tempfile.TemporaryDirectory()
+        kv = P(td.name) / "rok.json"
+        write_rokdeploy_kvitto(
+            kv,
+            runner_commit="deadbeef",
+            manifest_sha256="ab" * 32,
+            lock_token="fable-token",
+            slut_observed={
+                "cells": 5983, "links": 48216, "rj_links": 0,
+                "graph_stamp": "1", "graph_content_hash": "cd" * 32,
+            },
+        )
         orig = drill._git_commit
         drill._git_commit = lambda _repo: ""
         try:
-            rc = drill.main(["--port", "27996", "--run"])
+            rc = drill.main(["--port", "27996", "--run", "--rokdeploy", str(kv)])
         finally:
             drill._git_commit = orig
+            td.cleanup()
         self.assertEqual(rc, 2)
 
     def test_restart_mentions_reset_failed(self):
