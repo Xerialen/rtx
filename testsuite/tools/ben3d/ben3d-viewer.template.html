@@ -6,28 +6,39 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ben3d — misslyckade ben i isometrisk 3D (navmesh-obduktion)</title>
 <style>
-:root{--bg:#0f1216;--panel:#161c22;--ink:#d8e0e8;--muted:#8492a0;--line:#2a333d;
- --blue:#3b82f6;--gold:#e0a832;--red:#dc2626;--okand:#94a3b8}
+:root{--ground:#0c0b0a;--panel:rgba(20,18,15,0.9);--panel-2:rgba(30,27,22,0.72);
+ --ink:#ece7dd;--ink-2:#b3aa9c;--muted:#857c6f;--rule:#322d25;--rule-2:#201d18;
+ --accent:#e0842f;--good:#58c07a;--bad:#e4483a;--mesh-mid:#453d33;--halo:#0c0b0a;
+ --blue:#3b82f6;--gold:#e0a832;--red:#dc2626;--okand:#94a3b8;
+ --mono:ui-monospace,"DejaVu Sans Mono",Menlo,Consolas,monospace;
+ --sans:ui-sans-serif,system-ui,"Segoe UI",Roboto,Helvetica,sans-serif}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 system-ui;overflow:hidden}
-#bar{position:fixed;top:0;left:0;right:0;z-index:10;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;background:rgba(18,23,29,.95);border-bottom:1px solid var(--line)}
-button,select{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:5px 10px;font:inherit;cursor:pointer}
+body{margin:0;background:var(--ground);color:var(--ink);font:13px/1.45 var(--sans);overflow:hidden}
+#bar{position:fixed;top:0;left:0;right:0;z-index:10;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--rule)}
+button,select{background:var(--panel-2);color:var(--ink);border:1px solid var(--rule);border-radius:5px;padding:5px 10px;font:inherit;cursor:pointer}
+.plate{background:var(--panel);border:1px solid var(--rule);backdrop-filter:blur(6px)}
+.eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:var(--muted)}
 #scrub{flex:1;min-width:140px}
 input[type=range]{accent-color:var(--gold)}
 #badges{position:fixed;left:10px;bottom:10px;z-index:11;display:flex;flex-direction:column;gap:4px;pointer-events:none}
-.badge{font-size:11px;font-weight:700;letter-spacing:.04em;padding:4px 9px;border-radius:4px;border:1px solid var(--line);background:rgba(18,23,29,.9)}
-.badge.frozen{color:#fca5a5;border-color:#7f1d1d;background:rgba(60,10,10,.85)}
-.badge.honesty{color:#fcd34d;border-color:#92400e;background:rgba(50,30,5,.85)}
-#legend{position:fixed;right:10px;top:52px;z-index:11;background:rgba(18,23,29,.92);border:1px solid var(--line);border-radius:6px;padding:9px 11px;font-size:12px;min-width:220px}
-#legend h3{margin:0 0 6px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
-#legend .row{display:flex;align-items:center;gap:7px;margin:3px 0}
-#legend .sw{width:13px;height:13px;border-radius:3px;flex:0 0 13px}
+.badge{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:5px 10px;border:1px solid var(--rule);background:var(--panel)}
+.badge.frozen{color:var(--bad);border-color:var(--bad)}
+.badge.honesty{color:var(--accent);border-color:var(--accent)}
+#legend{position:fixed;right:10px;top:52px;z-index:11;padding:9px 13px;font-size:12px;min-width:230px}
+#legend h3{margin:0 0 6px;font-family:var(--mono);font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:var(--muted)}
+.lrow{display:flex;align-items:center;gap:9px;padding:3.5px 2px;font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+.lrow .sw{width:10px;height:10px;flex:0 0 auto;border-radius:2px}
+.lrow .sw.round{border-radius:50%}
+.lrow .nm{flex:1 1 auto}
+.lrow .ct{font-variant-numeric:tabular-nums;color:var(--muted)}
+.lrow.off{opacity:0.35}
 #legend .strike{text-decoration:line-through;color:var(--muted)}
 #legend .okand{color:var(--okand)}
-#hud{position:fixed;left:10px;top:52px;z-index:11;background:rgba(18,23,29,.92);border:1px solid var(--line);border-radius:6px;padding:8px 11px;font:12px/1.5 ui-monospace,monospace;min-width:290px}
-#hud b{color:#fff}
+#hud{position:fixed;left:10px;top:52px;z-index:11;padding:9px 13px;font:12px/1.5 var(--mono);min-width:300px}
+#hud b{color:var(--ink)}
 #prov{position:fixed;left:0;right:0;bottom:0;z-index:12;max-height:40vh;overflow:auto;background:rgba(12,16,20,.97);border-top:1px solid var(--line);padding:12px 16px;font-size:12px;display:none;white-space:pre-wrap;word-break:break-word}
-canvas{display:block;position:fixed;inset:0;z-index:1}
+canvas{display:block;position:fixed;inset:0;z-index:1;cursor:grab}
+canvas.dragging{cursor:grabbing}
 #err{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:20;background:#2a1215;border:1px solid var(--red);border-radius:8px;padding:16px 20px;max-width:70vw;display:none}
 </style>
 </head>
@@ -44,17 +55,17 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
  <button id="zoomin" title="zooma in">+</button><button id="zoomout" title="zooma ut">−</button><button id="resetcam" title="återställ kamera (låst isometri)">⟲ kamera</button>
  <button id="provbtn">Proveniens</button>
 </div>
-<div id="legend">
- <h3>Lager / färg</h3>
- <div class="row"><span class="sw" style="background:var(--blue)"></span>Räckhåll (färg 1) — extraktorns per-tick-lista</div>
- <div class="row"><span class="sw" style="background:var(--gold)"></span>Observerad bana (färg 2)</div>
- <div class="row"><span class="sw" style="background:var(--panel);border:1px dashed var(--muted)"></span>Rekonstruerad plan (PROXY) — ingen data</div>
- <div class="row"><span class="sw" style="background:var(--okand)"></span><span class="okand">OKÄND — <span id="okand-count">0</span> (SJ utan sidotabell + vald länk ej observerad)</span></div>
- <div class="row" id="main-disabled" style="display:none"><span class="sw" style="background:#3a3f45"></span><span class="strike">färg 1 / färg 3 — ej beräknade för main</span></div>
- <div class="row" style="color:var(--muted)">HÄRLEDD FART (PROXY) — fartberoende färgposter</div>
- <div class="row" style="color:var(--muted);margin-top:6px">Motor 2,5 Hz vs extraktor per tick (proxy)</div>
+<div id="legend" class="plate">
+ <div class="eyebrow">Lager / färg</div>
+ <div class="lrow"><span class="sw" style="background:var(--blue)"></span><span class="nm">Räckhåll (färg 1) — extraktorns per-tick-lista</span></div>
+ <div class="lrow"><span class="sw" style="background:var(--gold)"></span><span class="nm">Observerad bana (färg 2)</span></div>
+ <div class="lrow"><span class="sw" style="background:var(--panel-2);border:1px dashed var(--muted)"></span><span class="nm">Rekonstruerad plan (PROXY) — ingen data</span></div>
+ <div class="lrow"><span class="sw" style="background:var(--okand)"></span><span class="nm okand">OKÄND — <span id="okand-count">0</span> (SJ utan sidotabell + vald länk ej observerad)</span></div>
+ <div class="lrow" id="main-disabled" style="display:none"><span class="sw" style="background:#3a3f45"></span><span class="nm strike">färg 1 / färg 3 — ej beräknade för main</span></div>
+ <div class="lrow"><span class="nm" style="color:var(--muted)">HÄRLEDD FART (PROXY) — fartberoende färgposter</span></div>
+ <div class="lrow"><span class="nm" style="color:var(--muted)">Motor 2,5 Hz vs extraktor per tick (proxy)</span></div>
 </div>
-<div id="hud">…</div>
+<div id="hud" class="plate">…</div>
 <div id="badges">
  <div class="badge honesty" id="badge-arm">FORK: OFFLINE REGELREKONSTRUKTION</div>
  <div class="badge frozen">FRUSEN UPPSPELNING — INTE LIVE — INGEN NÄTVERKSANSLUTNING</div>
@@ -108,7 +119,8 @@ function sha256hex(s){
 // Kamerans läge ingår INTE i scen-identiteten; scene-SHA-domänen är oförändrad.
 const C30=Math.cos(Math.PI/6), S30=Math.sin(Math.PI/6);
 let SCALE=1, worldCx=0, worldCy=0;  // base-fit (låst isometri)
-let yaw=0, pitch=0, zoom=1;         // presentation: rotation/zoom, EJ i scene-SHA
+let yaw=0, pitch=0, zoom=1;         // presentation: rotation/zoom/pan, EJ i scene-SHA
+let OX=0, OY=0;                     // pan-offset (presentation)
 const cv=document.getElementById("c"), ctx=cv.getContext("2d");
 function isoProj(x,y,z){const sx=(x-y)*C30, sy=(x+y)*S30-z; return [sx,sy];}
 function rot(x,y,z){
@@ -132,19 +144,21 @@ function fit(){
   worldCx=(minx+maxx)/2; worldCy=(miny+maxy)/2;
 }
 function sp(x,y,z){const r=rot(x,y,z); const p=isoProj(r[0],r[1],r[2]);
-  return [innerWidth/2+(p[0]-worldCx)*SCALE*zoom, innerHeight/2+(p[1]-worldCy)*SCALE*zoom];}
-function resetCam(){yaw=0;pitch=0;zoom=1;meshCv=cur?buildMesh(cur.geo):null;draw();}
+  return [innerWidth/2+(p[0]-worldCx)*SCALE*zoom+OX, innerHeight/2+(p[1]-worldCy)*SCALE*zoom+OY];}
+function resetCam(){yaw=0;pitch=0;zoom=1;OX=0;OY=0;meshCv=cur?buildMesh(cur.geo):null;draw();}
 
 let meshCv=null;
 function buildMesh(geoArm){
   const g=DATA.geo[geoArm]; if(!g)return null;
   const c=document.createElement("canvas"); c.width=cv.width; c.height=cv.height;
   const x=c.getContext("2d");
-  for(let i=0;i<g.cells.length;i+=3){const p=sp(g.cells[i],g.cells[i+1],g.cells[i+2]); x.fillStyle="rgba(70,80,92,0.30)"; x.fillRect(p[0]-1.5,p[1]-1.5,3,3);}
+  const dpr=window.devicePixelRatio||1;
+  x.setTransform(dpr,0,0,dpr,0,0);  // samma DPR-transform som huvud-ctx — annars hamnar meshen i 1/dpr-skala i hörnet och boten "utanför kartan"
+  for(let i=0;i<g.cells.length;i+=3){const p=sp(g.cells[i],g.cells[i+1],g.cells[i+2]); x.fillStyle="rgba(120,108,90,0.28)"; x.fillRect(p[0]-1.5,p[1]-1.5,3,3);}
   for(let i=0;i<g.links.length;i+=4){
     const a=g.links[i],b=g.links[i+1],t=g.links[i+3];
     const pa=sp(g.cells[a*3],g.cells[a*3+1],g.cells[a*3+2]), pb=sp(g.cells[b*3],g.cells[b*3+1],g.cells[b*3+2]);
-    x.strokeStyle=t===1?"rgba(120,132,148,0.18)":"rgba(120,132,148,0.06)"; x.lineWidth=1;
+    x.strokeStyle=t===1?"rgba(69,61,51,0.20)":"rgba(69,61,51,0.07)"; x.lineWidth=1;
     x.beginPath();x.moveTo(pa[0],pa[1]);x.lineTo(pb[0],pb[1]);x.stroke();
   }
   return c;
@@ -279,12 +293,15 @@ document.getElementById("arm").onchange=()=>{populate();loadBen(document.getElem
 document.getElementById("ben").onchange=e=>{loadBen(document.getElementById("dataset").value+":"+document.getElementById("arm").value+":"+e.target.value);};
 document.getElementById("provbtn").onclick=()=>{const p=document.getElementById("prov");if(cur){p.textContent=JSON.stringify(cur.provFull,null,1);p.style.display="block";}};
 document.getElementById("prov").onclick=()=>{document.getElementById("prov").style.display="none";};
-let dragging=false, lx=0, ly=0;
-cv.addEventListener("pointerdown",e=>{dragging=true;lx=e.clientX;ly=e.clientY;cv.setPointerCapture(e.pointerId);});
+let dragging=false, panning=false, lx=0, ly=0;
+cv.addEventListener("pointerdown",e=>{dragging=true;panning=e.shiftKey||e.button===1||e.button===2;lx=e.clientX;ly=e.clientY;cv.setPointerCapture(e.pointerId);cv.classList.add("dragging");});
+cv.addEventListener("contextmenu",e=>e.preventDefault());
 cv.addEventListener("pointermove",e=>{if(!dragging)return;
-  yaw+=(e.clientX-lx)*0.005; pitch=Math.max(-1.5,Math.min(1.5,pitch+(e.clientY-ly)*0.005)); lx=e.clientX;ly=e.clientY;
+  const dx=e.clientX-lx, dy=e.clientY-ly; lx=e.clientX;ly=e.clientY;
+  if(panning){ OX+=dx; OY+=dy; }   // drag-pan (presentation)
+  else { yaw+=dx*0.005; pitch=Math.max(-1.5,Math.min(1.5,pitch+dy*0.005)); }
   meshCv=cur?buildMesh(cur.geo):null; draw();});
-cv.addEventListener("pointerup",()=>dragging=false);
+cv.addEventListener("pointerup",e=>{dragging=false;cv.classList.remove("dragging");});
 cv.addEventListener("wheel",e=>{e.preventDefault(); zoom=Math.max(0.2,Math.min(8,zoom*(e.deltaY<0?1.1:0.9))); meshCv=cur?buildMesh(cur.geo):null; draw();},{passive:false});
 document.getElementById("zoomin").onclick=()=>{zoom=Math.min(8,zoom*1.25);meshCv=cur?buildMesh(cur.geo):null;draw();};
 document.getElementById("zoomout").onclick=()=>{zoom=Math.max(0.2,zoom*0.8);meshCv=cur?buildMesh(cur.geo):null;draw();};

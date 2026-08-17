@@ -1,29 +1,96 @@
 {
-  "schema": "ben3d-postbuild/1",
-  "git_range": "2388d87..HEAD",
-  "skriven_efter": "FIXVARV 1 (Sols bygggranskning)",
-  "b3_placering_crates_ben3d": {
-    "beslut": "behåll crates/ben3d — SPEC-REVISION 1 R1-a (Fable) tillåter uttryckligen crates/ben3d: cargo-arbetsytans byggsystem kräver crate-katalogen; P5:s övriga avsikt (samma git-root, inget eget repo, launchers/fixturer/artefaktdata under testsuite/tools/ben3d) uppfylls oförändrat",
-    "motivering": "Extraktorn är en Rust-binär som LÄNKAR motorns egna crates (rtx-nav, rtx-game) som bibliotek — G2 kräver att reglerna beräknas av motorkod i extraktorn, inte av en Python-kopia. En Rust-crate i workspace-roten är den enda plats där den kan bero på rtx-nav/rtx-game via Cargo-workspace. Launchers/fixturer/CLI-verktyg ligger däremot i testsuite/tools/ben3d/ per P5 B3 (launcherreferens kpi_daglig.py, fixturer under testsuite/tools).",
-    "ovriga_b3_grindar": {
-      "samma_git_root": "ja — crates/ben3d är workspace-medlem i samma repo, inget submodule/eget repo",
-      "ingen_socket_control": "ja — extraktorn använder bara rtx-nav/rtx-game som bibliotek; ingen TcpListener/Control-port (grep-verifierad)",
-      "ingen_lab_atkomst_i_tester": "ja — fixturtester använder hermetisk tmp; lab-vakten (test_lab_guard) kör i sviten",
-      "sha_miss_fail_closed": "ja — restore/fork/bunt STOPPAR (exit 2) vid SHA-miss",
-      "deterministisk_bunt_rot": "ja — RFC 8785 + ben3d-num-as-string/1, rot_sha256 7cb80ac0…",
-      "golden_mot_befintlig_dumpläsare": "ja — test_ben3d_golden.py: ben3d restore (Rust) == graphstamp.py (befintlig Python-dumpläsare)"
-    }
+ "schema": "ben3d-postbuild/1",
+ "git_range": "2388d87..HEAD",
+ "skriven_efter": "FIXVARV 1 (Sols bygggranskning)",
+ "b3_placering_crates_ben3d": {
+  "beslut": "behåll crates/ben3d — SPEC-REVISION 1 R1-a (Fable) tillåter uttryckligen crates/ben3d: cargo-arbetsytans byggsystem kräver crate-katalogen; P5:s övriga avsikt (samma git-root, inget eget repo, launchers/fixturer/artefaktdata under testsuite/tools/ben3d) uppfylls oförändrat",
+  "motivering": "Extraktorn är en Rust-binär som LÄNKAR motorns egna crates (rtx-nav, rtx-game) som bibliotek — G2 kräver att reglerna beräknas av motorkod i extraktorn, inte av en Python-kopia. En Rust-crate i workspace-roten är den enda plats där den kan bero på rtx-nav/rtx-game via Cargo-workspace. Launchers/fixturer/CLI-verktyg ligger däremot i testsuite/tools/ben3d/ per P5 B3 (launcherreferens kpi_daglig.py, fixturer under testsuite/tools).",
+  "ovriga_b3_grindar": {
+   "samma_git_root": "ja — crates/ben3d är workspace-medlem i samma repo, inget submodule/eget repo",
+   "ingen_socket_control": "ja — extraktorn använder bara rtx-nav/rtx-game som bibliotek; ingen TcpListener/Control-port (grep-verifierad)",
+   "ingen_lab_atkomst_i_tester": "ja — fixturtester använder hermetisk tmp; lab-vakten (test_lab_guard) kör i sviten",
+   "sha_miss_fail_closed": "ja — restore/fork/bunt STOPPAR (exit 2) vid SHA-miss",
+   "deterministisk_bunt_rot": "ja — RFC 8785 + ben3d-num-as-string/1, rot_sha256 7cb80ac0…",
+   "golden_mot_befintlig_dumpläsare": "ja — test_ben3d_golden.py: ben3d restore (Rust) == graphstamp.py (befintlig Python-dumpläsare)"
+  }
+ },
+ "filer": [
+  {
+   "path": "crates/ben3d/src/restore.rs",
+   "komponent": "dump-restore/stamp",
+   "beslut": "reuse",
+   "ateranvand_del": "rtx-nav NavGraph::from_topology + graphstamp.py:s canonical_inventory-semantik (C/L-poster, T=adjacensmedlemskap)",
+   "evidens": "ben3d restore == graphstamp.py (golden-test)"
   },
-  "filer": [
-    {"path": "crates/ben3d/src/restore.rs", "komponent": "dump-restore/stamp", "beslut": "reuse", "ateranvand_del": "rtx-nav NavGraph::from_topology + graphstamp.py:s canonical_inventory-semantik (C/L-poster, T=adjacensmedlemskap)", "evidens": "ben3d restore == graphstamp.py (golden-test)"},
-    {"path": "crates/ben3d/src/fork.rs", "komponent": "dump-restore/stamp", "beslut": "reuse", "ateranvand_del": "rtx::komponat_apply (motorns EGNA apply-kod: plant_speed_jump_into + apply_in_chain, 72d5733) — inte en kopia", "evidens": "verifierad mot körkvittots slut_observed cd800200…"},
-    {"path": "crates/ben3d/src/extract.rs", "komponent": "regelutvärdering", "beslut": "reuse", "ateranvand_del": "rtx-nav nearest/banded_step/chain_entry_blocked/band_of (motorns egna predikat)", "evidens": "per-tick-färglistor med predikatens faktiska svar"},
-    {"path": "crates/ben3d/src/canon.rs", "komponent": "bunt/proveniens", "beslut": "new", "ateranvand_del": "ingen befintlig RFC 8785-kanoniserare (seal_ledger.py använder sort_keys, ej RFC 8785 — inventeringen)", "evidens": "canon-test + Python-match på 97 payloads"},
-    {"path": "crates/ben3d/src/main.rs", "komponent": "launcher/verifiering", "beslut": "adapt", "ateranvand_del": "kpi_daglig.py:s launcher-/subkommandomönster", "evidens": "inventering.json kandidat 'toolbox-extraktionsmönster'"},
-    {"path": "crates/rtx-game/src/control.rs + lib.rs", "komponent": "dump-restore/stamp", "beslut": "adapt", "ateranvand_del": "motorns komponat_apply + graph_stamp/graph_content_hash pub-re-exporterade (ingen beteendeändring)", "evidens": "pub use control::komponat_apply; pub use nav_patch::{graph_stamp,graph_content_hash}"},
-    {"path": "testsuite/tools/ben3d/ben3d_buntar.py + ben3d_verify.py + ben3d_viewer.py", "komponent": "launcher/verifiering", "beslut": "adapt", "ateranvand_del": "kpi_daglig.py-launcher + seal_ledger.py:s verify-mönster + graphstamp.py (källverifiering)", "evidens": "inventering.json"},
-    {"path": "testsuite/tools/ben3d/ben3d-viewer.template.html", "komponent": "viewer/rendering + playback/UI", "beslut": "adapt", "ateranvand_del": "exec-show referens-viewer.html:s isometri/playback-motor (proj3/scr), exec-show2:s ärlighetsbadge", "evidens": "inventering.json kandidater exec-show/exec-show2"},
-    {"path": "testsuite/tools/test_ben3d*.py (inkl. golden)", "komponent": "fixturer (B3)", "beslut": "new", "ateranvand_del": "unittest-mönstret + lab-vakten + graphstamp.py som golden", "evidens": "hermetisk tmp, tools 537 OK"},
-    {"path": "testsuite/tools/ben3d/*.json (dumpregister/verify/h-index)", "komponent": "försegling", "beslut": "new", "ateranvand_del": "—", "evidens": "SHA-förseglade per P1/P3/P4"}
-  ]
+  {
+   "path": "crates/ben3d/src/fork.rs",
+   "komponent": "dump-restore/stamp",
+   "beslut": "reuse",
+   "ateranvand_del": "rtx::komponat_apply (motorns EGNA apply-kod: plant_speed_jump_into + apply_in_chain, 72d5733) — inte en kopia",
+   "evidens": "verifierad mot körkvittots slut_observed cd800200…"
+  },
+  {
+   "path": "crates/ben3d/src/extract.rs",
+   "komponent": "regelutvärdering",
+   "beslut": "reuse",
+   "ateranvand_del": "rtx-nav nearest/banded_step/chain_entry_blocked/band_of (motorns egna predikat)",
+   "evidens": "per-tick-färglistor med predikatens faktiska svar"
+  },
+  {
+   "path": "crates/ben3d/src/canon.rs",
+   "komponent": "bunt/proveniens",
+   "beslut": "new",
+   "ateranvand_del": "ingen befintlig RFC 8785-kanoniserare (seal_ledger.py använder sort_keys, ej RFC 8785 — inventeringen)",
+   "evidens": "canon-test + Python-match på 97 payloads"
+  },
+  {
+   "path": "crates/ben3d/src/main.rs",
+   "komponent": "launcher/verifiering",
+   "beslut": "adapt",
+   "ateranvand_del": "kpi_daglig.py:s launcher-/subkommandomönster",
+   "evidens": "inventering.json kandidat 'toolbox-extraktionsmönster'"
+  },
+  {
+   "path": "crates/rtx-game/src/control.rs + lib.rs",
+   "komponent": "dump-restore/stamp",
+   "beslut": "adapt",
+   "ateranvand_del": "motorns komponat_apply + graph_stamp/graph_content_hash pub-re-exporterade (ingen beteendeändring)",
+   "evidens": "pub use control::komponat_apply; pub use nav_patch::{graph_stamp,graph_content_hash}"
+  },
+  {
+   "path": "testsuite/tools/ben3d/ben3d_buntar.py + ben3d_verify.py + ben3d_viewer.py",
+   "komponent": "launcher/verifiering",
+   "beslut": "adapt",
+   "ateranvand_del": "kpi_daglig.py-launcher + seal_ledger.py:s verify-mönster + graphstamp.py (källverifiering)",
+   "evidens": "inventering.json"
+  },
+  {
+   "path": "testsuite/tools/ben3d/ben3d-viewer.template.html",
+   "komponent": "viewer/rendering + playback/UI",
+   "beslut": "adapt",
+   "ateranvand_del": "exec-show referens-viewer.html:s isometri/playback-motor (proj3/scr), exec-show2:s ärlighetsbadge",
+   "evidens": "inventering.json kandidater exec-show/exec-show2"
+  },
+  {
+   "path": "testsuite/tools/test_ben3d*.py (inkl. golden)",
+   "komponent": "fixturer (B3)",
+   "beslut": "new",
+   "ateranvand_del": "unittest-mönstret + lab-vakten + graphstamp.py som golden",
+   "evidens": "hermetisk tmp, tools 537 OK"
+  },
+  {
+   "path": "testsuite/tools/ben3d/*.json (dumpregister/verify/h-index)",
+   "komponent": "försegling",
+   "beslut": "new",
+   "ateranvand_del": "—",
+   "evidens": "SHA-förseglade per P1/P3/P4"
+  }
+ ],
+ "missad_kandidat_map_template": {
+  "kandidat": "testsuite/dashboard/map-template.html (dm3 — stall-diagnostik över navmeshen)",
+  "beslut": "reuse",
+  "komponent": "viewer/rendering",
+  "ateranvand_del": "zoom/panorering (mushjul + drag-pan, dragging-cursor), lagertoggle-mönstret (lrow), HELA visuella designen (designtokens, plate/eyebrow/lrow, mätetalsrad)",
+  "skal": "missades i ursprungsinventeringens sju kandidater (ägarens vakuumregel); nu källan för viewer/rendering-komponenten (FIXVARV 6)"
+ }
 }
