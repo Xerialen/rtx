@@ -72,12 +72,13 @@ def main() -> int:
     ap.add_argument("--base-dump", required=True)
     ap.add_argument("--extractor-bin", required=True)
     ap.add_argument("--viewer", required=True)
+    ap.add_argument("--n", type=int, default=97)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     buntar = sorted(Path(args.buntar).glob("*.bunt.json"))
-    if len(buntar) != 97:
-        print(f"STOPP: {len(buntar)} buntar != 97", file=sys.stderr)
+    if len(buntar) != args.n:
+        print(f"STOPP: {len(buntar)} buntar != {args.n}", file=sys.stderr)
         return 2
 
     ben = []
