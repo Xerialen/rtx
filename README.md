@@ -71,6 +71,8 @@ cargo build --release -p rtx-client
 | [Cvar reference](docs/cvars.md) | Every `rtx_*` tunable with its default, on one page. |
 | [Development & tooling](docs/development.md) | Building, CI artifacts, tests, the control channel and tuning harness. |
 
+Toolbox commits must include exactly one `Agent: <name>` trailer (`opus5`, `grok`, `grok2`, `deepseek`, `terra`, `qwen`, or `fable`) so reviewer-conflict checks remain meaningful under the shared Git identity.
+
 ## Workspace
 
 | crate | |

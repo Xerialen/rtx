@@ -47,41 +47,62 @@ class ReviewJavTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
-        env = os.environ.copy()
-        env.update(
+        self.env = os.environ.copy()
+        self.env.update(
             {
-                "GIT_AUTHOR_NAME": "Own Author",
-                "GIT_AUTHOR_EMAIL": "author@example.invalid",
-                "GIT_COMMITTER_NAME": "Own Author",
-                "GIT_COMMITTER_EMAIL": "author@example.invalid",
+                "GIT_AUTHOR_NAME": "Shared Git Identity",
+                "GIT_AUTHOR_EMAIL": "shared@example.invalid",
+                "GIT_COMMITTER_NAME": "Shared Git Identity",
+                "GIT_COMMITTER_EMAIL": "shared@example.invalid",
             }
         )
-        (self.repo / "evidence.txt").write_text("x\n", encoding="utf-8")
+        self.sha = self.commit("with trailer", "Agent: terra")
+        self.no_trailer_sha = self.commit("without trailer")
+        self.unknown_agent_sha = self.commit("unknown trailer", "Agent: outsider")
+
+    def commit(self, text: str, trailer: str | None = None) -> str:
+        evidence = self.repo / "evidence.txt"
+        with evidence.open("a", encoding="utf-8") as out:
+            out.write(text + "\n")
         subprocess.run(["git", "-C", str(self.repo), "add", "evidence.txt"], check=True)
-        subprocess.run(["git", "-C", str(self.repo), "commit", "-q", "-m", "fixture"], check=True, env=env)
-        self.sha = subprocess.check_output(
+        cmd = ["git", "-C", str(self.repo), "commit", "-q", "-m", text]
+        if trailer is not None:
+            cmd += ["-m", trailer]
+        subprocess.run(cmd, check=True, env=self.env)
+        return subprocess.check_output(
             ["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True
         ).strip()
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def run_jav(self, reviewer: str) -> subprocess.CompletedProcess[str]:
+    def run_jav(self, reviewer: str, sha: str | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [str(JAV), self.sha, reviewer], cwd=self.repo, text=True,
+            [str(JAV), sha or self.sha, reviewer], cwd=self.repo, text=True,
             capture_output=True, check=False,
         )
 
-    def test_rejects_author_as_reviewer(self) -> None:
-        result = self.run_jav("Own Author")
+    def test_rejects_trailer_agent_despite_shared_git_identity(self) -> None:
+        result = self.run_jav("Terra")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("JÄV:", result.stderr)
+        self.assertIn("Agent: terra", result.stderr)
         self.assertIn("välj annan granskare", result.stderr)
 
     def test_accepts_independent_reviewer(self) -> None:
-        result = self.run_jav("Independent Reviewer")
+        result = self.run_jav("grok")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("JÄVSKOLL OK", result.stdout)
+        self.assertIn("Agent='terra'", result.stdout)
+
+    def test_rejects_commit_without_agent_trailer(self) -> None:
+        result = self.run_jav("grok", self.no_trailer_sha)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("okänd författare — kräv Agent:-trailer", result.stderr)
+
+    def test_rejects_unknown_agent_trailer(self) -> None:
+        result = self.run_jav("grok", self.unknown_agent_sha)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("okänd Agent:", result.stderr)
 
 
 if __name__ == "__main__":
