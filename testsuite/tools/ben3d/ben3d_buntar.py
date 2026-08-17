@@ -90,7 +90,8 @@ def main() -> int:
         p["extractor"]["binary_sha256"] = binary_sha
         p["extractor"]["cargo_lock_sha256"] = cargo_lock_sha
         p["extractor"]["cli_config_sha256"] = cli_sha
-        p["kvitto"]["sha256"] = kvitto_sha
+        if p["kvitto"]["sha256"] == "OKÄND":  # fork: fyll kvitto-SHA; main: extraktorn band till basdumpen
+            p["kvitto"]["sha256"] = kvitto_sha
         bunt_out.write_text(json.dumps(b, ensure_ascii=False, separators=(",", ":")))
         index_rows.append({
             "ben_id": b["ben_id"],

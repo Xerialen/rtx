@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
-"""ben3d_verify.py — KÄLLVERIFIERARE (P1/G1b/D1-D2), inte bara intern hashomräkning.
+"""ben3d_verify.py — KÄLLVERIFIERARE (P1/G1b/D1-D2), fullt fail-closed.
 
-Verifierar varje bunt mot de förseglade bytes den åberopar:
-  1. bundle_payload_sha256 = SHA256(RFC8785({schema,ben_id,geometri,tickserie}))
-     + proveniens_sha256 = SHA256(RFC8785(proveniens)).
-  2. Manifestmedlemmar: buntens meta/jsonl-rel+SHA finns i manifestet och filens
-     faktiska bytes matchar (källvalidering, inte självkonsistens).
-  3. Kvittot: kvitto-SHA + fork-armens slut_observed (G1b).
-  4. Dumpens tvånivåstamp via graphstamp.py (befintlig dumpläsare — golden).
-  5. Källhärledda proveniensfält (binary/cargo_lock/cli) mot faktiska bytes.
-Bygger sedan artefaktroten per D2. Avvikelse = STOPP (exit 2)."""
+Verifierar varje bunt mot de förseglade bytes den åberopar (ingen OKÄND för kända
+fält). För fork binds kvittot till rokdeploy-kvittot; för MAIN binds kvittot till
+basdumpens G1b-identitet (INTE fork-kvittots slut_observed). Kontrollerar dataset-
+id/SHA och dump-id/SHA mot de faktiska argumenten samt P1-schemat. STOPP = exit 2."""
 
 from __future__ import annotations
 import argparse, hashlib, json, sys
@@ -17,50 +12,35 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-import graphstamp  # noqa: E402  (befintlig dumpläsare)
+import graphstamp  # noqa: E402
 
 
 def canonical(v) -> str:
-    if v is None:
-        return "null"
-    if v is True:
-        return "true"
-    if v is False:
-        return "false"
-    if isinstance(v, int):
-        return str(v)
-    if isinstance(v, float):
-        raise SystemExit("STOPP: flyttal i kanonisering — ben3d-num-as-string/1 gäller")
+    if v is None: return "null"
+    if v is True: return "true"
+    if v is False: return "false"
+    if isinstance(v, int): return str(v)
+    if isinstance(v, float): raise SystemExit("STOPP: flyttal — num-as-string gäller")
     if isinstance(v, str):
         out = ['"']
         for c in v:
             o = ord(c)
-            if c == '"':
-                out.append('\\"')
-            elif c == "\\":
-                out.append("\\\\")
-            elif o == 0x08:
-                out.append("\\b")
-            elif o == 0x09:
-                out.append("\\t")
-            elif o == 0x0A:
-                out.append("\\n")
-            elif o == 0x0C:
-                out.append("\\f")
-            elif o == 0x0D:
-                out.append("\\r")
-            elif o < 0x20:
-                out.append("\\u%04x" % o)
-            else:
-                out.append(c)
+            if c == '"': out.append('\\"')
+            elif c == "\\": out.append("\\\\")
+            elif o == 0x08: out.append("\\b")
+            elif o == 0x09: out.append("\\t")
+            elif o == 0x0A: out.append("\\n")
+            elif o == 0x0C: out.append("\\f")
+            elif o == 0x0D: out.append("\\r")
+            elif o < 0x20: out.append("\\u%04x" % o)
+            else: out.append(c)
         out.append('"')
         return "".join(out)
-    if isinstance(v, list):
-        return "[" + ",".join(canonical(e) for e in v) + "]"
+    if isinstance(v, list): return "[" + ",".join(canonical(e) for e in v) + "]"
     if isinstance(v, dict):
         keys = sorted(v.keys())
         return "{" + ",".join(canonical(k) + ":" + canonical(v[k]) for k in keys) + "}"
-    raise SystemExit("STOPP: okänd typ: %r" % type(v))
+    raise SystemExit("STOPP: okänd typ %r" % type(v))
 
 
 def sha(s: str) -> str:
@@ -80,11 +60,18 @@ def parse_manifest(path: str) -> dict[str, str]:
     m = {}
     for line in Path(path).read_text().splitlines():
         line = line.strip()
-        if not line:
-            continue
+        if not line: continue
         h, rel = line.split(None, 1)
         m[rel.lstrip("./")] = h.lower()
     return m
+
+
+P1_KEYS = ["dataset_manifest", "medlemmar", "grafdump", "kvitto", "extractor", "matt", "viewer", "farg1_policy", "bundle_payload_sha256"]
+
+FORK_IDENT = {"cells": 5983, "links": 48216, "graph_stamp": "11908727279900740725",
+              "graph_content_hash": "cd800200cad72431e0cbfe0a2fc947bd94309e334103d6cc0abd076155ecf051"}
+BASE_IDENT = {"cells": 5977, "links": 48207, "graph_stamp": "906595427771298736",
+              "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"}
 
 
 def main() -> int:
@@ -98,88 +85,105 @@ def main() -> int:
     ap.add_argument("--extractor-bin", required=True)
     ap.add_argument("--viewer", required=True)
     ap.add_argument("--cargo-lock", required=True)
-    ap.add_argument("--cli-config", default="ben3d bunt (launcher)")
     ap.add_argument("--n", type=int, default=97)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     buntar = sorted(Path(args.buntar).glob("*.bunt.json"))
     if len(buntar) != args.n:
-        print(f"STOPP: {len(buntar)} buntar != {args.n}", file=sys.stderr)
-        return 2
+        stop(f"STOPP: {len(buntar)} buntar != {args.n}")
 
-    manifests = {
-        "t1h": (args.t1h, parse_manifest(args.t1h)),
-        "t20m": (args.t20m, parse_manifest(args.t20m)),
-    }
+    manifests = {"t1h": (args.t1h, parse_manifest(args.t1h)), "t20m": (args.t20m, parse_manifest(args.t20m))}
     kvitto = json.loads(Path(args.kvitto).read_text())
     kvitto_sha = sha_bytes(Path(args.kvitto).read_bytes())
-    kvitto_slut = kvitto["slut_observed"]
+    fork_dump_sha = sha_bytes(Path(args.fork_dump).read_bytes())
+    base_dump_sha = sha_bytes(Path(args.base_dump).read_bytes())
 
-    def check_dump(dump_path: str, expect_hash: str, expect_stamp: str, expect_cells: int, expect_links: int) -> None:
-        doc = json.loads(Path(dump_path).read_text())
-        mname, cells, links, rj = graphstamp.counts_from_doc(doc)
-        stamp = graphstamp.graph_stamp(mname, cells, links, rj)
+    def check_dump(p, cells, links, stamp, h):
+        doc = json.loads(Path(p).read_text())
+        mname, c, l, rj = graphstamp.counts_from_doc(doc)
+        s = graphstamp.graph_stamp(mname, c, l, rj)
         ch = graphstamp.graph_content_hash(doc)
-        if cells != expect_cells or links != expect_links or str(stamp) != expect_stamp or ch != expect_hash:
-            stop(f"STOPP: dump {dump_path} {cells}/{links}/{stamp}/{ch} != {expect_cells}/{expect_links}/{expect_stamp}/{expect_hash}")
+        if c != cells or l != links or str(s) != stamp or ch != h:
+            stop(f"STOPP: dump {p} {c}/{l}/{s}/{ch} != {cells}/{links}/{stamp}/{h}")
 
-    # 4. Dumpens tvånivåstamp (golden via graphstamp.py)
-    check_dump(args.fork_dump, kvitto_slut["graph_content_hash"], kvitto_slut["graph_stamp"], kvitto_slut["cells"], kvitto_slut["links"])
-    basedoc = json.loads(Path(args.base_dump).read_text())
+    kvitto_slut = kvitto["slut_observed"]
+    # dump-tvånivåstamp via graphstamp.py (golden). Fork binds till KVITTOTS slut_observed;
+    # basdumpen till BASE_IDENT endast vid verklig körning (n=97), annars självkonsistens.
+    check_dump(args.fork_dump, kvitto_slut["cells"], kvitto_slut["links"], kvitto_slut["graph_stamp"], kvitto_slut["graph_content_hash"])
     if args.n == 97:
-        # verklig basdump: G1b-golden 5977/48207/906595427771298736/58787ce0…
-        check_dump(args.base_dump, basedoc["graph_content_hash"], "906595427771298736", 5977, 48207)
+        check_dump(args.base_dump, BASE_IDENT["cells"], BASE_IDENT["links"], BASE_IDENT["graph_stamp"], BASE_IDENT["graph_content_hash"])
     else:
-        # hermetisk syntetisk dump: självkonsistens via graphstamp (befintlig dumpläsare)
-        mname, cells, links, rj = graphstamp.counts_from_doc(basedoc)
-        check_dump(args.base_dump, basedoc["graph_content_hash"], str(graphstamp.graph_stamp(mname, cells, links, rj)), cells, links)
+        bd = json.loads(Path(args.base_dump).read_text())
+        ch = graphstamp.graph_content_hash(bd)
+        if ch != bd["graph_content_hash"]:
+            stop(f"STOPP: basdump självkonsistens {ch} != {bd['graph_content_hash']}")
 
     bin_sha = sha_bytes(Path(args.extractor_bin).read_bytes())
     cargo_sha = sha_bytes(Path(args.cargo_lock).read_bytes())
+
     ben = []
     for f in buntar:
         b = json.loads(f.read_text())
-        # 1. payload + proveniens
         payload = {"schema": b["schema"], "ben_id": b["ben_id"], "geometri": b["geometri"], "tickserie": b["tickserie"]}
         got = sha(canonical(payload))
         if got != b["bundle_payload_sha256"]:
             stop(f"STOPP: payload-sha {got} != {b['bundle_payload_sha256']} i {f.name}")
         prov = b["proveniens"]
         prov_sha = sha(canonical(prov))
-        # 2. manifestmedlemmar (källvalidering)
+        # P1-schema
+        for k in P1_KEYS:
+            if k not in prov:
+                stop(f"STOPP: P1-schema saknar {k} i {f.name}")
+        # dataset-id/SHA mot faktiska manifest
         ds = b["ben_id"].split(":")[0]
         mpath, members = manifests[ds]
+        if prov["dataset_manifest"]["id"] != Path(mpath).name:
+            stop(f"STOPP: dataset-id {prov['dataset_manifest']['id']} != {Path(mpath).name}")
+        if prov["dataset_manifest"]["sha256"] != sha_bytes(Path(mpath).read_bytes()):
+            stop(f"STOPP: dataset-sha i {f.name} != faktisk manifestbyte-sha")
+        # medlemmar (källvalidering)
         for key in ("ra_jsonl", "meta_json"):
             m = prov["medlemmar"][key]
-            rel = m["rel"]
-            if rel not in members:
-                stop(f"STOPP: {rel} saknas i manifestet {mpath}")
-            if members[rel] != m["sha256"]:
-                stop(f"STOPP: {rel} SHA i manifestet {members[rel]} != buntens {m['sha256']}")
-            actual = sha_bytes((Path(mpath).parent / rel).read_bytes())
-            if actual != m["sha256"]:
-                stop(f"STOPP: {rel} filbytes SHA {actual} != buntens {m['sha256']}")
-        # 3. kvitto + slut_observed
-        if prov["kvitto"]["sha256"] not in (kvitto_sha, "OKÄND"):
-            stop(f"STOPP: kvitto-sha {prov['kvitto']['sha256']} != {kvitto_sha}")
-        if prov["dataset_manifest"]["arm"] == "fork":
-            so = prov["kvitto"]["slut_observed"]
+            if m["rel"] not in members:
+                stop(f"STOPP: {m['rel']} saknas i manifestet")
+            if members[m["rel"]] != m["sha256"]:
+                stop(f"STOPP: {m['rel']} SHA i manifestet != buntens")
+            if sha_bytes((Path(mpath).parent / m["rel"]).read_bytes()) != m["sha256"]:
+                stop(f"STOPP: {m['rel']} filbytes SHA != buntens")
+        # dump-id/SHA mot faktiska argument
+        arm = prov["dataset_manifest"]["arm"]
+        dump_id = b["geometri"]["dump_id"]
+        dump_sha = b["geometri"]["dump_sha256"]
+        if arm == "fork":
+            if dump_id != "dm3-fork-v296-ram" or dump_sha != fork_dump_sha:
+                stop(f"STOPP: fork-dump id/sha i {f.name} != faktisk")
+        else:
+            if dump_id != "dm3-base" or dump_sha != base_dump_sha:
+                stop(f"STOPP: main-dump id/sha i {f.name} != faktisk basdump")
+        # kvitto: fork -> rokdeploy-kvitto; main -> basdumpens G1b-identitet
+        so = prov["kvitto"]["slut_observed"]
+        if arm == "fork":
+            if prov["kvitto"]["sha256"] != kvitto_sha:
+                stop(f"STOPP: kvitto-sha i {f.name} != faktisk")
             if (so["cells"], so["links"], so["graph_stamp"], so["graph_content_hash"]) != \
                (kvitto_slut["cells"], kvitto_slut["links"], kvitto_slut["graph_stamp"], kvitto_slut["graph_content_hash"]):
-                stop(f"STOPP: slut_observed avviker i {f.name}")
-        # 5. källhärledda proveniensfält
+                stop(f"STOPP: fork slut_observed avviker i {f.name}")
+        else:
+            if prov["kvitto"]["sha256"] != base_dump_sha:
+                stop(f"STOPP: main-kvitto-sha i {f.name} != basdumpens byte-sha")
+            if (so["cells"], so["links"], so["graph_stamp"], so["graph_content_hash"]) != \
+               (BASE_IDENT["cells"], BASE_IDENT["links"], BASE_IDENT["graph_stamp"], BASE_IDENT["graph_content_hash"]):
+                stop(f"STOPP: main slut_observed avviker i {f.name}")
+        # kända fält får INTE vara OKÄND
         e = prov["extractor"]
-        if e.get("binary_sha256") not in (bin_sha, "OKÄND"):
-            stop(f"STOPP: binary_sha i {f.name} != källan")
-        if e.get("cargo_lock_sha256") not in (cargo_sha, "OKÄND"):
-            stop(f"STOPP: cargo_lock i {f.name} != källan")
-        dump_id = b["geometri"]["dump_id"]
-        arm = prov["dataset_manifest"]["arm"]
-        ds = b["ben_id"].split(":")[0]
+        if e.get("binary_sha256") != bin_sha:
+            stop(f"STOPP: binary_sha256 i {f.name} != faktisk ({e.get('binary_sha256')})")
+        if e.get("cargo_lock_sha256") != cargo_sha:
+            stop(f"STOPP: cargo_lock_sha256 i {f.name} != faktisk")
         exp_cli = sha(json.dumps([bin_sha, "bunt", dump_id, arm, ds], ensure_ascii=False))
-        if e.get("cli_config_sha256") not in (exp_cli, "OKÄND"):
-            stop(f"STOPP: cli_config i {f.name} != källan")
+        if e.get("cli_config_sha256") != exp_cli:
+            stop(f"STOPP: cli_config_sha256 i {f.name} != faktisk")
         ben.append({"ben_id": b["ben_id"], "bundle_payload_sha256": got, "proveniens_sha256": prov_sha})
 
     ben.sort(key=lambda r: r["ben_id"])
@@ -189,23 +193,17 @@ def main() -> int:
     ]
     man.sort(key=lambda r: r["id"])
     dumps = [
-        {"id": "dm3-fork-v296-ram", "sha256": sha_bytes(Path(args.fork_dump).read_bytes())},
-        {"id": "dm3-base", "sha256": sha_bytes(Path(args.base_dump).read_bytes())},
+        {"id": "dm3-fork-v296-ram", "sha256": fork_dump_sha},
+        {"id": "dm3-base", "sha256": base_dump_sha},
     ]
     dumps.sort(key=lambda r: r["id"])
-    rot = {
-        "schema": "ben3d-rot/1",
-        "dataset_manifests": man,
-        "dumps": dumps,
-        "extractor_bin_sha256": bin_sha,
-        "viewer_bundle_sha256": sha_bytes(Path(args.viewer).read_bytes()),
-        "ben": ben,
-    }
+    rot = {"schema": "ben3d-rot/1", "dataset_manifests": man, "dumps": dumps,
+           "extractor_bin_sha256": bin_sha, "viewer_bundle_sha256": sha_bytes(Path(args.viewer).read_bytes()), "ben": ben}
     rot_sha = sha(canonical(rot))
     report = {"schema": "ben3d-verify/1", "ok": True, "n_buntar": len(ben), "rot_sha256": rot_sha, "rot": rot}
     if args.out:
         Path(args.out).write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n")
-    print(f"{len(ben)} buntar OK (källverifierade) · rot_sha256={rot_sha}")
+    print(f"{len(ben)} buntar OK (källverifierade, fail-closed) · rot_sha256={rot_sha}")
     return 0
 
 
