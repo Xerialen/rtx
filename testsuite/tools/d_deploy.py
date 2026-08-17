@@ -296,14 +296,56 @@ def check_portvakt(
     return matches[0]
 
 
+def rig_lock_declared_token(body: str) -> str | None:
+    """Mirror rtx-ctlproto::rig_lock_declared_token. None if empty or contradictory."""
+    found: str | None = None
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("token="):
+            continue
+        val = stripped[len("token="):].strip()
+        if found is not None and found != val:
+            return None
+        found = val
+    if found == "":
+        return None
+    return found
+
+
+def rig_lock_accepts(body: str, token: str) -> bool:
+    """Mirror rtx-ctlproto::rig_lock_accepts."""
+    body, token = body.strip(), token.strip()
+    if not body or not token:
+        return False
+    if any(line.strip().startswith("token=") for line in body.splitlines()):
+        return rig_lock_declared_token(body) == token
+    first = body.split()[0] if body.split() else ""
+    return token == body or token == first
+
+
 def parse_deploy_lock(path: Path) -> dict[str, str]:
+    """Parse campaign/bridge lock fields. Bare first line is skipped (no `=`).
+
+    A file that names `token=` but contradicts itself or leaves it empty is
+    refused here — it does not fall back to the first field.
+    """
+    raw = Path(path).read_text(encoding="utf-8", errors="replace")
+    has_token_line = any(line.strip().startswith("token=") for line in raw.splitlines())
+    declared = rig_lock_declared_token(raw) if has_token_line else None
+    if has_token_line and declared is None:
+        raise FailClosed(
+            "lock",
+            f"{path} har motsägelsefull eller tom token=-deklaration — vägran",
+        )
     fields: dict[str, str] = {}
-    for raw in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
-        line = raw.strip()
+    for line in raw.splitlines():
+        line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, val = line.partition("=")
         fields[key.strip()] = val.strip()
+    if declared is not None:
+        fields["token"] = declared
     return fields
 
 
@@ -358,7 +400,8 @@ def check_rig_lock(
             "lock",
             f"lock ts {fields['ts']} utanför ±{LOCK_TS_WINDOW_S // 3600}h-fönster",
         )
-    if fields["token"] != token:
+    body = path.read_text(encoding="utf-8", errors="replace")
+    if not rig_lock_accepts(body, token):
         raise FailClosed("lock", "lock kampanjtoken matchar inte runnerns token")
     if fields["qwprogs_sha256"].lower() != qwprogs_sha256.lower():
         raise FailClosed("lock", "lock qwprogs-sha ≠ hashad staged/live-fil")
@@ -509,7 +552,7 @@ def _apply_one(
             payload["carried"] = True
         send_plan_link(
             ctl, payload, recipe=syn, freeze=freeze,
-            deploy=True, deploy_ctx=deploy_ctx,
+            deploy=True, deploy_ctx=deploy_ctx, lock_token=lock_token,
         )
         return
     if kind == "shelf_patch":

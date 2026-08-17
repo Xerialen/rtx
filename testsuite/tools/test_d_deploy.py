@@ -538,7 +538,7 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertEqual(self.engine.n_apply, 0)
         fc.send_plan_link(
             self.ctl, _v296_payload(), recipe=syn, freeze=self.ctx,
-            deploy=True, deploy_ctx=ctx,
+            deploy=True, deploy_ctx=ctx, lock_token="fable",
         )
         self.assertEqual(self.engine.n_apply, 1)
         with self.assertRaises(fc.FailClosed) as cm:
@@ -717,29 +717,25 @@ class DeployRunnerTests(unittest.TestCase):
             "gain": float(op["gain"]),
             "carried": True,
         }
-        wire = fc.planlink_wire_cmd(payload)
+        wire = fc.planlink_wire_cmd(payload, lock_token="fable")
         sender_sha = fc.planlink_payload_sha256(wire["PlanLink"])
         self.assertEqual(sender_sha, fc.SEALED_V296_PAYLOAD_SHA256)
         self.ctl.request(wire)
         recv = self.engine.last_planlink
         self.assertIsNotNone(recv)
-        for key in ("from", "takeoff", "tgt", "v_req", "gain", "carried"):
+        for key in ("from", "takeoff", "tgt", "v_req", "gain", "carried", "lock_token"):
             self.assertIn(key, recv)
         self.assertTrue(recv["carried"])
+        self.assertEqual(recv["lock_token"], "fable")
         self.assertAlmostEqual(float(recv["gain"]), 5.5, places=5)
-        # Same sealed hash on the constructed (pre-wire) payload at both
-        # ends of the runner contract. The fake engine hashes the
-        # deserialized cmd; gain/carried must still be present so the
-        # seal's fields were not stripped.
         self.assertEqual(self.engine.last_planlink_sha, fc.planlink_payload_sha256(recv))
-        self.assertIn("gain", self.engine.last_planlink)
-        self.assertIn("carried", self.engine.last_planlink)
-        # Reconstruct from the recipe (the sealed object) and confirm
-        # the wire cmd was that object, not the text verb.
         self.assertTrue(any(_is_planlink(c) for c in self.engine.cmds))
         sent = next(c["PlanLink"] for c in self.engine.cmds if _is_planlink(c))
         self.assertEqual(fc.planlink_payload_sha256(payload), fc.SEALED_V296_PAYLOAD_SHA256)
-        self.assertEqual(set(sent), {"from", "takeoff", "tgt", "v_req", "gain", "carried"})
+        self.assertEqual(
+            set(sent),
+            {"from", "takeoff", "tgt", "v_req", "gain", "carried", "lock_token"},
+        )
 
 
 if __name__ == "__main__":

@@ -75,9 +75,19 @@ class EngineSession:
             return {"Status": {"map": "dm3", "navmesh": "ready"}}
         if isinstance(cmd, dict) and "PlanLink" in cmd:
             payload = dict(cmd["PlanLink"])
+            if not str(payload.get("lock_token") or "").strip():
+                raise EngineRefuse("plant requires lock_token")
             self.last_planlink = payload
             self.last_planlink_sha = planlink_payload_sha256(payload)
             return self._push_planlink(payload)
+        if isinstance(cmd, dict) and "PlanCell" in cmd:
+            if not str((cmd["PlanCell"] or {}).get("lock_token") or "").strip():
+                raise EngineRefuse("plant requires lock_token")
+            raise EngineRefuse("PlanCell not used by deploy-runner")
+        if isinstance(cmd, dict) and "PlanDrop" in cmd:
+            if not str((cmd["PlanDrop"] or {}).get("lock_token") or "").strip():
+                raise EngineRefuse("plant requires lock_token")
+            raise EngineRefuse("PlanDrop not used by deploy-runner")
         if isinstance(cmd, dict) and "Fixa" in cmd:
             body = cmd["Fixa"]
             return self._fixa(str(body.get("recipe") or ""), str(body.get("mode") or ""))

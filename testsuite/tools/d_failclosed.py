@@ -475,10 +475,12 @@ def revert_last_undo() -> None:
         sess.next_index += 1
 
 
-def planlink_wire_cmd(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """The live labctl/replant_kanon PlanLink object. Bit-faithful fields.
+def planlink_wire_cmd(
+    payload: Mapping[str, Any], *, lock_token: str | None = None
+) -> dict[str, Any]:
+    """Live PlanLink object. gain/carried stay; lock_token is the plant gate.
 
-    Never drop gain/carried — they are in the sealed payload hash.
+    lock_token is NOT part of the sealed payload hash.
     """
     body: dict[str, Any] = {
         "from": [float(x) for x in payload["from"]],
@@ -489,7 +491,24 @@ def planlink_wire_cmd(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
     if payload.get("carried"):
         body["carried"] = True
+    token = lock_token if lock_token is not None else payload.get("lock_token")
+    if token is not None:
+        body["lock_token"] = str(token)
     return {"PlanLink": body}
+
+
+def plancell_wire_cmd(pos: Any, *, lock_token: str) -> dict[str, Any]:
+    return {"PlanCell": {"pos": [float(x) for x in pos], "lock_token": str(lock_token)}}
+
+
+def plandrop_wire_cmd(frm: Any, to: Any, *, lock_token: str) -> dict[str, Any]:
+    return {
+        "PlanDrop": {
+            "from": [float(x) for x in frm],
+            "to": [float(x) for x in to],
+            "lock_token": str(lock_token),
+        }
+    }
 
 
 def planlink_payload_sha256(payload: Any) -> str:
@@ -1161,6 +1180,7 @@ def send_plan_link(
     freeze: FreezeContext | None = None,
     deploy: bool = False,
     deploy_ctx: DeployContext | None = None,
+    lock_token: str | None = None,
 ) -> Any:
     """Production PlanLink entry. Sealed V296 + deployläge require minted context."""
     payload_sha = planlink_payload_sha256(payload)
@@ -1212,7 +1232,11 @@ def send_plan_link(
     try:
         if isinstance(payload, str):
             return ctl.request(payload)
-        return ctl.request(planlink_wire_cmd(payload))
+        if (deploy or deploy_ctx is not None or active_deploy_context() is not None) and not (
+            lock_token or ""
+        ).strip():
+            raise FailClosed("lock", "plant kräver lock_token ur låskontraktet")
+        return ctl.request(planlink_wire_cmd(payload, lock_token=lock_token))
     except Exception:
         if consumed:
             after = read_engine_chain(ctl)
