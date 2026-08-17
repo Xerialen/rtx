@@ -16,7 +16,7 @@ sys.path.insert(0, str(HERE.parent))
 
 import test_lab_guard  # noqa: F401 — suite-global lab-vakt
 from test_lab_guard import install_lab_guard, uninstall_lab_guard  # noqa: E402
-from timtest_d_ports import EXIT_REFUSED, port_fel  # noqa: E402
+from timtest_d_ports import EXIT_REFUSED, REF_PAIRS, port_arm, port_fel  # noqa: E402
 from timtest_d_kluster import (
     MEASURE_ID, MEASURE_ID_FALL_EPISODER,
     klassa_utfall, kvot_krav_samma_measure, rapport_rad, samla_kluster,
@@ -55,6 +55,27 @@ class PortvaktTests(unittest.TestCase):
     def test_tillaten_d4(self):
         self.assertIsNone(port_fel(27999, 27595))
         self.assertIsNone(port_fel(27996, 27592))
+
+    def test_ref_pair_accepteras_som_referens(self):
+        self.assertEqual(REF_PAIRS, frozenset({(27991, 27550)}))
+        self.assertIsNone(port_fel(27991, 27550))
+        self.assertEqual(port_arm(27991, 27550), "referens")
+
+    def test_tbx_par_oforandrade_inte_referens(self):
+        self.assertIsNone(port_fel(27996, 27592))
+        self.assertIsNone(port_fel(27999, 27595))
+        self.assertEqual(port_arm(27996, 27592), "tbx")
+        self.assertEqual(port_arm(27999, 27595), "tbx")
+
+    def test_godtyckligt_par_vagrass_ingen_arm(self):
+        self.assertIsNotNone(port_fel(27991, 27551))
+        self.assertIsNotNone(port_fel(27992, 27550))
+        self.assertIsNotNone(port_fel(1234, 5678))
+        self.assertIsNone(port_arm(27991, 27551))
+        self.assertIsNone(port_arm(1234, 5678))
+        # 27991 + tbx-game är inte referensparet och inte tbx — vägras som förut
+        self.assertIsNotNone(port_fel(27991, 27595))
+        self.assertIsNone(port_arm(27991, 27595))
 
     def test_cli_forbjuden_rc2(self):
         for port, game in ((27990, 27595), (27993, 27595),
