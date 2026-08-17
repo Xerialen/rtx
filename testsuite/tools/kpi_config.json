@@ -9,10 +9,17 @@
   },
   "days_per_month": 30,
   "k1": {
-    "source": "domfil_pass_headings",
+    "source": "mattstock_domar",
     "target_max_days": 1,
-    "pass_markers": ["GRÖNT", "GODKÄND"],
-    "heading_regex": null
+    "include_markers": ["T1h", "T1H"],
+    "yardstick_markers": [
+      "fork vs main",
+      "fork mot main",
+      "parallellmätning fork",
+      "sida-vid-sida mot main"
+    ],
+    "exclude_markers": ["T20m", "T20M", "kodnivå", "kodnivån", "protocol=T20m"],
+    "worklog_globs": ["*-t1h-timtest.md", "*t1h-timtest*.md"]
   },
   "k2": {
     "source": "domfil_order_to_first_figure",

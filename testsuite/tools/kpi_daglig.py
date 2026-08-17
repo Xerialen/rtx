@@ -27,6 +27,7 @@ DEFAULT_OUT = DEFAULT_WORKLOGS / "kpi"
 HEAD = re.compile(r"^## DOM\s+(\S+)\s+—\s+(.*)$")
 DATE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 PASS_DEFAULT = ("GRÖNT", "GODKÄND")
+DOM_SPLIT = re.compile(r"(?=^## DOM )", re.M)
 
 SCHEMA = "kpi-daglig/1"
 
@@ -90,6 +91,65 @@ def parse_pass_dates(text: str, *, markers: list[str], heading_regex: str | None
     return out
 
 
+def _contains_any(blob: str, markers: list[str]) -> bool:
+    low = blob.lower()
+    return any(m.lower() in low for m in markers)
+
+
+def is_mattstock_block(heading: str, body: str, spec: dict[str, Any]) -> bool:
+    """T1h sida-vid-sida mot main. T20m prelim and kodnivå do not qualify."""
+    blob = heading + "\n" + body
+    if _contains_any(blob, list(spec.get("exclude_markers") or [])):
+        return False
+    if not _contains_any(blob, list(spec.get("include_markers") or ["T1h", "T1H"])):
+        return False
+    return _contains_any(blob, list(spec.get("yardstick_markers") or []))
+
+
+def parse_mattstock_dates(
+    dom_text: str,
+    *,
+    spec: dict[str, Any],
+    worklogs: Path | None,
+) -> list[tuple[date, str]]:
+    """Dates of måttstock figures: DOM blocks + named worklog reports."""
+    out: list[tuple[date, str]] = []
+    for part in DOM_SPLIT.split(dom_text):
+        if not part.startswith("## DOM"):
+            continue
+        lines = part.splitlines()
+        heading = lines[0]
+        body = "\n".join(lines[1:40])
+        if not is_mattstock_block(heading, body, spec):
+            continue
+        dm = DATE.search(heading)
+        if not dm:
+            continue
+        m = HEAD.match(heading.strip())
+        raw = m.group(1) if m else heading[:40]
+        out.append((date.fromisoformat(dm.group(1)), raw))
+    globs = list(spec.get("worklog_globs") or [])
+    if worklogs and worklogs.is_dir() and globs:
+        for p in worklogs.iterdir():
+            if not p.is_file():
+                continue
+            if not any(fnmatch(p.name, g) for g in globs):
+                continue
+            text = p.read_text(encoding="utf-8", errors="replace")[:4000]
+            heading = text.splitlines()[0] if text else p.name
+            if not is_mattstock_block(heading, text[:2000], spec):
+                # filename glob already selected T1h-timtest reports
+                if not _contains_any(text[:800], list(spec.get("include_markers") or [])):
+                    continue
+                if _contains_any(text[:800], list(spec.get("exclude_markers") or [])):
+                    continue
+            dm = DATE.search(p.name) or DATE.search(heading)
+            if not dm:
+                continue
+            out.append((date.fromisoformat(dm.group(1)), p.name))
+    return out
+
+
 def daily_cost_usd(cfg: dict[str, Any]) -> tuple[float | None, str]:
     costs = cfg.get("costs_usd_per_month") or {}
     days = float(cfg.get("days_per_month") or 30)
@@ -104,13 +164,16 @@ def daily_cost_usd(cfg: dict[str, Any]) -> tuple[float | None, str]:
     return daily, note
 
 
-def k1(cfg: dict[str, Any], dom_text: str, as_of: date) -> dict[str, Any]:
+def k1(cfg: dict[str, Any], dom_text: str, as_of: date, worklogs: Path | None = None) -> dict[str, Any]:
     spec = cfg.get("k1") or {}
-    source = spec.get("source") or "domfil_pass_headings"
-    markers = list(spec.get("pass_markers") or PASS_DEFAULT)
-    rows = parse_pass_dates(dom_text, markers=markers, heading_regex=spec.get("heading_regex"))
+    source = spec.get("source") or "mattstock_domar"
+    rows = parse_mattstock_dates(dom_text, spec=spec, worklogs=worklogs)
     if not rows:
-        return _unmeasured("K1", source, "ingen PASS-rubrik med datum i domfilen")
+        return _unmeasured(
+            "K1", source,
+            "ingen måttstocksdom (T1h sida-vid-sida mot main) med datum; "
+            "T20m-prelim och kod/verkstadsdomar räknas inte",
+        )
     last_day, last_id = max(rows, key=lambda r: r[0])
     days = (as_of - last_day).days
     target = int(spec.get("target_max_days") or 1)
@@ -348,7 +411,7 @@ def compute(
     worklogs: Path | None,
 ) -> dict[str, Any]:
     rows = {
-        "K1": k1(cfg, dom_text, as_of),
+        "K1": k1(cfg, dom_text, as_of, worklogs),
         "K2": k2(cfg, dom_text),
         "K3": k3(cfg, repo, as_of),
         "K4": k4(cfg),

@@ -46,15 +46,39 @@ def _git_repo() -> tuple[tempfile.TemporaryDirectory, Path]:
 
 class KpiTests(unittest.TestCase):
     def test_k1_days_since_last_pass(self):
+        # Kept as a smoke that kodnivå PASS is not a måttstock.
         row = kpi.k1(CFG, DOM, date(2026, 8, 17))
+        self.assertEqual(row["status"], "OMÄTT")
+
+    def test_k1_only_mattstock_not_kod_or_t20m(self):
+        """Both kinds in one file: kodnivå 16:e and T20m must lose to T1h-vs-main 15:e."""
+        mixed = """# d
+## DOM RAM-V2-KOD — GODKÄND (kodnivån) — 2026-08-16 20:43 CEST
+- spår: D
+## DOM T20M-PRELIM — STOPP — 2026-08-17 08:19 CEST
+- spår: D (T20m-prelim) protocol=T20m
+## DOM T1H-MAIN — GRÖNT — 2026-08-15 19:26 CEST
+- spår: T1h · parallellmätning fork vs main · N=75
+"""
+        row = kpi.k1(CFG, mixed, date(2026, 8, 17))
         self.assertEqual(row["status"], "MÄTT")
-        self.assertEqual(row["value"], 1)
-        self.assertEqual(row["last_date"], "2026-08-16")
-        self.assertEqual(row["last_punkt"], "RAM-V2-KOD")
-        self.assertFalse(row["alarm"])
-        row2 = kpi.k1(CFG, DOM, date(2026, 8, 18))
-        self.assertEqual(row2["value"], 2)
-        self.assertTrue(row2["alarm"])
+        self.assertEqual(row["last_date"], "2026-08-15")
+        self.assertEqual(row["last_punkt"], "T1H-MAIN")
+        self.assertEqual(row["value"], 2)
+        self.assertTrue(row["alarm"])
+
+    def test_k1_worklog_t1h_timtest(self):
+        td = tempfile.TemporaryDirectory()
+        wl = Path(td.name)
+        (wl / "2026-08-15-t1h-timtest.md").write_text(
+            "# T1h — 1 h kontinuerlig parallellmätning fork vs main\n\nResultat N=75\n",
+            encoding="utf-8",
+        )
+        row = kpi.k1(CFG, "## DOM RAM-V2-KOD — GODKÄND (kodnivån) — 2026-08-16 20:43 CEST\n",
+                     date(2026, 8, 17), worklogs=wl)
+        self.assertEqual(row["last_date"], "2026-08-15")
+        self.assertEqual(row["value"], 2)
+        td.cleanup()
 
     def test_k2_k4_k6_unmeasured(self):
         for fn, kid in ((kpi.k2, "K2"), (kpi.k4, "K4"), (kpi.k6, "K6")):
@@ -108,7 +132,11 @@ class KpiTests(unittest.TestCase):
         td = tempfile.TemporaryDirectory()
         out = Path(td.name) / "kpi"
         dom = Path(td.name) / "dom.md"
-        dom.write_text("## DOM I1 — GRÖNT — 2026-08-10 23:38 CEST\n", encoding="utf-8")
+        dom.write_text(
+            "## DOM T1H-MAIN — GRÖNT — 2026-08-10 19:26 CEST\n"
+            "- spår: T1h · parallellmätning fork vs main\n",
+            encoding="utf-8",
+        )
         doc = kpi.compute(
             cfg=CFG, as_of=date(2026, 8, 17),
             dom_text=dom.read_text(encoding="utf-8"),
