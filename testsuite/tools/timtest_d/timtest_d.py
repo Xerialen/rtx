@@ -29,8 +29,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, os.path.expanduser("~/rtx-tools"))
+# tools/ after this dir so `import timtest_d` stays this module.
+if str(HERE.parent) not in sys.path:
+    sys.path.append(str(HERE.parent))
 
 from timtest_d_ports import EXIT_REFUSED, port_fel  # noqa: E402
+from d_failclosed import change_freeze_reason  # noqa: E402
 from timtest_d_kluster import skriv_kluster  # noqa: E402
 
 # Importera BEN-API:t ur den frysta kopian — ingen omskrivning av loopen.
@@ -197,6 +201,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     fel = port_fel(args.port, args.game_port)
+    if not fel:
+        fel = change_freeze_reason()
     if fel:
         sys.stderr.write("VÄGRAR: %s\n" % fel)
         return EXIT_REFUSED

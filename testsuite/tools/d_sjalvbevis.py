@@ -18,6 +18,7 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from d_kvitto import astar_path, make_kvitto, recipe_kvitto_paths, refuse_shared_kvitto_dir  # noqa: E402
+from d_failclosed import change_freeze_reason, validate_anchors  # noqa: E402
 from d_recipe import (  # noqa: E402
     avsett_drop_registered,
     gates_registered,
@@ -246,8 +247,14 @@ class DrillRunner:
 
     def preflight(self) -> list[str]:
         reasons: list[str] = []
+        frozen = change_freeze_reason()
+        if frozen:
+            reasons.append(frozen)
         if self.ctl_port in FORBIDDEN_CTL or self.game_port in FORBIDDEN_GAME:
             reasons.append("RA/main endpoint")
+        aw = validate_anchors(self.recipe)
+        if aw:
+            reasons.append(aw)
         try:
             on_expected(self.recipe)
         except ValueError as exc:

@@ -31,6 +31,7 @@ from d_kvitto import (  # noqa: E402
     write_exclusive,
     write_kvitto,
 )
+from d_failclosed import change_freeze_reason, validate_anchors
 from d_recipe import load_recipe, on_expected  # noqa: E402
 from d_strata import (  # noqa: E402
     FORBIDDEN_CTL,
@@ -949,8 +950,14 @@ class RamRunner:
 
     def preflight(self) -> list[str]:
         reasons = []
+        frozen = change_freeze_reason()
+        if frozen:
+            reasons.append(frozen)
         if self.ctl_port in FORBIDDEN_CTL or self.game_port in FORBIDDEN_GAME:
             reasons.append("RA/main endpoint")
+        aw = validate_anchors(self.recipe)
+        if aw:
+            reasons.append(aw)
         rid = self.recipe.get("id")
         if rid not in {"ram-rail", "ram-rail-v2", "ram-prevent"}:
             reasons.append(f"not a ram recipe: {rid!r}")

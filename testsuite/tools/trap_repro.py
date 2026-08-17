@@ -39,7 +39,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runner.control import Control, ControlError  # noqa: E402
+from d_failclosed import change_freeze_reason  # noqa: E402
 
 FORBIDDEN_CTL = {27990, 27993}
 RIG_LOCK = Path.home() / "lab" / ".rig-lock"
@@ -47,6 +49,9 @@ RIG_LOCK = Path.home() / "lab" / ".rig-lock"
 
 def require_riglock(port: int) -> None:
     """GAP 6: lock before Control(); refuse RA/main endpoints."""
+    frozen = change_freeze_reason()
+    if frozen:
+        sys.exit(frozen)
     if port in FORBIDDEN_CTL:
         sys.exit(
             f"port {port} is RA/main — trap_repro runs only on a dedicated D instance"

@@ -35,6 +35,7 @@ from d_kvitto import (  # noqa: E402
     write_attempt_raw_file,
     write_kvitto,
 )
+from d_failclosed import guard_mutation
 from d_recipe import on_expected
 from d_strata import (
     FORBIDDEN_CTL,
@@ -371,6 +372,8 @@ class LiveTrialDriver:
     def apply(self) -> dict:
         if not self.lock_token:
             raise RuntimeError("fixa apply requires lock_token")
+        live = self.identity()
+        guard_mutation("apply", recipe=self.recipe, live=live)
         self.quiesce()
         rid = self.recipe.get("id") or "west-shelf"
         cmd = f"fixa {rid} apply lock {self.lock_token}"
@@ -384,6 +387,8 @@ class LiveTrialDriver:
     def undo(self) -> dict:
         if not self.lock_token:
             raise RuntimeError("fixa undo requires lock_token")
+        live = self.identity()
+        guard_mutation("undo", recipe=self.recipe, live=live)
         self._apply_arm_cvars("off")
         self.quiesce()
         rid = self.recipe.get("id") or "west-shelf"

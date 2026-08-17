@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -150,6 +151,26 @@ class FixaTests(unittest.TestCase):
         self.assertEqual(doc["stamps"]["on"]["expected"], on)
         self.assertEqual(doc["stamps"]["on"]["observed"], on)
         self.assertIs(recipe["on_expected"], on)
+
+
+
+    def test_require_lock_refused_when_frozen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            flag = Path(tmp) / "freeze"
+            flag.write_text("fable 2026-08-17T07:15:00Z\n", encoding="utf-8")
+            lock = Path(tmp) / "lock"
+            lock.write_text("fable\n", encoding="utf-8")
+            old = os.environ.get("D_CHANGE_FREEZE")
+            os.environ["D_CHANGE_FREEZE"] = str(flag)
+            try:
+                with self.assertRaises(SystemExit) as ctx:
+                    fixa.require_lock(27996, lock)
+                self.assertIn("change-freeze", str(ctx.exception))
+            finally:
+                if old is None:
+                    os.environ.pop("D_CHANGE_FREEZE", None)
+                else:
+                    os.environ["D_CHANGE_FREEZE"] = old
 
 
 if __name__ == "__main__":

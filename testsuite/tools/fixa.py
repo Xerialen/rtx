@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from d_kvitto import WEST_SHELF_RECIPE, astar_path, make_kvitto, write_kvitto  # noqa: E402
+from d_failclosed import FailClosed, change_freeze_reason, guard_mutation  # noqa: E402
 from d_recipe import load_recipe, on_expected  # noqa: E402
 from d_strata import FORBIDDEN_CTL, FORBIDDEN_GAME  # noqa: E402
 from verify_d_kvitto import verify  # noqa: E402
@@ -27,6 +28,9 @@ RIG_LOCK = Path.home() / "lab" / ".rig-lock"
 def require_lock(port: int, lock_path: Path = RIG_LOCK) -> str:
     if port in FORBIDDEN_CTL:
         raise SystemExit(f"port {port} is RA/main — dedicated D instance only")
+    frozen = change_freeze_reason()
+    if frozen:
+        raise SystemExit(frozen)
     if not lock_path.is_file():
         raise SystemExit(f"no {lock_path} — hold the lock before fixa --apply/--undo")
     body = lock_path.read_text(encoding="utf-8", errors="replace").strip()
@@ -210,6 +214,23 @@ def main(argv: list[str] | None = None) -> int:
         token = lock_token_from_file(args.lock)
     ctl = Control(args.host, args.port)
     try:
+        if mode_s in {"apply", "undo"}:
+            try:
+                ident = run_fixa(
+                    ctl,
+                    recipe_id=args.recept,
+                    mode="dry-run",
+                    from_cell=args.from_cell,
+                    to_cell=args.to_cell,
+                )
+                live = stamp_from_reply(ident)
+                guard_mutation(mode_s, recipe=recipe, live=live)
+            except FailClosed as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            except (KeyError, TypeError, ValueError) as exc:
+                print(f"live stamp oläsbar före {mode_s}: {exc}", file=sys.stderr)
+                return 2
         reply = run_fixa(
             ctl,
             recipe_id=args.recept,

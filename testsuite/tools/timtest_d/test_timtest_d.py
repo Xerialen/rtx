@@ -49,6 +49,22 @@ class PortvaktTests(unittest.TestCase):
             self.assertEqual(r.returncode, EXIT_REFUSED, r.stderr)
             self.assertIn("VÄGRAR", r.stderr)
 
+    def test_cli_freeze_rc2(self):
+        td = tempfile.mkdtemp(prefix="timtest-d-freeze-")
+        flag = Path(td) / "change-freeze"
+        flag.write_text("fable 2026-08-17T07:15:00Z\n", encoding="utf-8")
+        env = dict(os.environ)
+        env["D_CHANGE_FREEZE"] = str(flag)
+        r = subprocess.run(
+            [sys.executable, str(HERE / "timtest_d.py"),
+             "--port", "27999", "--game-port", "27595",
+             "--out", td, "--mock"],
+            cwd=str(HERE), capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(r.returncode, EXIT_REFUSED, r.stderr)
+        self.assertIn("change-freeze", r.stderr)
+        self.assertIn("VÄGRAR", r.stderr)
+
     def test_cli_tillaten_nar_mock(self):
         """Portvakten släpper d4; mock tar aldrig socket."""
         self.assertIsNone(port_fel(27999, 27595))
