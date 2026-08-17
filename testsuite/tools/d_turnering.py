@@ -1121,6 +1121,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.run and not commit:
         print("judged --run requires --commit", file=sys.stderr)
         return 2
+    if args.run and (args.n_heldout is not None or args.n_repro is not None):
+        # deepseek d8ee25e review: the test/smoke overrides must never reach
+        # a judged run — they would silently shrink the facit populations.
+        print("judged --run refuses --n-heldout/--n-repro", file=sys.stderr)
+        return 2
 
     sys.path.insert(0, str(HERE.parent))
     from runner.control import Control  # noqa: E402
