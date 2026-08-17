@@ -268,9 +268,24 @@ class Control:
         except json.JSONDecodeError as exc:
             raise ControlError(f"invalid text control reply: {exc}") from exc
 
-    def request(self, command: str, timeout: float = 15.0) -> dict[str, Any]:
+    def request(self, command: str | dict[str, Any], timeout: float = 15.0) -> dict[str, Any]:
+        """Send a control command.
+
+        * ``str`` — existing text verbs (``fixa``, ``status``, ``planlink``…).
+          Parsed by ``_parse_verb``. Text-wire consumers are unchanged.
+        * ``dict`` — already-typed cmd, sent bit-faithfully as msgpack
+          ``{"id", "cmd"}``. This is the labctl/replant_kanon PlanLink path
+          (full payload including ``gain`` / ``carried``). Requires msgpack.
+        """
         assert self._socket is not None
-        typed = _parse_verb(command)
+        if isinstance(command, dict):
+            typed = command
+            if not self._msgpack:
+                raise ControlError("structured cmd requires msgpack wire")
+        elif isinstance(command, str):
+            typed = _parse_verb(command)
+        else:
+            raise ControlError(f"control command must be str or dict, got {type(command).__name__}")
         request_id = self._next_id
         self._next_id += 1
         if self._msgpack:

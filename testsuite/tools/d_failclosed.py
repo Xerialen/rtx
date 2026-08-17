@@ -475,6 +475,23 @@ def revert_last_undo() -> None:
         sess.next_index += 1
 
 
+def planlink_wire_cmd(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The live labctl/replant_kanon PlanLink object. Bit-faithful fields.
+
+    Never drop gain/carried — they are in the sealed payload hash.
+    """
+    body: dict[str, Any] = {
+        "from": [float(x) for x in payload["from"]],
+        "takeoff": [float(x) for x in payload["takeoff"]],
+        "tgt": [float(x) for x in payload["tgt"]],
+        "v_req": float(payload["v_req"]),
+        "gain": float(payload["gain"]),
+    }
+    if payload.get("carried"):
+        body["carried"] = True
+    return {"PlanLink": body}
+
+
 def planlink_payload_sha256(payload: Any) -> str:
     if not isinstance(payload, Mapping):
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
@@ -1193,7 +1210,9 @@ def send_plan_link(
         raise FailClosed("plant", "ctl saknar request — plant avbruten")
     before = read_engine_chain(ctl) if consumed else None
     try:
-        return ctl.request({"PlanLink": payload} if not isinstance(payload, str) else payload)
+        if isinstance(payload, str):
+            return ctl.request(payload)
+        return ctl.request(planlink_wire_cmd(payload))
     except Exception:
         if consumed:
             after = read_engine_chain(ctl)
