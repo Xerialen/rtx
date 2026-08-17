@@ -647,11 +647,11 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertFalse(any(_is_fixa(c, mode="apply") or _is_fixa(c, mode="undo") for c in self.engine.cmds))
         self.assertTrue(all(_is_fixa(c, mode="chain") for c in self.engine.cmds if _is_fixa(c)))
 
-    def test_qwprogs_pin_is_5c66a6d(self):
+    def test_qwprogs_pin_is_79c8457(self):
         from d_deploy import EXPECTED_QWPROGS_SHA256
         self.assertEqual(
             EXPECTED_QWPROGS_SHA256,
-            "4e71191c5dce641be593834dcf2f4736724f24685e84ea5b2b2de905087392f0",
+            "02bf8d0dfbf66573157c16a1ee67155fdc9c29ec460846d624107b7742f96d30",
         )
 
     def test_v2_self_issued_ticket_refused(self):
