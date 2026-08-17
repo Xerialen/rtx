@@ -164,6 +164,7 @@ class StampFnvTests(unittest.TestCase):
         self.assertEqual(graphstamp.graph_stamp("dm3", 5977, 48207, 0), 906595427771298736)
         self.assertEqual(graphstamp.graph_stamp("dm3", 5977, 48205, 0), 14344244513446609626)
         self.assertEqual(graphstamp.graph_stamp("dm3", 5983, 48213, 0), 8774822664048001128)
+        self.assertEqual(graphstamp.graph_stamp("dm3", 5983, 48214, 0), 15510284848814560699)
         self.assertEqual(graphstamp.graph_stamp("dm3", 5978, 48208, 0), 13090435456435551592)
 
 
@@ -171,9 +172,11 @@ class KollisionTests(unittest.TestCase):
     def setUp(self):
         self.reg = graphstamp.load_register()
 
-    def test_register_has_the_three_named_collisions(self):
+    def test_register_has_the_named_collisions(self):
         keys = {(e["cells"], e["links"]) for e in self.reg}
-        self.assertEqual(keys, {(5977, 48207), (5983, 48213), (5977, 48205)})
+        self.assertEqual(keys, {
+            (5977, 48207), (5983, 48213), (5977, 48205), (5983, 48214),
+        })
 
     def test_warns_on_base_counts(self):
         hit = graphstamp.match_kollision(5977, 48207, 0, 906595427771298736, self.reg)
@@ -198,15 +201,26 @@ class KollisionTests(unittest.TestCase):
         self.assertIn("K2-ON", text)
         self.assertIn("K2+V296-om-+0/+0", text)
 
+    def test_warns_on_5983_48214_halv_vs_k2slut(self):
+        hit = graphstamp.match_kollision(5983, 48214, 0, 15510284848814560699, self.reg)
+        self.assertIsNotNone(hit)
+        text = graphstamp.warn_kollision(hit)
+        self.assertIn("VARNING:", text)
+        self.assertIn("5983/48214", text)
+        self.assertIn("15510284848814560699", text)
+        self.assertIn("HALVAPPLICERAT", text)
+        self.assertIn("deploy-v296-ram op2", text)
+        self.assertIn("komponat-k2-v296-ram SLUT", text)
+        self.assertIn("EJ-DEPLOY", text)
+        self.assertIn("nivå-2", text)
+        self.assertIn("cab98ac2", text)
+        self.assertIn("7a98d6e9", text)
+
     def test_no_warn_on_planlink_counts(self):
-        # Rätt V296-apply +0/+1 efter K2: 5977/48206 — inte i registret.
+        # V296-apply +0/+1 efter K2: 5977/48206 — inte i registret.
         stamp = graphstamp.graph_stamp("dm3", 5977, 48206, 0)
         self.assertIsNone(
             graphstamp.match_kollision(5977, 48206, 0, stamp, self.reg)
-        )
-        stamp2 = graphstamp.graph_stamp("dm3", 5983, 48214, 0)
-        self.assertIsNone(
-            graphstamp.match_kollision(5983, 48214, 0, stamp2, self.reg)
         )
 
     def test_cli_warns_plaintext_on_stderr(self):
@@ -254,6 +268,15 @@ class KollisionTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(buf_err.getvalue(), "")
         self.assertTrue(buf_out.getvalue().startswith("nivå-1 "))
+
+    def test_cli_warns_on_5983_48214(self):
+        buf_out, buf_err = io.StringIO(), io.StringIO()
+        with redirect_stdout(buf_out), redirect_stderr(buf_err):
+            rc = graphstamp.main(["--cells", "5983", "--links", "48214"])
+        self.assertEqual(rc, 0)
+        self.assertIn("nivå-1 15510284848814560699", buf_out.getvalue())
+        self.assertIn("VARNING:", buf_err.getvalue())
+        self.assertIn("HALVAPPLICERAT", buf_err.getvalue())
 
 
 class TwoGraphsSameCountsDifferentParams(unittest.TestCase):

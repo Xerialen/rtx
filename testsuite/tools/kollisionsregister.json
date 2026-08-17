@@ -25,6 +25,21 @@
       "graph_stamp": "14344244513446609626",
       "aliases": ["K2-ON", "K2+V296-om-+0/+0"],
       "warn": "VARNING: nivå-1-kollision 5977/48205 (FNV 14344244513446609626) — kända namn: K2-ON, K2+V296-om-+0/+0. Nivå-1 räcker inte; läs nivå-2. PlanLink-V296 mot post-K2 är +0/+1 ⇒ 5977/48206."
+    },
+    {
+      "cells": 5983,
+      "links": 48214,
+      "rj_links": 0,
+      "graph_stamp": "15510284848814560699",
+      "aliases": [
+        "deploy-v296-ram op2 (efter rail, mellansteg)",
+        "komponat-k2-v296-ram SLUT (EJ-DEPLOY)"
+      ],
+      "niva2": {
+        "deploy_op2_utan_params": "cab98ac22f356bc3",
+        "k2_slut_utan_params": "7a98d6e93bd8ebc3"
+      },
+      "warn": "VARNING: nivå-1-kollision 5983/48214 (FNV 15510284848814560699) — kända namn: deploy-v296-ram op2 (efter rail, mellansteg), komponat-k2-v296-ram SLUT (EJ-DEPLOY). En counts/FNV-läsare kan inte skilja ett HALVAPPLICERAT deploy-komponat från det färdiga K2-komponatet. Kräv nivå-2 för dom (cab98ac2… vs 7a98d6e9…; opus5 0c8554b)."
     }
   ]
 }
