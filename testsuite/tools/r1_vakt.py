@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """R1-vakt: a judged run is refused without a preceding rökdeploy receipt.
 
-R1 (flödesregel): rökdeploy först. The receipt format is defined here and
-tested in test_r1_vakt.py. No rig — callers pass a path; tests write
-fixtures under tempfile (FreezeContext.for_test / never ~/lab).
+TRIPWIRE, not attestation. Schema r1-rokdeploy-kvitto/1 is unsigned JSON.
+The gate checks FORM (required fields, sha hex, unit/port pair, outcome
+applied) plus, when a deploy-run.json path is present AND the file is
+reachable, a sha256 cross-check against that file. Anyone with filesystem
+write can author a passing receipt. This upholds R1 (rökdeploy first)
+against forgetfulness, not against intent. nature="tripwire" is written
+on every receipt so that stands on the can.
+
+No rig — callers pass a path; tests write fixtures under tempfile
+(FreezeContext.for_test / never ~/lab).
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import datetime
@@ -18,6 +26,8 @@ from typing import Any
 from d_failclosed import ALLOWED_DEPLOY_PAIRS, FailClosed
 
 SCHEMA = "r1-rokdeploy-kvitto/1"
+# On the can: this schema is a tripwire. It is not a signed attestation.
+NATURE = "tripwire"
 REQUIRED = (
     "schema",
     "written_at",
@@ -43,8 +53,19 @@ def _iso(value: Any) -> datetime:
         raise FailClosed("r1", f"written_at är inte ISO-8601: {value!r}") from exc
 
 
+def _sha256_hex(value: Any, label: str) -> str:
+    sha = str(value or "").strip().lower()
+    if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+        raise FailClosed("r1", f"rökdeploy-kvitto {label} är inte SHA-256")
+    return sha
+
+
 def parse_rokdeploy_kvitto(doc: Any) -> dict[str, Any]:
-    """Validate a rökdeploy receipt. Raises FailClosed('r1', …) on any defect."""
+    """Validate a rökdeploy receipt. Raises FailClosed('r1', …) on any defect.
+
+    Form only, plus optional deploy_run_sha256 hex check. File cross-check
+    lives in require_rokdeploy (needs the filesystem).
+    """
     if not isinstance(doc, dict):
         raise FailClosed("r1", "rökdeploy-kvitto är inte ett objekt")
     missing = [k for k in REQUIRED if k not in doc]
@@ -54,6 +75,13 @@ def parse_rokdeploy_kvitto(doc: Any) -> dict[str, Any]:
         raise FailClosed(
             "r1",
             f"rökdeploy-kvitto schema {doc.get('schema')!r} ≠ {SCHEMA}",
+        )
+    nature = doc.get("nature")
+    if nature is not None and nature != NATURE:
+        raise FailClosed(
+            "r1",
+            f"rökdeploy-kvitto nature {nature!r} ≠ {NATURE} "
+            "(schema is a tripwire, not an attestation)",
         )
     _iso(doc.get("written_at"))
     if not str(doc.get("runner_commit") or "").strip():
@@ -66,9 +94,11 @@ def parse_rokdeploy_kvitto(doc: Any) -> dict[str, Any]:
         )
     if not str(doc.get("recept_id") or "").strip():
         raise FailClosed("r1", "rökdeploy-kvitto saknar recept_id")
-    sha = str(doc.get("manifest_sha256") or "").strip().lower()
-    if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
-        raise FailClosed("r1", "rökdeploy-kvitto manifest_sha256 är inte SHA-256")
+    _sha256_hex(doc.get("manifest_sha256"), "manifest_sha256")
+    if "deploy_run_sha256" in doc:
+        _sha256_hex(doc.get("deploy_run_sha256"), "deploy_run_sha256")
+    if "deploy_run_path" in doc and not str(doc.get("deploy_run_path") or "").strip():
+        raise FailClosed("r1", "rökdeploy-kvitto deploy_run_path är tom")
     unit = str(doc.get("unit") or "")
     if unit not in ALLOWED_DEPLOY_PAIRS:
         raise FailClosed("r1", f"rökdeploy-kvitto unit {unit!r} är inte tbx-d1/d3")
@@ -94,13 +124,38 @@ def parse_rokdeploy_kvitto(doc: Any) -> dict[str, Any]:
     return doc
 
 
+def _cross_check_deploy_run(doc: dict[str, Any]) -> None:
+    """When deploy-run.json is reachable, the bound sha256 must match the bytes.
+
+    Unreachable path ⇒ no check (tripwire, not attestation).
+    """
+    raw_path = doc.get("deploy_run_path")
+    if raw_path is None:
+        return
+    p = Path(str(raw_path))
+    if not p.is_file():
+        return
+    sha = str(doc.get("deploy_run_sha256") or "").strip().lower()
+    if not sha:
+        raise FailClosed(
+            "r1",
+            "rökdeploy-kvitto har deploy_run_path men saknar deploy_run_sha256",
+        )
+    got = hashlib.sha256(p.read_bytes()).hexdigest()
+    if got != sha:
+        raise FailClosed(
+            "r1",
+            f"deploy_run_sha256 stämmer inte mot {p}",
+        )
+
+
 def require_rokdeploy(path: Path | str | None) -> dict[str, Any]:
     """R1 grind. Missing or invalid receipt ⇒ judged run is refused."""
     if path is None or str(path).strip() == "":
         raise FailClosed(
             "r1",
             "dömd körning vägras utan föregående rökdeploy-kvitto "
-            f"({SCHEMA})",
+            f"({SCHEMA}, {NATURE})",
         )
     p = Path(path)
     if not p.is_file():
@@ -110,7 +165,9 @@ def require_rokdeploy(path: Path | str | None) -> dict[str, Any]:
         doc = json.loads(raw)
     except (OSError, json.JSONDecodeError) as exc:
         raise FailClosed("r1", f"rökdeploy-kvitto oläsbart: {exc}") from exc
-    return parse_rokdeploy_kvitto(doc)
+    parsed = parse_rokdeploy_kvitto(doc)
+    _cross_check_deploy_run(parsed)
+    return parsed
 
 
 def refuse_judged_run(path: Path | str | None) -> str | None:
@@ -123,9 +180,14 @@ def refuse_judged_run(path: Path | str | None) -> str | None:
 
 
 def write_rokdeploy_kvitto(path: Path | str, **fields: Any) -> dict[str, Any]:
-    """Write a complete receipt. Tests only — never invents a lock token."""
+    """Write a complete receipt. Tests only — never invents a lock token.
+
+    Always stamps nature=tripwire. If deploy_run_path is given and the
+    file is readable, bind deploy_run_sha256 to those bytes.
+    """
     doc = {
         "schema": SCHEMA,
+        "nature": NATURE,
         "written_at": fields.get("written_at") or "2026-08-17T12:00:00Z",
         "runner_commit": fields["runner_commit"],
         "outcome": fields.get("outcome") or "applied",
@@ -137,6 +199,20 @@ def write_rokdeploy_kvitto(path: Path | str, **fields: Any) -> dict[str, Any]:
         "lock_token": fields["lock_token"],
         "slut_observed": fields["slut_observed"],
     }
+    deploy_path = fields.get("deploy_run_path")
+    claimed = fields.get("deploy_run_sha256")
+    if deploy_path:
+        dp = Path(deploy_path)
+        doc["deploy_run_path"] = str(dp)
+        if dp.is_file():
+            got = hashlib.sha256(dp.read_bytes()).hexdigest()
+            if claimed and str(claimed).strip().lower() != got:
+                raise ValueError("deploy_run_sha256 stämmer inte mot filen")
+            doc["deploy_run_sha256"] = got
+        elif claimed:
+            doc["deploy_run_sha256"] = str(claimed).strip().lower()
+    elif claimed:
+        doc["deploy_run_sha256"] = str(claimed).strip().lower()
     Path(path).write_text(
         json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -152,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
     except FailClosed as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    print("r1: ok")
+    print("r1: ok (tripwire)")
     return 0
 
 

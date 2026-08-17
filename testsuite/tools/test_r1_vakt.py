@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ import test_lab_guard  # noqa: F401
 import d_failclosed as fc
 import r1_vakt
 from r1_vakt import (
+    NATURE,
     SCHEMA,
     parse_rokdeploy_kvitto,
     refuse_judged_run,
@@ -57,6 +59,8 @@ class R1KvittoFormatTests(unittest.TestCase):
         p = self._write()
         doc = require_rokdeploy(p)
         self.assertEqual(doc["schema"], SCHEMA)
+        self.assertEqual(doc["nature"], NATURE)
+        self.assertEqual(NATURE, "tripwire")
         self.assertEqual(doc["outcome"], "applied")
         self.assertEqual(doc["unit"], "tbx-d1")
 
@@ -136,6 +140,66 @@ class R1KvittoFormatTests(unittest.TestCase):
         require_rokdeploy(p)
         self.assertTrue(str(p).startswith(str(self.dir)))
 
+    def test_legacy_receipt_without_nature_still_accepted(self):
+        p = self._write()
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        del doc["nature"]
+        p.write_text(json.dumps(doc), encoding="utf-8")
+        got = require_rokdeploy(p)
+        self.assertNotIn("nature", got)
+
+    def test_attestation_nature_refused(self):
+        p = self._write()
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        doc["nature"] = "attestation"
+        p.write_text(json.dumps(doc), encoding="utf-8")
+        with self.assertRaises(fc.FailClosed) as cm:
+            require_rokdeploy(p)
+        self.assertIn("tripwire", str(cm.exception))
+
+    def test_bind_deploy_run_matches_when_reachable(self):
+        run = self.dir / "deploy-run.json"
+        run.write_text('{"schema":"deploy-run/1","outcome":"applied"}\n', encoding="utf-8")
+        p = self._write(deploy_run_path=str(run))
+        doc = require_rokdeploy(p)
+        want = hashlib.sha256(run.read_bytes()).hexdigest()
+        self.assertEqual(doc["deploy_run_sha256"], want)
+        self.assertEqual(doc["deploy_run_path"], str(run))
+
+    def test_bind_deploy_run_mismatch_refused(self):
+        run = self.dir / "deploy-run.json"
+        run.write_text('{"schema":"deploy-run/1"}\n', encoding="utf-8")
+        p = self._write(deploy_run_path=str(run))
+        run.write_text('{"schema":"deploy-run/1","tampered":true}\n', encoding="utf-8")
+        with self.assertRaises(fc.FailClosed) as cm:
+            require_rokdeploy(p)
+        self.assertIn("deploy_run_sha256", str(cm.exception))
+
+    def test_bind_unreachable_deploy_run_is_not_checked(self):
+        missing = self.dir / "gone" / "deploy-run.json"
+        p = self._write(
+            deploy_run_path=str(missing),
+            deploy_run_sha256="ab" * 32,
+        )
+        doc = require_rokdeploy(p)
+        self.assertEqual(doc["deploy_run_sha256"], "ab" * 32)
+
+    def test_bind_path_without_sha_refused_when_reachable(self):
+        run = self.dir / "deploy-run.json"
+        run.write_text("{}\n", encoding="utf-8")
+        p = self._write()
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        doc["deploy_run_path"] = str(run)
+        p.write_text(json.dumps(doc), encoding="utf-8")
+        with self.assertRaises(fc.FailClosed) as cm:
+            require_rokdeploy(p)
+        self.assertIn("saknar deploy_run_sha256", str(cm.exception))
+
+    def test_cli_ok_prints_tripwire(self):
+        p = self._write()
+        self.assertEqual(r1_vakt.main(["--kvitto", str(p)]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
