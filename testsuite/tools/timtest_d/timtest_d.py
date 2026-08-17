@@ -34,7 +34,7 @@ if str(HERE.parent) not in sys.path:
     sys.path.append(str(HERE.parent))
 
 from timtest_d_ports import EXIT_REFUSED, port_fel  # noqa: E402
-from d_failclosed import change_freeze_reason  # noqa: E402
+from d_failclosed import FailClosed, guard_portvakt  # noqa: E402
 from timtest_d_kluster import skriv_kluster  # noqa: E402
 
 # Importera BEN-API:t ur den frysta kopian — ingen omskrivning av loopen.
@@ -201,10 +201,13 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     fel = port_fel(args.port, args.game_port)
-    if not fel:
-        fel = change_freeze_reason()
     if fel:
         sys.stderr.write("VÄGRAR: %s\n" % fel)
+        return EXIT_REFUSED
+    try:
+        guard_portvakt()
+    except FailClosed as exc:
+        sys.stderr.write("VÄGRAR: %s\n" % exc)
         return EXIT_REFUSED
     if args.duration <= 0:
         sys.stderr.write("VÄGRAR: --duration måste vara > 0 (fick %s)\n" % args.duration)

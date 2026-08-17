@@ -79,17 +79,67 @@ class FixaTests(unittest.TestCase):
         fixa.run_fixa(ctl, recipe_id="west-shelf", mode="dry-run", from_cell=1, to_cell=2)
         self.assertEqual(ctl.cmds, ["fixa west-shelf dry-run 1 2"])
 
+    def _stamp_reply(self, outcome="applied"):
+        rec = load_recipe()
+        off = rec["off"]
+        return {
+            "outcome": outcome,
+            "recipe": "west-shelf",
+            "cells": off["cells"],
+            "links": off["links"],
+            "rj_links": off["rj_links"],
+            "stamp": off["graph_stamp"],
+            "content_hash": off["graph_content_hash"],
+        }
+
     def test_apply_command_sends_lock_token(self):
-        ctl = FakeCtl({"outcome": "applied", "recipe": "west-shelf"})
-        fixa.run_fixa(
-            ctl,
-            recipe_id="west-shelf",
-            mode="apply",
-            from_cell=None,
-            to_cell=None,
-            lock_token="fable",
-        )
-        self.assertEqual(ctl.cmds, ["fixa west-shelf apply lock fable"])
+        ctl = FakeCtl(self._stamp_reply("applied"))
+        home = tempfile.mkdtemp()
+        (Path(home) / "lab").mkdir()
+        old = os.environ.get("HOME")
+        os.environ["HOME"] = home
+        try:
+            fixa.run_fixa(
+                ctl,
+                recipe_id="west-shelf",
+                mode="apply",
+                from_cell=None,
+                to_cell=None,
+                lock_token="fable",
+            )
+        finally:
+            if old is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old
+        self.assertIn("fixa west-shelf apply lock fable", ctl.cmds)
+        self.assertTrue(any("dry-run" in c for c in ctl.cmds))
+
+    def test_run_fixa_apply_refused_when_frozen(self):
+        """Terra bypass: run_fixa(mode=apply) must not send apply under freeze."""
+        import d_failclosed as fc
+        ctl = FakeCtl(self._stamp_reply("applied"))
+        home = tempfile.mkdtemp()
+        (Path(home) / "lab").mkdir()
+        old = os.environ.get("HOME")
+        os.environ["HOME"] = home
+        try:
+            fc.write_change_freeze("fable")
+            with self.assertRaises(fc.FailClosed):
+                fixa.run_fixa(
+                    ctl,
+                    recipe_id="west-shelf",
+                    mode="apply",
+                    from_cell=None,
+                    to_cell=None,
+                    lock_token="fable",
+                )
+        finally:
+            if old is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old
+        self.assertFalse(any(" apply " in f" {c} " for c in ctl.cmds))
 
     def test_dry_run_command_omits_lock_token(self):
         ctl = FakeCtl({"outcome": "dry_run_ok", "recipe": "west-shelf"})
@@ -152,25 +202,24 @@ class FixaTests(unittest.TestCase):
         self.assertEqual(doc["stamps"]["on"]["observed"], on)
         self.assertIs(recipe["on_expected"], on)
 
-
-
     def test_require_lock_refused_when_frozen(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            flag = Path(tmp) / "freeze"
-            flag.write_text("fable 2026-08-17T07:15:00Z\n", encoding="utf-8")
-            lock = Path(tmp) / "lock"
-            lock.write_text("fable\n", encoding="utf-8")
-            old = os.environ.get("D_CHANGE_FREEZE")
-            os.environ["D_CHANGE_FREEZE"] = str(flag)
-            try:
-                with self.assertRaises(SystemExit) as ctx:
-                    fixa.require_lock(27996, lock)
-                self.assertIn("change-freeze", str(ctx.exception))
-            finally:
-                if old is None:
-                    os.environ.pop("D_CHANGE_FREEZE", None)
-                else:
-                    os.environ["D_CHANGE_FREEZE"] = old
+        import d_failclosed as fc
+        home = tempfile.mkdtemp()
+        (Path(home) / "lab").mkdir()
+        lock = Path(home) / "lock"
+        lock.write_text("fable\n", encoding="utf-8")
+        old = os.environ.get("HOME")
+        os.environ["HOME"] = home
+        try:
+            fc.write_change_freeze("fable")
+            with self.assertRaises(SystemExit) as ctx:
+                fixa.require_lock(27996, lock)
+            self.assertIn("change-freeze", str(ctx.exception))
+        finally:
+            if old is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old
 
 
 if __name__ == "__main__":

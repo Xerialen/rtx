@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -25,19 +26,105 @@ REGISTERED_IDS = frozenset({
     "haz1462-k3",
 })
 
+# SHA-256 of the bytes on disk. A swapped --fixture with the same id fails closed.
+FIXTURE_SHA256 = {
+    "west-shelf": "f20beaf86c13b43dcc7a08cc1bbfb3979a7aacc6027b73368eda308c24b77c1e",
+    "ram-rail": "25ce4597c4cce00cb9bcd937b087790fc30bb27bccbe35eece0f413a4958586f",
+    "ram-rail-v2": "12f6df1e6321dcac77d012992287f246316c0dc1562d9f0dc87b97811cfbb8bd",
+    "ram-prevent": "04171a5c82f1a4d1155911d686603245081d0394ea47a57eef317cbfcda02ffb",
+    "haz1462-k1": "33b59dcd84721138044f97b903ebf884edaefd0bc2ffbf2f70e75dce6f2a3ed8",
+    "haz1462-k2": "2c90b990ed064723a573967243c2494794a45829aad5b75194bd38a8cecac10c",
+    "haz1462-k3": "fd2a8a839274d53e6fce24a7bcb0866a0c0c299d248ae0e92e69bc866a4d96cb",
+}
+
+# Mutation the engine will apply for each registered id. Empty list ≠ described.
+REQUIRED_OPS: dict[str, dict[str, Any]] = {
+    "haz1462-k1": {
+        "remove_links": [
+            {"id": 10447, "from": 1416, "to": 1461, "kind": "walk"},
+        ],
+    },
+    "haz1462-k2": {
+        "remove_links": [
+            {"id": 10447, "from": 1416, "to": 1461, "kind": "walk"},
+            {"id": 10446, "from": 1416, "to": 1459, "kind": "walk"},
+        ],
+    },
+    "haz1462-k3": {
+        "retype_links": [
+            {"id": 10447, "from": 1416, "to": 1461, "old_kind": "walk", "new_kind": "drop"},
+        ],
+    },
+    "ram-prevent": {"drops": 2},
+    "ram-rail": {"drops": 6},
+    "ram-rail-v2": {"drops": 6},
+    "west-shelf": {"engine_patch": True},
+}
+
+
+def recipe_path(recipe_id: str) -> Path:
+    return HERE / "recept" / f"{recipe_id}.json"
+
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _stamp_identity(block: Any) -> tuple[str, str] | None:
+    if not isinstance(block, dict):
+        return None
+    try:
+        fnv = str(block["graph_stamp"]).strip()
+        sha = str(block["graph_content_hash"]).strip()
+    except (KeyError, TypeError, AttributeError):
+        return None
+    if not fnv or not sha:
+        return None
+    return (fnv, sha)
+
+
+def _sealed_from_doc(doc: dict[str, Any]) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(block: Any) -> None:
+        key = _stamp_identity(block)
+        if key is None or key in seen:
+            return
+        seen.add(key)
+        out.append(key)
+
+    _add(doc.get("off"))
+    for name in ("sealed_stamps", "intermediates"):
+        blob = doc.get(name)
+        if isinstance(blob, dict):
+            blob = [blob]
+        if isinstance(blob, list):
+            for item in blob:
+                _add(item)
+    _add(doc.get("on_expected"))
+    return out
+
+
 def load_recipe(path: Path | None = None) -> dict[str, Any]:
-    doc = load_json(path or DEFAULT_RECIPE)
+    path = path or DEFAULT_RECIPE
+    raw = Path(path).read_bytes()
+    sha = hashlib.sha256(raw).hexdigest()
+    doc = json.loads(raw.decode("utf-8"))
     rid = doc.get("id")
     if rid not in REGISTERED_IDS:
         raise ValueError(f"unknown recipe {rid!r}; registered={sorted(REGISTERED_IDS)}")
+    want = FIXTURE_SHA256.get(rid)
+    if want != sha:
+        raise ValueError(
+            f"fixture {rid} SHA-256 {sha} ≠ förseglad {want} — "
+            f"stampmängden är inte bunden till den pinnade filen"
+        )
     off = doc.get("off")
     if not isinstance(off, dict) or any(k not in off for k in STAMP_KEYS):
         raise ValueError("recipe.off is not a complete stamp block")
+    doc["_fixture_sha256"] = sha
+    doc["_sealed_identities"] = _sealed_from_doc(doc)
     return doc
 
 

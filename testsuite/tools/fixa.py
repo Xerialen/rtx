@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from d_kvitto import WEST_SHELF_RECIPE, astar_path, make_kvitto, write_kvitto  # noqa: E402
 from d_failclosed import FailClosed, change_freeze_reason, guard_mutation  # noqa: E402
-from d_recipe import load_recipe, on_expected  # noqa: E402
+from d_recipe import load_recipe, on_expected, recipe_path  # noqa: E402
 from d_strata import FORBIDDEN_CTL, FORBIDDEN_GAME  # noqa: E402
 from verify_d_kvitto import verify  # noqa: E402
 
@@ -74,7 +74,7 @@ def lock_token_from_file(lock_path: Path) -> str:
     return body.split()[0]
 
 
-def run_fixa(
+def _send_fixa(
     ctl,
     *,
     recipe_id: str,
@@ -83,12 +83,52 @@ def run_fixa(
     to_cell: int | None,
     lock_token: str | None = None,
 ) -> dict:
+    """Private ctl send. Callers must go through run_fixa."""
     cmd = f"fixa {recipe_id} {mode}"
     if from_cell is not None and to_cell is not None:
         cmd += f" {from_cell} {to_cell}"
     if lock_token:
         cmd += f" lock {lock_token}"
     return parse_fixa_reply(ctl.request(cmd)["data"])
+
+
+def run_fixa(
+    ctl,
+    *,
+    recipe_id: str,
+    mode: str,
+    from_cell: int | None,
+    to_cell: int | None,
+    lock_token: str | None = None,
+    recipe: dict | None = None,
+) -> dict:
+    """Gated fixa send. apply/undo/plant cannot skip freeze + sealed stamps."""
+    mode_l = (mode or "").strip().lower()
+    if mode_l in {"apply", "undo", "plant"}:
+        rec = recipe
+        if rec is None:
+            rec = load_recipe(recipe_path(recipe_id))
+        if mode_l == "plant":
+            from d_failclosed import guard_plant
+            guard_plant(rec)
+        else:
+            ident = _send_fixa(
+                ctl,
+                recipe_id=recipe_id,
+                mode="dry-run",
+                from_cell=from_cell,
+                to_cell=to_cell,
+            )
+            live = stamp_from_reply(ident)
+            guard_mutation(mode_l, recipe=rec, live=live)
+    return _send_fixa(
+        ctl,
+        recipe_id=recipe_id,
+        mode=mode,
+        from_cell=from_cell,
+        to_cell=to_cell,
+        lock_token=lock_token,
+    )
 
 
 def write_apply_kvitto(
@@ -214,31 +254,22 @@ def main(argv: list[str] | None = None) -> int:
         token = lock_token_from_file(args.lock)
     ctl = Control(args.host, args.port)
     try:
-        if mode_s in {"apply", "undo"}:
-            try:
-                ident = run_fixa(
-                    ctl,
-                    recipe_id=args.recept,
-                    mode="dry-run",
-                    from_cell=args.from_cell,
-                    to_cell=args.to_cell,
-                )
-                live = stamp_from_reply(ident)
-                guard_mutation(mode_s, recipe=recipe, live=live)
-            except FailClosed as exc:
-                print(str(exc), file=sys.stderr)
-                return 2
-            except (KeyError, TypeError, ValueError) as exc:
-                print(f"live stamp oläsbar före {mode_s}: {exc}", file=sys.stderr)
-                return 2
-        reply = run_fixa(
-            ctl,
-            recipe_id=args.recept,
-            mode=mode_s,
-            from_cell=args.from_cell,
-            to_cell=args.to_cell,
-            lock_token=token,
-        )
+        try:
+            reply = run_fixa(
+                ctl,
+                recipe_id=args.recept,
+                mode=mode_s,
+                from_cell=args.from_cell,
+                to_cell=args.to_cell,
+                lock_token=token,
+                recipe=recipe,
+            )
+        except FailClosed as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        except (KeyError, TypeError, ValueError) as exc:
+            print(f"live stamp oläsbar före {mode_s}: {exc}", file=sys.stderr)
+            return 2
     finally:
         ctl.close()
     ended = datetime.now(timezone.utc).isoformat()

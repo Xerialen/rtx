@@ -35,7 +35,7 @@ from d_kvitto import (  # noqa: E402
     write_attempt_raw_file,
     write_kvitto,
 )
-from d_failclosed import guard_mutation
+from d_failclosed import guard_mutation, guard_plant, is_plant_command
 from d_recipe import on_expected
 from d_strata import (
     FORBIDDEN_CTL,
@@ -246,6 +246,8 @@ class LiveTrialDriver:
         self._demo_stem: str | None = None
 
     def request(self, cmd: str) -> dict:
+        if is_plant_command(cmd):
+            guard_plant(self.recipe)
         self.cmds.append(cmd)
         return self.ctl.request(cmd)
 

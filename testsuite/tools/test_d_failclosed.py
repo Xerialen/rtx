@@ -63,59 +63,80 @@ def _recipe(**extra):
     return doc
 
 
+class _Home:
+    """Point Path.home() at a tmp tree. No env path override exists."""
+
+    def __enter__(self):
+        self.tmp = tempfile.mkdtemp(prefix="d-failclosed-home-")
+        (Path(self.tmp) / "lab").mkdir()
+        self.old = os.environ.get("HOME")
+        os.environ["HOME"] = self.tmp
+        return Path(self.tmp)
+
+    def __exit__(self, *exc):
+        if self.old is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self.old
+
+
 class FreezeTests(unittest.TestCase):
     def test_absent_is_none(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / ".change-freeze"
-            self.assertIsNone(fc.change_freeze_reason(p))
-            fc.check_change_freeze(p)
+        with _Home():
+            self.assertIsNone(fc.change_freeze_reason())
+            fc.check_change_freeze()
 
     def test_present_refuses_with_owner_clock(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / ".change-freeze"
-            p.write_text("fable 2026-08-17T07:15:00Z Xerial T20m\n", encoding="utf-8")
-            why = fc.change_freeze_reason(p)
+        with _Home():
+            path = fc.write_change_freeze("fable", "Xerial T20m")
+            why = fc.change_freeze_reason()
             self.assertIsNotNone(why)
-            self.assertIn("fable 2026-08-17T07:15:00Z", why)
-            self.assertIn("vägrar mutation", why)
+            self.assertIn("fable", why)
+            self.assertIn("T20m", why or "")
+            self.assertTrue(path.is_file())
             with self.assertRaises(fc.FailClosed) as ctx:
-                fc.check_change_freeze(p)
+                fc.check_change_freeze()
             self.assertEqual(ctx.exception.gate, "freeze")
 
     def test_empty_file_still_refuses(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / ".change-freeze"
-            p.write_text("", encoding="utf-8")
-            why = fc.change_freeze_reason(p)
+        with _Home() as home:
+            (home / "lab" / ".change-freeze").write_text("", encoding="utf-8")
+            why = fc.change_freeze_reason()
             self.assertIn("tom fil", why)
+            self.assertIn("frys ändå", why)
 
-    def test_env_override(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "flag"
-            p.write_text("fable now\n", encoding="utf-8")
-            old = os.environ.get("D_CHANGE_FREEZE")
-            os.environ["D_CHANGE_FREEZE"] = str(p)
+    def test_malformed_flag_freezes_anyway(self):
+        with _Home() as home:
+            (home / "lab" / ".change-freeze").write_text("not-a-valid-line\n", encoding="utf-8")
+            why = fc.change_freeze_reason()
+            self.assertIn("felformad", why)
+            self.assertIn("frys ändå", why)
+            with self.assertRaises(fc.FailClosed):
+                fc.check_change_freeze()
+
+    def test_env_cannot_hide_real_freeze(self):
+        with _Home():
+            fc.write_change_freeze("fable", "real")
+            os.environ["D_CHANGE_FREEZE"] = "/tmp/definitely-absent-d-change-freeze"
             try:
-                self.assertEqual(fc.freeze_path(), p)
-                self.assertIn("fable now", fc.change_freeze_reason())
+                why = fc.change_freeze_reason()
+                self.assertIsNotNone(why)
+                self.assertIn("fable", why)
             finally:
-                if old is None:
-                    os.environ.pop("D_CHANGE_FREEZE", None)
-                else:
-                    os.environ["D_CHANGE_FREEZE"] = old
+                os.environ.pop("D_CHANGE_FREEZE", None)
+
+    def test_no_d_change_freeze_api(self):
+        self.assertFalse(hasattr(fc, "freeze_path"))
+        self.assertNotIn("D_CHANGE_FREEZE", Path(fc.__file__).read_text(encoding="utf-8"))
 
     def test_guard_blocks_all_four_verbs(self):
         rec = _recipe()
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / ".change-freeze"
-            p.write_text("fable freeze\n", encoding="utf-8")
+        with _Home():
+            fc.write_change_freeze("fable")
             for verb in ("apply", "undo", "plant", "portvakt"):
                 with self.assertRaises(fc.FailClosed) as ctx:
-                    fc.guard_mutation(
-                        verb, recipe=rec, live=BAS, freeze_path_override=p
-                    )
+                    fc.guard_mutation(verb, recipe=rec, live=BAS)
                 self.assertEqual(ctx.exception.gate, "freeze")
-                self.assertNotIn("fixa", str(ctx.exception))
 
 
 class CrashDetectorTests(unittest.TestCase):
@@ -288,6 +309,86 @@ class GuardIntegrationTests(unittest.TestCase):
     def test_unknown_verb_refused(self):
         with self.assertRaises(fc.FailClosed):
             fc.guard_mutation("dry-run", recipe=_recipe(), live=BAS)
+
+
+class TerraBypassTests(unittest.TestCase):
+    """Every bypass terra-review-p3p4p7.md executed."""
+
+    def test_sealed_stamps_int_is_failclosed(self):
+        rec = _recipe(sealed_stamps=7)
+        with self.assertRaises(fc.FailClosed) as ctx:
+            fc.sealed_identities(rec)
+        self.assertEqual(ctx.exception.gate, "crash-detector")
+        self.assertIn("korrupt form", str(ctx.exception))
+        with self.assertRaises(fc.FailClosed):
+            fc.guard_mutation("apply", recipe=rec, live=BAS)
+
+    def test_registered_apply_requires_fixture_sha(self):
+        rec = load_recipe(RECEPT / "haz1462-k2.json")
+        rec.pop("_fixture_sha256")
+        with self.assertRaises(fc.FailClosed) as ctx:
+            fc.guard_mutation("apply", recipe=rec, live=BAS)
+        self.assertEqual(ctx.exception.gate, "crash-detector")
+        self.assertIn("förseglad fixture-SHA", str(ctx.exception))
+
+    def test_k2_empty_ops_refused(self):
+        rec = load_recipe(RECEPT / "haz1462-k2.json")
+        rec["remove_links"] = []
+        why = fc.validate_anchors(rec)
+        self.assertIsNotNone(why)
+        self.assertIn("tom", why)
+        with self.assertRaises(fc.FailClosed) as ctx:
+            fc.guard_mutation("apply", recipe=rec, live=BAS)
+        self.assertEqual(ctx.exception.gate, "anchor")
+
+    def test_k2_missing_ops_key_refused(self):
+        rec = load_recipe(RECEPT / "haz1462-k2.json")
+        rec.pop("remove_links")
+        why = fc.validate_anchors(rec)
+        self.assertIsNotNone(why)
+        self.assertIn("tom", why)
+
+    def test_west_shelf_without_seal_refused(self):
+        rec = {
+            "id": "west-shelf",
+            "off": dict(BAS),
+            "on_expected": dict(BAS),
+        }
+        with self.assertRaises(fc.FailClosed) as ctx:
+            fc.guard_mutation("apply", recipe=rec, live=BAS)
+        self.assertEqual(ctx.exception.gate, "crash-detector")
+        self.assertIn("förseglad fixture-SHA", str(ctx.exception))
+
+    def test_send_plan_link_goes_through_guard_plant(self):
+        class Ctl:
+            def __init__(self):
+                self.cmds = []
+
+            def request(self, cmd):
+                self.cmds.append(cmd)
+                return {"ok": True}
+
+        with _Home():
+            fc.write_change_freeze("fable")
+            ctl = Ctl()
+            with self.assertRaises(fc.FailClosed) as ctx:
+                fc.send_plan_link(ctl, {"from": [0, 0, 0]}, recipe=_recipe())
+            self.assertEqual(ctx.exception.gate, "freeze")
+            self.assertEqual(ctl.cmds, [])
+
+    def test_guard_portvakt_is_the_port_entry(self):
+        with _Home():
+            fc.write_change_freeze("fable")
+            with self.assertRaises(fc.FailClosed) as ctx:
+                fc.guard_portvakt()
+            self.assertEqual(ctx.exception.gate, "freeze")
+
+    def test_writer_roundtrip_validates_format(self):
+        with _Home():
+            path = fc.write_change_freeze("fable", "note")
+            ok, display = fc.parse_freeze_line(path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertTrue(ok)
+            self.assertIn("fable", display)
 
 
 if __name__ == "__main__":

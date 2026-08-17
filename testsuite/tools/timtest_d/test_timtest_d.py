@@ -53,10 +53,20 @@ class PortvaktTests(unittest.TestCase):
 
     def test_cli_freeze_rc2(self):
         td = tempfile.mkdtemp(prefix="timtest-d-freeze-")
-        flag = Path(td) / "change-freeze"
-        flag.write_text("fable 2026-08-17T07:15:00Z\n", encoding="utf-8")
+        home = Path(td) / "home"
+        (home / "lab").mkdir(parents=True)
+        import d_failclosed as fc
+        old_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(home)
+        try:
+            fc.write_change_freeze("fable")
+        finally:
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
         env = dict(os.environ)
-        env["D_CHANGE_FREEZE"] = str(flag)
+        env["HOME"] = str(home)
         r = subprocess.run(
             [sys.executable, str(HERE / "timtest_d.py"),
              "--port", "27999", "--game-port", "27595",
