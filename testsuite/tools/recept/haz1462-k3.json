@@ -1,5 +1,7 @@
 {
   "id": "haz1462-k3",
+  "status": "LABB",
+  "status_skal": "Turneringskandidat, mats i labb. Ingen deploy som fristaende apply; deploy sker endast via komponat-manifestet.",
   "map": "dm3",
   "taxonomy_class": "slapp_lank",
   "evidence": "HAZ-1462 k3: retype 10447 Walk\u2192Drop. Counts unchanged; niv\u00e5-1 FNV equals OFF; niv\u00e5-2 hash differs.",

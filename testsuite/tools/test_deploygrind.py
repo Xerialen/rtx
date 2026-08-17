@@ -17,12 +17,15 @@ sys.path.insert(0, str(HERE))
 
 from d_failclosed import (  # noqa: E402
     DEPLOY_OK,
+    KANDA_STATUSAR,
+    LABB_OK,
     FailClosed,
     FreezeContext,
     check_deploy_status,
     deploy_status,
     guard_mutation,
 )
+from d_recipe import FIXTURE_SHA256, REGISTERED_IDS  # noqa: E402
 
 RECEPT = HERE / "recept"
 
@@ -68,30 +71,51 @@ class Grenarna(unittest.TestCase):
             check_deploy_status({"id": "x", "schema": "komponat/1", "status": "OKAND"})
         self.assertIn("OKAND", str(cm.exception))
 
-    def test_saknad_status_pa_komponat_vagras(self):
-        with self.assertRaises(FailClosed) as cm:
-            check_deploy_status({"id": "x", "schema": "komponat/1"})
-        self.assertIn("Tystnad är inte ett godkännande", str(cm.exception))
-
-    def test_saknad_status_pa_manifest_vagras_ocksa(self):
-        with self.assertRaises(FailClosed):
-            check_deploy_status({"recept_id": "x", "schema": "komponat-manifest/1"})
+    def test_saknad_status_vagras_villkorslost(self):
+        """Fables disposition: ALLA recept måste ta ställning, schema eller ej."""
+        for artefakt in (
+            {"id": "x", "schema": "komponat/1"},
+            {"recept_id": "x", "schema": "komponat-manifest/1"},
+            {"id": "ram-rail-v2", "off": {}, "on_expected": {}},
+            {"id": "nagot-nytt-nagon-lade-till"},
+        ):
+            with self.subTest(artefakt.get("id") or artefakt.get("recept_id")):
+                with self.assertRaises(FailClosed) as cm:
+                    check_deploy_status(artefakt)
+                self.assertEqual(cm.exception.gate, "deploy-status")
+                self.assertIn("Tystnad är inte ett godkännande", str(cm.exception))
 
     def test_okant_statusvarde_vagras_inte_ignoreras(self):
         """Ett stavfel får inte tolkas som godkänt."""
-        with self.assertRaises(FailClosed):
+        with self.assertRaises(FailClosed) as cm:
             check_deploy_status({"id": "x", "schema": "komponat/1", "status": "DEPLOY-KANDIAT"})
+        self.assertIn("okänd status", str(cm.exception))
 
-    def test_en_op_fixtur_utan_status_slapps_igenom(self):
-        """Avgränsningen, uttalad: de sju registrerade fixturerna bär inget
-        statusfält och styrs av sina egna sigill. En villkorslös läsning hade
-        vägrat varje apply i kedjan."""
-        check_deploy_status({"id": "ram-rail-v2", "off": {}, "on_expected": {}})
+    def test_labb_far_matas(self):
+        """LABB är hela poängen med att fixturerna finns: de mäts ensamma mot bas."""
+        check_deploy_status({"id": "ram-rail-v2", "status": LABB_OK})
+
+    def test_labb_far_aldrig_deployas(self):
+        with self.assertRaises(FailClosed) as cm:
+            check_deploy_status({"id": "ram-rail-v2", "status": LABB_OK}, deploy=True)
+        self.assertIn("får mätas, aldrig deployas", str(cm.exception))
+
+    def test_labb_pa_ett_komponat_ar_en_sjalvmotsagelse(self):
+        """Ett komponat ÄR deploy-vägen; att kalla det labb får inte öppna den."""
+        with self.assertRaises(FailClosed) as cm:
+            check_deploy_status({"id": "x", "schema": "komponat/1", "status": LABB_OK})
+        self.assertIn(DEPLOY_OK, str(cm.exception))
+
+    def test_deploy_kandidat_far_ocksa_matas_i_labb(self):
+        check_deploy_status({"id": "v296-ram", "status": DEPLOY_OK})
 
     def test_en_op_fixtur_med_ej_deploy_vagras_anda(self):
-        """Bär den en status gäller den — utan undantag, schema eller ej."""
+        """Bär den EJ-DEPLOY gäller det — utan undantag, schema eller ej."""
         with self.assertRaises(FailClosed):
             check_deploy_status({"id": "ram-rail-v2", "status": "EJ-DEPLOY"})
+
+    def test_ordforradet_ar_slutet(self):
+        self.assertEqual(set(KANDA_STATUSAR), {DEPLOY_OK, LABB_OK, "EJ-DEPLOY", "OKAND"})
 
 
 class IApplyVagen(unittest.TestCase):
@@ -172,19 +196,61 @@ class MotDeReellaRecepten(unittest.TestCase):
                 manifest = self.ladda(f"{namn}.manifest.json")
                 self.assertEqual(manifest["status"], recept["status"])
 
-    def test_alla_registrerade_enop_fixturer_passerar_oforandrat(self):
-        """Regressionsvakt: grinden får inte brickra den befintliga apply-kedjan."""
-        for namn in (
-            "west-shelf.json",
-            "ram-rail.json",
-            "ram-rail-v2.json",
-            "ram-prevent.json",
-            "haz1462-k1.json",
-            "haz1462-k2.json",
-            "haz1462-k3.json",
-        ):
+    #: Vad de sju registrerade fixturerna är märkta som, och varför.
+    SJU = {
+        "west-shelf.json": LABB_OK,
+        "ram-rail.json": LABB_OK,
+        "ram-rail-v2.json": LABB_OK,
+        "ram-prevent.json": LABB_OK,
+        "haz1462-k1.json": LABB_OK,
+        "haz1462-k2.json": "EJ-DEPLOY",
+        "haz1462-k3.json": LABB_OK,
+    }
+
+    def test_de_sju_bar_sin_avsedda_status(self):
+        for namn, vantad in self.SJU.items():
             with self.subTest(namn):
-                check_deploy_status(self.ladda(namn))
+                self.assertEqual(self.ladda(namn).get("status"), vantad)
+
+    def test_de_sju_genom_grinden_labbvagen(self):
+        """LABB-märkta mäts vidare som förut; k2 stoppas av domen."""
+        for namn, status in self.SJU.items():
+            with self.subTest(namn):
+                if status == LABB_OK:
+                    check_deploy_status(self.ladda(namn))
+                else:
+                    with self.assertRaises(FailClosed):
+                        check_deploy_status(self.ladda(namn))
+
+    def test_de_sju_genom_grinden_deployvagen(self):
+        """Ingen av dem får deployas fristående — deploy går via komponatet."""
+        for namn in self.SJU:
+            with self.subTest(namn):
+                with self.assertRaises(FailClosed) as cm:
+                    check_deploy_status(self.ladda(namn), deploy=True)
+                self.assertEqual(cm.exception.gate, "deploy-status")
+
+    def test_varje_receptfil_med_id_ar_markt(self):
+        """Villkorslös läsning: en omärkt receptfil ska hittas här, inte i drift."""
+        omarkta = []
+        for p in sorted(RECEPT.glob("*.json")):
+            doc = json.loads(p.read_text(encoding="utf-8"))
+            if (doc.get("id") or doc.get("recept_id")) and doc.get("status") is None:
+                omarkta.append(p.name)
+        self.assertEqual(omarkta, [], "omärkta receptfiler vägras nu av grinden")
+
+    def test_fixtursigillen_foljer_med_statusandringen(self):
+        """Statusfältet ändrar filens byte, och sigillet måste följa med.
+
+        Missas det vägrar `verify_fixture_seal` varje registrerat recept — grinden
+        hade då stoppat kedjan via en helt annan väg än den vi ville införa.
+        """
+        import hashlib
+
+        for rid in sorted(REGISTERED_IDS):
+            with self.subTest(rid):
+                blob = (RECEPT / f"{rid}.json").read_bytes()
+                self.assertEqual(hashlib.sha256(blob).hexdigest(), FIXTURE_SHA256[rid])
 
 
 if __name__ == "__main__":

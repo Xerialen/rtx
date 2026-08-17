@@ -1,5 +1,7 @@
 {
   "id": "ram-rail",
+  "status": "LABB",
+  "status_skal": "Labbrecept: mats ensamt mot bas. Deploy sker ENDAST via komponat-manifestet, aldrig som fristaende apply.",
   "map": "dm3",
   "taxonomy_class": "carve_origin",
   "evidence": "Six indegree-0 rail cells + Drop each to 638. Pinned ON 5983/48213.",

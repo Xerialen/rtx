@@ -61,14 +61,22 @@ REGISTERED_IDS = frozenset({
 })
 
 # SHA-256 of the bytes on disk. A swapped --fixture with the same id fails closed.
+#
+# Rebumped when every fixture gained an explicit `status` / `status_skal` (Fables
+# disposition 2026-08-17: den villkorslösa läsningen). Statusfältet är metadata om
+# vem som får köra receptet, inte grafinnehåll — stampblocken (`off` /
+# `on_expected`) är oförändrade, och därmed också allt som hashas. De gamla
+# värdena finns kvar i inspelade kvitton under `testdata/`; de kontrolleras bara
+# till formen, inte mot den här tabellen, så historiken står kvar och stämmer
+# fortfarande om den fil den spelades mot.
 FIXTURE_SHA256 = {
-    "west-shelf": "f20beaf86c13b43dcc7a08cc1bbfb3979a7aacc6027b73368eda308c24b77c1e",
-    "ram-rail": "25ce4597c4cce00cb9bcd937b087790fc30bb27bccbe35eece0f413a4958586f",
-    "ram-rail-v2": "12f6df1e6321dcac77d012992287f246316c0dc1562d9f0dc87b97811cfbb8bd",
-    "ram-prevent": "04171a5c82f1a4d1155911d686603245081d0394ea47a57eef317cbfcda02ffb",
-    "haz1462-k1": "33b59dcd84721138044f97b903ebf884edaefd0bc2ffbf2f70e75dce6f2a3ed8",
-    "haz1462-k2": "2c90b990ed064723a573967243c2494794a45829aad5b75194bd38a8cecac10c",
-    "haz1462-k3": "fd2a8a839274d53e6fce24a7bcb0866a0c0c299d248ae0e92e69bc866a4d96cb",
+    "west-shelf": "3d7089f13e2e925158294403da5b38445bbef0a899c5b0af2a6a8ecb2d33549b",
+    "ram-rail": "31f411d9a5b0ab9439de409008d6390cf1aba3148d46515293d6c213b7eb2ef9",
+    "ram-rail-v2": "7202490688f6e7f84f7cd66505f02d1ba6e6b72a8bf70ecafefd792ab6a8048f",
+    "ram-prevent": "b9d894bed3684b2cc409044fa48564494148775c7a70a0bec3cd501b8ff318a9",
+    "haz1462-k1": "7ba219ed914442e52e3845475655e34d9b2dddacac3713ae95baf2e19f5f5560",
+    "haz1462-k2": "d9522af1f836c0ed00941e35e55fccd29088d4da5da482f6c7731336c40b2f9b",
+    "haz1462-k3": "4a337599837a19fbe02a47553e1997cbb4be2d074fc5603b15f83af827ca8930",
 }
 
 # Mutation the engine will apply for each registered id. Empty list ≠ described.

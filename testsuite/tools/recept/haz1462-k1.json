@@ -1,5 +1,7 @@
 {
   "id": "haz1462-k1",
+  "status": "LABB",
+  "status_skal": "Turneringskandidat, mats i labb. Ingen deploy som fristaende apply; deploy sker endast via komponat-manifestet.",
   "map": "dm3",
   "taxonomy_class": "slapp_lank",
   "evidence": "HAZ-1462: remove Walk 10447 (1416\u21921461). Pinned ON 5977/48206.",

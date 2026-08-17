@@ -1,5 +1,7 @@
 {
   "id": "west-shelf",
+  "status": "LABB",
+  "status_skal": "Labbrecept: mats ensamt mot bas. Deploy sker ENDAST via komponat-manifestet, aldrig som fristaende apply.",
   "map": "dm3",
   "taxonomy_class": "carve_origin",
   "evidence": "dm3 machinery shelf west of SNG: walkable strip narrower than the column-carve GRID and out of phase with it; plant_cell + plant_drop restore an honest standing cell and a north-lip Drop. See nav_patch::PATCHES west-shelf.",

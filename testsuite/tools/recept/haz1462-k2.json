@@ -1,5 +1,7 @@
 {
   "id": "haz1462-k2",
+  "status": "EJ-DEPLOY",
+  "status_skal": "EJ-DEPLOY efter DOM M1-EFTER-OFF (WORK_LOGS/kimi-testprotokoll-domar.md): harden vid [304,-800] ar K2-inducerad (OFF 1/426 mot ON 42/372, exakt Fisher p = 8e-14), K2:s nettoeffekt pa ytan ar negativ, och den forexisterande flacken vid [272,-816] ligger kvar.",
   "map": "dm3",
   "taxonomy_class": "slapp_lank",
   "evidence": "HAZ-1462 k2: remove Walk 10447 and 10446. Pinned ON 5977/48205. Appendix 49 dests.",

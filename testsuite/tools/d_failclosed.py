@@ -565,13 +565,20 @@ def check_anchors(recipe: dict[str, Any]) -> None:
         raise FailClosed("anchor", why)
 
 
-#: Enda driftstatusen som får muteras. Allt annat är en vägran.
+#: Enda driftstatusen som får nå en deploy. Allt annat vägras på deploy-vägen.
 DEPLOY_OK = "DEPLOY-KANDIDAT"
 
-#: Artefaktklasser som MÅSTE bära en driftstatus. En komponat-op-lista är en
-#: deploybar sak i sig själv och är därför gated på att någon uttryckligen sagt
-#: att den får köras; de äldre en-op-fixturerna har inget statusfält och styrs av
-#: sina egna sigill (`verify_fixture_seal`), så de gatas bara om de bär ett.
+#: Får köras i labb — torrkörning, mock, tbx-dömda mätningar — men aldrig
+#: deployas. Deploy sker endast via komponat-manifestet.
+LABB_OK = "LABB"
+
+#: Hela ordförrådet. Ett värde utanför det är ett stavfel, och ett stavfel får
+#: aldrig tolkas som ett godkännande.
+KANDA_STATUSAR = (DEPLOY_OK, LABB_OK, "EJ-DEPLOY", "OKAND")
+
+#: Artefaktklasser som ÄR deploy-vägen: en komponat-op-lista (och dess manifest)
+#: är den enda vägen till drift, så den kräver `DEPLOY-KANDIDAT` oavsett hur den
+#: anropas. `LABB` på ett komponat är en självmotsägelse och vägras.
 KOMPONAT_SCHEMAN = ("komponat/1", "komponat-manifest/1")
 
 
@@ -583,42 +590,60 @@ def deploy_status(recipe: Any) -> str | None:
     return None if status is None else str(status).strip().upper()
 
 
-def check_deploy_status(recipe: Any) -> None:
-    """Gate: bara `DEPLOY-KANDIDAT` får appliceras.
+def check_deploy_status(recipe: Any, *, deploy: bool = False) -> None:
+    """Gate: varje recept måste bära en status, och bara rätt status får köra.
 
     Märkningen fanns (opus5 0c8554b) men ingen konsumerade den, så "aldrig
     deploybar" var en konvention och inte en grind (deepseeks trio-review, flagga
-    ii). Här blir den hård: `EJ-DEPLOY` vägras med domens skäl i klartext, och en
-    komponat-op-lista utan status vägras också — tystnad får inte läsas som
-    godkänd, vilket är hela poängen med att `OKAND` finns som eget värde.
+    ii). Nu är den hård, och sedan Fables disposition också **villkorslös**: en
+    artefakt utan status vägras, punkt. Alla recept i `recept/` är märkta, så
+    tystnad betyder numera att någon lagt till en fil utan att ta ställning — och
+    det ska stoppa, inte glida igenom.
 
-    Avgränsningen är medveten och värd att säga rakt ut: ordern lyder "saknad ⇒
-    FailClosed", men de sju registrerade en-op-fixturerna (west-shelf, ram-*,
-    haz1462-*) bär inget statusfält. En villkorslös läsning hade vägrat varje
-    apply i kedjan från och med nu. Kravet gäller därför artefakter som ÄR
-    komponat, plus alla som bär ett statusfält — och där gäller det utan undantag.
+    Två vägar, med olika krav:
+
+    * **Deploy** — `DEPLOY-KANDIDAT` och inget annat. Vägen känns igen på
+      artefakten (ett komponat ÄR deploy-vägen) eller pekas ut av anroparen med
+      `deploy=True`. `LABB` räcker inte här; det är hela skillnaden mellan de två.
+    * **Labb** — torrkörning, mock, tbx-dömda mätningar. `LABB` och
+      `DEPLOY-KANDIDAT` går båda igenom; en deploy-kandidat får förstås mätas.
+
+    `EJ-DEPLOY` och `OKAND` vägras överallt. `EJ-DEPLOY` bär domens skäl vidare i
+    klartext, så den som blir stoppad slipper leta reda på varför.
     """
     if recipe is None or not hasattr(recipe, "get"):
         return
     status = deploy_status(recipe)
     schema = str(recipe.get("schema") or "")
-    rid = recipe.get("id") or "receptet"
+    rid = recipe.get("id") or recipe.get("recept_id") or "receptet"
+    ar_deploy = deploy or schema in KOMPONAT_SCHEMAN
+
     if status is None:
-        if schema in KOMPONAT_SCHEMAN:
-            raise FailClosed(
-                "deploy-status",
-                f"{rid} ({schema}) saknar status — en komponat-op-lista måste bära "
-                f"{DEPLOY_OK} för att få appliceras. Tystnad är inte ett godkännande.",
-            )
-        return
-    if status == DEPLOY_OK:
-        return
+        raise FailClosed(
+            "deploy-status",
+            f"{rid} saknar status — varje recept måste ta ställning "
+            f"({'/'.join(KANDA_STATUSAR)}). Tystnad är inte ett godkännande.",
+        )
+    if status not in KANDA_STATUSAR:
+        raise FailClosed(
+            "deploy-status",
+            f"{rid} har okänd status {status!r} — kända är {'/'.join(KANDA_STATUSAR)}. "
+            f"Ett värde ingen känner igen godkänns inte.",
+        )
+
     skal = recipe.get("status_skal")
     svans = f" Skäl: {skal}" if skal else ""
-    raise FailClosed(
-        "deploy-status",
-        f"{rid} har status {status}, inte {DEPLOY_OK} — vägrar applicera.{svans}",
-    )
+    if status in ("EJ-DEPLOY", "OKAND"):
+        raise FailClosed(
+            "deploy-status", f"{rid} har status {status} — vägrar köra.{svans}"
+        )
+    if ar_deploy and status != DEPLOY_OK:
+        vad = f"{schema}-artefakt" if schema else "deploy-körning"
+        raise FailClosed(
+            "deploy-status",
+            f"{rid} har status {status}, men en {vad} kräver {DEPLOY_OK}. "
+            f"{LABB_OK} får mätas, aldrig deployas.{svans}",
+        )
 
 
 def guard_mutation(
@@ -628,8 +653,17 @@ def guard_mutation(
     live: Mapping | None = None,
     require_live: bool = True,
     freeze: FreezeContext | None = None,
+    deploy: bool = False,
 ) -> None:
-    """Gate 7 always for mutating verbs; 4 if recipe given; 3 if live required."""
+    """Gate 7 always for mutating verbs; 4 if recipe given; 3 if live required.
+
+    `deploy=True` säger att det här är en driftkörning och inte en labbmätning.
+    Default är labb därför att en fristående fixtur-apply ÄR en labbkörning —
+    deploy sker endast via komponat-manifestet, och det manifestet känns igen på
+    sitt schema utan att någon behöver komma ihåg flaggan. Flaggan finns för en
+    framtida deploy-runner som vill kräva `DEPLOY-KANDIDAT` även av något som
+    kallar sig labb.
+    """
     action = (action or "").strip().lower()
     mutating = {"apply", "undo", "plant", "portvakt"}
     if action not in mutating:
@@ -646,15 +680,17 @@ def guard_mutation(
         verify_fixture_seal(recipe)
     # Före ankarvalideringen: ett recept som inte får köras ska vägras på den
     # grunden, inte på ett ankarfel som råkar hittas först.
-    check_deploy_status(recipe)
+    check_deploy_status(recipe, deploy=deploy)
     check_anchors(recipe)
     if action in {"apply", "undo"} and require_live:
         check_live_sealed(live, recipe)
 
 
-def guard_plant(recipe: Any = None, *, freeze: FreezeContext | None = None) -> None:
+def guard_plant(
+    recipe: Any = None, *, freeze: FreezeContext | None = None, deploy: bool = False
+) -> None:
     """PlanLink / plant / replant. Always freeze; anchors if a recipe is given."""
-    guard_mutation("plant", recipe=recipe, require_live=False, freeze=freeze)
+    guard_mutation("plant", recipe=recipe, require_live=False, freeze=freeze, deploy=deploy)
 
 
 def guard_portvakt(*, freeze: FreezeContext | None = None) -> None:

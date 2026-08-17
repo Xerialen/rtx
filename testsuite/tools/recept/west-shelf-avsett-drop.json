@@ -1,5 +1,7 @@
 {
   "id": "west-shelf-avsett-drop",
+  "status": "LABB",
+  "status_skal": "Labbrecept: mats ensamt mot bas. Deploy sker ENDAST via komponat-manifestet, aldrig som fristaende apply.",
   "recipe": "west-shelf",
   "applies_to": [
     "A1",

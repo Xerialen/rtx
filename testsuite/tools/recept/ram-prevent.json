@@ -1,5 +1,7 @@
 {
   "id": "ram-prevent",
+  "status": "LABB",
+  "status_skal": "Labbrecept: mats ensamt mot bas. Deploy sker ENDAST via komponat-manifestet, aldrig som fristaende apply.",
   "map": "dm3",
   "taxonomy_class": "lagg_lank",
   "evidence": "Prevention Drops 733\u2192669 and 734\u2192670. Pinned ON 5977/48209.",

@@ -60,6 +60,12 @@ def _recipe(**extra):
     doc = {
         "id": "unit-compose",
         "map": "dm3",
+        # Deploy-statusgrinden är villkorslös sedan Fables disposition 2026-08-17:
+        # varje recept måste ta ställning, annars vägras det före ankar- och
+        # kraschgrindarna. Den här fixturen finns för att pröva DE grindarna, så
+        # den bär LABB — vilket också är sant om den: den deployas aldrig.
+        # (opus5; `status=DEPLOY-KANDIDAT` skulle fungera lika bra här.)
+        "status": "LABB",
         "off": dict(BAS),
         "on_expected": dict(K2_ON),
         "remove_links": [
