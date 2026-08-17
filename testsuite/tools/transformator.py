@@ -530,6 +530,50 @@ def _identitet_matchar(fick: dict, vantat: dict) -> list[str]:
     return fel
 
 
+def manifestsokvag(receptvag: str | Path) -> Path:
+    """Manifestet som hör till en receptfil: ``<stam>.manifest.json`` bredvid den."""
+    p = Path(receptvag)
+    return p.with_name(p.stem + ".manifest.json")
+
+
+def korskontrollera_manifest(steg: list, annat: dict) -> list[str]:
+    """Nivå-1-krockar mellan två komponat.
+
+    Registret fångar namnkollisioner mellan *kända grafer*. Det här fångar den
+    andra sorten: två op-listor vars steg landar på samma counts/FNV men olika
+    inventering. Den farliga formen är en MELLANSTAMP i den ena som är lika med
+    SLUTSTAMPEN i den andra — en grind som läser counts/FNV ser då "klart" på ett
+    halvapplicerat komponat. Nivå-2 skiljer dem, och det är hela poängen med att
+    säga det högt i stället för att lita på att någon läser rätt kolumn.
+    """
+    varningar = []
+    andra = {
+        s["identitet"]["graph_stamp"]: s
+        for s in annat.get("steg", [])
+        if s.get("index", 0) > 0
+    }
+    sista = (annat.get("steg") or [{}])[-1].get("index")
+    for s in steg:
+        if s["index"] == 0:
+            continue
+        i = s["identitet"]
+        träff = andra.get(i["graph_stamp"])
+        if träff is None:
+            continue
+        deras = träff["identitet"]
+        if deras["graph_content_hash_utan_params"] == i["graph_content_hash_utan_params"]:
+            continue  # samma graf, ingen fälla
+        var = "SLUTSTAMPEN" if träff["index"] == sista else f"steg {träff['index']}"
+        varningar.append(
+            f"VARNING: nivå-1-krock mot {annat.get('recept_id')}: steg {s['index']} "
+            f"({s['name']}) är {i['cells']}/{i['links']} FNV {i['graph_stamp']} — samma "
+            f"som {var} ({träff['name']}) där. Olika grafer: nivå-2 {i['graph_content_hash_utan_params'][:16]}… "
+            f"mot {deras['graph_content_hash_utan_params'][:16]}…. En grind som läser "
+            f"counts/FNV kan inte skilja ett halvapplicerat komponat från ett färdigt."
+        )
+    return varningar
+
+
 def kor_recept(bas: Graf, recept: dict, register: list) -> dict:
     """Applicera op-listan i ordning och skriv ett steg per op."""
     graf = bas.kopia()
@@ -592,6 +636,10 @@ def kor_recept(bas: Graf, recept: dict, register: list) -> dict:
     return {
         "schema": "komponat-manifest/1",
         "recept_id": recept.get("id"),
+        # Driftstatusen bor i receptet och följer med hit, så ett manifest aldrig
+        # kan läsas som deploybart utan att receptet säger att det är det.
+        "status": recept.get("status", "OKAND"),
+        "status_skal": recept.get("status_skal"),
         "map": graf.map,
         "harledning": (
             "bas + op-lista i ordning, offline i transformator.py; ingen live-apply, "
@@ -764,6 +812,23 @@ def main(argv: list[str] | None = None) -> int:
     except Vagran as exc:
         print(f"VÄGRAR: {exc}", file=sys.stderr)
         return 1
+
+    # Receptet får peka ut vilket komponat det ersätter. Gör det det, korskontrollerar
+    # vi mot det manifestet: två op-listor mot samma bas är precis där en nivå-1-krock
+    # blir farlig, och ingen av dem kan upptäcka den ensam.
+    ersatter = (recept.get("ersatter") or {}).get("recept")
+    if ersatter:
+        annanvag = manifestsokvag(Path(args.recept).parent / Path(ersatter).name)
+        try:
+            annat = json.loads(annanvag.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            manifest["varningar"].append(
+                f"kunde inte korskontrollera mot {annanvag.name} — kör den först om "
+                "krockkontrollen ska vara gjord"
+            )
+        else:
+            manifest["korskontrollerat_mot"] = annat.get("recept_id")
+            manifest["varningar"].extend(korskontrollera_manifest(manifest["steg"], annat))
 
     manifest["bas_dump"] = str(args.bas)
     blob = kanonisk_json(manifest)

@@ -1,21 +1,22 @@
 {
   "bas_dump": "/home/xerial/lab/toolbox/dm3-base-full-graph.json",
   "harledning": "bas + op-lista i ordning, offline i transformator.py; ingen live-apply, ingen apply-then-copy, ingen summering av delstampars delta",
+  "korskontrollerat_mot": "haz1462-k2-v296-ram",
   "map": "dm3",
-  "recept_id": "haz1462-k2-v296-ram",
+  "recept_id": "v296-ram",
   "schema": "komponat-manifest/1",
   "slut": {
     "cells": 5983,
-    "graph_content_hash": "26c65c62aa60537b8a3c5161eb5839bb9288d67b3136cd0d21ca95f69549f151",
-    "graph_content_hash_utan_params": "7a98d6e93bd8ebc37fb032150216f221e4d6659f51fd5bf45f27b1ff7aae45fd",
-    "graph_stamp": "15510284848814560699",
+    "graph_content_hash": "6dba02735f58bc04100ef5252922b43e16952a95b9e44ea3168bb1358161ffd7",
+    "graph_content_hash_utan_params": "cd800200cad72431e0cbfe0a2fc947bd94309e334103d6cc0abd076155ecf051",
+    "graph_stamp": "11908727279900740725",
     "kollision": null,
-    "links": 48214,
+    "links": 48216,
     "map": "dm3",
     "rj_links": 0
   },
-  "status": "EJ-DEPLOY",
-  "status_skal": "K2 utesluten ur deployen efter DOM M1-EFTER-OFF (WORK_LOGS/kimi-testprotokoll-domar.md): härden vid [304,-800] är K2-inducerad (OFF 1/426 mot ON 42/372, exakt Fisher p = 8e-14), K2:s nettoeffekt på ytan är negativ, och den förexisterande fläcken vid [272,-816] ligger kvar. Behålls som REFERENS: härledningen är giltig, det är receptet som inte ska köras. Deploy-komponatet är recept/komponat-v296-ram.json.",
+  "status": "DEPLOY-KANDIDAT",
+  "status_skal": "Xerials beslut 2026-08-17 efter DOM M1-EFTER-OFF: K2 utgår, resten står kvar.",
   "steg": [
     {
       "d_cells": 0,
@@ -42,49 +43,8 @@
         "rj_links": 0
       },
       "index": 0,
-      "name": "haz1462-k2-v296-ram",
+      "name": "v296-ram",
       "op": "pin"
-    },
-    {
-      "bevis": {
-        "T0_efter": 0,
-        "T0_fore": 15,
-        "ankare": [
-          "1416->1461 walk",
-          "1416->1459 walk"
-        ],
-        "borttagna_id": [
-          10447,
-          10446
-        ],
-        "not": "15 tidigare rensade länkar (T=0) är traverserbara igen: remove_links_by_id bygger om adjacensen från noll och rebuild_derived kör ingen teleport-rensning. Det är motorns beteende och det syns i nivå-2."
-      },
-      "d_cells": 0,
-      "d_links": -2,
-      "harledd": false,
-      "identitet": {
-        "cells": 5977,
-        "graph_content_hash": "feb503b67a0b4a4fa394f6066fa5a3b45d373d57b154d079e2b4910329e7eb7e",
-        "graph_content_hash_utan_params": "feb503b67a0b4a4fa394f6066fa5a3b45d373d57b154d079e2b4910329e7eb7e",
-        "graph_stamp": "14344244513446609626",
-        "kollision": {
-          "aliases": [
-            "K2-ON",
-            "K2+V296-om-+0/+0"
-          ],
-          "cells": 5977,
-          "graph_stamp": "14344244513446609626",
-          "links": 48205,
-          "rj_links": 0,
-          "warn": "VARNING: nivå-1-kollision 5977/48205 (FNV 14344244513446609626) — kända namn: K2-ON, K2+V296-om-+0/+0. Nivå-1 räcker inte; läs nivå-2. PlanLink-V296 mot post-K2 är +0/+1 ⇒ 5977/48206."
-        },
-        "links": 48205,
-        "map": "dm3",
-        "rj_links": 0
-      },
-      "index": 1,
-      "name": "haz1462-k2",
-      "op": "remove_links"
     },
     {
       "bevis": {
@@ -110,9 +70,9 @@
         "link_vid_cert": {
           "id": 48131,
           "not": "cert-id är inte ett ankare: id-rymden flyttas av varje tidigare op",
-          "pekar_pa_i_grafen_fore_op": "5969->5972 swim"
+          "pekar_pa_i_grafen_fore_op": "5968->5965 swim"
         },
-        "planterad_lank": 48205,
+        "planterad_lank": 48207,
         "takeoff": {
           "avstand": 20.396,
           "cell": 1167,
@@ -158,15 +118,15 @@
       "harledd": true,
       "identitet": {
         "cells": 5977,
-        "graph_content_hash": "f7802d2d81fd5270eee754b03460c310c30793c79d1acb231c8172d9fabd82d1",
-        "graph_content_hash_utan_params": "d37d45b614af8ffa51443e1ba1359f3855775a31fad6e440ab576a0be2b9da3a",
-        "graph_stamp": "2907815051556140081",
+        "graph_content_hash": "bc95158281ac8dea10fc23e131c04dae8dec709838fbdd28bc198225c9001073",
+        "graph_content_hash_utan_params": "cc372ad04f8f98f7962df10f35b21eda3852557349743b6d44a81199f88ba42e",
+        "graph_stamp": "12211291694571542511",
         "kollision": null,
-        "links": 48206,
+        "links": 48208,
         "map": "dm3",
         "rj_links": 0
       },
-      "index": 2,
+      "index": 1,
       "name": "v296-vasthoppet",
       "op": "plan_link"
     },
@@ -228,32 +188,32 @@
         "nya_drops": [
           {
             "from_cell": 5977,
-            "link": 48206,
+            "link": 48208,
             "to_cell": 698
           },
           {
             "from_cell": 5978,
-            "link": 48207,
+            "link": 48209,
             "to_cell": 699
           },
           {
             "from_cell": 5979,
-            "link": 48208,
+            "link": 48210,
             "to_cell": 700
           },
           {
             "from_cell": 5980,
-            "link": 48209,
+            "link": 48211,
             "to_cell": 702
           },
           {
             "from_cell": 5981,
-            "link": 48210,
+            "link": 48212,
             "to_cell": 703
           },
           {
             "from_cell": 5982,
-            "link": 48211,
+            "link": 48213,
             "to_cell": 704
           }
         ]
@@ -263,15 +223,15 @@
       "harledd": false,
       "identitet": {
         "cells": 5983,
-        "graph_content_hash": "5de5d8086db4c418dbc2d83f48022705ef3f241ffb5dcf1ab6733cf501e0e01f",
-        "graph_content_hash_utan_params": "eab18bad85d0bcb849695f7162aa4d145113524a3f34bb1aeeb4b777a0c2aca2",
-        "graph_stamp": "5140673781446876521",
+        "graph_content_hash": "bb19b9978f555828f7f640ebfe6de494e6fe40cc6b73b3d3a6506b5dafb8bfa9",
+        "graph_content_hash_utan_params": "cab98ac22f356bc333bc04909a1ee5610190670c4505ff23bdcd7aeb1d7c33f8",
+        "graph_stamp": "15510284848814560699",
         "kollision": null,
-        "links": 48212,
+        "links": 48214,
         "map": "dm3",
         "rj_links": 0
       },
-      "index": 3,
+      "index": 2,
       "name": "ram-rail-v2",
       "op": "shelf_patch"
     },
@@ -284,12 +244,12 @@
         "nya_drops": [
           {
             "from_cell": 733,
-            "link": 48212,
+            "link": 48214,
             "to_cell": 669
           },
           {
             "from_cell": 734,
-            "link": 48213,
+            "link": 48215,
             "to_cell": 670
           }
         ]
@@ -299,21 +259,21 @@
       "harledd": false,
       "identitet": {
         "cells": 5983,
-        "graph_content_hash": "26c65c62aa60537b8a3c5161eb5839bb9288d67b3136cd0d21ca95f69549f151",
-        "graph_content_hash_utan_params": "7a98d6e93bd8ebc37fb032150216f221e4d6659f51fd5bf45f27b1ff7aae45fd",
-        "graph_stamp": "15510284848814560699",
+        "graph_content_hash": "6dba02735f58bc04100ef5252922b43e16952a95b9e44ea3168bb1358161ffd7",
+        "graph_content_hash_utan_params": "cd800200cad72431e0cbfe0a2fc947bd94309e334103d6cc0abd076155ecf051",
+        "graph_stamp": "11908727279900740725",
         "kollision": null,
-        "links": 48214,
+        "links": 48216,
         "map": "dm3",
         "rj_links": 0
       },
-      "index": 4,
+      "index": 3,
       "name": "ram-prevent",
       "op": "shelf_patch"
     }
   ],
   "varningar": [
     "VARNING: nivå-1-kollision 5977/48207 (FNV 906595427771298736) — kända namn: bas, K2+prevent, K3-retype. Nivå-1 räcker inte; läs nivå-2.",
-    "efter op 1 (haz1462-k2): VARNING: nivå-1-kollision 5977/48205 (FNV 14344244513446609626) — kända namn: K2-ON, K2+V296-om-+0/+0. Nivå-1 räcker inte; läs nivå-2. PlanLink-V296 mot post-K2 är +0/+1 ⇒ 5977/48206."
+    "VARNING: nivå-1-krock mot haz1462-k2-v296-ram: steg 2 (ram-rail-v2) är 5983/48214 FNV 15510284848814560699 — samma som SLUTSTAMPEN (ram-prevent) där. Olika grafer: nivå-2 cab98ac22f356bc3… mot 7a98d6e93bd8ebc3…. En grind som läser counts/FNV kan inte skilja ett halvapplicerat komponat från ett färdigt."
   ]
 }

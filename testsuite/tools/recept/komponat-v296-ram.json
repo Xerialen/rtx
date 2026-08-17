@@ -1,10 +1,14 @@
 {
   "schema": "komponat/1",
-  "id": "haz1462-k2-v296-ram",
+  "id": "v296-ram",
   "map": "dm3",
-  "status": "EJ-DEPLOY",
-  "status_skal": "K2 utesluten ur deployen efter DOM M1-EFTER-OFF (WORK_LOGS/kimi-testprotokoll-domar.md): härden vid [304,-800] är K2-inducerad (OFF 1/426 mot ON 42/372, exakt Fisher p = 8e-14), K2:s nettoeffekt på ytan är negativ, och den förexisterande fläcken vid [272,-816] ligger kvar. Behålls som REFERENS: härledningen är giltig, det är receptet som inte ska köras. Deploy-komponatet är recept/komponat-v296-ram.json.",
-  "evidence": "Komponerat recept per WORK_LOGS/deepseek-ompinning-spec.md r2 §1: EN ordnad op-lista som pinnar bas och härleder slutstampen regelstyrt. Ordningen är del av pinnen och får inte omordnas utan ny härledning.",
+  "status": "DEPLOY-KANDIDAT",
+  "status_skal": "Xerials beslut 2026-08-17 efter DOM M1-EFTER-OFF: K2 utgår, resten står kvar.",
+  "evidence": "Deploy-komponatet efter DOM M1-EFTER-OFF (WORK_LOGS/kimi-testprotokoll-domar.md): härden vid [304,-800] är K2-inducerad (OFF 1/426 mot ON 42/372, exakt Fisher p = 8e-14), K2:s nettoeffekt på ytan är negativ, och K2 rensar inte heller den förexisterande fläcken vid [272,-816]. Xerials beslut: K2 utgår ur deployen. Op-listan är därför V296 -> ram-rail-v2 -> ram-prevent mot orörd bas.",
+  "ersatter": {
+    "recept": "recept/komponat-k2-v296-ram.json",
+    "skal": "samma tre ram-/V296-ops, men utan K2-op:en"
+  },
   "base": {
     "cells": 5977,
     "links": 48207,
@@ -14,22 +18,11 @@
   },
   "ops": [
     {
-      "op": "remove_links",
-      "name": "haz1462-k2",
-      "kalla": "recept/haz1462-k2.json",
-      "evidence": "Enda remove-op:en, och den läser sina live-id mot en orörd bas. Ankaret är id PLUS from/to/kind — ett rått id från en annan graf får aldrig bära en apply.",
-      "links": [
-        { "id": 10447, "from": 1416, "to": 1461, "kind": "walk" },
-        { "id": 10446, "from": 1416, "to": 1459, "kind": "walk" }
-      ],
-      "expect": { "d_cells": 0, "d_links": -2 }
-    },
-    {
       "op": "plan_link",
       "name": "v296-vasthoppet",
       "kalla": "~/lab/vast_296_planted.json",
       "fixture_sha256": "00da285962f19b8e53aca279f3bbb670844282260395c6d1585ecbe435348ae8",
-      "evidence": "PlanLink 1167->1191. INGET expect: deltat är just det transformatorn ska härleda, inte det receptet ska påstå. carried är cert-metadata som inte når Cmd::PlanLink — den hashas i receptets egen nivå-2 (params-bärande), inte i den motorjämförbara.",
+      "evidence": "PlanLink 1167->1191. INGET expect: deltat härleds, det påstås inte. carried är cert-metadata som inte når Cmd::PlanLink — den hashas i receptets egen nivå-2 (params-bärande), inte i den motorjämförbara. Utan K2 före sig kör den mot orörd bas, så snappen sker i basens egen id-rymd.",
       "from": [107.0, -582.0, 296.0],
       "takeoff": [92.0, -588.0, 296.0],
       "tgt": [138.1, -701.0, 328.0],
@@ -43,7 +36,7 @@
       "op": "shelf_patch",
       "name": "ram-rail-v2",
       "kalla": "recept/ram-rail-v2.json",
-      "evidence": "Sex indegree-0 rälsceller + ett Drop var öster till 670/702-linjen. Cellernas id i komponatet är INTE receptets 5977-5982 om en tidigare op allokerat celler — de re-ankras per origin.",
+      "evidence": "Sex indegree-0 rälsceller + ett Drop var öster till 670/702-linjen. V296 allokerar ingen cell, så rälsen får samma id 5977-5982 som i det ensamma receptet.",
       "cells": [
         [-360.0, -784.0, 128.03125],
         [-360.0, -752.0, 128.03125],

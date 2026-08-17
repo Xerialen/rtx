@@ -316,12 +316,70 @@ class Korning(unittest.TestCase):
         tr.kor_recept(g, recept, [])
         self.assertEqual(len(g.links), 2, "kor_recept arbetar på en kopia")
 
+    def test_status_foljer_med_fran_receptet(self):
+        g = self.bas()
+        man = tr.kor_recept(g, {"id": "x", "status": "EJ-DEPLOY", "status_skal": "dom",
+                                "base": self.pin(g), "ops": []}, [])
+        self.assertEqual(man["status"], "EJ-DEPLOY")
+        self.assertEqual(man["status_skal"], "dom")
+
+    def test_status_utan_uppgift_ar_okand_inte_deploybar(self):
+        g = self.bas()
+        man = tr.kor_recept(g, {"id": "x", "base": self.pin(g), "ops": []}, [])
+        self.assertEqual(man["status"], "OKAND", "tystnad får aldrig läsas som godkänd")
+
     def test_manifestet_ar_kanoniskt_och_stabilt(self):
         g = self.bas()
         recept = {"id": "x", "base": self.pin(g), "ops": []}
         a = tr.kanonisk_json(tr.kor_recept(g, recept, []))
         b = tr.kanonisk_json(tr.kor_recept(g, recept, []))
         self.assertEqual(a, b, "manifestet måste vara byte-stabilt för att kunna förseglas")
+
+
+class Korskontroll(unittest.TestCase):
+    """Nivå-1-krockar mellan två komponat mot samma bas."""
+
+    def steg(self, index, name, cells, links, stamp, hash_):
+        return {
+            "index": index,
+            "name": name,
+            "identitet": {
+                "cells": cells,
+                "links": links,
+                "graph_stamp": stamp,
+                "graph_content_hash_utan_params": hash_,
+            },
+        }
+
+    def test_krock_mot_annat_komponats_slutstamp_flaggas(self):
+        mitt = [self.steg(0, "pin", 5977, 48207, "1", "a"), self.steg(2, "rail", 5983, 48214, "77", "b")]
+        annat = {"recept_id": "k2-varianten",
+                 "steg": [self.steg(0, "pin", 5977, 48207, "1", "a"),
+                          self.steg(4, "prevent", 5983, 48214, "77", "c")]}
+        w = tr.korskontrollera_manifest(mitt, annat)
+        self.assertEqual(len(w), 1)
+        self.assertIn("SLUTSTAMPEN", w[0])
+        self.assertIn("k2-varianten", w[0])
+
+    def test_samma_graf_ar_ingen_falla(self):
+        """Samma nivå-1 OCH samma nivå-2 är samma graf — inget att varna för."""
+        mitt = [self.steg(0, "pin", 5977, 48207, "1", "a"), self.steg(1, "x", 5983, 48214, "77", "b")]
+        annat = {"recept_id": "annat",
+                 "steg": [self.steg(0, "pin", 5977, 48207, "1", "a"),
+                          self.steg(1, "y", 5983, 48214, "77", "b")]}
+        self.assertEqual(tr.korskontrollera_manifest(mitt, annat), [])
+
+    def test_pinsteget_jamfors_inte(self):
+        """Båda komponaten pinnar samma bas — det är meningen, inte en krock."""
+        mitt = [self.steg(0, "pin", 5977, 48207, "1", "a")]
+        annat = {"recept_id": "annat", "steg": [self.steg(0, "pin", 5977, 48207, "1", "a")]}
+        self.assertEqual(tr.korskontrollera_manifest(mitt, annat), [])
+
+    def test_manifestsokvagen_ligger_bredvid_receptet(self):
+        self.assertEqual(
+            tr.manifestsokvag("recept/komponat-v296-ram.json").name,
+            "komponat-v296-ram.manifest.json",
+        )
 
 
 @unittest.skipUnless(BAS.exists(), f"behöver basdumpen {BAS}")
@@ -411,6 +469,49 @@ class MotBasdumpen(unittest.TestCase):
         slut = tr.kor_recept(self.bas, recept, self.reg)["slut"]
         self.assertIsNone(slut["kollision"], "slutbilden får inte landa på ett registrerat ON-namn")
         self.assertNotEqual((slut["cells"], slut["links"]), (5983, 48213))
+
+    def test_deploykomponatet_utan_k2(self):
+        """Op-listan Xerial beslutade om efter DOM M1-EFTER-OFF."""
+        recept = json.loads((RECEPT / "komponat-v296-ram.json").read_text(encoding="utf-8"))
+        man = tr.kor_recept(self.bas, recept, self.reg)
+        self.assertEqual(man["status"], "DEPLOY-KANDIDAT")
+        v296 = next(s for s in man["steg"] if s["name"] == "v296-vasthoppet")
+        self.assertTrue(v296["harledd"])
+        self.assertEqual((v296["d_cells"], v296["d_links"]), (0, 1))
+        self.assertEqual((v296["identitet"]["cells"], v296["identitet"]["links"]), (5977, 48208))
+        slut = man["slut"]
+        self.assertEqual((slut["cells"], slut["links"]), (5983, 48216))
+        self.assertEqual(slut["graph_stamp"], "11908727279900740725")
+        self.assertIsNone(slut["kollision"], "slutbilden får inte landa på ett registrerat ON-namn")
+
+    def test_k2_komponatet_ar_markt_ej_deploy(self):
+        recept = json.loads((RECEPT / "komponat-k2-v296-ram.json").read_text(encoding="utf-8"))
+        self.assertEqual(recept["status"], "EJ-DEPLOY")
+        self.assertIn("M1-EFTER-OFF", recept["status_skal"])
+
+    def test_railsteget_krockar_med_k2_komponatets_slutstamp(self):
+        """Den fällan finns inte i registret och ingen av op-listorna ser den ensam.
+
+        Deploy-komponatets steg 2 (efter rail) är 5983/48214 — exakt samma nivå-1
+        som K2-komponatets FÄRDIGA bild. En grind som läser counts/FNV kan alltså
+        inte skilja ett halvapplicerat deploy-komponat från ett färdigt K2-komponat.
+        Nivå-2 skiljer dem, och varningen finns för att någon ska läsa rätt kolumn.
+        """
+        deploy = tr.kor_recept(
+            self.bas, json.loads((RECEPT / "komponat-v296-ram.json").read_text(encoding="utf-8")), self.reg
+        )
+        k2 = tr.kor_recept(
+            self.bas, json.loads((RECEPT / "komponat-k2-v296-ram.json").read_text(encoding="utf-8")), self.reg
+        )
+        rail = next(s for s in deploy["steg"] if s["name"] == "ram-rail-v2")
+        self.assertEqual(rail["identitet"]["graph_stamp"], k2["slut"]["graph_stamp"])
+        self.assertNotEqual(
+            rail["identitet"]["graph_content_hash_utan_params"],
+            k2["slut"]["graph_content_hash_utan_params"],
+        )
+        w = tr.korskontrollera_manifest(deploy["steg"], k2)
+        self.assertEqual(len(w), 1)
+        self.assertIn("SLUTSTAMPEN", w[0])
 
     def test_komponatet_ar_deterministiskt(self):
         recept = json.loads((RECEPT / "komponat-k2-v296-ram.json").read_text(encoding="utf-8"))
