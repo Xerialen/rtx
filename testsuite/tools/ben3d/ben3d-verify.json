@@ -2,7 +2,7 @@
  "schema": "ben3d-verify/1",
  "ok": true,
  "n_buntar": 97,
- "rot_sha256": "1c9eb9cc724d62796b6c0f76e11dc759631360a93875d0de20170848eba3033b",
+ "rot_sha256": "f0d6d6ca62894e62d9d4b1c1cd3473ffdc9a48834c975915c7dff52f0064b22f",
  "rot": {
   "schema": "ben3d-rot/1",
   "dataset_manifests": [
@@ -26,7 +26,7 @@
    }
   ],
   "extractor_bin_sha256": "f54a81e89d93945e5ae19a29417c952376379e95e8d3a5851544f59993d3132a",
-  "viewer_bundle_sha256": "87f18771f05fd3a0f3334bdcb6009e27392e749b8e2e5ca37d377273f43bf334",
+  "viewer_bundle_sha256": "9231d9297b7b2c48525bfad04fae746743e5272dc5063c38fadb77f4d72f68c7",
   "ben": [
    {
     "ben_id": "t1h:fork:c002:in_vast",
