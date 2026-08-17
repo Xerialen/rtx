@@ -417,17 +417,91 @@ class Kallkravet(Bas):
                 )
             )
 
-    def test_vilken_tidsstampel_som_helst_i_framtiden_vagras(self):
-        """Hängslet: regeln gäller varje `*_at`-fält, inte bara det som råkar heta
-        measured_at. Ett facit kan datera sin källa under vilket namn som helst."""
+    def test_deepseeks_prob_ett_narare_measured_when_slipper_inte_igenom(self):
+        """JUSTERAS-varv 1, deepseeks prob mot 26509ee, ordagrant.
+
+        Ärligt `measured_at` + ett NYARE `measured_when` accepterades förr: hängslet
+        granskade bara `*_at`-suffix, så en vilseledande tidsstämpel under ett annat
+        namn gick rakt igenom och bokfördes inte ens. Nu är ordförrådet slutet — en
+        nyckel ingen granskar får inte finnas.
+        """
         with self.assertRaises(facit_kalla.Vagran) as cm:
-            self.granska(kalla_block(kvitto_skrivet_at="2026-08-17T12:00:01Z"))
-        self.assertIn("nyare än förseglingen", str(cm.exception))
+            self.granska(
+                kalla_block(
+                    expected_source="pre-measured",
+                    derived_from=...,
+                    measured_at="2026-08-17T09:00:00Z",
+                    measured_by="kimi tbx-d4",
+                    measured_when="2026-08-17T13:00:00Z",  # nyare, icke-_at
+                )
+            )
+        why = str(cm.exception)
+        self.assertIn("okända nycklar", why)
+        self.assertIn("measured_when", why)
+
+    def test_vilket_okant_namn_som_helst_vagras_oavsett_varde(self):
+        """Poängen är inte att gissa vilka namn som bär tid, utan att inget okänt
+        fält får finnas. Även ett harmlöst värde vägras."""
+        for nyckel, varde in (
+            ("timestamp", "2026-08-17T13:00:00Z"),
+            ("matt", "igår"),
+            ("kommentar", "helt oskyldig"),
+        ):
+            with self.subTest(nyckel=nyckel):
+                with self.assertRaises(facit_kalla.Vagran) as cm:
+                    self.granska(kalla_block(**{nyckel: varde}))
+                self.assertIn(nyckel, str(cm.exception))
+
+    def test_falt_fran_en_annan_kalla_pekas_ut_som_sadant(self):
+        """`derived` som också bär `measured_at` hedgar mellan två källor. Felet ska
+        säga det, inte bara 'okänd nyckel'."""
+        with self.assertRaises(facit_kalla.Vagran) as cm:
+            self.granska(kalla_block(measured_at="2026-08-17T09:00:00Z"))
+        why = str(cm.exception)
+        self.assertIn("hör till en annan expected_source", why)
+        self.assertIn("pre-measured", why)
+
+    def test_note_ar_tillaten_fritext(self):
+        """Ordförrådet får inte vara så snävt att ingen kan förklara sig."""
+        block, _ = self.granska(kalla_block(note="härledd ur manifestet, se U5-rapporten"))
+        self.assertEqual(block["expected_source"], "derived")
+
+    def test_vilken_tidsstampel_som_helst_i_framtiden_vagras(self):
+        """Hängslet gäller fortfarande: en KÄND nyckel kan bära ett datum åt fel håll."""
+        with self.assertRaises(facit_kalla.Vagran) as cm:
+            self.granska(
+                kalla_block(
+                    expected_source="pre-measured",
+                    derived_from=...,
+                    measured_at="2026-08-17T12:00:01Z",
+                    measured_by="kimi",
+                )
+            )
+        self.assertIn("observed som blivit expected", str(cm.exception))
 
     def test_tidsstampel_utan_tidszon_vagras(self):
         with self.assertRaises(facit_kalla.Vagran) as cm:
-            self.granska(kalla_block(nagot_at="2026-08-17T09:00:00"))
+            self.granska(
+                kalla_block(
+                    expected_source="pre-measured",
+                    derived_from=...,
+                    measured_at="2026-08-17T09:00:00",
+                    measured_by="kimi",
+                )
+            )
         self.assertIn("saknar tidszon", str(cm.exception))
+
+    def test_okand_nyckel_i_en_source_post_vagras(self):
+        kalla = self.tmp / "kvitto2.json"
+        kalla.write_text('{"n": 1}', encoding="utf-8")
+        import hashlib
+
+        sha = hashlib.sha256(kalla.read_bytes()).hexdigest()
+        with self.assertRaises(facit_kalla.Vagran) as cm:
+            self.granska(
+                kalla_block(sources=[{"path": str(kalla), "sha256": sha, "matt_when": "2026-08-17T13:00:00Z"}])
+            )
+        self.assertIn("matt_when", str(cm.exception))
 
     def test_never_from_judged_run_maste_pastas(self):
         for v in (False, None, "true", ...):

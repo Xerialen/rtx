@@ -28,6 +28,13 @@ efter; tidsstämpeln fångar den som tänkt efter och ändå tog värdet ur fel 
 Valfria `sources: [{path, sha256}]` pinnar dessutom byten — då går det att visa i
 efterhand att facitet förseglades mot exakt de filerna och inte mot en omkörning.
 
+ORDFÖRRÅDET ÄR SLUTET. Första versionen granskade bara nycklar med `*_at`-suffix,
+och deepseeks prob mot `26509ee` visade vad det lämnade öppet: ett ärligt
+`measured_at` plus ett nyare `measured_when` gick rakt igenom — en vilseledande
+tidsstämpel under ett namn vakten inte kände igen, obokförd i kvittot. En namnlista
+över tidsfält hade bara flyttat gränsen. Det som håller är att blocket inte får bära
+något vi inte förstår: okänd nyckel är en vägran, i blocket och i varje `sources`-post.
+
 Ingen riggkontakt: läser bara den fil den får.
 """
 
@@ -45,6 +52,21 @@ NYCKEL = "forsegling_kalla"
 #: Slutet ordförråd. Ett okänt värde är ett stavfel eller en ny idé — bådadera ska
 #: stoppa, inte glida igenom som något närliggande.
 KALLOR = ("derived", "pre-measured", "none")
+
+#: Nycklar varje källblock får bära, oavsett källa.
+GEMENSAMMA_NYCKLAR = frozenset({"schema", "expected_source", "never_from_judged_run", "note", "sources"})
+
+#: Nycklar som hör till EN källa. `derived` får inte bära `measured_at`: har du mätt
+#: något är källan `pre-measured`, och att hedga mellan de två är precis det
+#: källkravet finns för att stoppa.
+NYCKLAR_PER_KALLA = {
+    "derived": frozenset({"derived_from"}),
+    "pre-measured": frozenset({"measured_at", "measured_by"}),
+    "none": frozenset(),
+}
+
+#: Nycklar en post i `sources` får bära. Sluten av samma skäl som blocket självt.
+SOURCE_NYCKLAR = frozenset({"path", "sha256", "note"})
 
 _FENCE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
 
@@ -115,6 +137,32 @@ def validera(block: dict, sealed_at: str, facit_dir: Path) -> list[str]:
             "förväntat värde; att inte påstå det är att inte ha tagit ställning."
         )
 
+    # SLUTET ORDFÖRRÅD (deepseeks prob mot 26509ee). Förr granskades bara nycklar med
+    # `*_at`-suffix, så ett ärligt `measured_at` plus ett nyare `measured_when` gick
+    # igenom obemärkt — en vilseledande tidsstämpel under ett namn hängslet inte kände
+    # igen. En namnlista över tidsfält hade bara flyttat gränsen; det som håller är att
+    # blocket inte får bära något vi inte förstår. Okänd nyckel = vägran.
+    tillatna = GEMENSAMMA_NYCKLAR | NYCKLAR_PER_KALLA[kalla]
+    okanda = sorted(set(block) - tillatna)
+    if okanda:
+        annan_kalla = sorted(
+            n
+            for n in okanda
+            for k, nycklar in NYCKLAR_PER_KALLA.items()
+            if k != kalla and n in nycklar
+        )
+        if annan_kalla:
+            raise Vagran(
+                f"{', '.join(annan_kalla)} hör till en annan expected_source än {kalla!r}. "
+                f"Har du mätt något är källan 'pre-measured' — deklarera det i stället för "
+                f"att bära fälten från två källor samtidigt."
+            )
+        raise Vagran(
+            f"okända nycklar i källblocket: {', '.join(okanda)}. Tillåtna för {kalla!r}: "
+            f"{', '.join(sorted(tillatna))}. Ett fält ingen granskar kan bära vad som helst — "
+            f"en vilseledande tidsstämpel under ett namn vakten inte känner igen, till exempel."
+        )
+
     seal_t = _parse_ts(sealed_at, "sealed_at")
     noter: list[str] = []
 
@@ -135,9 +183,9 @@ def validera(block: dict, sealed_at: str, facit_dir: Path) -> list[str]:
             )
         noter.append(f"measured_at={matt.isoformat()}")
 
-    # Alla tidsstämplar i blocket, oavsett namn, måste ligga före förseglingen.
-    # Bältet: fältkravet ovan fångar den som inte tänkt efter, det här fångar den
-    # som tänkt efter och ändå daterat något åt fel håll.
+    # Varje tidsstämpel i blocket måste ligga före förseglingen. Ordförrådet ovan gör
+    # att det INTE finns några andra fält än de kända — men en känd nyckel kan
+    # fortfarande bära ett datum åt fel håll, och det är vad den här loopen är till för.
     for nyckel, v in sorted(block.items()):
         if nyckel.endswith("_at") and isinstance(v, str):
             t = _parse_ts(v, nyckel)
@@ -156,6 +204,12 @@ def validera(block: dict, sealed_at: str, facit_dir: Path) -> list[str]:
         for i, s in enumerate(sources):
             if not isinstance(s, dict) or "path" not in s or "sha256" not in s:
                 raise Vagran(f"sources[{i}] måste ha path och sha256")
+            okanda_s = sorted(set(s) - SOURCE_NYCKLAR)
+            if okanda_s:
+                raise Vagran(
+                    f"sources[{i}]: okända nycklar {', '.join(okanda_s)}. Tillåtna: "
+                    f"{', '.join(sorted(SOURCE_NYCKLAR))}."
+                )
             p = Path(s["path"])
             if not p.is_absolute():
                 p = facit_dir / p
