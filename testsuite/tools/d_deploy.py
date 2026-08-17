@@ -296,10 +296,31 @@ def check_portvakt(
     return matches[0]
 
 
+def _rig_lock_lines(body: str):
+    """Mirror Rust ``str::lines()``: split on LF / CRLF only.
+
+    Lone CR is not a line break (unlike ``str.splitlines()``). A trailing
+    newline does not yield an empty last line. A lone trailing CR stays
+    on the last line — later ``str.strip()`` / Rust ``trim()`` treat it as
+    whitespace, same as the proto contract.
+    """
+    if not body:
+        return
+    ended_with_nl = body.endswith("\n")
+    core = body[:-1] if ended_with_nl else body
+    parts = core.split("\n")
+    n = len(parts)
+    for i, line in enumerate(parts):
+        followed_by_nl = (i < n - 1) or ended_with_nl
+        if followed_by_nl and line.endswith("\r"):
+            line = line[:-1]
+        yield line
+
+
 def rig_lock_declared_token(body: str) -> str | None:
     """Mirror rtx-ctlproto::rig_lock_declared_token. None if empty or contradictory."""
     found: str | None = None
-    for line in body.splitlines():
+    for line in _rig_lock_lines(body):
         stripped = line.strip()
         if not stripped.startswith("token="):
             continue
@@ -317,7 +338,7 @@ def rig_lock_accepts(body: str, token: str) -> bool:
     body, token = body.strip(), token.strip()
     if not body or not token:
         return False
-    if any(line.strip().startswith("token=") for line in body.splitlines()):
+    if any(line.strip().startswith("token=") for line in _rig_lock_lines(body)):
         return rig_lock_declared_token(body) == token
     first = body.split()[0] if body.split() else ""
     return token == body or token == first
@@ -328,9 +349,14 @@ def parse_deploy_lock(path: Path) -> dict[str, str]:
 
     A file that names `token=` but contradicts itself or leaves it empty is
     refused here — it does not fall back to the first field.
+
+    Bytes are decoded without universal-newline translation so a lone CR
+    reaches the Rust-``lines()`` mirror the same way ``read_to_string`` does.
     """
-    raw = Path(path).read_text(encoding="utf-8", errors="replace")
-    has_token_line = any(line.strip().startswith("token=") for line in raw.splitlines())
+    raw = Path(path).read_bytes().decode("utf-8", errors="replace")
+    has_token_line = any(
+        line.strip().startswith("token=") for line in _rig_lock_lines(raw)
+    )
     declared = rig_lock_declared_token(raw) if has_token_line else None
     if has_token_line and declared is None:
         raise FailClosed(
@@ -338,7 +364,7 @@ def parse_deploy_lock(path: Path) -> dict[str, str]:
             f"{path} har motsägelsefull eller tom token=-deklaration — vägran",
         )
     fields: dict[str, str] = {}
-    for line in raw.splitlines():
+    for line in _rig_lock_lines(raw):
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue

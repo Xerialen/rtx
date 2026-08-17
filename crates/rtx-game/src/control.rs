@@ -2501,6 +2501,27 @@ mod tests {
         }
     }
 
+    /// Same campaign form as CRLF bytes. `str::lines()` splits on CRLF;
+    /// a reader that does something else must fail here, not on the rig.
+    #[test]
+    fn riglock_crlf_campaign_form_is_crlf_and_opens() {
+        let p = riglock_fixture("kampanj-crlf.lock");
+        assert!(p.is_file(), "delad fixtur saknas: {}", p.display());
+        let bytes = std::fs::read(&p).expect("läs crlf-fixtur");
+        assert!(
+            bytes.windows(2).any(|w| w == b"\r\n"),
+            "kampanj-crlf.lock måste vara CRLF-bytes (git-normalisering?)"
+        );
+        for mode in ["apply", "undo", "plant"] {
+            assert!(fixa_require_lock_at(mode, FIXTUR_TOKEN, &p).is_ok(), "{mode}");
+        }
+        let body = String::from_utf8(bytes).unwrap();
+        assert_eq!(
+            rtx_ctlproto::rig_lock_declared_token(&body),
+            Some(FIXTUR_TOKEN)
+        );
+    }
+
     /// Ett lås som namnger sin token får inte kunna öppnas av något annat i filen.
     #[test]
     fn riglock_campaign_form_refuses_first_field_and_whole_body() {

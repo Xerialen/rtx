@@ -21,3 +21,6 @@
 *.jpeg  binary
 *.gif   binary
 *.ico   binary
+
+# Shared lock fixture that IS CRLF; do not rewrite to LF.
+testsuite/fixtures/riglock/kampanj-crlf.lock binary

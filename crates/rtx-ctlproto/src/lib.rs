@@ -1075,6 +1075,26 @@ mod tests {
     }
 
     #[test]
+    fn rig_lock_line_endings_match_str_lines() {
+        // Rust str::lines() splits on \n / \r\n only. Lone \r is not a break.
+        // Python splitlines() would give declared="a" / contradiction here.
+        assert_eq!(rig_lock_declared_token("token=a\rb"), Some("a\rb"));
+        assert_eq!(
+            rig_lock_declared_token("token=a\rtoken=b"),
+            Some("a\rtoken=b")
+        );
+        assert!(rig_lock_accepts("token=a\rb", "a\rb"));
+        assert!(!rig_lock_accepts("token=a\rb", "a"));
+        assert!(rig_lock_accepts("token=a\rtoken=b", "a\rtoken=b"));
+
+        let crlf = "owner=fable\r\ntoken=t20m-abc\r\nts=x\r\n";
+        assert_eq!(rig_lock_declared_token(crlf), Some("t20m-abc"));
+        assert!(rig_lock_accepts(crlf, "t20m-abc"));
+        assert!(!rig_lock_accepts(crlf, "owner=fable"));
+        assert_eq!(rig_lock_declared_token("token=abc  \r\n"), Some("abc"));
+    }
+
+    #[test]
     fn plan_cell_cmd_roundtrips() {
         let cmd = Cmd::PlanCell {
             pos: [-880.0, -42.0, 88.0],
