@@ -114,6 +114,20 @@ V296_STEP_NAME = "v296-vasthoppet"
 SEALED_V296_PAYLOAD_SHA256 = (
     "aa96a55f33a8d73005f4e8438f5cf3b51b927f5eb37801bd58c49e58c0995bf3"
 )
+SEALED_MANIFEST_SHA256 = (
+    "bcba5897a9af7887d63fcf7466081a52d0bc84885c6d227002ca3d67727bc8e8"
+)
+SEALED_RECEPT_SHA256 = (
+    "e327251e215a7a459e356fc7fa96e4d3d18f3e2dddb4c72412757614dd0df9ec"
+)
+SEALED_QWPROGS_SHA256 = (
+    "4e71191c5dce641be593834dcf2f4736724f24685e84ea5b2b2de905087392f0"
+)
+SEALED_MVDSV_SHA256 = (
+    "858465007c7bea52c5c790cdfdd07c0d65cce17b48110b327595bb8c2e051f15"
+)
+CAMPAIGN_OWNER = "fable"
+LOCK_TS_WINDOW_S = 48 * 3600
 
 # Facit §3: exactly one dedicated pair. d2/d4/RA/0/0 are not pairs.
 ALLOWED_DEPLOY_PAIRS: dict[str, tuple[int, int]] = {
@@ -166,22 +180,107 @@ class _DeploySession:
 
 _active_session: _DeploySession | None = None
 _preflight_ticket: str | None = None
+_test_pin: tuple[str, str] | None = None
 
 
 def active_deploy_context() -> DeployContext | None:
     return None if _active_session is None else _active_session.ctx
 
 
-def issue_preflight_seal(manifest_sha256: str, recept_sha256: str) -> PreflightSeal:
-    """Runner-only. Called at the end of a successful sealed preflight."""
+def _file_sha256(path: Path | str) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def install_test_pin(qwprogs_path: Path | str, mvdsv_path: Path | str) -> tuple[str, str]:
+    """Test-only. Expected binary shas = hash of tmp files. Not a caller override."""
+    global _test_pin
+    qw = Path(os.path.abspath(qwprogs_path))
+    mv = Path(os.path.abspath(mvdsv_path))
+    tmp_root = Path(os.path.abspath(tempfile.gettempdir()))
+    for p in (qw, mv):
+        try:
+            p.relative_to(tmp_root)
+        except ValueError as exc:
+            raise FailClosed(
+                "binary",
+                f"test-pin {p} ligger inte under tmp {tmp_root}",
+            ) from exc
+        if not p.is_file():
+            raise FailClosed("binary", f"test-pin saknar fil {p}")
+    _test_pin = (_file_sha256(qw), _file_sha256(mv))
+    return _test_pin
+
+
+def clear_test_pin() -> None:
+    global _test_pin
+    _test_pin = None
+
+
+def sealed_binary_shas() -> tuple[str, str]:
+    if _test_pin is not None:
+        return _test_pin
+    return SEALED_QWPROGS_SHA256, SEALED_MVDSV_SHA256
+
+
+def issue_preflight_seal(*_a: Any, **_k: Any) -> PreflightSeal:
+    """Closed. Sol V2: public issuer accepted arbitrary caller strings."""
+    raise FailClosed(
+        "deploy-context",
+        "issue_preflight_seal är stängd — ticket räknas ur verifierade filer "
+        "av runnern, aldrig ur caller-strängar",
+    )
+
+
+def _issue_preflight_seal_from_files(
+    *,
+    manifest_path: Path | str,
+    recept_path: Path | str,
+    qwprogs_path: Path | str,
+    mvdsv_path: Path | str,
+) -> PreflightSeal:
+    """Module-private. Hashes files; refuses if they are not the sealed bytes."""
     global _preflight_ticket
-    if not manifest_sha256 or not recept_sha256:
-        raise FailClosed("deploy-context", "preflight-sigill kräver båda SHA")
-    _preflight_ticket = secrets.token_hex(16)
+    man_path, rec_path = Path(manifest_path), Path(recept_path)
+    qw_path, mv_path = Path(qwprogs_path), Path(mvdsv_path)
+    for p, label in (
+        (man_path, "manifest"),
+        (rec_path, "recept"),
+        (qw_path, "qwprogs"),
+        (mv_path, "mvdsv"),
+    ):
+        if not p.is_file():
+            raise FailClosed("deploy-context", f"preflight-sigill: {label}-fil saknas {p}")
+    man_sha = _file_sha256(man_path)
+    rec_sha = _file_sha256(rec_path)
+    qw_sha = _file_sha256(qw_path)
+    mv_sha = _file_sha256(mv_path)
+    if man_sha != SEALED_MANIFEST_SHA256:
+        raise FailClosed(
+            "deploy-context",
+            f"preflight-sigill: manifest SHA {man_sha} ≠ förseglad",
+        )
+    if rec_sha != SEALED_RECEPT_SHA256:
+        raise FailClosed(
+            "deploy-context",
+            f"preflight-sigill: recept SHA {rec_sha} ≠ förseglad",
+        )
+    want_q, want_m = sealed_binary_shas()
+    if qw_sha != want_q:
+        raise FailClosed(
+            "deploy-context",
+            f"preflight-sigill: qwprogs-fil SHA {qw_sha} ≠ förseglad/test-pin",
+        )
+    if mv_sha != want_m:
+        raise FailClosed(
+            "deploy-context",
+            f"preflight-sigill: mvdsv-fil SHA {mv_sha} ≠ förseglad/test-pin",
+        )
+    material = f"{man_sha}:{rec_sha}:{qw_sha}:{mv_sha}:{secrets.token_hex(8)}"
+    _preflight_ticket = hashlib.sha256(material.encode("utf-8")).hexdigest()
     return PreflightSeal(
         _secret=_preflight_ticket,
-        manifest_sha256=manifest_sha256,
-        recept_sha256=recept_sha256,
+        manifest_sha256=man_sha,
+        recept_sha256=rec_sha,
     )
 
 
@@ -194,6 +293,11 @@ def mint_deploy_context(seal: PreflightSeal, steps: tuple[BoundStep, ...] | list
         raise FailClosed(
             "deploy-context",
             "DeployContext är inte självaktiverbar — saknar runner-preflight",
+        )
+    if seal.manifest_sha256 != SEALED_MANIFEST_SHA256 or seal.recept_sha256 != SEALED_RECEPT_SHA256:
+        raise FailClosed(
+            "deploy-context",
+            "preflight-sigill binder inte de förseglade manifest-/receptbyten",
         )
     if _active_session is not None:
         raise FailClosed("deploy-context", "deploy-kontext redan aktiv")
@@ -222,9 +326,10 @@ def activate_deploy_context(ctx: DeployContext) -> None:
 
 def reset_deploy_state() -> None:
     """Test/runner recovery: drop ambient session and unused preflight ticket."""
-    global _active_session, _preflight_ticket
+    global _active_session, _preflight_ticket, _test_pin
     _active_session = None
     _preflight_ticket = None
+    _test_pin = None
 
 
 def clear_deploy_context(token: str) -> None:
@@ -308,6 +413,47 @@ def consume_deploy_undo(
     sess.stack.pop()
     sess.next_index -= 1
     return top
+
+
+def parse_chain_reply(data: Any) -> dict[str, Any]:
+    """Kedjedjup + hela kedjan + nästa-att-undo ur FixaResp (5c66a6d)."""
+    if not isinstance(data, Mapping):
+        data = {}
+    audit = str(data.get("audit") or "")
+    outcome = str(data.get("outcome") or "")
+    top = str(data.get("recipe") or "").strip()
+    depth = 0
+    names: list[str] = []
+    m = re.search(r"depth=(\d+)", audit)
+    if m:
+        depth = int(m.group(1))
+    m = re.search(r"\[([^\]]*)\]", audit)
+    if m and m.group(1).strip():
+        names = [p.strip() for p in m.group(1).split("->") if p.strip()]
+        depth = depth or len(names)
+    m = re.search(r"next undo=(\S+)", audit)
+    if m and m.group(1) not in {"-", ""}:
+        top = m.group(1)
+    if outcome == "empty" or "undo chain: empty" in audit:
+        top, depth, names = "", 0, []
+    return {
+        "next": top,
+        "depth": depth,
+        "names": names,
+        "outcome": outcome,
+        "audit": audit,
+    }
+
+
+def read_engine_chain(ctl: Any) -> dict[str, Any]:
+    """Read-only chain. No lock. Avstämning mot motorn, inte mot egen lista."""
+    if not hasattr(ctl, "request"):
+        raise FailClosed("deploy", "ctl saknar request — kan inte läsa undo-kedjan")
+    reply = ctl.request("fixa west-shelf chain")
+    data = reply
+    if isinstance(reply, Mapping) and "data" in reply:
+        data = reply["data"]
+    return parse_chain_reply(data)
 
 
 def revert_last_apply() -> None:
@@ -1045,11 +1191,21 @@ def send_plan_link(
         if consumed:
             revert_last_apply()
         raise FailClosed("plant", "ctl saknar request — plant avbruten")
+    before = read_engine_chain(ctl) if consumed else None
     try:
         return ctl.request({"PlanLink": payload} if not isinstance(payload, str) else payload)
     except Exception:
         if consumed:
-            revert_last_apply()
+            after = read_engine_chain(ctl)
+            committed = (
+                after.get("depth", 0) > (before or {}).get("depth", 0)
+                or (
+                    after.get("next")
+                    and after.get("next") != (before or {}).get("next")
+                )
+            )
+            if not committed:
+                revert_last_apply()
         raise
 
 

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Deploy-runner: sealed komponat-manifest/1 apply, fail-closed.
 
-Varv 3 (Sol 7670f9a + Fable 5c66a6d): DeployContext minted from
-preflight seal; compose-child LABB requires campaign; rollback
-reads undo top via fixa chain; port pair d1|d3; binaries hashed
-from staged files (qwprogs 4e71191c…).
+Varv 4 (Sol 70571a7 V2/V3/V5): ticket from hashed files only;
+lost-reply recovery via engine chain; lock owner+ts validated;
+expected binary hashes not caller-overridable.
 """
 
 from __future__ import annotations
@@ -19,18 +18,27 @@ from typing import Any
 
 from d_failclosed import (
     ALLOWED_DEPLOY_PAIRS,
+    CAMPAIGN_OWNER,
     DEPLOY_OK,
     BoundStep,
     DeployContext,
     FailClosed,
     FreezeContext,
+    LOCK_TS_WINDOW_S,
     PLAN_LINK_UNDO_ID,
+    SEALED_MANIFEST_SHA256,
+    SEALED_MVDSV_SHA256,
+    SEALED_QWPROGS_SHA256,
+    SEALED_RECEPT_SHA256,
+    _issue_preflight_seal_from_files,
     check_change_freeze,
     check_deploy_status,
     clear_deploy_context,
-    issue_preflight_seal,
     mint_deploy_context,
     op_payload_sha256,
+    parse_chain_reply,
+    read_engine_chain,
+    sealed_binary_shas,
     send_plan_link,
 )
 from d_kvitto import write_exclusive
@@ -40,20 +48,9 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = HERE / "recept" / "komponat-v296-ram.manifest.json"
 DEFAULT_RECEPT = HERE / "recept" / "komponat-v296-ram.json"
 
-# Byte-pins. Compared always — never keyed on basename (Sol F1/F2).
-SEALED_MANIFEST_SHA256 = (
-    "bcba5897a9af7887d63fcf7466081a52d0bc84885c6d227002ca3d67727bc8e8"
-)
-SEALED_RECEPT_SHA256 = (
-    "e327251e215a7a459e356fc7fa96e4d3d18f3e2dddb4c72412757614dd0df9ec"
-)
-# 5c66a6d staged qwprogs-5c66a6d-4e71191c.so. Not a facit-r2 seal.
-EXPECTED_QWPROGS_SHA256 = (
-    "4e71191c5dce641be593834dcf2f4736724f24685e84ea5b2b2de905087392f0"
-)
-EXPECTED_MVDSV_SHA256 = (
-    "858465007c7bea52c5c790cdfdd07c0d65cce17b48110b327595bb8c2e051f15"
-)
+# Re-export sealed pins (single source: d_failclosed).
+EXPECTED_QWPROGS_SHA256 = SEALED_QWPROGS_SHA256
+EXPECTED_MVDSV_SHA256 = SEALED_MVDSV_SHA256
 
 SCHEMA_RUN = "deploy-run/1"
 SCHEMA_STEG = "deploy-steg-kvitto/1"
@@ -172,44 +169,9 @@ def live_identity(ctl) -> dict[str, Any]:
     return live_to_motor(stamp_from_reply(reply))
 
 
-def parse_chain_reply(data: dict[str, Any]) -> dict[str, Any]:
-    """Kedjedjup + hela kedjan + nästa-att-undo ur FixaResp (5c66a6d)."""
-    audit = str(data.get("audit") or "")
-    outcome = str(data.get("outcome") or "")
-    top = str(data.get("recipe") or "").strip()
-    depth = 0
-    names: list[str] = []
-    m = re.search(r"depth=(\d+)", audit)
-    if m:
-        depth = int(m.group(1))
-    m = re.search(r"\[([^\]]*)\]", audit)
-    if m and m.group(1).strip():
-        names = [p.strip() for p in m.group(1).split("->") if p.strip()]
-        depth = depth or len(names)
-    m = re.search(r"next undo=(\S+)", audit)
-    if m and m.group(1) not in {"-", ""}:
-        top = m.group(1)
-    if outcome == "empty" or "undo chain: empty" in audit:
-        top, depth, names = "", 0, []
-    return {
-        "next": top,
-        "depth": depth,
-        "names": names,
-        "outcome": outcome,
-        "audit": audit,
-    }
-
-
 def read_undo_chain(ctl) -> dict[str, Any]:
     """Read-only. No lock. Recovery must use this, never guess the top."""
-    reply = run_fixa(
-        ctl,
-        recipe_id="west-shelf",
-        mode="chain",
-        from_cell=None,
-        to_cell=None,
-    )
-    return parse_chain_reply(reply)
+    return read_engine_chain(ctl)
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
@@ -376,6 +338,26 @@ def check_rig_lock(
             f"lock portpar {fields['ctl_port']}/{fields['game_port']} "
             f"≠ {ctl_port}/{game_port}",
         )
+    if fields["owner"] != CAMPAIGN_OWNER:
+        raise FailClosed(
+            "lock",
+            f"lock owner {fields['owner']!r} ≠ kampanjidentitet {CAMPAIGN_OWNER!r}",
+        )
+    try:
+        lock_ts = datetime.strptime(fields["ts"], "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError as exc:
+        raise FailClosed(
+            "lock",
+            f"lock ts {fields['ts']!r} är inte ISO-8601 Z — vägran",
+        ) from exc
+    age = abs((datetime.now(timezone.utc) - lock_ts).total_seconds())
+    if age > LOCK_TS_WINDOW_S:
+        raise FailClosed(
+            "lock",
+            f"lock ts {fields['ts']} utanför ±{LOCK_TS_WINDOW_S // 3600}h-fönster",
+        )
     if fields["token"] != token:
         raise FailClosed("lock", "lock kampanjtoken matchar inte runnerns token")
     if fields["qwprogs_sha256"].lower() != qwprogs_sha256.lower():
@@ -388,11 +370,8 @@ def check_rig_lock(
 def check_binary_pin(
     qwprogs_path: Path | str | None,
     mvdsv_path: Path | str | None,
-    *,
-    expected_qwprogs: str | None = None,
-    expected_mvdsv: str | None = None,
 ) -> tuple[str, str]:
-    """Hash staged/live files. Caller hex strings are not a pin."""
+    """Hash staged/live files against sealed (or injected test-pin) constants."""
     if not qwprogs_path or not Path(qwprogs_path).is_file():
         raise FailClosed(
             "binary",
@@ -405,8 +384,7 @@ def check_binary_pin(
         )
     got_q = file_sha256(Path(qwprogs_path))
     got_m = file_sha256(Path(mvdsv_path))
-    want_q = (expected_qwprogs or EXPECTED_QWPROGS_SHA256).strip().lower()
-    want_m = (expected_mvdsv or EXPECTED_MVDSV_SHA256).strip().lower()
+    want_q, want_m = sealed_binary_shas()
     if got_q != want_q:
         raise FailClosed("binary", f"qwprogs-fil SHA-256 {got_q} ≠ förväntad {want_q}")
     if got_m != want_m:
@@ -443,8 +421,6 @@ def preflight(
     lock_token: str | None,
     qwprogs_path: Path | str | None,
     mvdsv_path: Path | str | None,
-    expected_qwprogs: str | None,
-    expected_mvdsv: str | None,
     ctl_port: int | None,
     game_port: int | None,
     unit: str | None,
@@ -471,12 +447,7 @@ def preflight(
     check_deploy_status(rec, deploy=True)
     bind_ops(rec, man)
     unit_id = check_portvakt(ctl_port, game_port, unit)
-    qw_sha, mv_sha = check_binary_pin(
-        qwprogs_path,
-        mvdsv_path,
-        expected_qwprogs=expected_qwprogs,
-        expected_mvdsv=expected_mvdsv,
-    )
+    qw_sha, mv_sha = check_binary_pin(qwprogs_path, mvdsv_path)
     if lock_path is None:
         raise FailClosed("lock", "rig-lock krävs i deploy-preflight")
     if not lock_token:
@@ -497,7 +468,19 @@ def preflight(
     why = same_identity(live, pin)
     if why:
         raise FailClosed("crash-detector", f"pin=bas misslyckades: {why}")
-    seal = issue_preflight_seal(man_sha, rec_sha)
+    chain0 = read_undo_chain(ctl)
+    if chain0.get("depth", 0) != 0 or chain0.get("next"):
+        raise FailClosed(
+            "crash-detector",
+            f"deploy-preflight kräver tom undo-kedja, kedjan är "
+            f"depth={chain0.get('depth')} next={chain0.get('next')!r}",
+        )
+    seal = _issue_preflight_seal_from_files(
+        manifest_path=manifest_path,
+        recept_path=recept_path,
+        qwprogs_path=qwprogs_path,
+        mvdsv_path=mvdsv_path,
+    )
     return man, rec, live, man_sha, rec_sha, lock_fields, qw_sha, mv_sha, unit_id, seal
 
 
@@ -551,12 +534,10 @@ def _apply_one(
 
 def _undo_one(
     ctl,
-    applied: dict[str, Any],
     *,
     freeze: FreezeContext,
     lock_token: str | None,
-    now: dict[str, Any],
-    then: dict[str, Any],
+    live: dict[str, Any],
     deploy_ctx: DeployContext,
     manifest: dict[str, Any],
 ) -> str:
@@ -575,7 +556,7 @@ def _undo_one(
         from_cell=None,
         to_cell=None,
         lock_token=lock_token,
-        recipe=_step_recipe(manifest, [then, now]),
+        recipe=_step_recipe(manifest, [live, live]),
         freeze=freeze,
         deploy=True,
         deploy_ctx=deploy_ctx,
@@ -635,35 +616,39 @@ def _safe_undo(
     steg_kvitton: list[str],
     manifest: dict[str, Any],
 ) -> tuple[dict[str, Any], list[str], str | None]:
-    """Pop every applied frame. Verify each waypoint. Never swallow leftover."""
+    """Pop every engine frame above the sealed empty baseline. Chain is truth."""
     undid: list[str] = []
     leftover: str | None = None
-    for rec in reversed(applied):
+    idx = 0
+    live = live_identity(ctl)
+    while True:
+        chain = read_undo_chain(ctl)
+        if int(chain.get("depth") or 0) <= 0:
+            break
+        name = chain.get("next") or ""
+        if not name:
+            leftover = "kedja djupare än bas men chain rapporterade ingen topp"
+            break
+        idx += 1
         try:
             _undo_one(
-                ctl, rec, freeze=freeze, lock_token=lock_token,
-                now=live, then=rec["before"], deploy_ctx=deploy_ctx,
-                manifest=manifest,
+                ctl, freeze=freeze, lock_token=lock_token,
+                live=live, deploy_ctx=deploy_ctx, manifest=manifest,
             )
             live = live_identity(ctl)
-            why = same_identity(live, rec["before"])
-            if why:
-                leftover = f"undo-waypoint {rec['name']}: {why}"
-                break
-            undid.append(rec["name"])
+            undid.append(name)
         except Exception as exc:
-            leftover = f"undo av {rec['name']} misslyckades: {exc}"
+            leftover = f"undo av {name} misslyckades: {exc}"
             break
         try:
             kpath = _write_steg_kvitto(
-                out, index=rec["index"], name=f"{rec['name']}-undo",
+                out, index=idx, name=f"{name}-undo",
                 op="undo", outcome="undo",
-                expected=rec["before"], observed=live, manifest_sha256=man_sha,
+                expected=pin, observed=live, manifest_sha256=man_sha,
             )
             steg_kvitton.append(str(kpath))
         except Exception as kexc:
-            # Graph already restored. A receipt write must not skip the next pop.
-            steg_kvitton.append(f"kvitto-skrivfel undo {rec['name']}: {kexc}")
+            steg_kvitton.append(f"kvitto-skrivfel undo {name}: {kexc}")
     if leftover is None:
         why_pin = same_identity(live, pin)
         if why_pin:
@@ -700,8 +685,6 @@ def run_deploy(
     lock_path: Path | None = None,
     qwprogs_path: Path | str | None = None,
     mvdsv_path: Path | str | None = None,
-    expected_qwprogs: str | None = None,
-    expected_mvdsv: str | None = None,
     ctl_port: int | None = None,
     game_port: int | None = None,
     unit: str | None = None,
@@ -775,12 +758,12 @@ def run_deploy(
 
     def _best_effort_undo() -> None:
         nonlocal live, undid, leftover, _undo_done
-        if _undo_done or not applied or deploy_ctx is None or live is None:
+        if _undo_done or deploy_ctx is None:
             return
         _undo_done = True
         try:
             live, undid, leftover = _safe_undo(
-                ctl, applied, live=live, pin=pin, freeze=ctx,
+                ctl, applied, live=live or {}, pin=pin, freeze=ctx,
                 lock_token=token, deploy_ctx=deploy_ctx, out=out,
                 man_sha=man_sha, steg_kvitton=steg_kvitton, manifest=man,
             )
@@ -800,8 +783,6 @@ def run_deploy(
             lock_token=lock_token,
             qwprogs_path=qwprogs_path,
             mvdsv_path=mvdsv_path,
-            expected_qwprogs=expected_qwprogs,
-            expected_mvdsv=expected_mvdsv,
             ctl_port=ctl_port,
             game_port=game_port,
             unit=unit,
@@ -833,6 +814,13 @@ def run_deploy(
                     before=live, after=want, deploy_ctx=deploy_ctx,
                     manifest=man,
                 )
+                chain = read_undo_chain(ctl)
+                if chain.get("next") != rid:
+                    abort_reason = (
+                        f"steg {i} ({name}): motor-topp {chain.get('next')!r} "
+                        f"≠ förväntad {rid!r}"
+                    )
+                    break
                 applied.append({
                     "index": i, "name": name, "op": kind,
                     "recipe_id": rid, "before": live, "after": want,
@@ -855,6 +843,12 @@ def run_deploy(
                 steg_kvitton.append(str(kpath))
             except Exception as exc:
                 abort_reason = f"steg {i} ({name}) vägrades: {exc}"
+                # Commit-status unknown: motor chain is truth, not applied[].
+                chain = read_undo_chain(ctl)
+                if chain.get("next") and chain.get("next") != rid:
+                    abort_reason += (
+                        f" | motor-topp {chain.get('next')!r} ≠ {rid!r}"
+                    )
                 break
 
         if not abort_reason:
@@ -862,7 +856,7 @@ def run_deploy(
             if why_slut:
                 abort_reason = f"slutverifiering: {why_slut}"
 
-        if abort_reason and applied:
+        if abort_reason:
             _best_effort_undo()
     except Exception as exc:
         abort_reason = abort_reason or str(exc)

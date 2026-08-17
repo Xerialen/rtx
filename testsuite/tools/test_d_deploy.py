@@ -11,6 +11,7 @@ import json
 import shutil
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -117,13 +118,14 @@ class ProdEngineMock:
     UNDO_HANDLES = ENGINE_UNDO_HANDLES
     UNDOABLE = ENGINE_UNDOABLE
 
-    def __init__(self, idents, *, corrupt_after=None, refuse_apply=None):
+    def __init__(self, idents, *, corrupt_after=None, refuse_apply=None, drop_reply_after_commit=None):
         self.idents = [dict(x) for x in idents]
         self.idx = 0
         self.cmds: list = []
         self.stack: list[str] = []
         self.corrupt_after = corrupt_after
         self.refuse_apply = refuse_apply
+        self.drop_reply_after_commit = drop_reply_after_commit
         self.n_apply = 0
 
     def _cur(self):
@@ -200,6 +202,8 @@ class ProdEngineMock:
         self.stack.append(name)
         self.idx = min(self.idx + 1, len(self.idents) - 1)
         ident = dict(self.idents[self.idx])
+        if self.drop_reply_after_commit is not None and self.n_apply == self.drop_reply_after_commit:
+            raise OSError("reply lost after commit")
         if self.corrupt_after is not None and self.n_apply == self.corrupt_after:
             ident["graph_content_hash"] = "ab" * 32
             self.idents[self.idx] = ident
@@ -215,8 +219,7 @@ class DeployRunnerTests(unittest.TestCase):
         self.mv = self.td / "mvdsv"
         self.qw.write_bytes(b"qw-test")
         self.mv.write_bytes(b"mv-test")
-        self.qw_sha = file_sha256(self.qw)
-        self.mv_sha = file_sha256(self.mv)
+        self.qw_sha, self.mv_sha = fc.install_test_pin(self.qw, self.mv)
         self.lock = self.td / "rig.lock"
         self._write_lock()
 
@@ -238,10 +241,11 @@ class DeployRunnerTests(unittest.TestCase):
         if body is not None:
             self.lock.write_text(body, encoding="utf-8")
             return
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.lock.write_text(
             f"owner=fable\nunit={unit}\nctl_port={ctl}\ngame_port={game}\n"
             f"token={token}\nqwprogs_sha256={qw or self.qw_sha}\n"
-            f"mvdsv_sha256={mv or self.mv_sha}\nts=2026-08-17T00:00:00Z\n",
+            f"mvdsv_sha256={mv or self.mv_sha}\nts={ts}\n",
             encoding="utf-8",
         )
 
@@ -254,8 +258,6 @@ class DeployRunnerTests(unittest.TestCase):
             lock_path=self.lock,
             qwprogs_path=self.qw,
             mvdsv_path=self.mv,
-            expected_qwprogs=self.qw_sha,
-            expected_mvdsv=self.mv_sha,
             ctl_port=27996,
             game_port=27592,
             unit="tbx-d1",
@@ -316,7 +318,7 @@ class DeployRunnerTests(unittest.TestCase):
         doc = self._run(ctl, outdir=self.td / "abort")
         self.assertEqual(doc["outcome"], "aborted")
         self.assertIn("steg 2", doc["abort_reason"] or "")
-        self.assertEqual(doc["undid"], ["ram-rail-v2", "v296-vasthoppet"])
+        self.assertEqual(doc["undid"], ["ram-rail-v2", "plan-link"])
         self.assertEqual(ctl.idx, 0)
         self.assertEqual(ctl.stack, [])
         chains = [c for c in ctl.cmds if isinstance(c, str) and c.endswith(" chain")]
@@ -333,7 +335,7 @@ class DeployRunnerTests(unittest.TestCase):
         doc = self._run(ctl, outdir=self.td / "refuse")
         self.assertEqual(doc["outcome"], "aborted")
         self.assertEqual(doc["applied"], ["v296-vasthoppet"])
-        self.assertEqual(doc["undid"], ["v296-vasthoppet"])
+        self.assertEqual(doc["undid"], ["plan-link"])
         self.assertEqual(ctl.idx, 0)
         self.assertTrue(any(
             isinstance(c, str) and c.endswith(" chain") for c in ctl.cmds
@@ -443,7 +445,6 @@ class DeployRunnerTests(unittest.TestCase):
             self._run(
                 ctl,
                 qwprogs_path=None,
-                expected_qwprogs=EXPECTED_QWPROGS_SHA256,
                 outdir=self.td / "binstr",
             )
         self.assertEqual(cm.exception.gate, "binary")
@@ -451,6 +452,7 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertEqual(ctl.n_apply, 0)
 
     def test_binary_pin_refuses_file_mismatch(self):
+        fc.clear_test_pin()
         with self.assertRaises(fc.FailClosed) as cm:
             check_binary_pin(self.qw, self.mv)
         self.assertEqual(cm.exception.gate, "binary")
@@ -568,8 +570,6 @@ class DeployRunnerTests(unittest.TestCase):
             lock_token="fable",
             qwprogs_path=self.qw,
             mvdsv_path=self.mv,
-            expected_qwprogs=self.qw_sha,
-            expected_mvdsv=self.mv_sha,
             ctl_port=27996,
             game_port=27592,
             unit="tbx-d1",
@@ -598,7 +598,6 @@ class DeployRunnerTests(unittest.TestCase):
             manifest_path=MANIFEST, recept_path=RECEPT_JSON, ctl=ctl,
             freeze=self.ctx, lock_path=self.lock, lock_token="fable",
             qwprogs_path=self.qw, mvdsv_path=self.mv,
-            expected_qwprogs=self.qw_sha, expected_mvdsv=self.mv_sha,
             ctl_port=27996, game_port=27592, unit="tbx-d1",
         )
         ctx = fc.mint_deploy_context(seal, bound_steps(rec))
@@ -635,7 +634,6 @@ class DeployRunnerTests(unittest.TestCase):
             manifest_path=MANIFEST, recept_path=RECEPT_JSON, ctl=ctl,
             freeze=self.ctx, lock_path=self.lock, lock_token="fable",
             qwprogs_path=self.qw, mvdsv_path=self.mv,
-            expected_qwprogs=self.qw_sha, expected_mvdsv=self.mv_sha,
             ctl_port=27996, game_port=27592, unit="tbx-d1",
         )
         real = fc.mint_deploy_context(seal, bound_steps(rec))
@@ -748,6 +746,55 @@ class DeployRunnerTests(unittest.TestCase):
             EXPECTED_QWPROGS_SHA256,
             "4e71191c5dce641be593834dcf2f4736724f24685e84ea5b2b2de905087392f0",
         )
+
+    def test_v2_self_issued_ticket_refused(self):
+        """Sol V2: public issue_preflight_seal + mint + extra PlanLink."""
+        ctl = ProdEngineMock(self.idents)
+        rec = json.loads(RECEPT_JSON.read_text(encoding="utf-8"))
+        with self.assertRaises(fc.FailClosed) as cm:
+            fc.issue_preflight_seal("attacker-manifest", "attacker-recipe")
+        self.assertEqual(cm.exception.gate, "deploy-context")
+        self.assertIn("stängd", str(cm.exception))
+        fake = fc.PreflightSeal("forged", "attacker-manifest", "attacker-recipe")
+        with self.assertRaises(fc.FailClosed):
+            fc.mint_deploy_context(fake, bound_steps(rec))
+        self.assertEqual(ctl.n_apply, 0)
+        self.assertIsNone(fc.active_deploy_context())
+
+    def test_v3_reply_lost_after_commit_undos_via_chain(self):
+        """Sol V3: PlanLink commits, reply lost, applied empty — motor chain is truth."""
+        ctl = ProdEngineMock(self.idents, drop_reply_after_commit=1)
+        doc = self._run(ctl, outdir=self.td / "lost")
+        self.assertEqual(doc["outcome"], "aborted")
+        self.assertIn("reply lost after commit", doc["abort_reason"] or "")
+        self.assertEqual(ctl.idx, 0)
+        self.assertEqual(ctl.stack, [])
+        self.assertTrue(any(
+            isinstance(c, str) and c.endswith(" chain") for c in ctl.cmds
+        ))
+        self.assertTrue(any(
+            isinstance(c, str) and "fixa plan-link undo" in c for c in ctl.cmds
+        ))
+        self.assertTrue((self.td / "lost" / "deploy-run.json").is_file())
+        run = json.loads((self.td / "lost" / "deploy-run.json").read_text())
+        self.assertIn("plan-link", run.get("undid") or [])
+
+    def test_v5_attacker_lock_refused(self):
+        """Sol V5: owner=attacker, ts=garbage, self-written lock."""
+        self.lock.write_text(
+            "owner=attacker\nunit=tbx-d1\nctl_port=27996\ngame_port=27592\n"
+            f"token=attacker\nqwprogs_sha256={self.qw_sha}\n"
+            f"mvdsv_sha256={self.mv_sha}\nts=garbage\n",
+            encoding="utf-8",
+        )
+        ctl = ProdEngineMock(self.idents)
+        with self.assertRaises(fc.FailClosed) as cm:
+            self._run(ctl, lock_token="attacker", outdir=self.td / "atklock")
+        self.assertEqual(cm.exception.gate, "lock")
+        self.assertTrue(
+            "owner" in str(cm.exception) or "ts" in str(cm.exception)
+        )
+        self.assertEqual(ctl.n_apply, 0)
 
 
 if __name__ == "__main__":
