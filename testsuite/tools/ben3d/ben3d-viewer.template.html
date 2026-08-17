@@ -50,6 +50,7 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
  <div class="row"><span class="sw" style="background:var(--panel);border:1px dashed var(--muted)"></span>Rekonstruerad plan (PROXY) — ingen data</div>
  <div class="row"><span class="sw" style="background:var(--okand)"></span><span class="okand">OKÄND — <span id="okand-count">0</span> (SJ utan sidotabell + vald länk ej observerad)</span></div>
  <div class="row" id="main-disabled" style="display:none"><span class="sw" style="background:#3a3f45"></span><span class="strike">färg 1 / färg 3 — ej beräknade för main</span></div>
+ <div class="row" style="color:var(--muted)">HÄRLEDD FART (PROXY) — fartberoende färgposter</div>
  <div class="row" style="color:var(--muted);margin-top:6px">Motor 2,5 Hz vs extraktor per tick (proxy)</div>
 </div>
 <div id="hud">…</div>
@@ -168,9 +169,8 @@ function draw(){
   // FÄRG 1: rita EXTRAKTORNS färdiga lista — ingen länkval/klassning här (G2).
   // main-armen: färg 1 hårt avstängd i RENDERINGEN (G11), inte bara legenden.
   if(cur.arm!=="main" && cur.farg1){
-    const list=cur.farg1[cell]; if(list){
-      for(let k=0;k<list.length;k+=2){
-        const li=list[k], klass=list[k+1];
+    const list=cur.farg1[i]; if(list){
+      for(const [li, klass] of list){
         const a=g.links[li*4], b=g.links[li*4+1];
         const pa=sp(g.cells[a*3],g.cells[a*3+1],g.cells[a*3+2]), pb=sp(g.cells[b*3],g.cells[b*3+1],g.cells[b*3+2]);
         ctx.strokeStyle=KLASS_COLOR[klass]||"var(--okand)"; ctx.lineWidth=klass===0?2.5:1.5;
@@ -204,15 +204,18 @@ function draw(){
       ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(bp[0],bp[1]);ctx.lineTo(bp[0]+vx/L*s,bp[1]+vy/L*s);ctx.stroke();}}
   // HUD + scene-SHA
   const pv=cur.prov||{};
-  const sceneStr=JSON.stringify([cur.dataset,cur.arm,cur.ben_id,i]);
-  const sceneSha=sha256hex(sceneStr).slice(0,16);
+  const sceneStr=JSON.stringify({dataset:cur.dataset,arm:cur.arm,ben_id:cur.ben_id,tick:i,
+    geo:pv.dump_id,geo_sha:pv.dump_sha256,cells:pv.cells,links:pv.links,
+    lager:{farg1:cur.arm!=="main",farg2:true,farg3:cur.arm!=="main"}});
+  const sceneSha=sha256hex(sceneStr);
   const lagerStatus=(cur.arm==="main"?"färg1/3 AV (G11)":"färg1 på · färg3 OKÄND");
   document.getElementById("hud").innerHTML=
     "<b>protokoll</b> ben3d-bunt/1 · <b>arm</b> "+cur.arm+" · <b>dataset</b> "+cur.dataset+
     "<br><b>ben</b> "+cur.ben_id+" · <b>tick</b> "+i+"/"+(cur.ticks.length-1)+" · <b>t</b> "+tk[0].toFixed(3)+"s"+
     "<br><b>pos</b> ["+tk[1].toFixed(1)+", "+tk[2].toFixed(1)+", "+tk[3].toFixed(1)+"] · <b>cell</b> "+cell+
     "<br><b>stamp</b> "+(pv.graph_stamp||"?")+" · <b>nivå-2</b> "+String(pv.graph_content_hash||"").slice(0,12)+"…"+
-    "<br><b>payload-sha</b> "+String(cur.bundle_payload_sha256||"").slice(0,12)+"… · <b>scene-sha</b> "+sceneSha+
+    "<br><b>payload-sha</b> "+String(cur.bundle_payload_sha256||"").slice(0,12)+"… · <b>proveniens-sha</b> "+String(cur.proveniens_sha256||"").slice(0,12)+"…"+
+    "<br><b>scene-sha</b> "+sceneSha.slice(0,16)+"…"+
     "<br><b>lager</b> "+lagerStatus+" · <b>viewer</b> "+VIEWER_COMMIT.slice(0,8);
 }
 
@@ -230,8 +233,8 @@ function tick(){
 
 function applyURL(){
   const q=new URLSearchParams(location.search);
-  if(![...q.keys()].length){ // ingen URL ⇒ default (första benet, tick 0)
-    populate(); loadBen(Object.keys(DATA.bundles).sort()[0]); return;
+  if(![...q.keys()].length){ // tom query ⇒ felruta (P6), men väljarna är ändå användbara
+    populate(); err("Saknad URL-parameter (dataset/arm/ben/tick krävs — fail-closed). Välj ett ben i listan eller ange ?dataset=&arm=&ben=&tick="); return;
   }
   const ds=q.get("dataset"), arm=q.get("arm"), ben=q.get("ben"), tick=q.get("tick");
   // strikt parsning, fail-closed

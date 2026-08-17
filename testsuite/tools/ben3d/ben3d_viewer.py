@@ -2,16 +2,17 @@
 """ben3d_viewer.py — bygger den självbärande viewern (ben3d-viewer.html).
 
 Läser fork-/basdump + alla buntar, kompakterar till DATA + injicerar i mallen.
-Viewern ritar ENDAST extraktorns färdiga per-tick-listor (G2). CSP i mallen.
-Ingen socket/Control; ~/lab endast läst."""
+Viewern ritar ENDAST extraktorns färdiga PER-TICK-färglistor (G2). CSP i mallen."""
 
 from __future__ import annotations
-import argparse, json, subprocess, sys
+import argparse, hashlib, json, subprocess, sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ben3d_verify import canonical, sha  # noqa: E402
 
 KIND = {"walk":0,"step":1,"drop":2,"jump":3,"doublejump":4,"speedjump":5,
         "plat":6,"teleport":7,"hook":8,"rocketjump":9,"swim":10}
-KLASS = {"räckhåll":0, "okänd":1, "blockerad":2}
 
 
 def git_head() -> str:
@@ -49,28 +50,28 @@ def main() -> int:
         ticks = []
         for t in b["tickserie"]["farg2_observerad_bana"]:
             ticks.append([float(t["t"]), float(t["x"]), float(t["y"]), float(t["z"]), int(t["cell"])])
-        # farg1: per cell → flat [link_id, klass_code, ...]
-        farg1 = {}
+        # farg1 PER TICK: [[link_id, klass_code], ...] parallellt med ticks
         raw = b["tickserie"].get("farg1")
-        if raw:
-            for cellblock in raw:
-                lst = []
-                for p in cellblock["lankar"]:
-                    lst.extend([int(p["link_id"]), KLASS.get(p["klass"], 1)])
-                farg1[int(cellblock["cell"])] = lst
+        farg1 = [[[int(p[0]), int(p[1])] for p in tickposts] for tickposts in raw] if raw else None
         p = b["proveniens"]
+        prov_sha = sha(canonical(p))
         bundles[b["ben_id"]] = {
             "arm": arm,
             "geo": "fork" if arm == "fork" else "base",
             "dataset": b["ben_id"].split(":")[0],
             "ticks": ticks,
-            "farg1": farg1 if farg1 else None,
+            "farg1": farg1,
             "sj_okand": p["farg1_policy"]["sj_okand"],
             "farg3_antal": b["tickserie"]["farg3"]["antal"] if b["tickserie"].get("farg3") else 0,
             "bundle_payload_sha256": b["bundle_payload_sha256"],
+            "proveniens_sha256": prov_sha,
             "prov": {
                 "graph_stamp": p["grafdump"]["graph_stamp"],
                 "graph_content_hash": p["grafdump"]["graph_content_hash"],
+                "dump_id": p["grafdump"]["id"],
+                "dump_sha256": p["grafdump"]["byte_sha256"],
+                "cells": p["grafdump"]["cells"],
+                "links": p["grafdump"]["links"],
             },
             "provFull": p,
         }
