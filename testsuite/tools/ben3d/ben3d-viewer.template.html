@@ -2,29 +2,29 @@
 <html lang="sv">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ben3d — misslyckade ben i isometrisk 3D (navmesh-obduktion)</title>
 <style>
 :root{--bg:#0f1216;--panel:#161c22;--ink:#d8e0e8;--muted:#8492a0;--line:#2a333d;
- --blue:#3b82f6;--gold:#e0a832;--orange:#f59e0b;--magenta:#c026d3;--red:#dc2626;--gray:#64748b;--okand:#94a3b8}
+ --blue:#3b82f6;--gold:#e0a832;--red:#dc2626;--okand:#94a3b8}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 system-ui;overflow:hidden}
 #bar{position:fixed;top:0;left:0;right:0;z-index:10;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;background:rgba(18,23,29,.95);border-bottom:1px solid var(--line)}
 button,select{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:5px 10px;font:inherit;cursor:pointer}
-button.on{border-color:var(--gold);color:#fff}
 #scrub{flex:1;min-width:140px}
 input[type=range]{accent-color:var(--gold)}
 #badges{position:fixed;left:10px;bottom:10px;z-index:11;display:flex;flex-direction:column;gap:4px;pointer-events:none}
 .badge{font-size:11px;font-weight:700;letter-spacing:.04em;padding:4px 9px;border-radius:4px;border:1px solid var(--line);background:rgba(18,23,29,.9)}
 .badge.frozen{color:#fca5a5;border-color:#7f1d1d;background:rgba(60,10,10,.85)}
 .badge.honesty{color:#fcd34d;border-color:#92400e;background:rgba(50,30,5,.85)}
-#legend{position:fixed;right:10px;top:52px;z-index:11;background:rgba(18,23,29,.92);border:1px solid var(--line);border-radius:6px;padding:9px 11px;font-size:12px;min-width:210px}
+#legend{position:fixed;right:10px;top:52px;z-index:11;background:rgba(18,23,29,.92);border:1px solid var(--line);border-radius:6px;padding:9px 11px;font-size:12px;min-width:220px}
 #legend h3{margin:0 0 6px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 #legend .row{display:flex;align-items:center;gap:7px;margin:3px 0}
 #legend .sw{width:13px;height:13px;border-radius:3px;flex:0 0 13px}
 #legend .strike{text-decoration:line-through;color:var(--muted)}
 #legend .okand{color:var(--okand)}
-#hud{position:fixed;left:10px;top:52px;z-index:11;background:rgba(18,23,29,.92);border:1px solid var(--line);border-radius:6px;padding:8px 11px;font:12px/1.5 ui-monospace,monospace;min-width:250px}
+#hud{position:fixed;left:10px;top:52px;z-index:11;background:rgba(18,23,29,.92);border:1px solid var(--line);border-radius:6px;padding:8px 11px;font:12px/1.5 ui-monospace,monospace;min-width:290px}
 #hud b{color:#fff}
 #prov{position:fixed;left:0;right:0;bottom:0;z-index:12;max-height:40vh;overflow:auto;background:rgba(12,16,20,.97);border-top:1px solid var(--line);padding:12px 16px;font-size:12px;display:none;white-space:pre-wrap;word-break:break-word}
 canvas{display:block;position:fixed;inset:0;z-index:1}
@@ -45,11 +45,11 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 </div>
 <div id="legend">
  <h3>Lager / färg</h3>
- <div class="row"><span class="sw" style="background:var(--blue)"></span>Räckhåll (färg 1) — utgående länk ur aktuell cell</div>
+ <div class="row"><span class="sw" style="background:var(--blue)"></span>Räckhåll (färg 1) — extraktorns per-tick-lista</div>
  <div class="row"><span class="sw" style="background:var(--gold)"></span>Observerad bana (färg 2)</div>
  <div class="row"><span class="sw" style="background:var(--panel);border:1px dashed var(--muted)"></span>Rekonstruerad plan (PROXY) — ingen data</div>
- <div class="row"><span class="sw" style="background:var(--okand)"></span><span class="okand">OKÄND — <span id="okand-count">0</span> (SJ-länkar utan sidotabell + vald länk ej observerad)</span></div>
- <div class="row" id="main-disabled"><span class="sw" style="background:#3a3f45"></span><span class="strike">färg 1 / färg 3 — ej beräknade för main</span></div>
+ <div class="row"><span class="sw" style="background:var(--okand)"></span><span class="okand">OKÄND — <span id="okand-count">0</span> (SJ utan sidotabell + vald länk ej observerad)</span></div>
+ <div class="row" id="main-disabled" style="display:none"><span class="sw" style="background:#3a3f45"></span><span class="strike">färg 1 / färg 3 — ej beräknade för main</span></div>
  <div class="row" style="color:var(--muted);margin-top:6px">Motor 2,5 Hz vs extraktor per tick (proxy)</div>
 </div>
 <div id="hud">…</div>
@@ -62,202 +62,209 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
 <script>
 "use strict";
 const DATA = /*DATA*/;
+const VIEWER_COMMIT = /*VIEWER_COMMIT*/;
 
-const KIND = {0:"walk",1:"step",2:"drop",3:"jump",4:"doublejump",5:"speedjump",6:"plat",7:"teleport",8:"hook",9:"rocketjump",10:"swim"};
-const SJ = 5;
+// ---- SHA-256 (kompakt, för scene-SHA — deterministiskt tillstånd, ej pixlar) ----
+function sha256hex(s){
+  function rr(x,c){return (x>>>c)|(x<<(32-c));}
+  const K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+  const b=unescape(encodeURIComponent(s));
+  const n=b.length, bitlen=n*8;
+  const len=((n+8+64)>>6)<<6;
+  const m=new Uint8Array(len);
+  for(let i=0;i<n;i++)m[i]=b.charCodeAt(i);
+  m[n]=0x80;
+  const dv=new DataView(m.buffer);
+  dv.setUint32(len-8, Math.floor(bitlen/0x100000000));
+  dv.setUint32(len-4, bitlen>>>0);
+  const H=new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+  const w=new Uint32Array(64);
+  for(let off=0;off<len;off+=64){
+    for(let i=0;i<16;i++)w[i]=dv.getUint32(off+i*4);
+    for(let i=16;i<64;i++){
+      const s0=rr(w[i-15],7)^rr(w[i-15],18)^(w[i-15]>>>3);
+      const s1=rr(w[i-2],17)^rr(w[i-2],19)^(w[i-2]>>>10);
+      w[i]=(w[i-16]+s0+w[i-7]+s1)>>>0;
+    }
+    let a=H[0],b2=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+    for(let i=0;i<64;i++){
+      const S1=rr(e,6)^rr(e,11)^rr(e,25);
+      const ch=(e&f)^(~e&g);
+      const t1=(h+S1+ch+K[i]+w[i])>>>0;
+      const S0=rr(a,2)^rr(a,13)^rr(a,22);
+      const maj=(a&b2)^(a&c)^(b2&c);
+      const t2=(S0+maj)>>>0;
+      h=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b2;b2=a;a=(t1+t2)>>>0;
+    }
+    H[0]=(H[0]+a)>>>0;H[1]=(H[1]+b2)>>>0;H[2]=(H[2]+c)>>>0;H[3]=(H[3]+d)>>>0;
+    H[4]=(H[4]+e)>>>0;H[5]=(H[5]+f)>>>0;H[6]=(H[6]+g)>>>0;H[7]=(H[7]+h)>>>0;
+  }
+  let out="";for(const x of H)out+=x.toString(16).padStart(8,"0");return out;
+}
 
 // ---- isometri (G6): x+y i skärmplan 30°, z vertikalt, låst kamera ----
-const C30 = Math.cos(Math.PI/6), S30 = Math.sin(Math.PI/6);
-let SCALE = 1, OX = 0, OY = 0;
-function proj(x,y,z){ return [(x-y)*C30, (x+y)*S30 - z]; }
-
-const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+const C30=Math.cos(Math.PI/6), S30=Math.sin(Math.PI/6);
+let SCALE=1,OX=0,OY=0;
+const cv=document.getElementById("c"), ctx=cv.getContext("2d");
 function fit(){
-  const dpr = window.devicePixelRatio||1;
-  cv.width = innerWidth*dpr; cv.height = innerHeight*dpr;
-  cv.style.width = innerWidth+"px"; cv.style.height = innerHeight+"px";
+  const dpr=window.devicePixelRatio||1;
+  cv.width=innerWidth*dpr; cv.height=innerHeight*dpr;
+  cv.style.width=innerWidth+"px"; cv.style.height=innerHeight+"px";
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  // auto-fit bounds
   let minx=1e9,maxx=-1e9,miny=1e9,maxy=-1e9;
-  for(const arm of ["fork","base"]){ const g=DATA.geo[arm]; if(!g) continue;
-    for(let i=0;i<g.cells.length;i+=3){ const p=proj(g.cells[i],g.cells[i+1],g.cells[i+2]);
-      minx=Math.min(minx,p[0]);maxx=Math.max(maxx,p[0]);miny=Math.min(miny,p[1]);maxy=Math.max(maxy,p[1]); } }
-  const w=maxx-minx, h=maxy-miny;
-  SCALE = Math.min(innerWidth*0.94/w, innerHeight*0.90/h);
-  OX = innerWidth/2 - (minx+maxx)/2*SCALE;
-  OY = innerHeight/2 - (miny+maxy)/2*SCALE;
+  for(const arm of ["fork","base"]){const g=DATA.geo[arm]; if(!g)continue;
+    for(let i=0;i<g.cells.length;i+=3){const x=g.cells[i],y=g.cells[i+1],z=g.cells[i+2];const sx=(x-y)*C30,sy=(x+y)*S30-z;
+      minx=Math.min(minx,sx);maxx=Math.max(maxx,sx);miny=Math.min(miny,sy);maxy=Math.max(maxy,sy);}}
+  const w=maxx-minx,h=maxy-miny;
+  SCALE=Math.min(innerWidth*0.94/w, innerHeight*0.90/h);
+  OX=innerWidth/2-(minx+maxx)/2*SCALE; OY=innerHeight/2-(miny+maxy)/2*SCALE;
 }
-function sp(x,y,z){ const p=proj(x,y,z); return [p[0]*SCALE+OX, p[1]*SCALE+OY]; }
+function sp(x,y,z){const sx=(x-y)*C30, sy=(x+y)*S30-z; return [sx*SCALE+OX, sy*SCALE+OY];}
 
-// ---- statisk mesh (offscreen) ----
-let meshCv = null;
-function buildMesh(arm){
-  const g = DATA.geo[arm]; if(!g) return null;
-  const c = document.createElement("canvas"); c.width = cv.width; c.height = cv.height;
-  const x = c.getContext("2d");
-  // cells
-  for(let i=0;i<g.cells.length;i+=3){
-    const p=sp(g.cells[i],g.cells[i+1],g.cells[i+2]);
-    x.fillStyle="rgba(70,80,92,0.30)";
-    x.fillRect(p[0]-1.5, p[1]-1.5, 3, 3);
-  }
-  // links wireframe (neutral); T=0 pruned svagare
+let meshCv=null;
+function buildMesh(geoArm){
+  const g=DATA.geo[geoArm]; if(!g)return null;
+  const c=document.createElement("canvas"); c.width=cv.width; c.height=cv.height;
+  const x=c.getContext("2d");
+  for(let i=0;i<g.cells.length;i+=3){const p=sp(g.cells[i],g.cells[i+1],g.cells[i+2]); x.fillStyle="rgba(70,80,92,0.30)"; x.fillRect(p[0]-1.5,p[1]-1.5,3,3);}
   for(let i=0;i<g.links.length;i+=4){
-    const a=g.links[i], b=g.links[i+1], t=g.links[i+3];
-    const pa=sp(g.cells[a*3],g.cells[a*3+1],g.cells[a*3+2]);
-    const pb=sp(g.cells[b*3],g.cells[b*3+1],g.cells[b*3+2]);
-    x.strokeStyle = t===1 ? "rgba(120,132,148,0.18)" : "rgba(120,132,148,0.06)";
-    x.lineWidth=1;
+    const a=g.links[i],b=g.links[i+1],t=g.links[i+3];
+    const pa=sp(g.cells[a*3],g.cells[a*3+1],g.cells[a*3+2]), pb=sp(g.cells[b*3],g.cells[b*3+1],g.cells[b*3+2]);
+    x.strokeStyle=t===1?"rgba(120,132,148,0.18)":"rgba(120,132,148,0.06)"; x.lineWidth=1;
     x.beginPath();x.moveTo(pa[0],pa[1]);x.lineTo(pb[0],pb[1]);x.stroke();
   }
   return c;
 }
 
-// ---- state ----
-let cur = null; // {ben_id, arm, dataset, ticks:[{t,x,y,z,cell}], prov, okand}
-let T = 0, playing = false, lastFrame = 0;
+let cur=null, playT=0, playing=false, lastFrame=0;
+const KLASS_COLOR={0:"var(--blue)",1:"var(--okand)",2:"var(--red)"};
 
-function err(msg){ const e=document.getElementById("err"); e.textContent=msg; e.style.display="block"; }
-function clearErr(){ document.getElementById("err").style.display="none"; }
+function err(m){const e=document.getElementById("err");e.textContent=m;e.style.display="block";}
+function clearErr(){document.getElementById("err").style.display="none";}
 
 function loadBen(benId){
-  const b = DATA.bundles[benId];
-  if(!b){ err("Ogiltigt ben: "+benId); return; }
-  cur = b;
-  clearErr();
-  document.getElementById("badge-arm").textContent = b.arm==="fork"
-    ? "FORK: OFFLINE REGELREKONSTRUKTION" : "MAIN: ENDAST GEOMETRI + OBSERVERAD BANA";
-  document.getElementById("main-disabled").style.display = b.arm==="main" ? "flex" : "none";
-  document.getElementById("okand-count").textContent = (b.sj_okand||0) + " + " + (b.farg3_antal||0);
-  meshCv = buildMesh(b.geo);
-  document.getElementById("scrub").max = Math.max(1, b.ticks.length-1);
-  T = 0; draw();
+  const b=DATA.bundles[benId]; if(!b){err("Ogiltigt ben (fail-closed): "+benId);return;}
+  cur=b; cur.tick=0; clearErr();
+  document.getElementById("badge-arm").textContent = b.arm==="fork" ? "FORK: OFFLINE REGELREKONSTRUKTION" : "MAIN: ENDAST GEOMETRI + OBSERVERAD BANA";
+  document.getElementById("main-disabled").style.display = b.arm==="main"?"flex":"none";
+  document.getElementById("okand-count").textContent = (b.sj_okand||0)+" + "+(b.farg3_antal||0);
+  meshCv=buildMesh(b.geo);
+  document.getElementById("scrub").max=Math.max(1,b.ticks.length-1);
+  playT=b.ticks[0][0]; draw();
 }
 
-function tickAt(i){ return cur.ticks[Math.max(0, Math.min(cur.ticks.length-1, Math.round(i)))]; }
+function tickIdxAt(t){ // t = inspelad tid (s)
+  const ts=cur.ticks; if(t<=ts[0][0])return 0; if(t>=ts[ts.length-1][0])return ts.length-1;
+  for(let i=1;i<ts.length;i++){ if(ts[i][0]>=t) return (t-ts[i-1][0])<(ts[i][0]-t) ? i-1 : i; }
+  return ts.length-1;
+}
 
 function draw(){
-  if(!cur) return;
+  if(!cur)return;
   ctx.clearRect(0,0,innerWidth,innerHeight);
-  if(meshCv) ctx.drawImage(meshCv, 0, 0, innerWidth, innerHeight);
-  const i = Math.round(T);
-  const tk = tickAt(i);
-  const cell = tk[4];
-  const g = DATA.geo[cur.geo];
-  // färg 1: utgående länkar ur aktuell cell
-  const adj = [];
-  for(let li=0;li<g.links.length;li+=4){
-    if(g.links[li]===cell && g.links[li+3]===1) adj.push(li/4);
-  }
-  for(const li of adj){
-    const from=g.links[li*4], to=g.links[li*4+1], kind=g.links[li*4+2];
-    const pa=sp(g.cells[from*3],g.cells[from*3+1],g.cells[from*3+2]);
-    const pb=sp(g.cells[to*3],g.cells[to*3+1],g.cells[to*3+2]);
-    ctx.strokeStyle = kind===SJ ? "var(--okand)" : "var(--blue)";
-    ctx.lineWidth = kind===SJ ? 1.5 : 2.5;
-    ctx.globalAlpha = kind===SJ ? 0.85 : 1;
-    ctx.beginPath();ctx.moveTo(pa[0],pa[1]);ctx.lineTo(pb[0],pb[1]);ctx.stroke();
+  if(meshCv)ctx.drawImage(meshCv,0,0,innerWidth,innerHeight);
+  const g=DATA.geo[cur.geo];
+  const i=Math.round(cur.tick); const tk=cur.ticks[i]; const cell=tk[4];
+  // FÄRG 1: rita EXTRAKTORNS färdiga lista — ingen länkval/klassning här (G2).
+  // main-armen: färg 1 hårt avstängd i RENDERINGEN (G11), inte bara legenden.
+  if(cur.arm!=="main" && cur.farg1){
+    const list=cur.farg1[cell]; if(list){
+      for(let k=0;k<list.length;k+=2){
+        const li=list[k], klass=list[k+1];
+        const a=g.links[li*4], b=g.links[li*4+1];
+        const pa=sp(g.cells[a*3],g.cells[a*3+1],g.cells[a*3+2]), pb=sp(g.cells[b*3],g.cells[b*3+1],g.cells[b*3+2]);
+        ctx.strokeStyle=KLASS_COLOR[klass]||"var(--okand)"; ctx.lineWidth=klass===0?2.5:1.5;
+        ctx.globalAlpha=klass===0?1:0.85;
+        ctx.beginPath();ctx.moveTo(pa[0],pa[1]);ctx.lineTo(pb[0],pb[1]);ctx.stroke();
+      }
+    }
   }
   ctx.globalAlpha=1;
   // aktuell cell
-  const pc = sp(g.cells[cell*3],g.cells[cell*3+1],g.cells[cell*3+2]);
-  ctx.strokeStyle="#fff";ctx.lineWidth=2;
-  ctx.strokeRect(pc[0]-4,pc[1]-4,8,8);
-  // observerad bana (färg 2, guld) — hela spåret upp till T
-  ctx.strokeStyle="var(--gold)";ctx.lineWidth=2.5;
-  ctx.beginPath();
-  let started=false;
+  const pc=sp(g.cells[cell*3],g.cells[cell*3+1],g.cells[cell*3+2]);
+  ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.strokeRect(pc[0]-4,pc[1]-4,8,8);
+  // OBSERVERAD BANA (guld) — BROTT vid dt-/teleportluckor (G7)
+  ctx.strokeStyle="var(--gold)";ctx.lineWidth=2.5;ctx.beginPath();
+  let pen=false, prev=null;
   for(let k=0;k<=i;k++){
-    const c2=cur.ticks[k][4];
-    const p=sp(g.cells[c2*3],g.cells[c2*3+1],g.cells[c2*3+2]);
-    started?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]);started=true;
+    const c2=cur.ticks[k][4]; const p=sp(g.cells[c2*3],g.cells[c2*3+1],g.cells[c2*3+2]);
+    if(prev!==null){
+      const dt=cur.ticks[k][0]-cur.ticks[k-1][0];
+      const dj=Math.hypot(p[0]-prev[0],p[1]-prev[1]);
+      if(dt>0.5 || dj>40*SCALE){ pen=false; } // lucka/teleport ⇒ brott
+    }
+    pen?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]); pen=true; prev=p;
   }
   ctx.stroke();
-  // botmarkör + hastighetsvektor
-  const p = sp(tk[1], tk[2], tk[3]);
-  ctx.fillStyle="#fff";ctx.beginPath();ctx.arc(p[0],p[1],4.5,0,7);ctx.fill();
-  if(i>0){
-    const a=cur.ticks[i-1], b=tk;
-    const vx=b[1]-a[1], vy=b[2]-a[2];
-    if(vx*vx+vy*vy>0.01){
-      const L=Math.hypot(vx,vy)||1, s=Math.min(30, 4+Math.hypot(vx,vy)*0.02);
-      ctx.strokeStyle="#fff";ctx.lineWidth=2;
-      ctx.beginPath();ctx.moveTo(p[0],p[1]);
-      ctx.lineTo(p[0]+vx/L*s, p[1]+vy/L*s);ctx.stroke();
-    }
-  }
-  // HUD
-  const prov=cur.prov||{};
-  document.getElementById("hud").innerHTML =
-    "<b>ben</b> "+cur.ben_id+
-    " · <b>tick</b> "+i+"/"+(cur.ticks.length-1)+
-    " · <b>t</b> "+tk[0].toFixed(3)+"s"+
-    "<br><b>pos</b> ["+tk[1].toFixed(1)+", "+tk[2].toFixed(1)+", "+tk[3].toFixed(1)+"]"+
-    " · <b>cell</b> "+cell+
-    "<br><b>arm</b> "+cur.arm+" · <b>dataset</b> "+cur.dataset+
-    " · <b>stamp</b> "+(prov.graph_stamp||"?")+
-    "<br><b>payload-sha</b> "+String(cur.bundle_payload_sha256||"").slice(0,12)+"…"+
-    "<br><b>nivå-2</b> "+String(prov.graph_content_hash||"").slice(0,12)+"…";
+  // botmarkör
+  const bp=sp(tk[1],tk[2],tk[3]);
+  ctx.fillStyle="#fff";ctx.beginPath();ctx.arc(bp[0],bp[1],4.5,0,7);ctx.fill();
+  if(i>0){const a=cur.ticks[i-1];const vx=tk[1]-a[1],vy=tk[2]-a[2];
+    if(vx*vx+vy*vy>0.01){const L=Math.hypot(vx,vy)||1,s=Math.min(30,4+Math.hypot(vx,vy)*0.02);
+      ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(bp[0],bp[1]);ctx.lineTo(bp[0]+vx/L*s,bp[1]+vy/L*s);ctx.stroke();}}
+  // HUD + scene-SHA
+  const pv=cur.prov||{};
+  const sceneStr=JSON.stringify([cur.dataset,cur.arm,cur.ben_id,i]);
+  const sceneSha=sha256hex(sceneStr).slice(0,16);
+  const lagerStatus=(cur.arm==="main"?"färg1/3 AV (G11)":"färg1 på · färg3 OKÄND");
+  document.getElementById("hud").innerHTML=
+    "<b>protokoll</b> ben3d-bunt/1 · <b>arm</b> "+cur.arm+" · <b>dataset</b> "+cur.dataset+
+    "<br><b>ben</b> "+cur.ben_id+" · <b>tick</b> "+i+"/"+(cur.ticks.length-1)+" · <b>t</b> "+tk[0].toFixed(3)+"s"+
+    "<br><b>pos</b> ["+tk[1].toFixed(1)+", "+tk[2].toFixed(1)+", "+tk[3].toFixed(1)+"] · <b>cell</b> "+cell+
+    "<br><b>stamp</b> "+(pv.graph_stamp||"?")+" · <b>nivå-2</b> "+String(pv.graph_content_hash||"").slice(0,12)+"…"+
+    "<br><b>payload-sha</b> "+String(cur.bundle_payload_sha256||"").slice(0,12)+"… · <b>scene-sha</b> "+sceneSha+
+    "<br><b>lager</b> "+lagerStatus+" · <b>viewer</b> "+VIEWER_COMMIT.slice(0,8);
 }
 
 function tick(){
-  if(!playing || !cur) return;
-  const now = performance.now(), dt = (now-lastFrame)/1000;
-  lastFrame = now;
-  const spd = parseFloat(document.getElementById("spd").value);
-  // t steg: en tick per ~40ms (uppspelning följer tick-ordningen, inte wall-tid)
-  T += dt * 25 * spd;
-  if(T >= cur.ticks.length-1){ T = cur.ticks.length-1; playing=false; document.getElementById("play").textContent="▶"; }
-  document.getElementById("scrub").value = Math.round(T);
-  draw();
-  requestAnimationFrame(tick);
+  if(!playing||!cur)return;
+  const now=performance.now(),dt=(now-lastFrame)/1000; lastFrame=now;
+  const spd=parseFloat(document.getElementById("spd").value);
+  playT += dt*spd; // inspelad tid, inte wall-tid
+  const i=tickIdxAt(playT);
+  if(i>=cur.ticks.length-1){cur.tick=cur.ticks.length-1;playing=false;document.getElementById("play").textContent="▶";}
+  else cur.tick=i;
+  document.getElementById("scrub").value=Math.round(cur.tick);
+  draw(); requestAnimationFrame(tick);
 }
 
-// ---- URL-kontrakt (fail-closed) ----
 function applyURL(){
-  const q = new URLSearchParams(location.search);
-  if(q.get("dataset")) document.getElementById("dataset").value = q.get("dataset");
-  if(q.get("arm")) document.getElementById("arm").value = q.get("arm");
-  populate();
-  const ben = q.get("ben");
-  if(ben){
-    const ds = document.getElementById("dataset").value, arm = document.getElementById("arm").value;
-    const id = ds+":"+arm+":"+ben;
-    if(!DATA.bundles[id]){ err("Ogiltigt ben (fail-closed): "+id); return; }
-    loadBen(id);
-    const tick = q.get("tick");
-    if(tick!==null){
-      const n = parseInt(tick,10);
-      if(!Number.isFinite(n) || n<0 || n>=cur.ticks.length){ err("Ogiltigt tick (fail-closed): "+tick); return; }
-      T = n; document.getElementById("scrub").value = n; draw();
-    }
+  const q=new URLSearchParams(location.search);
+  if(![...q.keys()].length){ // ingen URL ⇒ default (första benet, tick 0)
+    populate(); loadBen(Object.keys(DATA.bundles).sort()[0]); return;
   }
+  const ds=q.get("dataset"), arm=q.get("arm"), ben=q.get("ben"), tick=q.get("tick");
+  // strikt parsning, fail-closed
+  if(ds===null||arm===null||ben===null||tick===null){ err("Saknad URL-parameter (dataset/arm/ben/tick krävs alla — fail-closed)"); return; }
+  if(ds!=="t1h"&&ds!=="t20m"){ err("Ogiltigt dataset: "+ds); return; }
+  if(arm!=="fork"&&arm!=="main"){ err("Ogiltig arm: "+arm); return; }
+  const id=ds+":"+arm+":"+ben;
+  if(!DATA.bundles[id]){ err("Ogiltigt ben (fail-closed): "+id); return; }
+  if(!/^\d+$/.test(tick)){ err("Ogiltigt tick (måste vara heltal, fail-closed): "+tick); return; }
+  const n=parseInt(tick,10);
+  document.getElementById("dataset").value=ds; document.getElementById("arm").value=arm;
+  populate(); document.getElementById("ben").value=ben;
+  loadBen(id);
+  if(n<0||n>=cur.ticks.length){ err("Tick utanför intervall (fail-closed): "+tick); return; }
+  cur.tick=n; playT=cur.ticks[n][0]; document.getElementById("scrub").value=n; draw();
 }
 
 function populate(){
-  const ds = document.getElementById("dataset").value, arm = document.getElementById("arm").value;
-  const sel = document.getElementById("ben");
-  sel.innerHTML = "";
-  const ids = Object.keys(DATA.bundles).filter(id=>id.startsWith(ds+":"+arm+":")).sort();
-  for(const id of ids){
-    const o=document.createElement("option"); o.value = id.split(":").slice(2).join(":"); o.textContent = id; sel.appendChild(o);
-  }
-  if(ids.length && !sel.value) sel.value = ids[0].split(":").slice(2).join(":");
+  const ds=document.getElementById("dataset").value, arm=document.getElementById("arm").value;
+  const sel=document.getElementById("ben"); sel.innerHTML="";
+  const ids=Object.keys(DATA.bundles).filter(id=>id.startsWith(ds+":"+arm+":")).sort();
+  for(const id of ids){const o=document.createElement("option");o.value=id.split(":").slice(2).join(":");o.textContent=id;sel.appendChild(o);}
 }
 
-// ---- kontroller ----
-document.getElementById("play").onclick = ()=>{ if(!cur) return; playing=!playing; document.getElementById("play").textContent = playing?"⏸":"▶"; if(playing){ if(T>=cur.ticks.length-1)T=0; lastFrame=performance.now(); requestAnimationFrame(tick);} };
-document.getElementById("scrub").oninput = e=>{ T=+e.target.value; draw(); };
-document.getElementById("dataset").onchange = ()=>{ populate(); loadBen(document.getElementById("dataset").value+":"+document.getElementById("arm").value+":"+document.getElementById("ben").value); };
-document.getElementById("arm").onchange = ()=>{ populate(); loadBen(document.getElementById("dataset").value+":"+document.getElementById("arm").value+":"+document.getElementById("ben").value); };
-document.getElementById("ben").onchange = e=>{ loadBen(document.getElementById("dataset").value+":"+document.getElementById("arm").value+":"+e.target.value); };
-document.getElementById("provbtn").onclick = ()=>{ const p=document.getElementById("prov"); if(cur){ p.textContent = JSON.stringify(cur.prov, null, 1); p.style.display="block"; } };
-document.getElementById("prov").onclick = ()=>{ document.getElementById("prov").style.display="none"; };
-
-window.addEventListener("resize", ()=>{ fit(); meshCv = cur?buildMesh(cur.arm):null; draw(); });
-fit();
-populate();
-applyURL();
+document.getElementById("play").onclick=()=>{if(!cur)return;playing=!playing;document.getElementById("play").textContent=playing?"⏸":"▶";if(playing){if(cur.tick>=cur.ticks.length-1){cur.tick=0;playT=cur.ticks[0][0];}lastFrame=performance.now();requestAnimationFrame(tick);}};
+document.getElementById("scrub").oninput=e=>{if(!cur)return;cur.tick=+e.target.value;playT=cur.ticks[cur.tick][0];draw();};
+document.getElementById("dataset").onchange=()=>{populate();loadBen(document.getElementById("dataset").value+":"+document.getElementById("arm").value+":"+document.getElementById("ben").value);};
+document.getElementById("arm").onchange=()=>{populate();loadBen(document.getElementById("dataset").value+":"+document.getElementById("arm").value+":"+document.getElementById("ben").value);};
+document.getElementById("ben").onchange=e=>{loadBen(document.getElementById("dataset").value+":"+document.getElementById("arm").value+":"+e.target.value);};
+document.getElementById("provbtn").onclick=()=>{const p=document.getElementById("prov");if(cur){p.textContent=JSON.stringify(cur.provFull,null,1);p.style.display="block";}};
+document.getElementById("prov").onclick=()=>{document.getElementById("prov").style.display="none";};
+window.addEventListener("resize",()=>{fit();meshCv=cur?buildMesh(cur.geo):null;draw();});
+fit(); populate(); applyURL();
 </script>
 </body>
 </html>
