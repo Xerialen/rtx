@@ -74,6 +74,43 @@ class LasfilTests(unittest.TestCase):
         self.assertEqual(rig_lock_declared_token(p.read_text(encoding="utf-8")), TOKEN)
         td.cleanup()
 
+    def test_refuses_newline_in_every_field(self):
+        base = dict(token=TOKEN, unit="tbx-d1", qwprogs_sha256=QW, mvdsv_sha256=MV,
+                    ts="2026-08-17T12:00:00Z")
+        cases = (
+            ("token", "tok\nen"),
+            ("token", "tok\ren"),
+            ("owner", "fable\ninjected"),
+            ("owner", "fable\rinjected"),
+            ("ts", "2026-08-17T12:00:00Z\nowner=evil"),
+            ("ts", "2026-08-17T12:00:00Z\rowner=evil"),
+            ("qwprogs_sha256", QW[:32] + "\n" + QW[32:]),
+            ("mvdsv_sha256", MV[:32] + "\r" + MV[32:]),
+        )
+        for field, value in cases:
+            with self.subTest(field=field, nl=repr(value)):
+                kw = dict(base)
+                kw[field] = value
+                with self.assertRaises(ValueError) as cm:
+                    lasfil.generate_lock(**kw)
+                self.assertIn("radbrytning", str(cm.exception))
+                self.assertIn(field, str(cm.exception))
+
+    def test_cli_refuses_newline_owner_and_ts(self):
+        rc_owner = lasfil.main([
+            "--token", TOKEN, "--unit", "tbx-d1",
+            "--qwprogs-sha256", QW, "--mvdsv-sha256", MV,
+            "--owner", "fable\ninjected",
+        ])
+        self.assertEqual(rc_owner, 2)
+        rc_ts = lasfil.main([
+            "--token", TOKEN, "--unit", "tbx-d1",
+            "--qwprogs-sha256", QW, "--mvdsv-sha256", MV,
+            "--ts", "2026-08-17T12:00:00Z\rowner=x",
+        ])
+        self.assertEqual(rc_ts, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
+
