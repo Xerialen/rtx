@@ -513,6 +513,29 @@ class MotBasdumpen(unittest.TestCase):
         self.assertEqual(len(w), 1)
         self.assertIn("SLUTSTAMPEN", w[0])
 
+    def test_committade_manifest_ar_verktygets_utdata(self):
+        """Den committade filen måste vara byte för byte det verktyget skriver.
+
+        deepseeks korsreview av 2232fcc, punkt (iv): regenereringen var stabil, men
+        den committade filen bar fält `kor_recept` inte emitterade, så "byte-stabil"
+        var ett påstående ingen kunde pröva. Nu går skriv- och testvägen genom
+        `bygg_manifest`, och det här testet binder repot till den. Går det sönder är
+        rättningen att köra om verktyget och committa utdatat — aldrig att handredigera
+        manifestet.
+        """
+        for namn in ("komponat-v296-ram", "komponat-k2-v296-ram"):
+            with self.subTest(namn):
+                receptvag = RECEPT / f"{namn}.json"
+                recept = json.loads(receptvag.read_text(encoding="utf-8"))
+                blob = tr.kanonisk_json(
+                    tr.bygg_manifest(self.bas, recept, self.reg, receptvag, tr.DEFAULT_BAS)
+                )
+                self.assertEqual(
+                    blob,
+                    tr.manifestsokvag(receptvag).read_bytes(),
+                    f"{namn}.manifest.json har drivit från verktygets utdata",
+                )
+
     def test_komponatet_ar_deterministiskt(self):
         recept = json.loads((RECEPT / "komponat-k2-v296-ram.json").read_text(encoding="utf-8"))
         a = tr.kanonisk_json(tr.kor_recept(self.bas, recept, self.reg))

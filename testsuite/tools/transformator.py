@@ -655,6 +655,38 @@ def kanonisk_json(obj) -> bytes:
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
 
 
+DEFAULT_BAS = "/home/xerial/lab/toolbox/dm3-base-full-graph.json"
+
+
+def bygg_manifest(bas: Graf, recept: dict, register: list, receptvag: str | Path, basvag: str) -> dict:
+    """Hela manifestet, i EN kodväg.
+
+    `kor_recept` räcker inte som sanning om filen: korskontrollen mot det komponat
+    receptet ersätter, och vilken basdump som lästes, hör också till artefakten.
+    Låg de stegen kvar i `main` blev den committade filen något bara CLI:t kunde
+    reproducera — och då är "byte-stabil" ett påstående ingen kan pröva
+    (deepseeks korsreview av 2232fcc, punkt iv). Skriv- och testvägen går genom
+    den här funktionen, så det som ligger i repot är per konstruktion verktygets
+    utdata.
+    """
+    manifest = kor_recept(bas, recept, register)
+    ersatter = (recept.get("ersatter") or {}).get("recept")
+    if ersatter:
+        annanvag = manifestsokvag(Path(receptvag).parent / Path(ersatter).name)
+        try:
+            annat = json.loads(annanvag.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            manifest["varningar"].append(
+                f"kunde inte korskontrollera mot {annanvag.name} — kör den först om "
+                "krockkontrollen ska vara gjord"
+            )
+        else:
+            manifest["korskontrollerat_mot"] = annat.get("recept_id")
+            manifest["varningar"].extend(korskontrollera_manifest(manifest["steg"], annat))
+    manifest["bas_dump"] = str(basvag)
+    return manifest
+
+
 # ---------------------------------------------------------------------------
 # Validering mot de förseglade delstamparna
 # ---------------------------------------------------------------------------
@@ -743,7 +775,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--bas",
-        default="/home/xerial/lab/toolbox/dm3-base-full-graph.json",
+        default=DEFAULT_BAS,
         help="basdump (qw-nav-graph/1, komplett med T-flaggor)",
     )
     p.add_argument("--recept", help="komponerat recept (komponat/1)")
@@ -808,29 +840,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        manifest = kor_recept(bas, recept, register)
+        manifest = bygg_manifest(bas, recept, register, args.recept, args.bas)
     except Vagran as exc:
         print(f"VÄGRAR: {exc}", file=sys.stderr)
         return 1
 
-    # Receptet får peka ut vilket komponat det ersätter. Gör det det, korskontrollerar
-    # vi mot det manifestet: två op-listor mot samma bas är precis där en nivå-1-krock
-    # blir farlig, och ingen av dem kan upptäcka den ensam.
-    ersatter = (recept.get("ersatter") or {}).get("recept")
-    if ersatter:
-        annanvag = manifestsokvag(Path(args.recept).parent / Path(ersatter).name)
-        try:
-            annat = json.loads(annanvag.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            manifest["varningar"].append(
-                f"kunde inte korskontrollera mot {annanvag.name} — kör den först om "
-                "krockkontrollen ska vara gjord"
-            )
-        else:
-            manifest["korskontrollerat_mot"] = annat.get("recept_id")
-            manifest["varningar"].extend(korskontrollera_manifest(manifest["steg"], annat))
-
-    manifest["bas_dump"] = str(args.bas)
     blob = kanonisk_json(manifest)
     if args.ut:
         Path(args.ut).write_bytes(blob)
