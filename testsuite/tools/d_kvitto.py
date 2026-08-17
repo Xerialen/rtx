@@ -126,6 +126,7 @@ def make_kvitto(
     selected_link: int | None = None,
     knockback: dict | None = None,
     cvars: dict | None = None,
+    freeze_record: dict | None = None,
 ) -> dict[str, Any]:
     """Assemble a §4-complete receipt. Missing kwargs are a TypeError (fail closed).
 
@@ -189,6 +190,8 @@ def make_kvitto(
         doc["knockback"] = dict(knockback)
     if cvars is not None:
         doc["cvars"] = dict(cvars)
+    if freeze_record is not None:
+        doc["freeze"] = dict(freeze_record)
     return doc
 
 

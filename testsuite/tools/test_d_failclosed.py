@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import pwd
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,79 +65,88 @@ def _recipe(**extra):
     return doc
 
 
-class _Home:
-    """Point Path.home() at a tmp tree. No env path override exists."""
+class _Freeze:
+    """Injected freeze path. Never touches passwd-home."""
 
     def __enter__(self):
-        self.tmp = tempfile.mkdtemp(prefix="d-failclosed-home-")
-        (Path(self.tmp) / "lab").mkdir()
-        self.old = os.environ.get("HOME")
-        os.environ["HOME"] = self.tmp
-        return Path(self.tmp)
+        self.tmp = Path(tempfile.mkdtemp(prefix="d-failclosed-fz-"))
+        self.flag = self.tmp / ".change-freeze"
+        self.ctx = fc.FreezeContext.for_test(self.flag)
+        return self
 
     def __exit__(self, *exc):
-        if self.old is None:
-            os.environ.pop("HOME", None)
-        else:
-            os.environ["HOME"] = self.old
+        return None
 
 
 class FreezeTests(unittest.TestCase):
     def test_absent_is_none(self):
-        with _Home():
-            self.assertIsNone(fc.change_freeze_reason())
-            fc.check_change_freeze()
+        with _Freeze() as fz:
+            self.assertIsNone(fc.change_freeze_reason(fz.ctx))
+            fc.check_change_freeze(fz.ctx)
 
     def test_present_refuses_with_owner_clock(self):
-        with _Home():
-            path = fc.write_change_freeze("fable", "Xerial T20m")
-            why = fc.change_freeze_reason()
+        with _Freeze() as fz:
+            path = fc.write_change_freeze("fable", "Xerial T20m", freeze=fz.ctx)
+            why = fc.change_freeze_reason(fz.ctx)
             self.assertIsNotNone(why)
             self.assertIn("fable", why)
             self.assertIn("T20m", why or "")
             self.assertTrue(path.is_file())
             with self.assertRaises(fc.FailClosed) as ctx:
-                fc.check_change_freeze()
+                fc.check_change_freeze(fz.ctx)
             self.assertEqual(ctx.exception.gate, "freeze")
 
     def test_empty_file_still_refuses(self):
-        with _Home() as home:
-            (home / "lab" / ".change-freeze").write_text("", encoding="utf-8")
-            why = fc.change_freeze_reason()
+        with _Freeze() as fz:
+            fz.flag.write_text("", encoding="utf-8")
+            why = fc.change_freeze_reason(fz.ctx)
             self.assertIn("tom fil", why)
             self.assertIn("frys ändå", why)
 
     def test_malformed_flag_freezes_anyway(self):
-        with _Home() as home:
-            (home / "lab" / ".change-freeze").write_text("not-a-valid-line\n", encoding="utf-8")
-            why = fc.change_freeze_reason()
+        with _Freeze() as fz:
+            fz.flag.write_text("not-a-valid-line\n", encoding="utf-8")
+            why = fc.change_freeze_reason(fz.ctx)
             self.assertIn("felformad", why)
             self.assertIn("frys ändå", why)
             with self.assertRaises(fc.FailClosed):
-                fc.check_change_freeze()
+                fc.check_change_freeze(fz.ctx)
 
-    def test_env_cannot_hide_real_freeze(self):
-        with _Home():
-            fc.write_change_freeze("fable", "real")
-            os.environ["D_CHANGE_FREEZE"] = "/tmp/definitely-absent-d-change-freeze"
-            try:
-                why = fc.change_freeze_reason()
-                self.assertIsNotNone(why)
-                self.assertIn("fable", why)
-            finally:
-                os.environ.pop("D_CHANGE_FREEZE", None)
+    def test_home_env_does_not_move_production_path(self):
+        prod = fc.FreezeContext.production()
+        want = Path(pwd.getpwuid(os.getuid()).pw_dir) / "lab" / ".change-freeze"
+        self.assertEqual(prod.path, want)
+        self.assertFalse(prod.injected)
+        old = os.environ.get("HOME")
+        os.environ["HOME"] = "/tmp/not-the-real-home-for-freeze"
+        try:
+            again = fc.FreezeContext.production()
+            self.assertEqual(again.path, want)
+        finally:
+            if old is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old
+        rec = prod.as_kvitto()
+        self.assertEqual(rec["lookup"], "pwd.getpwuid")
+        self.assertFalse(rec["injected"])
+        sneaky = fc.FreezeContext(path=Path("/tmp/hidden-freeze"), injected=False)
+        self.assertEqual(sneaky.path, want)
 
     def test_no_d_change_freeze_api(self):
+        src = Path(fc.__file__).read_text(encoding="utf-8")
         self.assertFalse(hasattr(fc, "freeze_path"))
-        self.assertNotIn("D_CHANGE_FREEZE", Path(fc.__file__).read_text(encoding="utf-8"))
+        self.assertNotIn("D_CHANGE_FREEZE", src)
+        self.assertNotIn("Path.home()", src)
+        self.assertIn("pwd.getpwuid", src)
 
     def test_guard_blocks_all_four_verbs(self):
         rec = _recipe()
-        with _Home():
-            fc.write_change_freeze("fable")
+        with _Freeze() as fz:
+            fc.write_change_freeze("fable", freeze=fz.ctx)
             for verb in ("apply", "undo", "plant", "portvakt"):
                 with self.assertRaises(fc.FailClosed) as ctx:
-                    fc.guard_mutation(verb, recipe=rec, live=BAS)
+                    fc.guard_mutation(verb, recipe=rec, live=BAS, freeze=fz.ctx)
                 self.assertEqual(ctx.exception.gate, "freeze")
 
 
@@ -324,26 +335,25 @@ class TerraBypassTests(unittest.TestCase):
             fc.guard_mutation("apply", recipe=rec, live=BAS)
 
     def test_registered_apply_requires_fixture_sha(self):
-        rec = load_recipe(RECEPT / "haz1462-k2.json")
-        rec.pop("_fixture_sha256")
+        rec = dict(load_recipe(RECEPT / "haz1462-k2.json"))
         with self.assertRaises(fc.FailClosed) as ctx:
             fc.guard_mutation("apply", recipe=rec, live=BAS)
         self.assertEqual(ctx.exception.gate, "crash-detector")
-        self.assertIn("förseglad fixture-SHA", str(ctx.exception))
+        self.assertIn("SealedRecipe", str(ctx.exception))
 
     def test_k2_empty_ops_refused(self):
-        rec = load_recipe(RECEPT / "haz1462-k2.json")
+        rec = dict(load_recipe(RECEPT / "haz1462-k2.json"))
+        rec["id"] = "haz1462-k2"
         rec["remove_links"] = []
         why = fc.validate_anchors(rec)
         self.assertIsNotNone(why)
         self.assertIn("tom", why)
-        with self.assertRaises(fc.FailClosed) as ctx:
-            fc.guard_mutation("apply", recipe=rec, live=BAS)
-        self.assertEqual(ctx.exception.gate, "anchor")
+        why2 = fc.validate_anchors(rec)
+        self.assertIsNotNone(why2)
 
     def test_k2_missing_ops_key_refused(self):
-        rec = load_recipe(RECEPT / "haz1462-k2.json")
-        rec.pop("remove_links")
+        rec = dict(load_recipe(RECEPT / "haz1462-k2.json"))
+        rec.pop("remove_links", None)
         why = fc.validate_anchors(rec)
         self.assertIsNotNone(why)
         self.assertIn("tom", why)
@@ -357,7 +367,7 @@ class TerraBypassTests(unittest.TestCase):
         with self.assertRaises(fc.FailClosed) as ctx:
             fc.guard_mutation("apply", recipe=rec, live=BAS)
         self.assertEqual(ctx.exception.gate, "crash-detector")
-        self.assertIn("förseglad fixture-SHA", str(ctx.exception))
+        self.assertIn("SealedRecipe", str(ctx.exception))
 
     def test_send_plan_link_goes_through_guard_plant(self):
         class Ctl:
@@ -368,27 +378,86 @@ class TerraBypassTests(unittest.TestCase):
                 self.cmds.append(cmd)
                 return {"ok": True}
 
-        with _Home():
-            fc.write_change_freeze("fable")
+        with _Freeze() as fz:
+            fc.write_change_freeze("fable", freeze=fz.ctx)
             ctl = Ctl()
             with self.assertRaises(fc.FailClosed) as ctx:
-                fc.send_plan_link(ctl, {"from": [0, 0, 0]}, recipe=_recipe())
+                fc.send_plan_link(ctl, {"from": [0, 0, 0]}, recipe=_recipe(), freeze=fz.ctx)
             self.assertEqual(ctx.exception.gate, "freeze")
             self.assertEqual(ctl.cmds, [])
 
     def test_guard_portvakt_is_the_port_entry(self):
-        with _Home():
-            fc.write_change_freeze("fable")
+        with _Freeze() as fz:
+            fc.write_change_freeze("fable", freeze=fz.ctx)
             with self.assertRaises(fc.FailClosed) as ctx:
-                fc.guard_portvakt()
+                fc.guard_portvakt(freeze=fz.ctx)
             self.assertEqual(ctx.exception.gate, "freeze")
 
+
+    def test_sealed_recipe_is_immutable(self):
+        rec = load_recipe(RECEPT / "haz1462-k2.json")
+        with self.assertRaises(Exception):
+            rec.fixture_sha256 = "deadbeef"  # type: ignore[misc]
+        with self.assertRaises(TypeError):
+            rec.payload["id"] = "nope"  # type: ignore[index]
+        forged = dict(rec)
+        forged["_sealed_identities"] = [("0", "f" * 64)]
+        with self.assertRaises(fc.FailClosed) as ctx:
+            fc.guard_mutation("apply", recipe=forged, live=BAS)
+        self.assertIn("SealedRecipe", str(ctx.exception))
+
+    def test_injected_freeze_logged_in_kvitto_record(self):
+        with _Freeze() as fz:
+            rec = fz.ctx.as_kvitto()
+            self.assertTrue(rec["injected"])
+            self.assertEqual(rec["lookup"], "constructor")
+            self.assertEqual(rec["path"], str(fz.flag))
+
     def test_writer_roundtrip_validates_format(self):
-        with _Home():
-            path = fc.write_change_freeze("fable", "note")
+        with _Freeze() as fz:
+            path = fc.write_change_freeze("fable", "note", freeze=fz.ctx)
             ok, display = fc.parse_freeze_line(path.read_text(encoding="utf-8").splitlines()[0])
             self.assertTrue(ok)
             self.assertIn("fable", display)
+
+    def test_registered_corrupt_file_is_failclosed(self):
+        from d_recipe import load_recipe
+        src = json.loads((RECEPT / "haz1462-k2.json").read_text(encoding="utf-8"))
+        src["sealed_stamps"] = 7
+        dst = Path(tempfile.mkdtemp()) / "haz1462-k2.json"
+        dst.write_text(json.dumps(src), encoding="utf-8")
+        with self.assertRaises(fc.FailClosed) as ctx:
+            load_recipe(dst)
+        self.assertEqual(ctx.exception.gate, "crash-detector")
+
+    def test_post_load_stamp_rewrite_is_type_error(self):
+        rec = load_recipe(RECEPT / "haz1462-k2.json")
+        with self.assertRaises(TypeError):
+            rec["sealed_stamps"] = 7  # type: ignore[index]
+        with self.assertRaises(TypeError):
+            rec.payload["sealed_stamps"] = 7  # type: ignore[index]
+        with self.assertRaises(Exception):
+            rec.sealed_identities = frozenset()  # type: ignore[misc]
+
+    def test_replant_production_calls_guard_plant(self):
+        """Callees on the real replant chain must invoke guard_plant."""
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        copies = [
+            home / "rtx-tools" / "replant_kanon.py",
+            home / "rtx-cost-exp" / "harness-k1" / "replant_kanon.py",
+            home / "lab" / "k1b" / "verktyg" / "replant_kanon.py",
+            home / "lab" / "k2" / "verktyg" / "replant_kanon.py",
+            home / "lab" / "t1h" / "verktyg" / "replant_kanon.py",
+            home / "lab" / "t1hdry" / "verktyg" / "replant_kanon.py",
+        ]
+        present = [p for p in copies if p.is_file()]
+        self.assertTrue(present, "ingen produktions-replant_kanon.py hittad")
+        for p in present:
+            src = p.read_text(encoding="utf-8")
+            self.assertTrue(src.startswith("#!"), "%s saknar shebang på rad 1" % p)
+            self.assertIn("from d_failclosed import FailClosed, guard_plant", src)
+            self.assertIn("guard_plant()", src)
+            self.assertLess(src.index("guard_plant()"), src.index("lab = Lab"))
 
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ if str(HERE.parent) not in sys.path:
     sys.path.append(str(HERE.parent))
 
 from timtest_d_ports import EXIT_REFUSED, port_fel  # noqa: E402
-from d_failclosed import FailClosed, guard_portvakt  # noqa: E402
+from d_failclosed import FailClosed, FreezeContext, guard_portvakt  # noqa: E402
 from timtest_d_kluster import skriv_kluster  # noqa: E402
 
 # Importera BEN-API:t ur den frysta kopian — ingen omskrivning av loopen.
@@ -199,7 +199,7 @@ def stop_demo(lab) -> None:
 
 def skriv_manifest(outdir: Path, *, host, port, game_port, dry, mock,
                    duration, minuter, demo_file, judged=False,
-                   duration_source="cli", gates=None):
+                   duration_source="cli", gates=None, freeze_record=None):
     man = {
         "schema": "t1h-d-manifest-v1",
         "arm": "D",
@@ -233,6 +233,7 @@ def skriv_manifest(outdir: Path, *, host, port, game_port, dry, mock,
                 "path": str(Path(__file__).resolve()),
             },
         },
+        "freeze": None if freeze_record is None else dict(freeze_record),
     }
     (outdir / "manifest.json").write_text(
         json.dumps(man, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
@@ -261,14 +262,21 @@ def main(argv=None) -> int:
                     help="förseglad gates-fil (duration_min). Default recept/timtest-d-gates.json")
     ap.add_argument("--no-demo", action="store_true")
     ap.add_argument("--demo-stem", default=None)
+    ap.add_argument("--freeze-path", default=None,
+                    help="test-only FreezeContext injection; logged as injected")
     args = ap.parse_args(argv)
 
     fel = port_fel(args.port, args.game_port)
     if fel:
         sys.stderr.write("VÄGRAR: %s\n" % fel)
         return EXIT_REFUSED
+    freeze_ctx = (
+        FreezeContext.for_test(args.freeze_path)
+        if args.freeze_path
+        else FreezeContext.production()
+    )
     try:
-        guard_portvakt()
+        guard_portvakt(freeze=freeze_ctx)
     except FailClosed as exc:
         sys.stderr.write("VÄGRAR: %s\n" % exc)
         return EXIT_REFUSED
@@ -328,6 +336,7 @@ def main(argv=None) -> int:
             judged=bool(args.run),
             duration_source=duration_source,
             gates=args.gates,
+            freeze_record=freeze_ctx.as_kvitto(),
         )
         lab.teleport(ben.BOT, ben.TOPP)
         time.sleep(0.0 if args.mock else 0.6)

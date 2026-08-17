@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from d_kvitto import WEST_SHELF_RECIPE, astar_path, make_kvitto, write_kvitto  # noqa: E402
-from d_failclosed import FailClosed, change_freeze_reason, guard_mutation  # noqa: E402
+from d_failclosed import FailClosed, FreezeContext, change_freeze_reason, guard_mutation  # noqa: E402
 from d_recipe import load_recipe, on_expected, recipe_path  # noqa: E402
 from d_strata import FORBIDDEN_CTL, FORBIDDEN_GAME  # noqa: E402
 from verify_d_kvitto import verify  # noqa: E402
@@ -25,10 +25,12 @@ from verify_d_kvitto import verify  # noqa: E402
 RIG_LOCK = Path.home() / "lab" / ".rig-lock"
 
 
-def require_lock(port: int, lock_path: Path = RIG_LOCK) -> str:
+def require_lock(
+    port: int, lock_path: Path = RIG_LOCK, *, freeze: FreezeContext | None = None
+) -> str:
     if port in FORBIDDEN_CTL:
         raise SystemExit(f"port {port} is RA/main — dedicated D instance only")
-    frozen = change_freeze_reason()
+    frozen = change_freeze_reason(freeze or FreezeContext.production())
     if frozen:
         raise SystemExit(frozen)
     if not lock_path.is_file():
@@ -82,14 +84,33 @@ def _send_fixa(
     from_cell: int | None,
     to_cell: int | None,
     lock_token: str | None = None,
+    recipe=None,
+    freeze=None,
 ) -> dict:
-    """Private ctl send. Callers must go through run_fixa."""
-    cmd = f"fixa {recipe_id} {mode}"
-    if from_cell is not None and to_cell is not None:
-        cmd += f" {from_cell} {to_cell}"
-    if lock_token:
-        cmd += f" lock {lock_token}"
-    return parse_fixa_reply(ctl.request(cmd)["data"])
+    """ENDA muterande ctl-ingången. Frys + stampgrind bor här, inte hos anroparen."""
+    from d_failclosed import FreezeContext, guard_mutation, guard_plant
+
+    mode_l = (mode or "").strip().lower()
+
+    def _ctl(mode_now: str, token: str | None) -> dict:
+        cmd = f"fixa {recipe_id} {mode_now}"
+        if from_cell is not None and to_cell is not None:
+            cmd += f" {from_cell} {to_cell}"
+        if token:
+            cmd += f" lock {token}"
+        return parse_fixa_reply(ctl.request(cmd)["data"])
+
+    if mode_l in {"apply", "undo", "plant"}:
+        rec = recipe if recipe is not None else load_recipe(recipe_path(recipe_id))
+        ctx = freeze if freeze is not None else FreezeContext.production()
+        if mode_l == "plant":
+            guard_plant(rec, freeze=ctx)
+        else:
+            ident = _ctl("dry-run", None)
+            live = stamp_from_reply(ident)
+            guard_mutation(mode_l, recipe=rec, live=live, freeze=ctx)
+        return _ctl(mode_l, lock_token)
+    return _ctl(mode, lock_token)
 
 
 def run_fixa(
@@ -100,27 +121,10 @@ def run_fixa(
     from_cell: int | None,
     to_cell: int | None,
     lock_token: str | None = None,
-    recipe: dict | None = None,
+    recipe=None,
+    freeze=None,
 ) -> dict:
-    """Gated fixa send. apply/undo/plant cannot skip freeze + sealed stamps."""
-    mode_l = (mode or "").strip().lower()
-    if mode_l in {"apply", "undo", "plant"}:
-        rec = recipe
-        if rec is None:
-            rec = load_recipe(recipe_path(recipe_id))
-        if mode_l == "plant":
-            from d_failclosed import guard_plant
-            guard_plant(rec)
-        else:
-            ident = _send_fixa(
-                ctl,
-                recipe_id=recipe_id,
-                mode="dry-run",
-                from_cell=from_cell,
-                to_cell=to_cell,
-            )
-            live = stamp_from_reply(ident)
-            guard_mutation(mode_l, recipe=rec, live=live)
+    """Alias till _send_fixa — ingen ogrindad sändväg."""
     return _send_fixa(
         ctl,
         recipe_id=recipe_id,
@@ -128,6 +132,8 @@ def run_fixa(
         from_cell=from_cell,
         to_cell=to_cell,
         lock_token=lock_token,
+        recipe=recipe,
+        freeze=freeze,
     )
 
 
@@ -149,6 +155,7 @@ def write_apply_kvitto(
     seed: int,
     stratum: dict,
     raw_pointer: str,
+    freeze_record: dict | None = None,
 ) -> dict:
     off = dict(recipe["off"])
     on = on_expected(recipe)
@@ -180,6 +187,7 @@ def write_apply_kvitto(
         astar_before=path_from_fixa(reply.get("astar_before")),
         astar_after=path_from_fixa(reply.get("astar_after")),
         astar_next_best=path_from_fixa(reply.get("astar_next_best")),
+        freeze_record=freeze_record,
     )
     write_kvitto(path, doc)
     errors = verify(doc)
@@ -297,6 +305,7 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             stratum={"id": "fixa-apply"},
             raw_pointer=str(args.kvitto),
+            freeze_record=FreezeContext.production().as_kvitto(),
         )
     if reply.get("outcome") == "failed":
         return 1

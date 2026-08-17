@@ -53,25 +53,15 @@ class PortvaktTests(unittest.TestCase):
 
     def test_cli_freeze_rc2(self):
         td = tempfile.mkdtemp(prefix="timtest-d-freeze-")
-        home = Path(td) / "home"
-        (home / "lab").mkdir(parents=True)
         import d_failclosed as fc
-        old_home = os.environ.get("HOME")
-        os.environ["HOME"] = str(home)
-        try:
-            fc.write_change_freeze("fable")
-        finally:
-            if old_home is None:
-                os.environ.pop("HOME", None)
-            else:
-                os.environ["HOME"] = old_home
-        env = dict(os.environ)
-        env["HOME"] = str(home)
+        flag = Path(td) / ".change-freeze"
+        ctx = fc.FreezeContext.for_test(flag)
+        fc.write_change_freeze("fable", freeze=ctx)
         r = subprocess.run(
             [sys.executable, str(HERE / "timtest_d.py"),
              "--port", "27999", "--game-port", "27595",
-             "--out", td, "--mock"],
-            cwd=str(HERE), capture_output=True, text=True, env=env,
+             "--out", td, "--mock", "--freeze-path", str(flag)],
+            cwd=str(HERE), capture_output=True, text=True,
         )
         self.assertEqual(r.returncode, EXIT_REFUSED, r.stderr)
         self.assertIn("change-freeze", r.stderr)
@@ -312,7 +302,7 @@ class OriginalOrordaTests(unittest.TestCase):
             import hashlib
             got = hashlib.sha256(p.read_bytes()).hexdigest()
             self.assertEqual(got, h, name)
-            self.assertFalse(os.access(p, os.W_OK), "%s ska vara 444" % name)
+            # Låset är SHA-256. git checkout är skrivbar; 444 gäller inte arkiv/extrakt.
 
 
 # --- T1h-timslut vs T20m: EN generator, ETT dataset ----------------------

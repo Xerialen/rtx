@@ -8,6 +8,40 @@ import json
 from pathlib import Path
 from typing import Any
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
+
+
+def freeze_json(obj: Any) -> Any:
+    """Deep-freeze JSON-like structures (dicts → MappingProxy, lists → tuple)."""
+    if isinstance(obj, dict):
+        return MappingProxyType({str(k): freeze_json(v) for k, v in obj.items()})
+    if isinstance(obj, list):
+        return tuple(freeze_json(x) for x in obj)
+    return obj
+
+
+@dataclass(frozen=True)
+class SealedRecipe(Mapping):
+    """Immutable recipe. Stamp set cannot be rewritten after load."""
+
+    payload: MappingProxyType
+    fixture_sha256: str
+    sealed_identities: frozenset
+
+    def __getitem__(self, key: str) -> Any:
+        return self.payload[key]
+
+    def __iter__(self):
+        return iter(self.payload)
+
+    def __len__(self) -> int:
+        return len(self.payload)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.payload.get(key, default)
+
 from d_strata import STRATA, heldout_stratum_at  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -106,7 +140,7 @@ def _sealed_from_doc(doc: dict[str, Any]) -> list[tuple[str, str]]:
     return out
 
 
-def load_recipe(path: Path | None = None) -> dict[str, Any]:
+def load_recipe(path: Path | None = None) -> SealedRecipe:
     path = path or DEFAULT_RECIPE
     raw = Path(path).read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
@@ -116,22 +150,27 @@ def load_recipe(path: Path | None = None) -> dict[str, Any]:
         raise ValueError(f"unknown recipe {rid!r}; registered={sorted(REGISTERED_IDS)}")
     want = FIXTURE_SHA256.get(rid)
     if want != sha:
-        raise ValueError(
+        from d_failclosed import FailClosed
+        raise FailClosed(
+            "crash-detector",
             f"fixture {rid} SHA-256 {sha} ≠ förseglad {want} — "
-            f"stampmängden är inte bunden till den pinnade filen"
+            f"stampmängden är inte bunden till den pinnade filen",
         )
     off = doc.get("off")
     if not isinstance(off, dict) or any(k not in off for k in STAMP_KEYS):
         raise ValueError("recipe.off is not a complete stamp block")
-    doc["_fixture_sha256"] = sha
-    doc["_sealed_identities"] = _sealed_from_doc(doc)
-    return doc
+    identities = frozenset(_sealed_from_doc(doc))
+    return SealedRecipe(
+        payload=freeze_json(doc),
+        fixture_sha256=sha,
+        sealed_identities=identities,
+    )
 
 
 def on_expected(recipe: dict[str, Any]) -> dict[str, Any]:
     """Facit §1: ON expected lives in the fixture. Never copy observed into it."""
     on = recipe.get("on_expected")
-    if not isinstance(on, dict) or any(k not in on or on[k] in (None, "") for k in STAMP_KEYS):
+    if not isinstance(on, Mapping) or any(k not in on or on[k] in (None, "") for k in STAMP_KEYS):
         raise ValueError(
             "ON expected missing from recipe fixture — refusing to invent it from observed"
         )

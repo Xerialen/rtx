@@ -1,21 +1,53 @@
 #!/usr/bin/env python3
 """Fail-closed gates 3+4+7 for the apply tool chain (tools/testsuite only).
 
-Flaggväg: Path.home()/lab/.change-freeze — hårdkodad, ingen env-override.
-Fable skriver flaggan via write_change_freeze (ägare + UTC). Apply-vägar
-läser och validerar bara. Felformad flagga = frys ändå.
+Flaggväg: pwd.getpwuid(uid).pw_dir/lab/.change-freeze — aldrig HOME/env.
+Test injicerar ENDAST FreezeContext(path=..., injected=True), loggas i kvitto.
 """
 
 from __future__ import annotations
 
+import os
+import pwd
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from d_recipe import FIXTURE_SHA256, REGISTERED_IDS, REQUIRED_OPS
+from d_recipe import FIXTURE_SHA256, REGISTERED_IDS, REQUIRED_OPS, SealedRecipe
 
 CHANGE_FREEZE = Path("lab") / ".change-freeze"
+
+
+@dataclass(frozen=True)
+class FreezeContext:
+    """Production path from passwd home. Tests pass injected=True + path."""
+
+    path: Path
+    injected: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.injected:
+            real = Path(pwd.getpwuid(os.getuid()).pw_dir) / CHANGE_FREEZE
+            object.__setattr__(self, "path", real)
+
+    @staticmethod
+    def production() -> "FreezeContext":
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        return FreezeContext(path=home / CHANGE_FREEZE, injected=False)
+
+    @staticmethod
+    def for_test(path: Path | str) -> "FreezeContext":
+        return FreezeContext(path=Path(path), injected=True)
+
+    def as_kvitto(self) -> dict[str, Any]:
+        return {
+            "path": str(self.path),
+            "injected": self.injected,
+            "lookup": "constructor" if self.injected else "pwd.getpwuid",
+        }
 
 # Base-graph live ids that a recipe may name, and only with this walk-anchor.
 BASE_OWN_LINK_IDS: dict[int, dict[str, Any]] = {
@@ -56,23 +88,21 @@ class FailClosed(RuntimeError):
         super().__init__(message)
 
 
-def change_freeze_path() -> Path:
-    """Hardcoded ~/lab/.change-freeze. Tests isolate via tmp HOME."""
-    return Path.home() / CHANGE_FREEZE
+def change_freeze_path(ctx: FreezeContext | None = None) -> Path:
+    return (ctx or FreezeContext.production()).path
 
 
-def write_change_freeze(owner: str, note: str = "") -> Path:
-    """Fable-writer: one line `owner 2026-08-17T07:15:00Z [note]`.
-
-    Apply/undo/plant/portvakt never call this.
-    """
+def write_change_freeze(
+    owner: str, note: str = "", *, freeze: FreezeContext | None = None
+) -> Path:
+    """Fable-writer. Apply-vägar anropar inte denna."""
     if not re.fullmatch(r"[A-Za-z0-9._-]+", owner or ""):
         raise FailClosed("freeze", f"ogiltig freeze-ägare {owner!r}")
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     line = f"{owner} {ts}"
     if note:
         line += f" {note.strip()}"
-    path = change_freeze_path()
+    path = change_freeze_path(freeze)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(line + "\n", encoding="utf-8")
     return path
@@ -93,9 +123,9 @@ def parse_freeze_line(head: str) -> tuple[bool, str]:
     return True, display
 
 
-def change_freeze_reason() -> str | None:
-    """Klartext if the hardcoded flag exists; else None. No path override."""
-    p = change_freeze_path()
+def change_freeze_reason(ctx: FreezeContext | None = None) -> str | None:
+    """Klartext if the passwd-home flag exists. ctx is the only injection."""
+    p = change_freeze_path(ctx)
     try:
         if not p.is_file():
             return None
@@ -119,15 +149,15 @@ def change_freeze_reason() -> str | None:
     )
 
 
-def check_change_freeze() -> None:
-    why = change_freeze_reason()
+def check_change_freeze(ctx: FreezeContext | None = None) -> None:
+    why = change_freeze_reason(ctx)
     if why:
         raise FailClosed("freeze", why)
 
 
 def stamp_identity(block: dict[str, Any]) -> tuple[str, str] | None:
     """Nivå-1 FNV + nivå-2 SHA. None if the block cannot identify a graph."""
-    if not isinstance(block, dict):
+    if not isinstance(block, Mapping):
         return None
     try:
         fnv = str(block["graph_stamp"]).strip()
@@ -142,10 +172,10 @@ def stamp_identity(block: dict[str, Any]) -> tuple[str, str] | None:
 def _as_stamp_list(blob: Any, name: str) -> list[Any]:
     if blob is None:
         return []
-    if isinstance(blob, dict):
+    if isinstance(blob, Mapping) and not isinstance(blob, (str, bytes)):
         return [blob]
-    if isinstance(blob, list):
-        return blob
+    if isinstance(blob, (list, tuple)):
+        return list(blob)
     raise FailClosed(
         "crash-detector",
         f"{name} har korrupt form {type(blob).__name__} — FailClosed, inte TypeError",
@@ -157,7 +187,7 @@ def _extract_stamp_identities(recipe: dict[str, Any]) -> list[tuple[str, str]]:
     seen: set[tuple[str, str]] = set()
 
     def _add(block: Any) -> None:
-        key = stamp_identity(block) if isinstance(block, dict) else None
+        key = stamp_identity(block) if isinstance(block, Mapping) else None
         if key is None or key in seen:
             return
         seen.add(key)
@@ -179,47 +209,33 @@ def _extract_stamp_identities(recipe: dict[str, Any]) -> list[tuple[str, str]]:
     return out
 
 
-def verify_fixture_seal(recipe: dict[str, Any]) -> None:
-    """Registered recipes must carry the pinned fixture SHA from load_recipe."""
-    if not isinstance(recipe, dict):
+def verify_fixture_seal(recipe: Any) -> None:
+    """Registered recipes must be the frozen SealedRecipe from load_recipe."""
+    if isinstance(recipe, SealedRecipe):
+        rid = recipe.get("id")
+        want = FIXTURE_SHA256.get(rid)
+        if rid in REGISTERED_IDS and recipe.fixture_sha256 != want:
+            raise FailClosed(
+                "crash-detector",
+                f"recept {rid} fixture-SHA {recipe.fixture_sha256!r} ≠ pin {want!r}",
+            )
+        return
+    if not isinstance(recipe, Mapping):
         raise FailClosed("crash-detector", "recept saknas — kraschdetektor vägrar")
     rid = recipe.get("id")
-    if rid not in REGISTERED_IDS:
-        return
-    want = FIXTURE_SHA256.get(rid)
-    got = recipe.get("_fixture_sha256")
-    if not want or got != want:
+    if rid in REGISTERED_IDS:
         raise FailClosed(
             "crash-detector",
-            f"recept {rid} är inte bundet till förseglad fixture-SHA "
-            f"(fick {got!r}, ville {want!r})",
+            f"recept {rid} måste vara SealedRecipe från load_recipe — "
+            f"lösa dictar kan förfalska stampmängden",
         )
 
 
-def sealed_identities(recipe: dict[str, Any]) -> list[tuple[str, str]]:
-    """Förseglad mängd, bunden till fixture-SHA för registrerade id:n."""
+def sealed_identities(recipe: Any) -> list[tuple[str, str]]:
+    """Förseglad mängd. För registrerade id:n endast ur frozen SealedRecipe."""
     verify_fixture_seal(recipe)
-    pinned = recipe.get("_sealed_identities")
-    if pinned is not None:
-        if not isinstance(pinned, (list, tuple, set, frozenset)):
-            raise FailClosed(
-                "crash-detector",
-                f"_sealed_identities har korrupt form {type(pinned).__name__}",
-            )
-        out: list[tuple[str, str]] = []
-        for item in pinned:
-            if (
-                isinstance(item, (list, tuple))
-                and len(item) == 2
-                and all(isinstance(x, str) and x for x in item)
-            ):
-                out.append((item[0], item[1]))
-            else:
-                raise FailClosed(
-                    "crash-detector",
-                    "_sealed_identities-rad är inte (fnv, sha)",
-                )
-        return out
+    if isinstance(recipe, SealedRecipe):
+        return list(recipe.sealed_identities)
     return _extract_stamp_identities(recipe)
 
 
@@ -231,9 +247,9 @@ def sealed_stamps(recipe: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def live_in_sealed(live: dict[str, Any] | None, recipe: dict[str, Any]) -> str | None:
+def live_in_sealed(live: Mapping | None, recipe: Any) -> str | None:
     """None if live ∈ sealed set. Counts-only is not enough."""
-    if not isinstance(live, dict):
+    if not isinstance(live, Mapping):
         return "live stamp saknas — kraschdetektor vägrar mutation"
     live_key = stamp_identity(live)
     if live_key is None:
@@ -303,12 +319,12 @@ def _kind_of(op: dict[str, Any]) -> str:
     return ""
 
 
-def _sources(recipe: dict[str, Any]) -> list[dict[str, Any]]:
-    src = recipe.get("source")
-    if isinstance(src, dict):
+def _sources(recipe: Any) -> list:
+    src = recipe.get("source") if hasattr(recipe, "get") else None
+    if isinstance(src, Mapping) and "cell" in src:
         return [src]
-    if isinstance(src, list):
-        return [x for x in src if isinstance(x, dict)]
+    if isinstance(src, (list, tuple)):
+        return [x for x in src if isinstance(x, Mapping)]
     return []
 
 
@@ -325,7 +341,7 @@ def _origin_for_from(recipe: dict[str, Any], op: dict[str, Any], from_cell: int 
 
 def _walk_poison(obj: Any, path: str = "$") -> list[str]:
     hits: list[str] = []
-    if isinstance(obj, dict):
+    if isinstance(obj, Mapping) and not isinstance(obj, (str, bytes)):
         for k, v in obj.items():
             if str(k).startswith("_"):
                 continue
@@ -344,15 +360,15 @@ def _iter_ops(recipe: dict[str, Any]) -> Iterable[tuple[str, dict[str, Any]]]:
         blob = recipe.get(key)
         if blob is None:
             continue
-        if isinstance(blob, dict):
+        if isinstance(blob, Mapping) and not isinstance(blob, (str, bytes)):
             blob = [blob]
-        if not isinstance(blob, list):
+        if not isinstance(blob, (list, tuple)):
             raise FailClosed(
                 "anchor",
                 f"{key} har korrupt form {type(blob).__name__}",
             )
         for i, op in enumerate(blob):
-            if not isinstance(op, dict):
+            if not isinstance(op, Mapping):
                 raise FailClosed("anchor", f"{key}[{i}] är inte ett objekt")
             yield f"{key}[{i}]", op
             if key == "ops":
@@ -362,15 +378,15 @@ def _iter_ops(recipe: dict[str, Any]) -> Iterable[tuple[str, dict[str, Any]]]:
                     inner = op.get(inner_key)
                     if inner is None:
                         continue
-                    if isinstance(inner, dict):
+                    if isinstance(inner, Mapping) and not isinstance(inner, (str, bytes)):
                         inner = [inner]
-                    if not isinstance(inner, list):
+                    if not isinstance(inner, (list, tuple)):
                         raise FailClosed(
                             "anchor",
                             f"{key}[{i}].{inner_key} har korrupt form",
                         )
                     for j, child in enumerate(inner):
-                        if isinstance(child, dict):
+                        if isinstance(child, Mapping):
                             yield f"{key}[{i}].{inner_key}[{j}]", child
 
 
@@ -448,14 +464,14 @@ def _required_ops_present(recipe: dict[str, Any]) -> str | None:
                 f"{rid}: tom {key}-lista — grinden måste validera den "
                 f"mutation recept-id:t faktiskt utför"
             )
-        if not isinstance(have, list):
+        if not isinstance(have, (list, tuple)):
             return f"{rid}: {key} har korrupt form {type(have).__name__}"
         if isinstance(want, int):
             if len(have) != want:
                 return f"{rid}: {key} har {len(have)} poster, kräver {want}"
             continue
         if isinstance(want, list):
-            have_sigs = {_link_sig(op) for op in have if isinstance(op, dict)}
+            have_sigs = {_link_sig(op) for op in have if isinstance(op, Mapping)}
             want_sigs = set()
             for w in want:
                 want_sigs.add((
@@ -474,7 +490,7 @@ def _required_ops_present(recipe: dict[str, Any]) -> str | None:
 
 def validate_anchors(recipe: dict[str, Any]) -> str | None:
     """None if the fixture describes the mutation that will actually run."""
-    if not isinstance(recipe, dict):
+    if not isinstance(recipe, Mapping):
         return "recept saknas — ankarvalidering vägrar"
     poison = _walk_poison(recipe)
     if poison:
@@ -513,39 +529,43 @@ def check_anchors(recipe: dict[str, Any]) -> None:
 def guard_mutation(
     action: str,
     *,
-    recipe: dict[str, Any] | None = None,
-    live: dict[str, Any] | None = None,
+    recipe: Any = None,
+    live: Mapping | None = None,
     require_live: bool = True,
+    freeze: FreezeContext | None = None,
 ) -> None:
     """Gate 7 always for mutating verbs; 4 if recipe given; 3 if live required."""
     action = (action or "").strip().lower()
     mutating = {"apply", "undo", "plant", "portvakt"}
     if action not in mutating:
         raise FailClosed("action", f"okänd mutationsverb {action!r}")
-    check_change_freeze()
+    check_change_freeze(freeze)
     if action == "portvakt":
         return
     if recipe is None:
         if action in {"apply", "undo"}:
             raise FailClosed("anchor", f"{action} kräver recept för ankarvalidering")
         return
+    rid = recipe.get("id") if hasattr(recipe, "get") else None
+    if isinstance(recipe, SealedRecipe) or rid in REGISTERED_IDS:
+        verify_fixture_seal(recipe)
     check_anchors(recipe)
     if action in {"apply", "undo"} and require_live:
         check_live_sealed(live, recipe)
 
 
-def guard_plant(recipe: dict[str, Any] | None = None) -> None:
+def guard_plant(recipe: Any = None, *, freeze: FreezeContext | None = None) -> None:
     """PlanLink / plant / replant. Always freeze; anchors if a recipe is given."""
-    guard_mutation("plant", recipe=recipe, require_live=False)
+    guard_mutation("plant", recipe=recipe, require_live=False, freeze=freeze)
 
 
-def guard_portvakt() -> None:
-    guard_mutation("portvakt")
+def guard_portvakt(*, freeze: FreezeContext | None = None) -> None:
+    guard_mutation("portvakt", freeze=freeze)
 
 
-def send_plan_link(ctl: Any, payload: dict[str, Any], recipe: dict[str, Any] | None = None) -> Any:
+def send_plan_link(ctl: Any, payload: Any, recipe: Any = None, *, freeze: FreezeContext | None = None) -> Any:
     """Production PlanLink entry: freeze (+anchors) then send."""
-    guard_plant(recipe)
+    guard_plant(recipe, freeze=freeze)
     if hasattr(ctl, "request"):
         return ctl.request({"PlanLink": payload} if not isinstance(payload, str) else payload)
     raise FailClosed("plant", "ctl saknar request — plant avbruten")
