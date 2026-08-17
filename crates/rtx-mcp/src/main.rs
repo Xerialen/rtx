@@ -641,6 +641,7 @@ impl RtxMcp {
                     tgt: target,
                     v_req,
                     gain: Some(gain),
+                    lock_token: rig_lock_token()?,
                 },
                 SHORT,
             )
@@ -791,6 +792,30 @@ const KNOBS: &[&str] = &[
 
 fn is_ev(v: &Value, name: &str, bot: u32) -> bool {
     v.get("ev").and_then(Value::as_str) == Some(name) && v.get("bot").and_then(Value::as_u64) == Some(bot as u64)
+}
+
+/// The rig-lock token to send with a graph mutation.
+///
+/// Planting mutates the live graph, and since DOM MONTERING-V296RAM-2 every mutating verb sits
+/// behind the same gate as `fixa apply`/`undo`. The lock is a reservation, not a secret: reading it
+/// is how a local tool says "this rig is mine right now". What the gate actually stops is a mutation
+/// against a rig nobody has claimed — so an absent or empty lock is a refusal here, with the remedy
+/// in the message rather than a `lock_token does not match` from the far side.
+fn rig_lock_token() -> Result<String, String> {
+    let path = match std::env::var("RTX_RIG_LOCK") {
+        Ok(p) if !p.is_empty() => PathBuf::from(p),
+        _ => PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join("lab/.rig-lock"),
+    };
+    let body = std::fs::read_to_string(&path)
+        .map_err(|_| format!("no rig-lock at {} — take the rig lock before planting", path.display()))?;
+    if body.trim().is_empty() {
+        return Err(format!("rig-lock at {} is empty", path.display()));
+    }
+    // Same rule the engine applies, from the same function: the declared `token=` when the file has
+    // one, else the whole single-line body.
+    Ok(proto::rig_lock_declared_token(&body)
+        .unwrap_or_else(|| body.trim())
+        .to_string())
 }
 
 fn vec3_of(v: &Value) -> Result<[f32; 3], String> {

@@ -505,15 +505,26 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
             runway,
         } => probe_resp(game, v3(takeoff), v3(tgt), psi0, runway).map(Resp::Probe),
         Cmd::Curl { src, tgt } => curl_resp(game, v3(src), v3(tgt)).map(Resp::Curl),
+        // Every plant is a graph mutation and passes the same lock gate as `fixa apply`/`undo`.
+        // The asymmetry it replaces is what let a composed recipe half-apply: op 1 planted without
+        // a lock, op 2 was refused with one, and undoing op 1 was then blocked behind the check that
+        // had just fired (DOM MONTERING-V296RAM-2).
         Cmd::PlanLink {
             from,
             takeoff,
             tgt,
             v_req,
             gain,
-        } => plant_link_resp(game, v3(from), v3(takeoff), v3(tgt), v_req, gain).map(Resp::PlanLink),
-        Cmd::PlanCell { pos } => plant_cell_resp(game, v3(pos)).map(Resp::PlanCell),
-        Cmd::PlanDrop { from, to } => plant_drop_resp(game, v3(from), v3(to)).map(Resp::PlanDrop),
+            lock_token,
+        } => fixa_require_lock("plant", &lock_token)
+            .and_then(|()| plant_link_resp(game, v3(from), v3(takeoff), v3(tgt), v_req, gain))
+            .map(Resp::PlanLink),
+        Cmd::PlanCell { pos, lock_token } => fixa_require_lock("plant", &lock_token)
+            .and_then(|()| plant_cell_resp(game, v3(pos)))
+            .map(Resp::PlanCell),
+        Cmd::PlanDrop { from, to, lock_token } => fixa_require_lock("plant", &lock_token)
+            .and_then(|()| plant_drop_resp(game, v3(from), v3(to)))
+            .map(Resp::PlanDrop),
         Cmd::Fixa {
             recipe,
             mode,
@@ -609,8 +620,13 @@ pub(crate) fn rig_lock_path() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join("lab/.rig-lock")
 }
 
-/// Apply/undo require a token that matches `~/lab/.rig-lock` (full trimmed body or first
-/// field). Dry-run does not. This is the engine grind — Python-CLI is not enough.
+/// Every mutating verb requires a token that opens `~/lab/.rig-lock`. Read-only verbs do not.
+/// This is the engine grind — the Python CLI is not enough.
+///
+/// The acceptance rule itself lives in [`rtx_ctlproto::rig_lock_accepts`], because the lock file
+/// has more than one reader and they must not drift apart again: the campaign form that satisfied
+/// the deploy runner closed the engine completely (DOM MONTERING-V296RAM-2). The shared fixtures
+/// under `testsuite/fixtures/riglock/` are what both sides test against.
 pub(crate) fn fixa_require_lock(mode: &str, token: &str) -> Result<(), String> {
     fixa_require_lock_at(mode, token, &rig_lock_path())
 }
@@ -620,18 +636,16 @@ pub(crate) fn fixa_require_lock_at(mode: &str, token: &str, path: &std::path::Pa
         // Read-only verbs. `chain` reports what the undo chain holds and touches nothing, so
         // requiring the lock would only mean a runner has to take it to find out whether it needs to.
         "dry-run" | "chain" => Ok(()),
-        "apply" | "undo" => {
+        "apply" | "undo" | "plant" => {
             let tok = token.trim();
             if tok.is_empty() {
-                return Err("fixa apply/undo requires lock_token".into());
+                return Err(format!("{mode} requires lock_token (rig-lock)"));
             }
             let body = std::fs::read_to_string(path).map_err(|_| format!("no rig-lock at {}", path.display()))?;
-            let body = body.trim();
-            if body.is_empty() {
+            if body.trim().is_empty() {
                 return Err("rig-lock is empty".into());
             }
-            let first = body.split_whitespace().next().unwrap_or("");
-            if tok != body && tok != first {
+            if !rtx_ctlproto::rig_lock_accepts(&body, tok) {
                 return Err("lock_token does not match rig-lock".into());
             }
             Ok(())
@@ -2459,6 +2473,107 @@ mod tests {
         let err = fixa_require_lock_at("apply", "not-the-lock", &p).unwrap_err();
         assert!(err.contains("does not match"), "{err}");
         let _ = std::fs::remove_file(p);
+    }
+
+    // ---- rigglåset: korskontrakt mot runnerns parser -----------------------------------------
+
+    /// De delade fixturerna. Runnerns `parse_deploy_lock` ska peka på SAMMA byte
+    /// (`testsuite/fixtures/riglock/README.md`), så en ändring i endera läsaren som bryter
+    /// kontraktet faller i test i stället för på riggen.
+    fn riglock_fixture(namn: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testsuite/fixtures/riglock")
+            .join(namn)
+    }
+
+    const FIXTUR_TOKEN: &str = "fixtur-kampanj-0000-0000";
+
+    /// Kampanjformen: åtta `nyckel=värde`-rader. Motorn måste ta `token=`-värdet.
+    ///
+    /// Det var precis den här filen som stängde motorn i DOM MONTERING-V296RAM-2: första fältet är
+    /// `owner=fable`, så den gamla regeln vägrade varje apply/undo medan runnern var nöjd.
+    #[test]
+    fn riglock_campaign_form_opens_with_the_declared_token() {
+        let p = riglock_fixture("kampanj-atta-falt.lock");
+        assert!(p.is_file(), "delad fixtur saknas: {}", p.display());
+        for mode in ["apply", "undo", "plant"] {
+            assert!(fixa_require_lock_at(mode, FIXTUR_TOKEN, &p).is_ok(), "{mode}");
+        }
+    }
+
+    /// Ett lås som namnger sin token får inte kunna öppnas av något annat i filen.
+    #[test]
+    fn riglock_campaign_form_refuses_first_field_and_whole_body() {
+        let p = riglock_fixture("kampanj-atta-falt.lock");
+        let body = std::fs::read_to_string(&p).unwrap();
+        for bad in ["owner=fable", body.trim(), "fable", "unit=tbx-d1"] {
+            let err = fixa_require_lock_at("apply", bad, &p).unwrap_err();
+            assert!(err.contains("does not match"), "{bad:?}: {err}");
+        }
+    }
+
+    /// Fables brygga: bar token på rad 1 plus de åtta fälten. Båda läsarna nöjda.
+    /// Den formen ligger på riggen just nu och får inte sluta fungera.
+    #[test]
+    fn riglock_bridge_form_opens_the_engine() {
+        let p = riglock_fixture("brygga-bar-forsta-rad.lock");
+        assert!(p.is_file(), "delad fixtur saknas: {}", p.display());
+        for mode in ["apply", "undo", "plant"] {
+            assert!(fixa_require_lock_at(mode, FIXTUR_TOKEN, &p).is_ok(), "{mode}");
+        }
+    }
+
+    /// Gamla enradslås lever kvar: hela kroppen och första fältet, som förut.
+    #[test]
+    fn riglock_legacy_single_line_still_opens_both_ways() {
+        let p = riglock_fixture("arv-enrad.lock");
+        assert!(p.is_file(), "delad fixtur saknas: {}", p.display());
+        assert!(fixa_require_lock_at("apply", "fable 1", &p).is_ok(), "hela kroppen");
+        assert!(fixa_require_lock_at("apply", "fable", &p).is_ok(), "första fältet");
+        assert!(fixa_require_lock_at("apply", "1", &p).is_err(), "inte vilket fält som helst");
+    }
+
+    /// Två olika `token=`-rader säger inte vilken som gäller. Då öppnas ingenting.
+    #[test]
+    fn riglock_contradictory_tokens_open_nothing() {
+        let p = riglock_fixture("motsagelsefull-tva-token.lock");
+        assert!(p.is_file(), "delad fixtur saknas: {}", p.display());
+        let body = std::fs::read_to_string(&p).unwrap();
+        for bad in [FIXTUR_TOKEN, "nagot-annat-0000", "owner=fable", body.trim()] {
+            assert!(fixa_require_lock_at("apply", bad, &p).is_err(), "{bad:?}");
+        }
+    }
+
+    /// Enhetsnivå på tokenläsaren, så regeln går att läsa utan en fil.
+    #[test]
+    fn riglock_declared_token_is_read_by_name() {
+        use rtx_ctlproto::rig_lock_declared_token as tok;
+        assert_eq!(tok("owner=fable\ntoken=abc\nts=x"), Some("abc"));
+        assert_eq!(tok("token=  abc  \n"), Some("abc"));
+        assert_eq!(tok("fable 1"), None, "inget token=-fält");
+        assert_eq!(tok("token=\n"), None, "tomt värde räknas inte");
+        assert_eq!(tok("token=a\ntoken=b"), None, "motsägelse");
+        assert_eq!(tok("token=a\ntoken=a"), Some("a"), "upprepning är ingen motsägelse");
+    }
+
+    /// Grindtäckningen: plantverben ligger bakom SAMMA grind som apply/undo.
+    ///
+    /// Asymmetrin den ersätter är det som gjorde en halvmonterad deploy möjlig — op 1 planterades
+    /// utan lås, op 2 vägrades med, och undo av op 1 satt bakom just den kontroll som nyss fällde.
+    #[test]
+    fn riglock_plant_is_gated_like_apply_and_undo() {
+        let missing = std::env::temp_dir().join("rtx-riglock-absent-plant");
+        let _ = std::fs::remove_file(&missing);
+        for mode in ["apply", "undo", "plant"] {
+            let err = fixa_require_lock_at(mode, "", &missing).unwrap_err();
+            assert!(err.contains("requires lock_token"), "{mode}: {err}");
+            let err = fixa_require_lock_at(mode, "nagot", &missing).unwrap_err();
+            assert!(err.contains("no rig-lock"), "{mode}: {err}");
+        }
+        // ... och läsverben är fortsatt fria.
+        for mode in ["dry-run", "chain"] {
+            assert!(fixa_require_lock_at(mode, "", &missing).is_ok(), "{mode}");
+        }
     }
 
     /// `chain` reads the undo chain and mutates nothing, so it must not demand the rig lock —

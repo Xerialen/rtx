@@ -186,13 +186,91 @@ pub enum Cmd {
         v_req: f32,
         #[serde(default)]
         gain: Option<f32>,
+        /// Rig-lock token, same gate as [`Cmd::Fixa`]'s `apply`/`undo`.
+        ///
+        /// A plant mutates the live graph exactly like a recipe apply does, and until DOM
+        /// MONTERING-V296RAM-2 it did so without the lock: the composed recipe's first op could
+        /// commit while its second was refused, and undoing the first was then blocked behind the
+        /// very check that had just fired. That is a gate-coverage defect, not a lock defect —
+        /// every mutating verb belongs behind the same gate.
+        ///
+        /// `default` keeps the wire backward compatible (an old sender still deserializes); the
+        /// empty token it produces is then refused by the gate, which is the point.
+        #[serde(default)]
+        lock_token: String,
     },
     /// Hand-plant a standing cell at `pos` — a walkable surface the column carve's XY pitch cannot
     /// sample (see `NavGraph::plant_cell`). Inert on its own: nothing routes into it.
-    PlanCell { pos: Vec3 },
+    PlanCell {
+        pos: Vec3,
+        /// Rig-lock token — see [`Cmd::PlanLink`].
+        #[serde(default)]
+        lock_token: String,
+    },
     /// Hand-plant a `Drop` link from the cell nearest `from` to the cell nearest `to`, so a bot standing
     /// on a planted shelf has a way off it.
-    PlanDrop { from: Vec3, to: Vec3 },
+    PlanDrop {
+        from: Vec3,
+        to: Vec3,
+        /// Rig-lock token — see [`Cmd::PlanLink`].
+        #[serde(default)]
+        lock_token: String,
+    },
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Rig-lock: the token contract shared by everything that mutates the graph
+// ---------------------------------------------------------------------------------------------------
+
+/// The campaign token a rig-lock body declares on its `token=` line, if it has one.
+///
+/// Lives here, with the rest of the control-channel contract, because the lock file has more than
+/// one reader: the engine gates every mutating verb on it, the MCP bridge has to pick a token to
+/// send, and the deploy runner parses the same eight fields in Python. When those readers disagreed
+/// the rig half-mounted — the form that satisfied the runner (eight `key=value` lines) left the
+/// engine looking at `owner=fable` as the first field and refusing everything (DOM
+/// MONTERING-V296RAM-2). One definition, mirrored deliberately, instead of three that drift.
+///
+/// `None` when there is no `token=` line, when its value is empty, or when two lines declare
+/// *different* tokens — a file that contradicts itself does not say what it means.
+pub fn rig_lock_declared_token(body: &str) -> Option<&str> {
+    let mut found: Option<&str> = None;
+    for line in body.lines() {
+        if let Some(v) = line.trim().strip_prefix("token=") {
+            let v = v.trim();
+            match found {
+                Some(prev) if prev != v => return None,
+                _ => found = Some(v),
+            }
+        }
+    }
+    found.filter(|v| !v.is_empty())
+}
+
+/// Whether `token` opens a rig-lock whose file body is `body`.
+///
+/// Accepted forms, in order of authority:
+///
+/// 1. **the declared `token=`** — when the file names its token, that is the token and nothing else
+///    is accepted. A lock that names itself must not also be openable by whatever sits first in it.
+/// 2. **the whole trimmed body**, or **its first whitespace field** — the old single-line locks
+///    (`fable 1`). Only consulted when there is no `token=` line.
+///
+/// An empty token never opens anything, and neither does an empty body.
+///
+/// A file that *tries* to declare a token but fails to — an empty value, or two lines disagreeing —
+/// opens nothing at all. It does not fall back to rule 2: falling back would let `owner=fable` open
+/// a lock whose token field is broken, which is the loose behaviour this whole contract exists to
+/// remove.
+pub fn rig_lock_accepts(body: &str, token: &str) -> bool {
+    let (body, token) = (body.trim(), token.trim());
+    if body.is_empty() || token.is_empty() {
+        return false;
+    }
+    if body.lines().any(|l| l.trim().starts_with("token=")) {
+        return rig_lock_declared_token(body) == Some(token);
+    }
+    token == body || token == body.split_whitespace().next().unwrap_or("")
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -915,10 +993,92 @@ pub struct FlyResult {
 #[cfg(test)]
 mod tests {
 
+    /// An old sender's frame has no `lock_token`. It must still decode — the field is additive —
+    /// and it must decode to the empty token, which the engine's gate refuses. Wire compatibility
+    /// and the gate are two different promises and both have to hold.
+    #[test]
+    fn plant_cmds_from_an_old_sender_still_decode_with_an_empty_token() {
+        #[derive(serde::Serialize)]
+        enum GammalCmd {
+            PlanCell { pos: Vec3 },
+            PlanDrop { from: Vec3, to: Vec3 },
+            PlanLink { from: Vec3, takeoff: Vec3, tgt: Vec3, v_req: f32 },
+        }
+        let gamla = [
+            rmp_serde::to_vec_named(&GammalCmd::PlanCell {
+                pos: [-880.0, -42.0, 88.0],
+            })
+            .unwrap(),
+            rmp_serde::to_vec_named(&GammalCmd::PlanDrop {
+                from: [-880.0, -42.0, 88.0],
+                to: [-864.0, -32.0, -16.0],
+            })
+            .unwrap(),
+            rmp_serde::to_vec_named(&GammalCmd::PlanLink {
+                from: [107.0, -582.0, 296.0],
+                takeoff: [92.0, -588.0, 296.0],
+                tgt: [138.1, -701.0, 328.0],
+                v_req: 320.0,
+            })
+            .unwrap(),
+        ];
+        for bytes in gamla {
+            let cmd: Cmd = rmp_serde::from_slice(&bytes).expect("gammal ram måste avkodas");
+            let token = match &cmd {
+                Cmd::PlanCell { lock_token, .. }
+                | Cmd::PlanDrop { lock_token, .. }
+                | Cmd::PlanLink { lock_token, .. } => lock_token.as_str(),
+                other => panic!("fel variant: {other:?}"),
+            };
+            assert_eq!(token, "", "saknat fält blir tom token");
+            assert!(!rig_lock_accepts("t20m-abc\ntoken=t20m-abc", token), "och grinden vägrar den");
+        }
+    }
+
+    #[test]
+    fn rig_lock_declared_token_wins_over_everything_else_in_the_file() {
+        let campaign = "owner=fable\nunit=tbx-d1\ntoken=t20m-abc\nts=2026-08-17T08:16:02Z";
+        assert!(rig_lock_accepts(campaign, "t20m-abc"));
+        // Det var precis de här två som öppnade låset förr och stängde motorn nu.
+        assert!(!rig_lock_accepts(campaign, "owner=fable"));
+        assert!(!rig_lock_accepts(campaign, campaign));
+    }
+
+    #[test]
+    fn rig_lock_bridge_and_legacy_forms_both_open() {
+        let bridge = "t20m-abc\nowner=fable\ntoken=t20m-abc\nts=x";
+        assert!(rig_lock_accepts(bridge, "t20m-abc"));
+        assert!(!rig_lock_accepts(bridge, "owner=fable"));
+
+        let legacy = "fable 1\n";
+        assert!(rig_lock_accepts(legacy, "fable 1"), "hela kroppen");
+        assert!(rig_lock_accepts(legacy, "fable"), "första fältet");
+        assert!(!rig_lock_accepts(legacy, "1"));
+    }
+
+    #[test]
+    fn rig_lock_that_contradicts_itself_opens_nothing() {
+        let bad = "owner=fable\ntoken=a\ntoken=b";
+        for t in ["a", "b", "owner=fable", bad] {
+            assert!(!rig_lock_accepts(bad, t), "{t:?}");
+        }
+        // Ett tomt token=-värde är också ett misslyckat försök att deklarera, inte en frånvaro.
+        assert!(!rig_lock_accepts("owner=fable\ntoken=", "owner=fable"));
+    }
+
+    #[test]
+    fn rig_lock_empty_inputs_open_nothing() {
+        assert!(!rig_lock_accepts("", "x"));
+        assert!(!rig_lock_accepts("   \n", "x"));
+        assert!(!rig_lock_accepts("fable 1", ""));
+        assert!(!rig_lock_accepts("fable 1", "   "));
+    }
+
     #[test]
     fn plan_cell_cmd_roundtrips() {
         let cmd = Cmd::PlanCell {
             pos: [-880.0, -42.0, 88.0],
+            lock_token: "t20m-0000".into(),
         };
         let bytes = rmp_serde::to_vec_named(&cmd).unwrap();
         assert_eq!(rmp_serde::from_slice::<Cmd>(&bytes).unwrap(), cmd);
@@ -929,6 +1089,7 @@ mod tests {
         let cmd = Cmd::PlanDrop {
             from: [-880.0, -42.0, 88.0],
             to: [-864.0, -32.0, -16.0],
+            lock_token: "t20m-0000".into(),
         };
         let bytes = rmp_serde::to_vec_named(&cmd).unwrap();
         assert_eq!(rmp_serde::from_slice::<Cmd>(&bytes).unwrap(), cmd);
