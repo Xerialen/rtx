@@ -82,6 +82,58 @@ class EnarmsMockTests(unittest.TestCase):
         self.assertEqual(kl["n_ben"], 6)
         # originalen orörda
         self.assertFalse(man.get("ab_tabell"))
+        # default-fönster är 60; mock tvingar effektiv 1 cykel
+        self.assertEqual(man["duration"], 60.0)
+        self.assertEqual(man["minuter"], 1)
+
+
+class DurationFlagTests(unittest.TestCase):
+    """Punkt 6: --duration parametriserar bara fönstret. Ingen rigg."""
+
+    def test_duration_20_mock_stays_one_cycle(self):
+        td = tempfile.mkdtemp(prefix="timtest-d-dur20-")
+        rc = timtest_d.main([
+            "--port", "27999", "--game-port", "27595",
+            "--out", td, "--mock", "--duration", "20",
+        ])
+        self.assertEqual(rc, 0)
+        man = json.loads((Path(td) / "manifest.json").read_text())
+        self.assertEqual(man["duration"], 20.0)
+        self.assertEqual(man["minuter"], 1)
+        self.assertTrue((Path(td) / "c001" / "in_vast.jsonl").is_file())
+
+    def test_minuter_alias(self):
+        td = tempfile.mkdtemp(prefix="timtest-d-min-")
+        rc = timtest_d.main([
+            "--port", "27999", "--game-port", "27595",
+            "--out", td, "--mock", "--minuter", "20",
+        ])
+        self.assertEqual(rc, 0)
+        man = json.loads((Path(td) / "manifest.json").read_text())
+        self.assertEqual(man["duration"], 20.0)
+
+    def test_duration_noll_vagrar(self):
+        r = subprocess.run(
+            [sys.executable, str(HERE / "timtest_d.py"),
+             "--port", "27999", "--game-port", "27595",
+             "--out", "/tmp/timtest-d-should-not-exist-dur",
+             "--mock", "--duration", "0"],
+            cwd=str(HERE), capture_output=True, text=True,
+        )
+        self.assertEqual(r.returncode, EXIT_REFUSED)
+        self.assertIn("VÄGRAR", r.stderr)
+        self.assertIn("duration", r.stderr)
+
+    def test_portvakt_oforandrad_med_duration(self):
+        r = subprocess.run(
+            [sys.executable, str(HERE / "timtest_d.py"),
+             "--port", "27990", "--game-port", "27595",
+             "--out", "/tmp/timtest-d-should-not-exist-dur2",
+             "--mock", "--duration", "20"],
+            cwd=str(HERE), capture_output=True, text=True,
+        )
+        self.assertEqual(r.returncode, EXIT_REFUSED)
+        self.assertIn("VÄGRAR", r.stderr)
 
 
 class KlusterKlassTests(unittest.TestCase):

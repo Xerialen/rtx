@@ -7,6 +7,8 @@ granskriterier.py.
 
 Skillnad mot orkestern (ärligt):
   * --host/--port/--game-port, EN arm, ingen A/B-tabell
+  * --duration N (minuter, default 60; T20m = --duration 20). --minuter är alias.
+    --dry/--mock tvingar en cykel oavsett fönster.
   * ingen systemctl-restart, ingen replant, ingen taskset, ingen RA-riglock
   * portvakt fail-closed rc=2
   * demo via ctl RunCmd sv_demorecord / sv_demostop
@@ -136,13 +138,15 @@ def stop_demo(lab) -> None:
         pass
 
 
-def skriv_manifest(outdir: Path, *, host, port, game_port, dry, mock, minuter, demo_file):
+def skriv_manifest(outdir: Path, *, host, port, game_port, dry, mock,
+                   duration, minuter, demo_file):
     man = {
         "schema": "t1h-d-manifest-v1",
         "arm": "D",
         "host": host,
         "port": {"kontroll": port, "spel": game_port},
         "start_utc": _utc(),
+        "duration": duration,
         "minuter": minuter,
         "torrkorning": dry,
         "mock": mock,
@@ -180,7 +184,11 @@ def main(argv=None) -> int:
     ap.add_argument("--game-port", type=int, required=True, dest="game_port",
                     help="spelport (27592–27595)")
     ap.add_argument("--out", required=True, help="utdatakatalog")
-    ap.add_argument("--minuter", type=float, default=60.0)
+    ap.add_argument(
+        "--duration", "--minuter", type=float, default=60.0, dest="duration",
+        help="tidsfönster i minuter (default 60). T20m = --duration 20. "
+             "--minuter är alias. --dry/--mock tvingar en cykel.",
+    )
     ap.add_argument("--dry", action="store_true", help="en cykel (samma som originalet)")
     ap.add_argument("--mock", action="store_true",
                     help="ingen socket; FakeLab. Bara tester.")
@@ -191,6 +199,9 @@ def main(argv=None) -> int:
     fel = port_fel(args.port, args.game_port)
     if fel:
         sys.stderr.write("VÄGRAR: %s\n" % fel)
+        return EXIT_REFUSED
+    if args.duration <= 0:
+        sys.stderr.write("VÄGRAR: --duration måste vara > 0 (fick %s)\n" % args.duration)
         return EXIT_REFUSED
 
     outdir = Path(os.path.expanduser(args.out)).resolve()
@@ -208,17 +219,19 @@ def main(argv=None) -> int:
         if not args.no_demo and not args.mock:
             stem = args.demo_stem or ("t1hd_%s" % time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
             demo_file = start_demo(lab, stem)
+        effektiv = 1 if (args.dry or args.mock) else args.duration
         skriv_manifest(
             outdir, host=args.host, port=args.port, game_port=args.game_port,
             dry=args.dry, mock=args.mock,
-            minuter=(1 if args.dry or args.mock else args.minuter),
+            duration=args.duration,
+            minuter=effektiv,
             demo_file=demo_file,
         )
         lab.teleport(ben.BOT, ben.TOPP)
         time.sleep(0.0 if args.mock else 0.6)
         n = ben.koda_arm(
             lab, "D", str(outdir),
-            1 if (args.dry or args.mock) else args.minuter,
+            effektiv,
             dry=bool(args.dry or args.mock),
         )
         skriv_kluster(outdir)
