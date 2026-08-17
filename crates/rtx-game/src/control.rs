@@ -1767,57 +1767,95 @@ fn curl_resp(game: &GameState, src: Vec3, tgt: Vec3) -> Result<proto::CurlResp, 
 /// in 3D. Additive and inert on its own — nothing links into a planted cell unless the caller plants
 /// that too — so this cannot change any route a bot already takes. Pair it with `PlanDrop` to give the
 /// surface a way off.
+///
+/// Transactional, like `PlanLink` and a recipe apply: the plant runs against a clone, so a refusal
+/// leaves the live graph bit-for-bit as it was, and a success leaves a snapshot on the undo chain.
+/// The pairing is the reason it matters — a hand-planted fixture is a cell *and* the drops off it,
+/// and only a chain that recorded both can take the whole fixture back.
 fn plant_cell_resp(game: &mut GameState, pos: Vec3) -> Result<proto::PlanCellResp, String> {
     let bsp = game.nav.bsp.clone().ok_or("no bsp")?;
-    let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
-    let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
-    let (cell, links_created) = g
-        .plant_cell(&bsp, pos)
-        .ok_or("cell position is not standable dry floor")?;
-    // Refresh reachability + LOD for the same reason `PlanLink` does: without it the O(1) `reachable`
-    // gate and the coarse router keep answering for the pre-plant graph.
-    g.rebuild_derived();
-    Ok(proto::PlanCellResp {
-        cell,
-        origin: a3(g.cell_origin(cell)),
-        links_created: links_created as u32,
-    })
+    let map = game.level.mapname.clone();
+    if !game.nav_patch_txns.has_room() {
+        return Err(format!(
+            "undo chain is full ({} applies deep) — undo back down or reload the map before planting",
+            game.nav_patch_txns.depth()
+        ));
+    }
+    let (txn, resp) = {
+        let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+        let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+        crate::nav_patch::live_txn("plan-cell", &map, g, |c| {
+            let (cell, links_created) = c
+                .plant_cell(&bsp, pos)
+                .ok_or("cell position is not standable dry floor")?;
+            // `live_txn` rebuilds reachability + LOD before publishing, for the same reason
+            // `PlanLink` does: otherwise the O(1) `reachable` gate and the coarse router keep
+            // answering for the pre-plant graph.
+            Ok(proto::PlanCellResp {
+                cell,
+                origin: a3(c.cell_origin(cell)),
+                links_created: links_created as u32,
+            })
+        })?
+    };
+    nav_txn_push(game, txn)?;
+    // A plant with auto-Walk wires the new cell to its neighbours, so it can change routes; and an
+    // undo shortens the cell id space, which anything holding an id must not survive.
+    invalidate_all_bot_nav(game);
+    Ok(resp)
 }
 
 /// Hand-plant a `Drop` from the cell nearest `from` to the cell nearest `to`. Resolution goes through
 /// `nearest`, so plant the shelf cell *first* — otherwise `from` resolves to the floor below the shelf
 /// and the link is a no-op between two floor cells. The reply carries both resolved origins so the
 /// caller can assert it attached where it meant to.
+///
+/// Transactional for the same reason `PlanCell` is: a drop that the build validators refuse must
+/// leave the graph untouched rather than half-resolved, and a drop that goes in must be undoable
+/// together with the cell it came off.
 fn plant_drop_resp(game: &mut GameState, from: Vec3, to: Vec3) -> Result<proto::PlanDropResp, String> {
     /// Endpoint resolution is bounded, unlike bare `nearest`: a position with nothing near it must be
     /// an error, not a silent snap to whatever cell happens to be closest somewhere else on the map.
     const REACH_XY: f32 = 48.0;
     const REACH_Z: f32 = 48.0;
     let bsp = game.nav.bsp.clone().ok_or("no bsp")?;
-    let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
-    let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
-    let resolve = |g: &rtx_nav::navmesh::NavGraph, p: Vec3, what: &str| {
-        g.cell_within(p, REACH_XY, REACH_Z)
-            .ok_or_else(|| format!("no cell within {REACH_XY}/{REACH_Z} of {what} {p:?}"))
-    };
-    let from_cell = resolve(g, from, "from")?;
-    let to_cell = resolve(g, to, "to")?;
-    if from_cell == to_cell {
-        return Err("from and to resolved to the same cell".into());
+    let map = game.level.mapname.clone();
+    if !game.nav_patch_txns.has_room() {
+        return Err(format!(
+            "undo chain is full ({} applies deep) — undo back down or reload the map before planting",
+            game.nav_patch_txns.depth()
+        ));
     }
-    let link = g
-        .plant_drop(&bsp, from_cell, to_cell)
-        .ok_or("not a drop the build would emit (needs a descent off a lip, hull-clear, within MAX_DROP)")?;
-    g.rebuild_derived();
-    let (fo, to_o) = (g.cell_origin(from_cell), g.cell_origin(to_cell));
-    Ok(proto::PlanDropResp {
-        link,
-        from_cell,
-        to_cell,
-        from: a3(fo),
-        tgt: a3(to_o),
-        cost: g.link_cost(link),
-    })
+    let (txn, resp) = {
+        let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+        let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+        crate::nav_patch::live_txn("plan-drop", &map, g, |c| {
+            let resolve = |c: &rtx_nav::navmesh::NavGraph, p: Vec3, what: &str| {
+                c.cell_within(p, REACH_XY, REACH_Z)
+                    .ok_or_else(|| format!("no cell within {REACH_XY}/{REACH_Z} of {what} {p:?}"))
+            };
+            let from_cell = resolve(c, from, "from")?;
+            let to_cell = resolve(c, to, "to")?;
+            if from_cell == to_cell {
+                return Err("from and to resolved to the same cell".into());
+            }
+            let link = c.plant_drop(&bsp, from_cell, to_cell).ok_or(
+                "not a drop the build would emit (needs a descent off a lip, hull-clear, within MAX_DROP)",
+            )?;
+            let (fo, to_o) = (c.cell_origin(from_cell), c.cell_origin(to_cell));
+            Ok(proto::PlanDropResp {
+                link,
+                from_cell,
+                to_cell,
+                from: a3(fo),
+                tgt: a3(to_o),
+                cost: c.link_cost(link),
+            })
+        })?
+    };
+    nav_txn_push(game, txn)?;
+    invalidate_all_bot_nav(game);
+    Ok(resp)
 }
 
 /// Hand-plant a self-contained `SpeedJump` link into the live graph for takeoff-regime bring-up: the

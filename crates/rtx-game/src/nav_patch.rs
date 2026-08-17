@@ -2386,6 +2386,90 @@ mod tests {
         assert_eq!(g.links.len(), 3);
     }
 
+    /// A hand-planted fixture is a cell *and* the way off it, planted by two separate control-channel
+    /// commands. Both go through [`live_txn`] now, so both leave an undo point — and undoing the pair
+    /// takes the link and the cell back, in that order, onto a bit-identical base.
+    ///
+    /// Before the c-round only `PlanLink` was transactional: a `PlanCell` published a cell with
+    /// nothing recorded, so the chain around it could not be walked back through it and the fixture
+    /// could only be undone by reloading the map.
+    #[test]
+    fn a_planted_fixture_undoes_cell_and_link_together() {
+        let mut g = priced_edit_graph();
+        let mut stack = TxnStack::default();
+        let base = g.clone();
+        let shelf = Vec3::new(288.0, -900.0, 264.0);
+
+        // Kommando 1: plantera hyllcellen.
+        let (txn_cell, cell) = live_txn("plan-cell", "dm3", &mut g, |c| Ok(c.insert_cell(shelf)))
+            .expect("plant cell");
+        stack.push(txn_cell, &g).expect("room");
+        let efter_cell = g.clone();
+        assert_eq!(cell as usize, base.cells.len(), "cellen appendas sist");
+
+        // Kommando 2: plantera vägen ner från den.
+        let (txn_drop, link) = live_txn("plan-drop", "dm3", &mut g, |c| {
+            c.insert_link(Link {
+                from: cell,
+                to: 2,
+                kind: LinkKind::Drop,
+                cost: 1.0,
+            });
+            Ok(c.links.len() as u32 - 1)
+        })
+        .expect("plant drop");
+        stack.push(txn_drop, &g).expect("room");
+        assert_eq!(stack.names(), vec!["plan-cell", "plan-drop"]);
+        assert_eq!(link as usize, base.links.len(), "dropet appendas sist");
+        assert_eq!(g.cells.len(), base.cells.len() + 1);
+        assert_eq!(g.links.len(), base.links.len() + 1);
+        assert!(g.reachable(cell, 2), "fixturen ger cellen en väg ner");
+
+        // Undo i omvänd ordning tar hela fixturen, inte bara dess sista halva.
+        stack.undo("dm3", "plan-drop", &mut g).expect("undo drop");
+        assert!(bit_image_eq(&g, &efter_cell), "cellen står kvar när bara dropet rullas");
+        assert_eq!(g.cells.len(), base.cells.len() + 1);
+        stack.undo("dm3", "plan-cell", &mut g).expect("undo cell");
+        assert!(bit_image_eq(&g, &base), "hela fixturen är borta, bit för bit");
+        assert_eq!(g.cells.len(), base.cells.len());
+        assert!(stack.is_empty());
+    }
+
+    /// A refused plant leaves the live graph untouched — the `PlanCell` / `PlanDrop` shape.
+    ///
+    /// The refusal that matters is the one that comes *after* the mutation: `plant_drop` resolves
+    /// both endpoints and then hands the pair to the build's own validators, which say no to a drop
+    /// the carve would never emit. On the old in-place path that left the graph carrying whatever the
+    /// command had already done to it.
+    #[test]
+    fn a_refused_plant_leaves_the_live_graph_bit_identical() {
+        let mut g = priced_edit_graph();
+        let before = g.clone();
+
+        let err = live_txn("plan-cell", "dm3", &mut g, |c| {
+            c.insert_cell(Vec3::new(288.0, -900.0, 264.0));
+            Err::<u32, String>("cell position is not standable dry floor".into())
+        })
+        .expect_err("must refuse");
+        assert_eq!(err, "cell position is not standable dry floor");
+        assert!(bit_image_eq(&g, &before));
+        assert_eq!(g.cells.len(), before.cells.len(), "ingen halvplanterad cell blir kvar");
+
+        let err = live_txn("plan-drop", "dm3", &mut g, |c| {
+            c.insert_link(Link {
+                from: 0,
+                to: 2,
+                kind: LinkKind::Drop,
+                cost: 1.0,
+            });
+            Err::<u32, String>("not a drop the build would emit".into())
+        })
+        .expect_err("must refuse");
+        assert_eq!(err, "not a drop the build would emit");
+        assert!(bit_image_eq(&g, &before));
+        assert_eq!(g.links.len(), before.links.len());
+    }
+
     /// `live_txn` rebuilds the derived tables before publishing. Without it the O(1) reachability
     /// gate and the coarse router keep answering for the pre-plant graph, so a `goto` across a fresh
     /// plant reroutes instead of taking it.
