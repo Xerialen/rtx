@@ -7,8 +7,11 @@ granskriterier.py.
 
 Skillnad mot orkestern (ärligt):
   * --host/--port/--game-port, EN arm, ingen A/B-tabell
-  * --duration N (minuter, default 60; T20m = --duration 20). --minuter är alias.
-    --dry/--mock tvingar en cykel oavsett fönster.
+  * Tidsfönster: dömd --run läser duration_min ur förseglade gates
+    (recept/timtest-d-gates.json, T20m=20). CLI --duration/--minuter
+    vägras på --run (samma klass som --n-heldout i 2e77dcf). Fri
+    CLI-duration bara --mock/--dry (default 60). --dry/--mock tvingar
+    en cykel oavsett fönster.
   * ingen systemctl-restart, ingen replant, ingen taskset, ingen RA-riglock
   * portvakt fail-closed rc=2
   * demo via ctl RunCmd sv_demorecord / sv_demostop
@@ -43,6 +46,58 @@ import timtest_ben as ben  # noqa: E402
 
 DEMO_CMD_RECORD = "sv_demorecord"
 DEMO_CMD_STOP = "sv_demostop"
+
+DEFAULT_GATES = HERE.parent / "recept" / "timtest-d-gates.json"
+
+# Fryst koda_arm / orkester F9 + n_regel.
+CYKEL_BEN = ["ut_ring", "in_ring", "ut_tunnel", "in_tunnel", "ut_vast", "in_vast"]
+T1H_OGILTIGA = frozenset({"ogiltig_tic", "kasserad"})
+
+
+def t1h_startar_cykel(elapsed_min: float, window_min: float) -> bool:
+    """Grind vid cykelstart (koda_arm): starta iff elapsed < fönster."""
+    return float(elapsed_min) < float(window_min)
+
+
+def t1h_ben_giltigt(meta: dict) -> bool:
+    """orkester n_regel: ogiltig_tic/kasserad ur nämnaren."""
+    u = str((meta or {}).get("utfall") or "")
+    return bool(u) and u not in T1H_OGILTIGA
+
+
+def t1h_cykel_hel(bens: dict) -> bool:
+    """T1h-helhet: alla sex ben har terminal giltig utfall. Inte filnärvaro."""
+    if set(bens or {}) != set(CYKEL_BEN):
+        return False
+    return all(t1h_ben_giltigt(bens[b]) for b in CYKEL_BEN)
+
+
+def t1h_beslut(sekvens: list, window_min: float) -> dict:
+    """T1h-regeln mot en färdig kvittosekvens. Påbörjad cykel fullföljs;
+    benet klipps inte. `hela` ur t1h_cykel_hel, inte kataloglistning."""
+    hela: list[bool] = []
+    n = 0
+    for cy in sekvens:
+        elapsed = float(cy["frac_start"]) * float(window_min)
+        if not t1h_startar_cykel(elapsed, window_min):
+            break
+        n += 1
+        hela.append(t1h_cykel_hel(cy["bens"]))
+    return {
+        "n_cykler": n,
+        "hela": tuple(hela),
+        "klippt_sista_ben": False,
+    }
+
+
+def las_gates_duration(path: str | Path | None = None) -> float:
+    """duration_min ur förseglad gates-fil (d8ee25e appendix_n_pairs-mönster)."""
+    p = Path(path) if path else DEFAULT_GATES
+    doc = json.loads(p.read_text(encoding="utf-8"))
+    d = doc.get("duration_min")
+    if d is None or float(d) <= 0:
+        raise ValueError("gates %s saknar duration_min > 0" % p)
+    return float(d)
 
 
 def _utc() -> str:
@@ -143,7 +198,8 @@ def stop_demo(lab) -> None:
 
 
 def skriv_manifest(outdir: Path, *, host, port, game_port, dry, mock,
-                   duration, minuter, demo_file):
+                   duration, minuter, demo_file, judged=False,
+                   duration_source="cli", gates=None):
     man = {
         "schema": "t1h-d-manifest-v1",
         "arm": "D",
@@ -152,6 +208,9 @@ def skriv_manifest(outdir: Path, *, host, port, game_port, dry, mock,
         "start_utc": _utc(),
         "duration": duration,
         "minuter": minuter,
+        "duration_source": duration_source,
+        "judged": judged,
+        "gates": None if gates is None else str(gates),
         "torrkorning": dry,
         "mock": mock,
         "ingen_systemctl": True,
@@ -189,13 +248,17 @@ def main(argv=None) -> int:
                     help="spelport (27592–27595)")
     ap.add_argument("--out", required=True, help="utdatakatalog")
     ap.add_argument(
-        "--duration", "--minuter", type=float, default=60.0, dest="duration",
-        help="tidsfönster i minuter (default 60). T20m = --duration 20. "
-             "--minuter är alias. --dry/--mock tvingar en cykel.",
+        "--duration", "--minuter", type=float, default=None, dest="duration",
+        help="tidsfönster i minuter. Bara --mock/--dry. Dömd --run vägrar "
+             "flaggan (2e77dcf); duration kommer ur --gates duration_min.",
     )
     ap.add_argument("--dry", action="store_true", help="en cykel (samma som originalet)")
     ap.add_argument("--mock", action="store_true",
                     help="ingen socket; FakeLab. Bara tester.")
+    ap.add_argument("--run", action="store_true",
+                    help="dömd körning (fable-qa). Duration ur gates, inte CLI.")
+    ap.add_argument("--gates", default=str(DEFAULT_GATES),
+                    help="förseglad gates-fil (duration_min). Default recept/timtest-d-gates.json")
     ap.add_argument("--no-demo", action="store_true")
     ap.add_argument("--demo-stem", default=None)
     args = ap.parse_args(argv)
@@ -209,8 +272,35 @@ def main(argv=None) -> int:
     except FailClosed as exc:
         sys.stderr.write("VÄGRAR: %s\n" % exc)
         return EXIT_REFUSED
-    if args.duration <= 0:
-        sys.stderr.write("VÄGRAR: --duration måste vara > 0 (fick %s)\n" % args.duration)
+    explicit = args.duration is not None
+    if args.run and explicit:
+        sys.stderr.write("judged --run refuses --duration/--minuter\n")
+        return EXIT_REFUSED
+    if args.run:
+        try:
+            duration = las_gates_duration(args.gates)
+        except (OSError, ValueError, json.JSONDecodeError, TypeError) as exc:
+            sys.stderr.write("VÄGRAR: gates-duration: %s\n" % exc)
+            return EXIT_REFUSED
+        duration_source = "gates"
+    elif args.mock or args.dry:
+        duration = 60.0 if not explicit else float(args.duration)
+        duration_source = "cli"
+    else:
+        if explicit:
+            sys.stderr.write(
+                "VÄGRAR: CLI --duration bara med --mock/--dry; "
+                "dömd/live läser gates (T20m förseglad)\n"
+            )
+            return EXIT_REFUSED
+        try:
+            duration = las_gates_duration(args.gates)
+        except (OSError, ValueError, json.JSONDecodeError, TypeError) as exc:
+            sys.stderr.write("VÄGRAR: gates-duration: %s\n" % exc)
+            return EXIT_REFUSED
+        duration_source = "gates"
+    if duration <= 0:
+        sys.stderr.write("VÄGRAR: --duration måste vara > 0 (fick %s)\n" % duration)
         return EXIT_REFUSED
 
     outdir = Path(os.path.expanduser(args.out)).resolve()
@@ -228,13 +318,16 @@ def main(argv=None) -> int:
         if not args.no_demo and not args.mock:
             stem = args.demo_stem or ("t1hd_%s" % time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
             demo_file = start_demo(lab, stem)
-        effektiv = 1 if (args.dry or args.mock) else args.duration
+        effektiv = 1 if (args.dry or args.mock) else duration
         skriv_manifest(
             outdir, host=args.host, port=args.port, game_port=args.game_port,
             dry=args.dry, mock=args.mock,
-            duration=args.duration,
+            duration=duration,
             minuter=effektiv,
             demo_file=demo_file,
+            judged=bool(args.run),
+            duration_source=duration_source,
+            gates=args.gates,
         )
         lab.teleport(ben.BOT, ben.TOPP)
         time.sleep(0.0 if args.mock else 0.6)

@@ -1,0 +1,6 @@
+{
+  "id": "timtest-d",
+  "protocol": "T20m",
+  "duration_min": 20,
+  "note": "Xerials T20m förseglas här. Dömd --run läser duration_min; CLI --duration/--minuter vägras (2e77dcf). Fri CLI-duration bara --mock/--dry. appendix_n_pairs-mönster (d8ee25e): gates överskrider fixturens arv."
+}
