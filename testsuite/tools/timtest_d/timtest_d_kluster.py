@@ -12,12 +12,24 @@ Klassning (timtest_ben.py:255–261, låst):
                         «miss (täljarens nämnare, ej täljare)».
                         M1:s fall = fall till härden, inte miss efter ankomst.
   * fastnad           → fastnad-bucket
+
+Mått-identitet (punkt 8): varje rå-kvitto stämplas med `measure_id` =
+klassarens namn+version. Jämförelseverktyg VÄGRAR kvoter där täljare och
+nämnare bär olika measure_id (−36 %-läxan: fall-EPISODER ställdes mot
+fall-UTFALL). Här är klassaren `klassa_utfall` (UTFALL); den ANDRA klassen i
+läxan är fall-EPISODER (`fall_peak_drop_150`, falls-räknaren) — aldrig
+jämförbar med denna.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Any
+
+# Klassarens namn+version (låst mot timtest_ben.py:255–261, grok 8).
+MEASURE_ID = "klassa_utfall@r6"
+# Den andra måttklassen i −36 %-läxan — INTE denna bucket, aldrig jämförbar.
+MEASURE_ID_FALL_EPISODER = "fall_peak_drop_150@r6"
 
 
 def _origin(row: dict) -> list[float] | None:
@@ -122,6 +134,7 @@ def samla_kluster(outdir: Path) -> dict:
             rec["centroid"] = None
     return {
         "schema": "timtest-d/kluster/1",
+        "measure_id": MEASURE_ID,
         "n_ben": n_ben,
         "n_fall": n_fall,
         "n_fastnad": n_stall,
@@ -140,3 +153,43 @@ def skriv_kluster(outdir: Path, path: Path | None = None) -> dict:
     dest.write_text(json.dumps(doc, ensure_ascii=False, indent=1) + "\n",
                     encoding="utf-8")
     return doc
+
+
+def kvot_krav_samma_measure(
+    taljare: int | float,
+    namnare: int | float,
+    taljare_measure: str,
+    namnare_measure: str,
+    *,
+    etikett: str | None = None,
+) -> float | None:
+    """Jämförelsevägran (punkt 8 ii): beräkna kvot ENDAST om täljare och
+    nämnare bär samma measure_id. Blandmått (fall-EPISODER ställt mot
+    fall-UTFALL) är −36 %-läxan och vägras med ValueError."""
+    if taljare_measure != namnare_measure:
+        raise ValueError(
+            "vägrar kvot%s: täljare measure_id=%r != nämnare measure_id=%r "
+            "(blandmått förbjudet, punkt 8)"
+            % ((" %s" % etikett) if etikett else "",
+               taljare_measure, namnare_measure)
+        )
+    if not namnare:
+        return None
+    return taljare / namnare
+
+
+def rapport_rad(
+    etikett: str,
+    taljare: int,
+    namnare: int,
+    measure_id: str,
+) -> dict:
+    """Rapportrad med measure_id (punkt 8 iii): varje kvotrad bär sitt
+    mått-id så en granskare ser vad som jämfördes."""
+    return {
+        "etikett": etikett,
+        "measure_id": measure_id,
+        "taljare": taljare,
+        "namnare": namnare,
+        "pct": round(100.0 * taljare / namnare, 1) if namnare else None,
+    }

@@ -14,7 +14,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from timtest_d_ports import EXIT_REFUSED, port_fel  # noqa: E402
-from timtest_d_kluster import klassa_utfall, samla_kluster  # noqa: E402
+from timtest_d_kluster import (
+    MEASURE_ID, MEASURE_ID_FALL_EPISODER,
+    klassa_utfall, kvot_krav_samma_measure, rapport_rad, samla_kluster,
+)  # noqa: E402
 import timtest_d  # noqa: E402
 
 
@@ -82,6 +85,27 @@ class EnarmsMockTests(unittest.TestCase):
 
 
 class KlusterKlassTests(unittest.TestCase):
+    def test_measure_id_pa_rakvitto(self):
+        td = Path(tempfile.mkdtemp(prefix="timtest-d-mid-"))
+        self._skriv_ben(td, "c001", "ut_vast", "fall",
+                        [-360.0, -700.0, -16.0], cell=1462)
+        doc = samla_kluster(td)
+        self.assertEqual(doc["measure_id"], "klassa_utfall@r6")
+
+    def test_kvot_vagrar_blandmatt(self):
+        # −36 %-läxan: fall-EPISODER (113) ställdes mot fall-UTFALL (30/ben).
+        with self.assertRaises(ValueError):
+            kvot_krav_samma_measure(113, 900, MEASURE_ID_FALL_EPISODER, MEASURE_ID)
+        # samma mått: tillåten
+        self.assertAlmostEqual(
+            kvot_krav_samma_measure(30, 372, MEASURE_ID, MEASURE_ID),
+            30 / 372)
+
+    def test_rapport_rad_med_measure_id(self):
+        rad = rapport_rad("fall/ben", 30, 372, MEASURE_ID)
+        self.assertEqual(rad["measure_id"], "klassa_utfall@r6")
+        self.assertEqual(rad["pct"], 8.1)
+
     def test_klassa_utfall(self):
         self.assertEqual(klassa_utfall("fall"), (True, False, False))
         self.assertEqual(klassa_utfall("fastnad"), (False, True, False))
