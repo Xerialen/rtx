@@ -1076,5 +1076,6 @@
    "utfall": "fall_efter_framme"
   }
  ],
- "index_sha256": "aa7d8a68461173dde9e6865951f1984429ddaeacdf3d007207b5787f1bb7b87e"
+ "index_sha256": "aa7d8a68461173dde9e6865951f1984429ddaeacdf3d007207b5787f1bb7b87e",
+ "build_revision": "19ad900ce3937eb55890a2c5805a12d224312df4"
 }

@@ -15,6 +15,11 @@ def sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
+def git_head() -> str:
+    r = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 PREFIX = {
     ("t1h", "fork"): "t1h-d1-on",
     ("t1h", "main"): "t1h-main-ref",
@@ -108,6 +113,7 @@ def main() -> int:
     index_rows.sort(key=lambda r: r["ben_id"])
     index_doc = {
         "schema": "ben3d-h-index/1",
+        "build_revision": git_head(),
         "n_h": len(index_rows),
         "konton": {},
         "ben": index_rows,

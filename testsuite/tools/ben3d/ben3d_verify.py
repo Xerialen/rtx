@@ -91,7 +91,8 @@ def main() -> int:
     ap.add_argument("--extractor-bin", required=True)
     ap.add_argument("--viewer", required=True)
     ap.add_argument("--cargo-lock", required=True)
-    ap.add_argument("--revision", default=None, help="ren byggrevision (git rev-parse HEAD)")
+    ap.add_argument("--revision", default=None, help="ren byggrevision (override; default: h-index.json build_revision)")
+    ap.add_argument("--index", default=None, help="h-index.json (default: <buntar>/h-index.json)")
     ap.add_argument("--n", type=int, default=97)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
@@ -99,9 +100,13 @@ def main() -> int:
     buntar = sorted(Path(args.buntar).glob("*.bunt.json"))
     if len(buntar) != args.n:
         stop(f"STOPP: {len(buntar)} buntar != {args.n}")
-    revision = args.revision or git_head()
+    index_path = Path(args.index) if args.index else (Path(args.buntar) / "h-index.json")
+    build_rev = ""
+    if index_path.is_file():
+        build_rev = json.loads(index_path.read_text()).get("build_revision", "")
+    revision = args.revision or build_rev or git_head()
     if not revision:
-        stop("STOPP: ingen byggrevision (--revision) och git HEAD oläsligt")
+        stop("STOPP: ingen byggrevision (--revision/h-index.build_revision/git HEAD)")
     # viewerns inbäddade VIEWER_COMMIT måste matcha byggrevisionen
     viewer_text = Path(args.viewer).read_text()
     import re as _re
