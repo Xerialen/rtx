@@ -43,10 +43,15 @@ struct BenRow {
     meta_sha256: String,
 }
 
+mod restore;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() == 3 && args[1] == "restore" {
+        std::process::exit(restore::run(&args[2]));
+    }
     if args.len() != 4 || args[1] != "h-index" {
-        eprintln!("usage: ben3d h-index <t1h-manifest> <t20m-manifest>");
+        eprintln!("usage: ben3d h-index <t1h-manifest> <t20m-manifest> | ben3d restore <dump>");
         std::process::exit(2);
     }
     let t1h = &args[2];
@@ -97,6 +102,7 @@ fn h_index(t1h_manifest: &str, t20m_manifest: &str) -> HIndex {
             std::process::exit(2);
         });
         let manifest_sha = hex(&sha256(&manifest_bytes));
+        let display = Path::new(path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| id.to_string());
         let manifest_dir = Path::new(path).parent().unwrap_or(Path::new(".")).to_path_buf();
         let manifest_text = String::from_utf8_lossy(&manifest_bytes);
         manifests.push(ManifestRef { id: id.to_string(), sha256: manifest_sha.clone() });
@@ -154,13 +160,13 @@ fn h_index(t1h_manifest: &str, t20m_manifest: &str) -> HIndex {
             }
             let arm = arm_of(rel);
             let (cycle, ben) = cycle_and_ben(rel);
-            let ident = format!("{}:{}:{}:{}", id, arm, cycle, ben);
+            let ident = format!("{}:{}:{}:{}", manifest_sha, arm, cycle, ben);
             if !seen.insert(ident.clone()) {
                 eprintln!("STOPP: dublettidentitet {ident}");
                 std::process::exit(2);
             }
             ben_rows.push(BenRow {
-                dataset: id.to_string(),
+                dataset: display.clone(),
                 arm: arm.to_string(),
                 cycle_id: cycle,
                 ben,

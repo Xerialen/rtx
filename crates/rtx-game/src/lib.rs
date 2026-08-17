@@ -44,6 +44,8 @@ mod misc;
 mod mode;
 mod nav_build;
 mod nav_patch;
+// Offline-extraktorn (ben3d) behöver motorns EGNA stamp, inte en kopia (G1b/G2).
+pub use nav_patch::{graph_content_hash, graph_stamp};
 #[cfg(feature = "netclient")]
 pub mod netclient;
 mod obituary;
