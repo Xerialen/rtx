@@ -218,7 +218,7 @@ function draw(){
     if(prev!==null){
       const dt=cur.ticks[k][0]-cur.ticks[k-1][0];
       const dj=Math.hypot(p[0]-prev[0],p[1]-prev[1]);
-      if(dt>0.5 || dj>40*SCALE){ pen=false; } // lucka/teleport ⇒ brott
+      if(dt>0.5 || dj>40*SCALE*zoom){ pen=false; } // lucka/teleport ⇒ brott (zoom-kompenserat)
     }
     pen?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]); pen=true; prev=p;
   }
