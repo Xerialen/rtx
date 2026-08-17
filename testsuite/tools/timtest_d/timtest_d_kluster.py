@@ -102,32 +102,6 @@ def _add(buckets: dict, typ: str, cell: Any, origin: list[float] | None,
     rec["utfall"].append(utfall)
 
 
-def stampa_ra_meta(outdir: Path) -> int:
-    """Stämpla varje per-ben `cNNN/*_meta.json` med measure_id (punkt 8 rev 2).
-
-    Den frysta benmätaren (`timtest_ben.py`) skriver meta utan fält — det här
-    är poststeget som lägger fältet på VARJE rå-kvitto, inte bara aggregatet.
-    Skrivningen är atomisk (temp + `os.replace`); ett befintligt measure_id som
-    redan är rätt lämnas orört. Returnerar antalet stämplade filer.
-    """
-    n = 0
-    for meta_p in sorted(outdir.glob("c*/*_meta.json")):
-        try:
-            meta = json.loads(meta_p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if meta.get("measure_id") == MEASURE_ID:
-            n += 1
-            continue
-        meta["measure_id"] = MEASURE_ID
-        tmp = meta_p.with_name(meta_p.name + ".tmp")
-        tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n",
-                       encoding="utf-8")
-        os.replace(tmp, meta_p)
-        n += 1
-    return n
-
-
 def samla_kluster(outdir: Path) -> dict:
     """Gå cNNN/*_meta.json. Två oberoende if: fall_plus_fastnad ger rad
     i båda bucketarna. fall_efter_framme är miss, inte fall."""
@@ -192,7 +166,6 @@ def _write_exclusive(path: Path, text: str) -> Path:
 
 
 def skriv_kluster(outdir: Path, path: Path | None = None) -> dict:
-    stampa_ra_meta(outdir)
     doc = samla_kluster(outdir)
     dest = path or (outdir / "kluster.json")
     _write_exclusive(dest, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
@@ -232,7 +205,7 @@ def kvot_krav_samma_measure(
                 return taljare / namnare
         raise ValueError(
             "vägrar kvot%s: measure_id saknas på %s — märk kvittot eller ge "
-            "explicit --tillat-omarkta (punkt 8)"
+            "explicit tillat_omarkta=True (punkt 8)"
             % ((" %s" % etikett) if etikett else "",
                "täljare och/eller nämnare")
         )
@@ -262,7 +235,7 @@ def rapport_rad(
     if _saknat_measure(measure_id) and not tillat_omarkta:
         raise ValueError(
             "rapport_rad %r: measure_id saknas — märk kvittot eller ge "
-            "explicit --tillat-omarkta (punkt 8)" % etikett
+            "explicit tillat_omarkta=True (punkt 8)" % etikett
         )
     return {
         "etikett": etikett,

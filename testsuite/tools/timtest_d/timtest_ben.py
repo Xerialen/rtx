@@ -40,6 +40,24 @@ from granskriterier import dxy, at_topp, at_ring, at_tunnel, at_vast
 BOT = 1
 TOPP = [250.0, -703.0, 328.0]
 
+# Mått-identitet (punkt 8 rev 3): varje rå-kvitto — per-ben `_meta.json` OCH
+# varje `.jsonl`-rad — stämplas med measure_id. Skribenten använder
+# kvittolagrets O_EXCL-väg (samma O_CREAT|O_EXCL som d_kvitto.write_exclusive),
+# aldrig open(..., "w") som tyst skriver över ett befintligt kvitto.
+MEASURE_ID_UTFALL = "klassa_utfall@r6"              # utfall-fältet (grok 8, låst)
+MEASURE_ID_FALL_EPISODER = "fall_peak_drop_150@r6"   # falls-räknaren (peak_drop_150)
+
+
+def _write_exclusive(path, text):
+    """O_CREAT|O_EXCL (samma väg som d_kvitto.write_exclusive): vägrar att
+    skriva över ett befintligt rå-kvitto (3785da5-klassen)."""
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    fd = os.open(path, flags, 0o644)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
 # Nya IN-målet (Xerials order 2026-08-15, REVISION 1): "topp-vid".
 # Framme = första tick med z≥320 OCH dxy(toppcentrum [250,-703])≤130, med
 # kvarvaro ≥ IN_KONSEQ_TICKS konsekutiva ticks (≈0,3 s @ ~49 Hz). Radie 130
@@ -221,11 +239,14 @@ def ben_forsok(lab, ben, idx, rec_path, start_mode):
     except (TimeoutError, ConnectionError, OSError, KontrollportDod):
         pass
 
-    with open(rec_path, "w") as f:
-        for tg, o, g, w in rows:
-            f.write(json.dumps({"t": tg, "wall": w, "players": [
-                {"ent": BOT, "origin": [round(v, 2) for v in o],
-                 "on_ground": g}]}, separators=(",", ":")) + "\n")
+    rader = []
+    for tg, o, g, w in rows:
+        rader.append(json.dumps({
+            "t": tg, "wall": w, "measure_id": MEASURE_ID_UTFALL,
+            "players": [{"ent": BOT, "origin": [round(v, 2) for v in o],
+                         "on_ground": g}],
+        }, separators=(",", ":")))
+    _write_exclusive(rec_path, "\n".join(rader) + "\n")
 
     pts = [(tg, o) for tg, o, _, _ in rows]
     # tid mot målet:
@@ -289,7 +310,9 @@ def ben_forsok(lab, ben, idx, rec_path, start_mode):
 
 def _meta(start, utfall, tid, falls, skal=None):
     return {"start": start, "utfall": utfall, "tid": tid, "falls": falls,
-            "skal": skal, "tic_drift_pct": None}
+            "skal": skal, "tic_drift_pct": None,
+            "measure_id": MEASURE_ID_UTFALL,
+            "falls_measure_id": MEASURE_ID_FALL_EPISODER}
 
 
 def koda_arm(lab, arm, outdir, minuter, dry=False, logf=None):
@@ -312,8 +335,8 @@ def koda_arm(lab, arm, outdir, minuter, dry=False, logf=None):
             meta = ben_forsok(lab, ben, cykel, rec, start_mode)
             meta["cykel"] = cykel
             meta["ben"] = ben
-            with open(rec.replace(".jsonl", "_meta.json"), "w") as f:
-                json.dump(meta, f, ensure_ascii=False, indent=1)
+            _write_exclusive(rec.replace(".jsonl", "_meta.json"),
+                             json.dumps(meta, ensure_ascii=False, indent=1) + "\n")
             print(json.dumps(meta, ensure_ascii=False), flush=True)
             # kedjningen: nästa ben är kedjad OMVISSA det här benet lyckades
             # (framme utan fall). Annars teleport till nästa bens start.
@@ -337,8 +360,8 @@ def koda_arm(lab, arm, outdir, minuter, dry=False, logf=None):
                     nmeta["cykel"] = cykel
                     nmeta["ben"] = nxt
                     try:
-                        with open(nrec.replace(".jsonl", "_meta.json"), "w") as f:
-                            json.dump(nmeta, f, ensure_ascii=False, indent=1)
+                        _write_exclusive(nrec.replace(".jsonl", "_meta.json"),
+                                         json.dumps(nmeta, ensure_ascii=False, indent=1) + "\n")
                     except OSError:
                         pass
                     print(json.dumps(nmeta, ensure_ascii=False), flush=True)

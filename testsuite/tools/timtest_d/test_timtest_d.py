@@ -17,8 +17,10 @@ from timtest_d_ports import EXIT_REFUSED, port_fel  # noqa: E402
 from timtest_d_kluster import (
     MEASURE_ID, MEASURE_ID_FALL_EPISODER,
     klassa_utfall, kvot_krav_samma_measure, rapport_rad, samla_kluster,
+    skriv_kluster,
 )  # noqa: E402
 import timtest_d  # noqa: E402
+import timtest_ben as ben  # noqa: E402
 
 
 class PortvaktTests(unittest.TestCase):
@@ -106,6 +108,18 @@ class EnarmsMockTests(unittest.TestCase):
         kl = json.loads((out / "kluster.json").read_text())
         self.assertEqual(kl["schema"], "timtest-d/kluster/1")
         self.assertEqual(kl["n_ben"], 6)
+        # rev 3 (punkt 8): varje rå-kvitto bär measure_id — meta OCH jsonl-rader
+        for ben_namn in ("ut_ring", "in_ring", "ut_tunnel", "in_tunnel",
+                         "ut_vast", "in_vast"):
+            meta = json.loads((out / "c001" / ("%s_meta.json" % ben_namn)).read_text())
+            self.assertEqual(meta["measure_id"], "klassa_utfall@r6", ben_namn)
+            self.assertEqual(meta["falls_measure_id"], "fall_peak_drop_150@r6", ben_namn)
+            rader = [json.loads(ln) for ln in
+                     (out / "c001" / ("%s.jsonl" % ben_namn)).read_text().splitlines()
+                     if ln.strip()]
+            self.assertTrue(rader, ben_namn)
+            for rad in rader:
+                self.assertEqual(rad["measure_id"], "klassa_utfall@r6", ben_namn)
         # originalen orörda
         self.assertFalse(man.get("ab_tabell"))
         # default-fönster är 60; mock tvingar effektiv 1 cykel
@@ -184,6 +198,51 @@ class KlusterKlassTests(unittest.TestCase):
         self.assertEqual(rad["measure_id"], "klassa_utfall@r6")
         self.assertEqual(rad["pct"], 8.1)
 
+    def test_kvot_vagrar_saknat_measure_id(self):
+        # grok2-p8 (iii): None==None får inte bli en tyst kvot.
+        with self.assertRaises(ValueError):
+            kvot_krav_samma_measure(113, 900, None, None)
+        with self.assertRaises(ValueError):
+            kvot_krav_samma_measure(113, 900, "", "")
+        with self.assertRaises(ValueError):
+            kvot_krav_samma_measure(113, 900, None, MEASURE_ID)
+
+    def test_kvot_tillat_omarkta(self):
+        self.assertAlmostEqual(
+            kvot_krav_samma_measure(30, 372, None, None, tillat_omarkta=True),
+            30 / 372)
+
+    def test_rapport_rad_vagrar_saknat(self):
+        with self.assertRaises(ValueError):
+            rapport_rad("fall/ben", 30, 372, None)
+
+    def test_skriv_kluster_vagrar_oexcl_overwrite(self):
+        td = Path(tempfile.mkdtemp(prefix="timtest-d-oexcl-"))
+        self._skriv_ben(td, "c001", "ut_vast", "fall",
+                        [-360.0, -700.0, -16.0], cell=1462)
+        skriv_kluster(td)
+        with self.assertRaises(FileExistsError):
+            skriv_kluster(td)
+
+    def test_kluster_buckets_bar_measure_id(self):
+        td = Path(tempfile.mkdtemp(prefix="timtest-d-bucket-"))
+        self._skriv_ben(td, "c001", "ut_vast", "fall",
+                        [-360.0, -700.0, -16.0], cell=1462)
+        doc = samla_kluster(td)
+        self.assertEqual(doc["kluster"][0]["measure_id"], "klassa_utfall@r6")
+
+    def test_ben_meta_och_skribent_bar_measure_id(self):
+        meta = ben._meta("kedjad", "framme", 1.0, 0)
+        self.assertEqual(meta["measure_id"], "klassa_utfall@r6")
+        self.assertEqual(meta["falls_measure_id"], "fall_peak_drop_150@r6")
+
+    def test_ben_skribent_oexcl_vagrar(self):
+        td = Path(tempfile.mkdtemp(prefix="timtest-d-raw-oexcl-"))
+        p = td / "c001" / "ut_vast.jsonl"
+        ben._write_exclusive(p, "{\"t\":1.0}\n")
+        with self.assertRaises(FileExistsError):
+            ben._write_exclusive(p, "{\"t\":2.0}\n")
+
     def test_klassa_utfall(self):
         self.assertEqual(klassa_utfall("fall"), (True, False, False))
         self.assertEqual(klassa_utfall("fastnad"), (False, True, False))
@@ -239,9 +298,11 @@ class KlusterKlassTests(unittest.TestCase):
 
 class OriginalOrordaTests(unittest.TestCase):
     def test_frysta_kopior_matchar_sha(self):
-        # sha låst vid kopiering 2026-08-16; om någon rört originalen failar detta
+        # timtest_ben.py fick punkt 8 rev 3: measure_id i meta + jsonl-rader via
+        # O_EXCL-vägen. Mätlogiken (ben_forsok/utfall/falls) är oförändrad — bara
+        # skrivningen. Ny sha låst nedan; orkestern och granskriterier är orörda.
         want = {
-            "timtest_ben.py": "7b6fadf4d7f1de2fb69d6edca2348c8fb2e658630d248ad45073548df6d42e98",
+            "timtest_ben.py": "40442ce9d4c2f9cec1998c3c67afa1b546e1bbd675f3a6fb20351a7eb3027baa",
             "timtest_orkester.py": "f42c9078904d4d8b34ceb97c2ba57f778daa44b91685d4c7a8afa13950877d3f",
             "granskriterier.py": "f19ffd18f75a56c5441dbc90f6ec3df0634be6adbdfb53108e9db0a598764cf9",
         }
