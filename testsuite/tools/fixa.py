@@ -91,11 +91,17 @@ def _send_fixa(
 ) -> dict:
     """ENDA muterande ctl-ingången. Frys + stampgrind bor här, inte hos anroparen."""
     from d_failclosed import (
+        COMPOSE_CHILD_IDS,
         KOMPONAT_SCHEMAN,
         FreezeContext,
+        consume_deploy_apply,
+        consume_deploy_undo,
         guard_mutation,
         guard_plant,
         require_deploy_context,
+        revert_last_apply,
+        revert_last_undo,
+        shelf_payload_sha256,
     )
 
     mode_l = (mode or "").strip().lower()
@@ -112,18 +118,38 @@ def _send_fixa(
         rec = recipe if recipe is not None else load_recipe(recipe_path(recipe_id))
         ctx = freeze if freeze is not None else FreezeContext.production()
         schema = str(rec.get("schema") or "") if hasattr(rec, "get") else ""
-        want_deploy = bool(deploy or deploy_ctx is not None)
-        if want_deploy or schema in KOMPONAT_SCHEMAN:
+        child = recipe_id if recipe_id in COMPOSE_CHILD_IDS else None
+        want_deploy = bool(deploy or deploy_ctx is not None or schema in KOMPONAT_SCHEMAN or child)
+        consumed = None
+        if want_deploy or child:
             require_deploy_context(deploy_ctx)
-        if mode_l == "plant":
-            guard_plant(rec, freeze=ctx, deploy=want_deploy)
-        else:
-            ident = _ctl("dry-run", None)
-            live = stamp_from_reply(ident)
-            guard_mutation(
-                mode_l, recipe=rec, live=live, freeze=ctx, deploy=want_deploy
+        if child and mode_l == "apply":
+            consume_deploy_apply(
+                kind="shelf_patch",
+                name=child,
+                payload_sha256=shelf_payload_sha256(child, child),
+                ctx=deploy_ctx,
             )
-        return _ctl(mode_l, lock_token)
+            consumed = "apply"
+        elif want_deploy and mode_l == "undo":
+            consume_deploy_undo(recipe_id=recipe_id, ctx=deploy_ctx)
+            consumed = "undo"
+        try:
+            if mode_l == "plant":
+                guard_plant(rec, freeze=ctx, deploy=want_deploy)
+            else:
+                ident = _ctl("dry-run", None)
+                live = stamp_from_reply(ident)
+                guard_mutation(
+                    mode_l, recipe=rec, live=live, freeze=ctx, deploy=want_deploy
+                )
+            return _ctl(mode_l, lock_token)
+        except Exception:
+            if consumed == "apply":
+                revert_last_apply()
+            elif consumed == "undo":
+                revert_last_undo()
+            raise
     return _ctl(mode, lock_token)
 
 

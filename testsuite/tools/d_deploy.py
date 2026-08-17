@@ -1,33 +1,38 @@
 #!/usr/bin/env python3
 """Deploy-runner: sealed komponat-manifest/1 apply, fail-closed.
 
-Varv 2 (Sol af56481): DeployContext after complete preflight; motor
-nivå-2 is graph_content_hash_utan_params; exception-safe undo; PlanLink
-undo uses recipe-id plan-link; SHA pin is basename-independent.
+Varv 3 (Sol 7670f9a): DeployContext minted from preflight seal, step/
+payload-bound; compose-child LABB apply requires campaign; rollback
+catches Exception after mutation; port pair d1|d3; lock binds unit+
+ports+token+both file shas; binaries hashed from staged files.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import secrets
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from d_failclosed import (
+    ALLOWED_DEPLOY_PAIRS,
     DEPLOY_OK,
+    BoundStep,
     DeployContext,
     FailClosed,
     FreezeContext,
-    activate_deploy_context,
+    PLAN_LINK_UNDO_ID,
     check_change_freeze,
     check_deploy_status,
     clear_deploy_context,
+    issue_preflight_seal,
+    mint_deploy_context,
+    op_payload_sha256,
     send_plan_link,
 )
 from d_kvitto import write_exclusive
-from d_strata import FORBIDDEN_CTL, FORBIDDEN_GAME
 from fixa import run_fixa, stamp_from_reply
 
 HERE = Path(__file__).resolve().parent
@@ -45,10 +50,22 @@ SEALED_RECEPT_SHA256 = (
 EXPECTED_QWPROGS_SHA256 = (
     "65af0b5eb065c3f16f2a00a159af9b26f6c516bddc7d475a94983c73b334076b"
 )
+EXPECTED_MVDSV_SHA256 = (
+    "858465007c7bea52c5c790cdfdd07c0d65cce17b48110b327595bb8c2e051f15"
+)
 
 SCHEMA_RUN = "deploy-run/1"
 SCHEMA_STEG = "deploy-steg-kvitto/1"
-PLAN_LINK_UNDO_ID = "plan-link"
+LOCK_REQUIRED = (
+    "owner",
+    "unit",
+    "ctl_port",
+    "game_port",
+    "token",
+    "qwprogs_sha256",
+    "mvdsv_sha256",
+    "ts",
+)
 
 
 def _utc() -> str:
@@ -223,45 +240,156 @@ def bind_ops(recept: dict[str, Any], manifest: dict[str, Any]) -> None:
             )
 
 
-def check_portvakt(ctl_port: int | None, game_port: int | None) -> None:
-    if ctl_port is not None and ctl_port in FORBIDDEN_CTL:
-        raise FailClosed("portvakt", f"ctl port {ctl_port} är RA/main")
-    if game_port is not None and game_port in FORBIDDEN_GAME:
-        raise FailClosed("portvakt", f"game port {game_port} är RA/main")
-    if ctl_port is not None and ctl_port in FORBIDDEN_GAME:
-        raise FailClosed("portvakt", f"ctl port {ctl_port} är RA/main-spelport")
+def bound_steps(recept: dict[str, Any]) -> tuple[BoundStep, ...]:
+    out: list[BoundStep] = []
+    for i, op in enumerate(recept.get("ops") or [], start=1):
+        kind = str(op.get("op") or "")
+        name = str(op.get("name") or f"op{i}")
+        if kind == "plan_link":
+            rid = PLAN_LINK_UNDO_ID
+        else:
+            rid = Path(str(op.get("kalla") or name)).stem
+        out.append(
+            BoundStep(
+                index=i,
+                kind=kind,
+                name=name,
+                recipe_id=rid,
+                payload_sha256=op_payload_sha256(op),
+            )
+        )
+    return tuple(out)
 
 
-def check_rig_lock(lock_path: Path, freeze: FreezeContext | None) -> str:
+def check_portvakt(
+    ctl_port: int | None,
+    game_port: int | None,
+    unit: str | None = None,
+) -> str:
+    """Exact d1 or d3 as an atomic pair. d2/d4/0/0/mixed/RA are refused."""
+    if ctl_port is None or game_port is None:
+        raise FailClosed("portvakt", "ctl- och game-port krävs som par")
+    pair = (int(ctl_port), int(game_port))
+    if unit:
+        if unit not in ALLOWED_DEPLOY_PAIRS:
+            raise FailClosed(
+                "portvakt",
+                f"unit {unit!r} är inte tbx-d1 eller tbx-d3",
+            )
+        want = ALLOWED_DEPLOY_PAIRS[unit]
+        if pair != want:
+            raise FailClosed(
+                "portvakt",
+                f"{unit} kräver par {want[0]}/{want[1]}, fick {pair[0]}/{pair[1]}",
+            )
+        return unit
+    matches = [u for u, p in ALLOWED_DEPLOY_PAIRS.items() if p == pair]
+    if len(matches) != 1:
+        raise FailClosed(
+            "portvakt",
+            f"portpar {pair[0]}/{pair[1]} är inte d1 (27996/27592) eller "
+            f"d3 (27998/27594) — paret valideras atomärt",
+        )
+    return matches[0]
+
+
+def parse_deploy_lock(path: Path) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for raw in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        fields[key.strip()] = val.strip()
+    return fields
+
+
+def check_rig_lock(
+    lock_path: Path,
+    *,
+    freeze: FreezeContext | None,
+    unit: str,
+    ctl_port: int,
+    game_port: int,
+    token: str,
+    qwprogs_sha256: str,
+    mvdsv_sha256: str,
+) -> dict[str, str]:
     check_change_freeze(freeze)
     path = Path(lock_path)
     if not path.is_file():
         raise FailClosed("lock", f"ingen rig-lock {path}")
-    body = path.read_text(encoding="utf-8", errors="replace").strip()
-    if not body:
-        raise FailClosed("lock", f"{path} är tom")
-    return body.split()[0]
+    fields = parse_deploy_lock(path)
+    missing = [k for k in LOCK_REQUIRED if not fields.get(k)]
+    if missing:
+        raise FailClosed(
+            "lock",
+            f"{path} saknar bindande fält {missing} "
+            f"(unit+båda portar+kampanjtoken+båda binär-sha krävs)",
+        )
+    if fields["unit"] != unit:
+        raise FailClosed("lock", f"lock unit {fields['unit']!r} ≠ vald {unit!r}")
+    if int(fields["ctl_port"]) != int(ctl_port) or int(fields["game_port"]) != int(game_port):
+        raise FailClosed(
+            "lock",
+            f"lock portpar {fields['ctl_port']}/{fields['game_port']} "
+            f"≠ {ctl_port}/{game_port}",
+        )
+    if fields["token"] != token:
+        raise FailClosed("lock", "lock kampanjtoken matchar inte runnerns token")
+    if fields["qwprogs_sha256"].lower() != qwprogs_sha256.lower():
+        raise FailClosed("lock", "lock qwprogs-sha ≠ hashad staged/live-fil")
+    if fields["mvdsv_sha256"].lower() != mvdsv_sha256.lower():
+        raise FailClosed("lock", "lock mvdsv-sha ≠ hashad staged/live-fil")
+    return fields
 
 
-def check_binary_pin(qwprogs_sha256: str | None) -> str:
-    if not qwprogs_sha256:
-        raise FailClosed("binary", "qwprogs-sha saknas — binärpin krävs i preflight")
-    got = str(qwprogs_sha256).strip().lower()
-    want = EXPECTED_QWPROGS_SHA256.lower()
-    if got != want:
+def check_binary_pin(
+    qwprogs_path: Path | str | None,
+    mvdsv_path: Path | str | None,
+    *,
+    expected_qwprogs: str | None = None,
+    expected_mvdsv: str | None = None,
+) -> tuple[str, str]:
+    """Hash staged/live files. Caller hex strings are not a pin."""
+    if not qwprogs_path or not Path(qwprogs_path).is_file():
         raise FailClosed(
             "binary",
-            f"qwprogs SHA-256 {got} ≠ förväntad {want}",
+            "qwprogs-fil saknas — binärpin hashar staged/live-fil, inte callersträng",
         )
-    return got
+    if not mvdsv_path or not Path(mvdsv_path).is_file():
+        raise FailClosed(
+            "binary",
+            "mvdsv-fil saknas — binärpin hashar staged/live-fil, inte callersträng",
+        )
+    got_q = file_sha256(Path(qwprogs_path))
+    got_m = file_sha256(Path(mvdsv_path))
+    want_q = (expected_qwprogs or EXPECTED_QWPROGS_SHA256).strip().lower()
+    want_m = (expected_mvdsv or EXPECTED_MVDSV_SHA256).strip().lower()
+    if got_q != want_q:
+        raise FailClosed("binary", f"qwprogs-fil SHA-256 {got_q} ≠ förväntad {want_q}")
+    if got_m != want_m:
+        raise FailClosed("binary", f"mvdsv-fil SHA-256 {got_m} ≠ förväntad {want_m}")
+    return got_q, got_m
 
 
-def _reserve_outdir(outdir: Path, names: list[str]) -> None:
+def _reserve_outdir(outdir: Path, names: list[str]) -> dict[str, Path]:
+    """O_EXCL-create every receipt path before the first mutation."""
     outdir.mkdir(parents=True, exist_ok=True)
+    reserved: dict[str, Path] = {}
     for name in names:
         p = outdir / name
-        if p.exists():
-            raise FailClosed("kvitto", f"output {p} finns redan — reservera före mutation")
+        try:
+            fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError as exc:
+            raise FailClosed("kvitto", f"output {p} finns redan — reservera före mutation") from exc
+        os.close(fd)
+        reserved[name] = p
+    return reserved
+
+
+def _write_reserved(path: Path, text: str) -> None:
+    Path(path).write_text(text, encoding="utf-8")
 
 
 def preflight(
@@ -271,11 +399,16 @@ def preflight(
     ctl,
     freeze: FreezeContext | None,
     lock_path: Path | None,
-    qwprogs_sha256: str | None,
+    lock_token: str | None,
+    qwprogs_path: Path | str | None,
+    mvdsv_path: Path | str | None,
+    expected_qwprogs: str | None,
+    expected_mvdsv: str | None,
     ctl_port: int | None,
     game_port: int | None,
-) -> tuple[dict[str, Any], dict[str, Any], str, str, str, str]:
-    """SHA+recept-sigill+status+pin+portvakt+lock+binär. Then caller activates context."""
+    unit: str | None,
+):
+    """SHA+recept+status+bind+portpar+binärfiler+lock+pin. Issues the mint seal."""
     manifest_path = Path(manifest_path)
     recept_path = Path(recept_path)
     man_sha = file_sha256(manifest_path)
@@ -296,20 +429,35 @@ def preflight(
     check_deploy_status(man, deploy=True)
     check_deploy_status(rec, deploy=True)
     bind_ops(rec, man)
-    check_portvakt(ctl_port, game_port)
-    lock_owner = ""
-    if lock_path is not None:
-        lock_owner = check_rig_lock(Path(lock_path), freeze)
-    else:
+    unit_id = check_portvakt(ctl_port, game_port, unit)
+    qw_sha, mv_sha = check_binary_pin(
+        qwprogs_path,
+        mvdsv_path,
+        expected_qwprogs=expected_qwprogs,
+        expected_mvdsv=expected_mvdsv,
+    )
+    if lock_path is None:
         raise FailClosed("lock", "rig-lock krävs i deploy-preflight")
-    check_binary_pin(qwprogs_sha256)
+    if not lock_token:
+        raise FailClosed("lock", "kampanjtoken krävs och måste bindas i låset")
+    lock_fields = check_rig_lock(
+        Path(lock_path),
+        freeze=freeze,
+        unit=unit_id,
+        ctl_port=int(ctl_port),
+        game_port=int(game_port),
+        token=lock_token,
+        qwprogs_sha256=qw_sha,
+        mvdsv_sha256=mv_sha,
+    )
     check_change_freeze(freeze)
     live = live_identity(ctl)
     pin = motor_ident(man["steg"][0].get("identitet") or man["steg"][0])
     why = same_identity(live, pin)
     if why:
         raise FailClosed("crash-detector", f"pin=bas misslyckades: {why}")
-    return man, rec, live, man_sha, rec_sha, lock_owner
+    seal = issue_preflight_seal(man_sha, rec_sha)
+    return man, rec, live, man_sha, rec_sha, lock_fields, qw_sha, mv_sha, unit_id, seal
 
 
 def _apply_one(
@@ -416,7 +564,11 @@ def _write_steg_kvitto(
         "written_at": _utc(),
     }
     path = outdir / f"steg-{index:02d}-{name}.json"
-    write_exclusive(path, json.dumps(doc, indent=2, sort_keys=True) + "\n")
+    body = json.dumps(doc, indent=2, sort_keys=True) + "\n"
+    if path.exists():
+        _write_reserved(path, body)
+    else:
+        write_exclusive(path, body)
     return path
 
 
@@ -467,12 +619,22 @@ def _safe_undo(
 
 
 def _write_run(path: Path, doc: dict[str, Any]) -> None:
+    body = json.dumps(doc, indent=2, sort_keys=True) + "\n"
     try:
-        write_exclusive(path, json.dumps(doc, indent=2, sort_keys=True) + "\n")
-    except FileExistsError:
+        if path.exists():
+            _write_reserved(path, body)
+        else:
+            write_exclusive(path, body)
+    except Exception:
         alt = path.with_name(path.stem + "-recovery.json")
-        write_exclusive(alt, json.dumps(doc, indent=2, sort_keys=True) + "\n")
-        doc["run_kvitto_recovery"] = str(alt)
+        try:
+            if alt.exists():
+                _write_reserved(alt, body)
+            else:
+                write_exclusive(alt, body)
+            doc["run_kvitto_recovery"] = str(alt)
+        except Exception:
+            doc["run_kvitto_write_failed"] = True
 
 
 def run_deploy(
@@ -483,8 +645,10 @@ def run_deploy(
     freeze: FreezeContext | None = None,
     lock_token: str | None = None,
     lock_path: Path | None = None,
-    qwprogs_sha256: str | None = None,
-    mvdsv_sha256: str | None = None,
+    qwprogs_path: Path | str | None = None,
+    mvdsv_path: Path | str | None = None,
+    expected_qwprogs: str | None = None,
+    expected_mvdsv: str | None = None,
     ctl_port: int | None = None,
     game_port: int | None = None,
     unit: str | None = None,
@@ -509,8 +673,12 @@ def run_deploy(
     man_sha = ""
     rec_sha = ""
     lock_owner = ""
+    qw_sha = ""
+    mv_sha = ""
+    unit_id = unit
     pin: dict[str, Any] = {}
     slut: dict[str, Any] = {}
+    token = lock_token or ""
 
     def _run_doc(outcome: str) -> dict[str, Any]:
         return {
@@ -527,9 +695,11 @@ def run_deploy(
             "started_at": started,
             "ended_at": _utc(),
             "runner_commit": commit or "unknown",
-            "qwprogs_sha256": qwprogs_sha256,
-            "mvdsv_sha256": mvdsv_sha256,
-            "unit": unit,
+            "qwprogs_sha256": qw_sha or None,
+            "mvdsv_sha256": mv_sha or None,
+            "qwprogs_path": str(qwprogs_path) if qwprogs_path else None,
+            "mvdsv_path": str(mvdsv_path) if mvdsv_path else None,
+            "unit": unit_id,
             "ctl_port": ctl_port,
             "game_port": game_port,
             "lock_path": str(lock_path) if lock_path else None,
@@ -548,17 +718,42 @@ def run_deploy(
             "n_ops": len(applied) if abort_reason else 3,
         }
 
+    _undo_done = False
+
+    def _best_effort_undo() -> None:
+        nonlocal live, undid, leftover, _undo_done
+        if _undo_done or not applied or deploy_ctx is None or live is None:
+            return
+        _undo_done = True
+        try:
+            live, undid, leftover = _safe_undo(
+                ctl, applied, live=live, pin=pin, freeze=ctx,
+                lock_token=token, deploy_ctx=deploy_ctx, out=out,
+                man_sha=man_sha, steg_kvitton=steg_kvitton, manifest=man,
+            )
+        except Exception as undo_exc:
+            leftover = f"undo-recovery misslyckades: {undo_exc}"
+
     try:
-        man, recept, live, man_sha, rec_sha, lock_owner = preflight(
+        (
+            man, recept, live, man_sha, rec_sha, lock_fields,
+            qw_sha, mv_sha, unit_id, seal,
+        ) = preflight(
             manifest_path=manifest_path,
             recept_path=recept_path,
             ctl=ctl,
             freeze=ctx,
             lock_path=lock_path,
-            qwprogs_sha256=qwprogs_sha256,
+            lock_token=lock_token,
+            qwprogs_path=qwprogs_path,
+            mvdsv_path=mvdsv_path,
+            expected_qwprogs=expected_qwprogs,
+            expected_mvdsv=expected_mvdsv,
             ctl_port=ctl_port,
             game_port=game_port,
+            unit=unit,
         )
+        lock_owner = lock_fields.get("owner") or ""
         pin = motor_ident(man["steg"][0].get("identitet") or man["steg"][0])
         slut = motor_ident(man["slut"])
         ops = list(recept.get("ops") or [])
@@ -569,14 +764,9 @@ def run_deploy(
             reserved.append(f"steg-{i:02d}-{st['name']}-undo.json")
         _reserve_outdir(out, reserved)
 
-        deploy_ctx = DeployContext(
-            token=secrets.token_hex(16),
-            manifest_sha256=man_sha,
-            recept_sha256=rec_sha,
-        )
-        activate_deploy_context(deploy_ctx)
+        deploy_ctx = mint_deploy_context(seal, bound_steps(recept))
+        token = lock_token or lock_fields.get("token") or ""
 
-        token = lock_token or lock_owner
         for i, (op, steg) in enumerate(zip(ops, steg_mut), start=1):
             want = motor_ident(steg.get("identitet") or steg)
             name = str(steg.get("name") or op.get("name") or f"op{i}")
@@ -590,59 +780,48 @@ def run_deploy(
                     before=live, after=want, deploy_ctx=deploy_ctx,
                     manifest=man,
                 )
+                applied.append({
+                    "index": i, "name": name, "op": kind,
+                    "recipe_id": rid, "before": live, "after": want,
+                })
+                live = live_identity(ctl)
+                why = same_identity(live, want)
+                if why:
+                    abort_reason = f"steg {i} ({name}): {why}"
+                    kpath = _write_steg_kvitto(
+                        out, index=i, name=name, op=kind, outcome="avvikelse",
+                        expected=want, observed=live, manifest_sha256=man_sha,
+                        note=abort_reason,
+                    )
+                    steg_kvitton.append(str(kpath))
+                    break
+                kpath = _write_steg_kvitto(
+                    out, index=i, name=name, op=kind, outcome="ok",
+                    expected=want, observed=live, manifest_sha256=man_sha,
+                )
+                steg_kvitton.append(str(kpath))
             except Exception as exc:
                 abort_reason = f"steg {i} ({name}) vägrades: {exc}"
                 break
-            applied.append({
-                "index": i, "name": name, "op": kind,
-                "recipe_id": rid, "before": live, "after": want,
-            })
-            live = live_identity(ctl)
-            why = same_identity(live, want)
-            if why:
-                abort_reason = f"steg {i} ({name}): {why}"
-                kpath = _write_steg_kvitto(
-                    out, index=i, name=name, op=kind, outcome="avvikelse",
-                    expected=want, observed=live, manifest_sha256=man_sha,
-                    note=abort_reason,
-                )
-                steg_kvitton.append(str(kpath))
-                break
-            kpath = _write_steg_kvitto(
-                out, index=i, name=name, op=kind, outcome="ok",
-                expected=want, observed=live, manifest_sha256=man_sha,
-            )
-            steg_kvitton.append(str(kpath))
 
         if not abort_reason:
             why_slut = same_identity(live, slut)
             if why_slut:
                 abort_reason = f"slutverifiering: {why_slut}"
 
-        if abort_reason and applied and deploy_ctx is not None:
-            live, undid, leftover = _safe_undo(
-                ctl, applied, live=live, pin=pin, freeze=ctx,
-                lock_token=token, deploy_ctx=deploy_ctx, out=out,
-                man_sha=man_sha, steg_kvitton=steg_kvitton, manifest=man,
-            )
-    except FailClosed as exc:
+        if abort_reason and applied:
+            _best_effort_undo()
+    except Exception as exc:
         abort_reason = abort_reason or str(exc)
-        if applied and deploy_ctx is not None and live is not None:
-            try:
-                live, undid, leftover = _safe_undo(
-                    ctl, applied, live=live, pin=pin, freeze=ctx,
-                    lock_token=lock_token or lock_owner, deploy_ctx=deploy_ctx,
-                    out=out, man_sha=man_sha, steg_kvitton=steg_kvitton,
-                    manifest=man,
-                )
-            except Exception as undo_exc:
-                leftover = f"undo-recovery misslyckades: {undo_exc}"
+        _best_effort_undo()
         doc = _run_doc("aborted")
         _write_run(run_path, doc)
         doc["run_kvitto"] = str(run_path)
         if leftover:
             raise FailClosed("crash-detector", leftover) from exc
-        raise
+        if isinstance(exc, FailClosed):
+            raise
+        raise FailClosed("crash-detector", abort_reason) from exc
     finally:
         if deploy_ctx is not None:
             clear_deploy_context(deploy_ctx.token)
@@ -669,15 +848,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, required=True)
-    ap.add_argument("--game-port", type=int, default=0)
+    ap.add_argument("--game-port", type=int, required=True)
     ap.add_argument("--lock", type=Path, required=True)
-    ap.add_argument("--lock-token", default=None)
-    ap.add_argument("--qwprogs-sha256", required=True)
-    ap.add_argument("--mvdsv-sha256", default=None)
-    ap.add_argument("--unit", default=None)
-    ap.add_argument("--commit", default="unknown")
+    ap.add_argument("--lock-token", required=True)
+    ap.add_argument("--qwprogs", type=Path, required=True, help="staged/live qwprogs file to hash")
+    ap.add_argument("--mvdsv", type=Path, required=True, help="staged/live mvdsv file to hash")
+    ap.add_argument("--unit", required=True, choices=sorted(ALLOWED_DEPLOY_PAIRS))
+    ap.add_argument("--commit", required=True)
     args = ap.parse_args(argv)
-    check_portvakt(args.port, args.game_port)
+    check_portvakt(args.port, args.game_port, args.unit)
     from runner.control import Control
     ctl = Control(args.host, args.port)
     try:
@@ -688,8 +867,8 @@ def main(argv: list[str] | None = None) -> int:
             freeze=FreezeContext.production(),
             lock_token=args.lock_token,
             lock_path=args.lock,
-            qwprogs_sha256=args.qwprogs_sha256,
-            mvdsv_sha256=args.mvdsv_sha256,
+            qwprogs_path=args.qwprogs,
+            mvdsv_path=args.mvdsv,
             ctl_port=args.port,
             game_port=args.game_port,
             unit=args.unit,

@@ -7,12 +7,15 @@ Test injicerar ENDAST FreezeContext(path=..., injected=True), loggas i kvitto.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import pwd
 import re
+import secrets
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -89,58 +92,281 @@ class FailClosed(RuntimeError):
         super().__init__(message)
 
 
+# a564b4f registered_recipe_names() — equality, not contains (Sol villkor 6).
+ENGINE_REGISTERED_RECIPES = (
+    "west-shelf",
+    "ram-rail",
+    "ram-rail-v2",
+    "ram-prevent",
+    "haz1462-k1",
+    "haz1462-k2",
+    "haz1462-k3",
+)
+
+# Compose children. Generic LABB apply of these is a silent-deploy surface.
+COMPOSE_CHILD_IDS = frozenset({"ram-rail-v2", "ram-prevent"})
+PLAN_LINK_UNDO_ID = "plan-link"
+V296_STEP_NAME = "v296-vasthoppet"
+# Canonical payload of sealed v296-vasthoppet (recept e327251e…).
+SEALED_V296_PAYLOAD_SHA256 = (
+    "aa96a55f33a8d73005f4e8438f5cf3b51b927f5eb37801bd58c49e58c0995bf3"
+)
+
+# Facit §3: exactly one dedicated pair. d2/d4/RA/0/0 are not pairs.
+ALLOWED_DEPLOY_PAIRS: dict[str, tuple[int, int]] = {
+    "tbx-d1": (27996, 27592),
+    "tbx-d3": (27998, 27594),
+}
+
+
+@dataclass(frozen=True)
+class BoundStep:
+    """One sealed compose mutation. Consumed in order, once."""
+
+    index: int
+    kind: str
+    name: str
+    recipe_id: str
+    payload_sha256: str
+
+
+@dataclass(frozen=True)
+class PreflightSeal:
+    """Single-use ticket. Only issue_preflight_seal after a real preflight."""
+
+    _secret: str
+    manifest_sha256: str
+    recept_sha256: str
+
+
 @dataclass(frozen=True)
 class DeployContext:
-    """Capability established only after sealed compose preflight.
+    """Capability minted from a preflight seal. Not self-activatable.
 
-    Child apply and V296-PlanLink in deploy mode require this object.
-    Callers cannot forge it: activate_deploy_context is the only setter,
-    and only the runner calls it after preflight.
+    Carries the exact ordered op projection + payload hashes. apply/undo
+    consume one expected step; extra/reordered/reused/borrowed is refused
+    before ctl-send.
     """
 
     token: str
     manifest_sha256: str
     recept_sha256: str
+    steps: tuple[BoundStep, ...] = field(default_factory=tuple)
 
 
-_active_deploy: DeployContext | None = None
+@dataclass
+class _DeploySession:
+    ctx: DeployContext
+    next_index: int = 0
+    stack: list[BoundStep] = field(default_factory=list)
+
+
+_active_session: _DeploySession | None = None
+_preflight_ticket: str | None = None
 
 
 def active_deploy_context() -> DeployContext | None:
-    return _active_deploy
+    return None if _active_session is None else _active_session.ctx
+
+
+def issue_preflight_seal(manifest_sha256: str, recept_sha256: str) -> PreflightSeal:
+    """Runner-only. Called at the end of a successful sealed preflight."""
+    global _preflight_ticket
+    if not manifest_sha256 or not recept_sha256:
+        raise FailClosed("deploy-context", "preflight-sigill kräver båda SHA")
+    _preflight_ticket = secrets.token_hex(16)
+    return PreflightSeal(
+        _secret=_preflight_ticket,
+        manifest_sha256=manifest_sha256,
+        recept_sha256=recept_sha256,
+    )
+
+
+def mint_deploy_context(seal: PreflightSeal, steps: tuple[BoundStep, ...] | list[BoundStep]) -> DeployContext:
+    """Activate from a one-shot preflight seal. Public activate is closed."""
+    global _preflight_ticket, _active_session
+    if not isinstance(seal, PreflightSeal) or not seal._secret:
+        raise FailClosed("deploy-context", "ogiltigt preflight-sigill")
+    if _preflight_ticket is None or seal._secret != _preflight_ticket:
+        raise FailClosed(
+            "deploy-context",
+            "DeployContext är inte självaktiverbar — saknar runner-preflight",
+        )
+    if _active_session is not None:
+        raise FailClosed("deploy-context", "deploy-kontext redan aktiv")
+    bound = tuple(steps)
+    if len(bound) != 3:
+        raise FailClosed("deploy-context", "kontext kräver exakt de tre komponatstegen")
+    _preflight_ticket = None
+    ctx = DeployContext(
+        token=secrets.token_hex(16),
+        manifest_sha256=seal.manifest_sha256,
+        recept_sha256=seal.recept_sha256,
+        steps=bound,
+    )
+    _active_session = _DeploySession(ctx=ctx)
+    return ctx
 
 
 def activate_deploy_context(ctx: DeployContext) -> None:
-    """Bind the capability. Runner-only. One active context at a time."""
-    global _active_deploy
-    if not isinstance(ctx, DeployContext) or not ctx.token:
-        raise FailClosed("deploy-context", "ogiltig deploy-kontext")
-    if _active_deploy is not None:
-        raise FailClosed("deploy-context", "deploy-kontext redan aktiv")
-    _active_deploy = ctx
+    """Closed. Sol C1: public setter is not a grind."""
+    raise FailClosed(
+        "deploy-context",
+        "activate_deploy_context är stängd — kontext mintas av runnern "
+        "efter förseglad preflight (icke-självaktiverbar)",
+    )
+
+
+def reset_deploy_state() -> None:
+    """Test/runner recovery: drop ambient session and unused preflight ticket."""
+    global _active_session, _preflight_ticket
+    _active_session = None
+    _preflight_ticket = None
 
 
 def clear_deploy_context(token: str) -> None:
-    global _active_deploy
-    if _active_deploy is None:
+    global _active_session, _preflight_ticket
+    if _active_session is None:
+        _preflight_ticket = None
         return
-    if token != _active_deploy.token:
+    if token != _active_session.ctx.token:
         raise FailClosed("deploy-context", "clear_deploy_context: fel token")
-    _active_deploy = None
+    _active_session = None
+    _preflight_ticket = None
 
 
 def require_deploy_context(ctx: DeployContext | None = None) -> DeployContext:
-    active = _active_deploy
-    if active is None:
+    sess = _active_session
+    if sess is None:
         raise FailClosed(
             "deploy-context",
-            "ingen deploy-kontext — komponat-barn och V296-PlanLink i "
-            "deployläge kräver att runnern etablerat kontexten efter "
-            "förseglad preflight",
+            "ingen deploy-kontext — komponat-barn och V296-PlanLink kräver "
+            "att runnern mintat kontexten efter förseglad preflight",
         )
-    if ctx is not None and ctx.token != active.token:
-        raise FailClosed("deploy-context", "deploy-kontext token mismatch")
-    return active
+    if ctx is not None and ctx.token != sess.ctx.token:
+        raise FailClosed(
+            "deploy-context",
+            "lånad/förfalskad deploy-kontext — token mismatch",
+        )
+    return sess.ctx
+
+
+def _session(ctx: DeployContext | None = None) -> _DeploySession:
+    require_deploy_context(ctx)
+    assert _active_session is not None
+    return _active_session
+
+
+def consume_deploy_apply(
+    *,
+    kind: str,
+    name: str,
+    payload_sha256: str,
+    ctx: DeployContext | None = None,
+) -> BoundStep:
+    """Refuse extra/reordered/reused/wrong-payload before ctl-send."""
+    sess = _session(ctx)
+    if sess.next_index >= len(sess.ctx.steps):
+        raise FailClosed(
+            "deploy-context",
+            "extra steg — kontexten har inga fler apply (förbrukad)",
+        )
+    want = sess.ctx.steps[sess.next_index]
+    got = (str(kind), str(name), str(payload_sha256))
+    exp = (want.kind, want.name, want.payload_sha256)
+    if got != exp:
+        raise FailClosed(
+            "deploy-context",
+            f"omordnat/lånat/fel payload: förväntade steg {want.index} "
+            f"{exp[0]}/{exp[1]}/{exp[2][:16]}… fick {got[0]}/{got[1]}/{got[2][:16]}…",
+        )
+    sess.stack.append(want)
+    sess.next_index += 1
+    return want
+
+
+def consume_deploy_undo(
+    *,
+    recipe_id: str,
+    ctx: DeployContext | None = None,
+) -> BoundStep:
+    sess = _session(ctx)
+    if not sess.stack:
+        raise FailClosed(
+            "deploy-context",
+            "återanvänd/tom undo — ingen applicerad ram att poppa",
+        )
+    top = sess.stack[-1]
+    if top.recipe_id != recipe_id:
+        raise FailClosed(
+            "deploy-context",
+            f"undo {recipe_id!r} ≠ stacktop {top.recipe_id!r}",
+        )
+    sess.stack.pop()
+    sess.next_index -= 1
+    return top
+
+
+def revert_last_apply() -> None:
+    if _active_session is None or not _active_session.stack:
+        return
+    _active_session.stack.pop()
+    _active_session.next_index -= 1
+
+
+def revert_last_undo() -> None:
+    """Undo send failed after consume — put the frame back."""
+    sess = _active_session
+    if sess is None or sess.next_index >= len(sess.ctx.steps):
+        return
+    # next_index was decremented by consume_deploy_undo; the step lives in ctx.steps
+    nxt = sess.ctx.steps[sess.next_index]
+    if nxt not in sess.stack:
+        sess.stack.append(nxt)
+        sess.next_index += 1
+
+
+def planlink_payload_sha256(payload: Any) -> str:
+    if not isinstance(payload, Mapping):
+        blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    canon = {
+        "from": payload.get("from"),
+        "takeoff": payload.get("takeoff"),
+        "tgt": payload.get("tgt"),
+        "v_req": float(payload["v_req"]) if payload.get("v_req") is not None else None,
+        "gain": float(payload["gain"]) if payload.get("gain") is not None else None,
+        "carried": bool(payload.get("carried") or False),
+    }
+    blob = json.dumps(canon, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def shelf_payload_sha256(name: str, kalla: str | None = None) -> str:
+    stem = Path(str(kalla or name)).stem
+    blob = json.dumps(
+        {"op": "shelf_patch", "name": name, "kalla": stem},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def op_payload_sha256(op: Mapping[str, Any]) -> str:
+    kind = str(op.get("op") or "")
+    if kind == "plan_link":
+        return planlink_payload_sha256(op)
+    return shelf_payload_sha256(str(op.get("name") or ""), str(op.get("kalla") or "") or None)
+
+
+def compose_child_id(recipe_id: str | None, recipe: Any = None) -> str | None:
+    if recipe_id in COMPOSE_CHILD_IDS:
+        return str(recipe_id)
+    if recipe is not None and hasattr(recipe, "get"):
+        rid = recipe.get("id")
+        if rid in COMPOSE_CHILD_IDS:
+            return str(rid)
+    return None
 
 
 def change_freeze_path(ctx: FreezeContext | None = None) -> Path:
@@ -770,8 +996,21 @@ def send_plan_link(
     deploy: bool = False,
     deploy_ctx: DeployContext | None = None,
 ) -> Any:
-    """Production PlanLink entry. Deploy-läge kräver sigill + DeployContext."""
-    if deploy or deploy_ctx is not None or active_deploy_context() is not None:
+    """Production PlanLink entry. Sealed V296 + deployläge require minted context."""
+    payload_sha = planlink_payload_sha256(payload)
+    is_v296 = payload_sha == SEALED_V296_PAYLOAD_SHA256
+    schema = ""
+    if recipe is not None and hasattr(recipe, "get"):
+        schema = str(recipe.get("schema") or "")
+    need_campaign = bool(
+        deploy
+        or deploy_ctx is not None
+        or active_deploy_context() is not None
+        or is_v296
+        or schema in KOMPONAT_SCHEMAN
+    )
+    consumed = False
+    if need_campaign:
         require_deploy_context(deploy_ctx)
         if recipe is None or not hasattr(recipe, "get"):
             raise FailClosed(
@@ -779,6 +1018,13 @@ def send_plan_link(
                 "PlanLink i deployläge kräver förseglat recept — recipe=None är stängt",
             )
         guard_plant(recipe, freeze=freeze, deploy=True)
+        consume_deploy_apply(
+            kind="plan_link",
+            name=V296_STEP_NAME,
+            payload_sha256=payload_sha,
+            ctx=deploy_ctx,
+        )
+        consumed = True
     else:
         if recipe is None:
             raise FailClosed(
@@ -786,16 +1032,22 @@ def send_plan_link(
                 "PlanLink kräver recept/sigill — recipe=None når inte live "
                 "(labbväg är inte tyst deployersättning för V296)",
             )
-        schema = str(recipe.get("schema") or "")
         if schema in KOMPONAT_SCHEMAN and active_deploy_context() is None:
             raise FailClosed(
                 "deploy-context",
                 "labbväg + komponat-ops vägras — deploy sker bara via runnern",
             )
         guard_plant(recipe, freeze=freeze, deploy=False)
-    if hasattr(ctl, "request"):
+    if not hasattr(ctl, "request"):
+        if consumed:
+            revert_last_apply()
+        raise FailClosed("plant", "ctl saknar request — plant avbruten")
+    try:
         return ctl.request({"PlanLink": payload} if not isinstance(payload, str) else payload)
-    raise FailClosed("plant", "ctl saknar request — plant avbruten")
+    except Exception:
+        if consumed:
+            revert_last_apply()
+        raise
 
 
 def is_plant_command(cmd: Any) -> bool:
