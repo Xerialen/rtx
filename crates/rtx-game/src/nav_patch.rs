@@ -1494,6 +1494,108 @@ mod tests {
         }
     }
 
+    /// Blockerare B2: `ram-rail-v2` måste gå att nå via namn, annars finns receptet
+    /// inte för `fixa` hur väl det än är definierat.
+    ///
+    /// Riggbinären (qwprogs 56cc6b22) byggdes före `bb1ece6` och känner bara
+    /// [west-shelf, ram-rail, ram-prevent, haz1462-k1/k2/k3]. Källan har haft v2
+    /// hela tiden — det som saknades var en byggd binär. Det här testet är
+    /// skillnaden mellan "det står i tabellen" och "receptet går att applicera",
+    /// och det faller på en binär som inte bär det.
+    #[test]
+    fn ram_rail_v2_is_reachable_by_name_in_the_registry() {
+        let p = patch_by_name("ram-rail-v2").expect("ram-rail-v2 måste finnas i receptregistret");
+        assert_eq!(p.name, "ram-rail-v2");
+        assert_eq!(p.map, "dm3");
+        let names: Vec<_> = registered_recipe_names().collect();
+        assert!(names.contains(&"ram-rail-v2"), "registrerade: {names:?}");
+        // Hela registret, så en borttappad post syns som en diff och inte som tystnad.
+        assert_eq!(
+            names,
+            vec![
+                "west-shelf",
+                "ram-rail",
+                "ram-rail-v2",
+                "ram-prevent",
+                "haz1462-k1",
+                "haz1462-k2",
+                "haz1462-k3",
+            ]
+        );
+    }
+
+    /// Motorns tabellpost mot den förseglade fixturen, fält för fält.
+    ///
+    /// Källa: `testsuite/tools/recept/ram-rail-v2.json` (sha256
+    /// `7202490688f6e7f84f7cd66505f02d1ba6e6b72a8bf70ecafefd792ab6a8048f` efter
+    /// statusmärkningen; op-innehållet är oförändrat sedan grok författade det).
+    /// Värdena står här som literaler med flit: ett test som läser samma JSON som
+    /// implementationen bevisar ingenting om att de två speglar varandra.
+    #[test]
+    fn ram_rail_v2_mirrors_the_sealed_fixture() {
+        let p = patch_by_name("ram-rail-v2").expect("registrerad");
+        assert_eq!(
+            p.cells,
+            &[
+                [-360.0, -784.0, 128.03125],
+                [-360.0, -752.0, 128.03125],
+                [-360.0, -720.0, 128.03125],
+                [-360.0, -688.0, 128.03125],
+                [-360.0, -656.0, 128.03125],
+                [-360.0, -624.0, 128.03125],
+            ]
+        );
+        assert_eq!(
+            p.drops,
+            &[
+                ([-360.0, -784.0, 128.03125], [-288.0, -800.0, -16.0]),
+                ([-360.0, -752.0, 128.03125], [-288.0, -768.0, -16.0]),
+                ([-360.0, -720.0, 128.03125], [-288.0, -736.0, -16.0]),
+                ([-360.0, -688.0, 128.03125], [-288.0, -672.0, -16.0]),
+                ([-360.0, -656.0, 128.03125], [-288.0, -640.0, -16.0]),
+                ([-360.0, -624.0, 128.03125], [-288.0, -608.0, -16.0]),
+            ]
+        );
+        assert_eq!(p.snap_z, 128.031_25);
+        assert!(p.no_auto_walk, "rälscellerna ska vara indegree-0, inte auto-Walk:as ihop");
+        assert!(p.remove_links.is_empty() && p.retype_links.is_empty(), "v2 är rent additiv");
+        // Fixturens `off`: basgrafen, med nivå-2 pinnad.
+        assert_eq!((p.pin.cells, p.pin.links, p.pin.rj_links), (5977, 48207, 0));
+        assert_eq!(p.pin.stamp, 906_595_427_771_298_736);
+        assert_eq!(
+            p.pin.content_hash,
+            Some("58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9")
+        );
+    }
+
+    /// Registreringens delta ska vara det transformatorn härleder: +6 celler /
+    /// +6 länkar, vilket ensamt mot bas ger 5983/48213 och fixturens förseglade
+    /// `on_expected`-FNV.
+    ///
+    /// Deltat mäts på en syntetisk graf (basgrafen finns inte i en enhetstest), och
+    /// slutcountsen räknas sedan ur motorns EGEN pin — så testet binder ihop tre
+    /// saker som annars bara påstås höra ihop: vad applyt gör, vad receptet pinnar,
+    /// och vad stampen blir.
+    #[test]
+    fn ram_rail_v2_alone_on_base_lands_on_the_sealed_on_expected() {
+        let mut g = NavGraph::from_topology(&v2_landing_origins(), &[]);
+        let patch = ram_rail_v2_patch(&g);
+        let (cells, drops) = match apply_one(&patch, None, &mut g) {
+            Outcome::Applied { cells, drops, .. } => (cells, drops),
+            other => panic!("v2 apply: {other:?}"),
+        };
+        assert_eq!((cells, drops), (6, 6), "v2 är +6 celler / +6 drops");
+
+        let pin = RAM_RAIL_V2.pin;
+        let (slut_cells, slut_links) = (pin.cells + cells as u32, pin.links + drops as u32);
+        assert_eq!((slut_cells, slut_links), (5983, 48213));
+        assert_eq!(
+            graph_stamp("dm3", slut_cells, slut_links, pin.rj_links),
+            8_774_822_664_048_001_128,
+            "ram-rail-v2.json on_expected.graph_stamp"
+        );
+    }
+
     #[test]
     fn ram_rail_stamp_mismatch_fails_closed() {
         let mut g = NavGraph::from_topology(&[landing_origin()], &[]);
