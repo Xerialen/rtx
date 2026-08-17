@@ -18,8 +18,10 @@ from d_turnering import (  # noqa: E402
     K2_NEXT_HIGH_FIRST,
     NEXT_HIGH,
     SPEEDJUMP,
+    TAttempt,
     TournamentRunner,
     appendix_obligations,
+    score_appendix,
     attests_speedjump,
     file_sha256,
     hearth_hit,
@@ -182,8 +184,9 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(h1461["off_bank"], 0)
         self.assertEqual(
             g["facit_sha256"],
-            "261a5c86ad929b57913ce0295f8bf118ea0cac1638206af024e9e077e9ea0999",
+            "e435a6e558085aa0de3540a7ce16c1e2259b02fc09d70207e095fe49aef1b9cb",
         )
+        self.assertEqual(g["appendix_n_pairs"], 25)
 
     def test_k2_appendix_is_49(self):
         app = json.loads((HERE / "recept" / "haz1462-k2-appendix.json").read_text())
@@ -353,6 +356,72 @@ class ScoringTests(unittest.TestCase):
         self.assertTrue(r1461)
         self.assertTrue(all(a.valid for a in r1461), [a.reason for a in r1461])
         self.assertFalse([a for a in report.attempts if "34419" in (a.reason or "")])
+
+    def test_appendix_stall_parity_r6(self):
+        # facit r6: appendix stall is paired non-regression per 25-pair
+        # route; parity/elimination passes, delta>0 fails, drops forbidden.
+        base = [{"id": f"app-1416-{i}", "kind": "heldout", "n_pairs": 2,
+                 "budget_s": 25.0, "start_cell": 1416, "goal_cell": i}
+                for i in (700, 701)]
+
+        def att(rid, arm, seq, *, stall=False, dropped=False, arrived=True):
+            return TAttempt(
+                attempt_id=f"{rid}-{arm.upper()}-{seq:02d}", route_id=rid,
+                arm=arm, valid=True, reason="ok", stall=stall,
+                arrived=arrived, dropped=dropped,
+            )
+
+        # parity: both arms stall once per route -> ok, delta 0
+        atts = []
+        for rid in ("app-1416-700", "app-1416-701"):
+            atts += [att(rid, "off", 1, stall=True), att(rid, "on", 1, stall=True),
+                     att(rid, "off", 2), att(rid, "on", 2)]
+        ok, stats = score_appendix(atts, base)
+        self.assertTrue(ok, stats)
+        self.assertEqual(stats["app-1416-700"]["stall_delta"], 0)
+        # regression: ON stalls, OFF clean -> fail, delta +1
+        atts = [att("app-1416-700", "off", 1), att("app-1416-700", "on", 1, stall=True),
+                att("app-1416-700", "off", 2), att("app-1416-700", "on", 2),
+                att("app-1416-701", "off", 1), att("app-1416-701", "on", 1),
+                att("app-1416-701", "off", 2), att("app-1416-701", "on", 2)]
+        ok, stats = score_appendix(atts, base)
+        self.assertFalse(ok)
+        self.assertEqual(stats["app-1416-700"]["stall_delta"], 1)
+        # elimination: OFF stalls, ON clean -> ok, eliminated 1; and a
+        # dropped ON fails regardless of stall parity.
+        atts = [att("app-1416-700", "off", 1, stall=True), att("app-1416-700", "on", 1),
+                att("app-1416-700", "off", 2), att("app-1416-700", "on", 2),
+                att("app-1416-701", "off", 1), att("app-1416-701", "on", 1),
+                att("app-1416-701", "off", 2), att("app-1416-701", "on", 2)]
+        ok, stats = score_appendix(atts, base)
+        self.assertTrue(ok)
+        self.assertEqual(stats["app-1416-700"]["stall_eliminated"], 1)
+        atts[1] = att("app-1416-700", "on", 1, dropped=True)
+        ok, _ = score_appendix(atts, base)
+        self.assertFalse(ok)
+
+    def test_appendix_n25_enforced_on_judged_runs(self):
+        # No override (judged shape) -> preflight demands N=25 from gates;
+        # gates carry it, so app_routes are 25 and preflight passes.
+        app = json.loads((HERE / "recept" / "haz1462-k2-appendix.json").read_text())
+        runner = TournamentRunner(
+            recipe=_recipe("haz1462-k2"),
+            gates=_gates(),
+            appendix=app,
+            exec_trial=lambda **k: _clean_on(),
+            ctl_port=0,
+            game_port=27592,
+            fixture_sha256=file_sha256(HERE / "recept" / "haz1462-k2.json"),
+        )
+        self.assertTrue(all(s["n_pairs"] == 25 for s in runner.app_routes))
+        self.assertNotIn(
+            "facit r6 requires N=25 pairs per appendix route", runner.preflight(),
+        )
+        # Tampered N without override -> preflight fails.
+        runner.app_routes[0]["n_pairs"] = 5
+        self.assertTrue(
+            any("N=25" in r for r in runner.preflight()),
+        )
 
     def test_1461_union_is_route_specific(self):
         # facit r5: 1156 (1461's dominant measured landing) passes; 1122

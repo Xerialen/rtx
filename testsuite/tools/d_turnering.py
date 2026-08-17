@@ -414,6 +414,8 @@ class TAttempt:
     # and True on the deterministically selected scored partner.
     bank_member: str = ""
     bank_selected: bool = False
+    # facit r6: any peak_drop_150 in the raw (appendix ON forbids drops).
+    dropped: bool = False
 
 
 @dataclass
@@ -429,6 +431,7 @@ class TournamentReport:
     appendix_on_ok: bool = True
     pass_ok: bool = False
     repro_stall: dict = field(default_factory=dict)
+    appendix_stall: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
@@ -445,7 +448,8 @@ class TournamentReport:
                 "stall": self.repro_stall,
             },
             "heldout": {"on_ok": self.heldout_on_ok},
-            "appendix": {"on_ok": self.appendix_on_ok},
+            # facit r6: per-route paired stall stats for the appendix surface.
+            "appendix": {"on_ok": self.appendix_on_ok, "stall": self.appendix_stall},
             "attempts": [
                 {
                     "id": a.attempt_id,
@@ -519,6 +523,39 @@ def score_migrate(attempts: list[TAttempt], routes: list[dict]) -> bool:
         if any(a.hearth or a.stall or not a.arrived or not a.sj_ok or not a.next_best_ok for a in ons):
             return False
     return True
+
+
+def score_appendix(attempts: list[TAttempt], routes: list[dict]) -> tuple[bool, dict]:
+    # facit r6: the appendix zero-stall producer is superseded — stall is a
+    # route-local paired non-regression exactly like the r4 reproduction
+    # rule (ON_stall_attempts <= OFF_stall_attempts per 25-pair route;
+    # delta > 0 fails). Every ON attempt must still arrive in budget and
+    # have zero peak_drop_150. No cross-route or cross-candidate pooling.
+    ok = True
+    stall: dict[str, dict] = {}
+    for spec in routes:
+        rid = spec["id"]
+        n = int(spec["n_pairs"])
+        ons = [a for a in attempts if a.route_id == rid and a.arm == "on" and a.valid]
+        offs = [a for a in attempts if a.route_id == rid and a.arm == "off" and a.valid]
+        if len(ons) != n:
+            ok = False
+            continue
+        if any(a.hearth or not a.arrived or a.dropped or not a.sj_ok or not a.next_best_ok for a in ons):
+            ok = False
+        off_stall = sum(1 for a in offs if a.stall)
+        on_stall = sum(1 for a in ons if a.stall)
+        stall[rid] = {
+            "off_count": off_stall,
+            "off_rate": off_stall / len(offs) if offs else None,
+            "on_count": on_stall,
+            "on_rate": on_stall / len(ons) if ons else None,
+            "stall_delta": on_stall - off_stall,
+            "stall_eliminated": off_stall - on_stall,
+        }
+        if on_stall > off_stall:
+            ok = False
+    return ok, stall
 
 
 def _side_by_side_view(rep: TournamentReport | dict) -> dict:
@@ -604,6 +641,15 @@ class TournamentRunner:
             if appendix and recipe.get("id") == "haz1462-k2"
             else []
         )
+        # facit r6 supersedes the sealed appendix fixture's legacy N=5
+        # zero-stall producer: N=25 pairs per route, paired stall parity.
+        # An explicit n_heldout override (tests/smoke) wins below; judged
+        # runs pass no override and preflight enforces the facit N.
+        self.n_heldout_override = n_heldout
+        app_n = int(gates.get("appendix_n_pairs") or 0)
+        if app_n:
+            for s in self.app_routes:
+                s["n_pairs"] = app_n
         if n_repro is not None:
             for s in self.repro:
                 s["n_pairs"] = int(n_repro)
@@ -657,6 +703,10 @@ class TournamentRunner:
                 reasons.append("K2 missing appendix fixture")
             elif len(self.app_routes) != 49:
                 reasons.append(f"K2 appendix dests {len(self.app_routes)} != 49")
+            elif self.n_heldout_override is None and any(
+                int(s.get("n_pairs") or 0) != 25 for s in self.app_routes
+            ):
+                reasons.append("facit r6 requires N=25 pairs per appendix route")
         if not self.fixture_sha256 or len(self.fixture_sha256) != 64:
             reasons.append("fixture_sha256 missing")
         return reasons
@@ -715,6 +765,9 @@ class TournamentRunner:
                 nb_links, cid, spec=spec, selected=links, mask=nb_mask,
             )
         vel = raw.get("measured_vel") if raw.get("measured_vel") is not None else raw.get("vel")
+        dropped = any(
+            ev.get("ev") == "peak_drop_150" for ev in (raw.get("events") or [])
+        )
         att = TAttempt(
             attempt_id=f"{spec['id']}-{arm.upper()}-{seq:02d}",
             route_id=spec["id"],
@@ -729,6 +782,7 @@ class TournamentRunner:
             next_best_links=nb_links,
             sj_ok=sj_ok,
             next_best_ok=nb_ok,
+            dropped=dropped,
         )
         if raw.get("stamp_ok") is False:
             att.valid = False
@@ -927,7 +981,11 @@ class TournamentRunner:
             self._run_pairs(spec, attempts, extra)
         repro_off, repro_on, repro_stall = score_reproduction(attempts, self.repro)
         held_ok = score_migrate(attempts, self.heldout)
-        app_ok = True if not self.app_routes else score_migrate(attempts, self.app_routes)
+        app_stall: dict = {}
+        if not self.app_routes:
+            app_ok = True
+        else:
+            app_ok, app_stall = score_appendix(attempts, self.app_routes)
         valid = not extra
         pass_ok = valid and repro_off and repro_on and held_ok and app_ok
         if not valid:
@@ -944,6 +1002,7 @@ class TournamentRunner:
             appendix_on_ok=app_ok,
             pass_ok=pass_ok,
             repro_stall=repro_stall,
+            appendix_stall=app_stall,
         )
 
 
