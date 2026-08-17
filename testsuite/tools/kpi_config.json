@@ -1,0 +1,67 @@
+{
+  "schema": "kpi-config/1",
+  "currency": "USD",
+  "costs_usd_per_month": {
+    "Max": 100,
+    "SuperGrok": 100,
+    "ChatGPT_Pro": 25,
+    "deepseek_api": null
+  },
+  "days_per_month": 30,
+  "k1": {
+    "source": "domfil_pass_headings",
+    "target_max_days": 1,
+    "pass_markers": ["GRÖNT", "GODKÄND"],
+    "heading_regex": null
+  },
+  "k2": {
+    "source": "domfil_order_to_first_figure",
+    "target_max_min": 45
+  },
+  "k3": {
+    "source": "git_log_path_class",
+    "window_days": 1,
+    "target_max_ratio": 0.4,
+    "apparat_prefixes": [
+      "testsuite/tools/",
+      "crates/rtx-ctlproto/",
+      ".github/"
+    ],
+    "produkt_prefixes": [
+      "crates/rtx-game/",
+      "testsuite/tools/recept/"
+    ]
+  },
+  "k4": {
+    "source": "daily_cost_over_measured_minutes",
+    "target_max": 3,
+    "measured_minutes_glob": null
+  },
+  "k5": {
+    "source": "daily_cost_over_agent_hours",
+    "provning_over": 8,
+    "uppsagning_idle_days": 3,
+    "transcript_buckets": null
+  },
+  "k6": {
+    "source": "rig_hours_per_figure",
+    "target_max": 1,
+    "rig_hours_log": null
+  },
+  "k7": {
+    "source": "ceremony_files_over_delivery_commits",
+    "target_max": 2,
+    "ceremony_globs": [
+      "*rapport*",
+      "*review*",
+      "*handoff*",
+      "*status*"
+    ]
+  },
+  "k8": {
+    "source": "handover_files_and_fable_time_share",
+    "target_max_handovers": 15,
+    "fable_max_share": 0.25,
+    "handover_glob": "*handoff*"
+  }
+}
