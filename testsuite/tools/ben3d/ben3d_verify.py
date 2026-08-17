@@ -91,7 +91,8 @@ def main() -> int:
     ap.add_argument("--extractor-bin", required=True)
     ap.add_argument("--viewer", required=True)
     ap.add_argument("--cargo-lock", required=True)
-    ap.add_argument("--revision", default=None, help="ren byggrevision (override; default: h-index.json build_revision)")
+    ap.add_argument("--revision", default=None, help="extractor/byggevision (override; default: h-index.json build_revision)")
+    ap.add_argument("--viewer-revision", default=None, help="viewer-byggrevision (override; default: h-index.json viewer_build_revision)")
     ap.add_argument("--index", default=None, help="h-index.json (default: <buntar>/h-index.json)")
     ap.add_argument("--n", type=int, default=97)
     ap.add_argument("--out", default=None)
@@ -101,18 +102,20 @@ def main() -> int:
     if len(buntar) != args.n:
         stop(f"STOPP: {len(buntar)} buntar != {args.n}")
     index_path = Path(args.index) if args.index else (Path(args.buntar) / "h-index.json")
-    build_rev = ""
-    if index_path.is_file():
-        build_rev = json.loads(index_path.read_text()).get("build_revision", "")
+    index_doc = json.loads(index_path.read_text()) if index_path.is_file() else {}
+    build_rev = index_doc.get("build_revision", "")
+    viewer_build_rev = index_doc.get("viewer_build_revision", build_rev)
     revision = args.revision or build_rev or git_head()
-    if not revision:
-        stop("STOPP: ingen byggrevision (--revision/h-index.build_revision/git HEAD)")
-    # viewerns inbäddade VIEWER_COMMIT måste matcha byggrevisionen
+    viewer_revision = args.viewer_revision or viewer_build_rev or revision
+    if not revision or not viewer_revision:
+        stop("STOPP: ingen byggrevision (--revision/--viewer-revision/h-index/git HEAD)")
+    # viewerns inbäddade VIEWER_COMMIT måste matcha VIEWER-byggrevisionen (kan skilja
+    # från extraktorns — viewern kan byggas om vid en senare ren HEAD utan att buntar rörs)
     viewer_text = Path(args.viewer).read_text()
     import re as _re
     m = _re.search(r'const VIEWER_COMMIT = "([0-9a-f]{40})"', viewer_text)
-    if not m or m.group(1) != revision:
-        stop(f"STOPP: viewer VIEWER_COMMIT {m.group(1) if m else '?'} != byggrevision {revision}")
+    if not m or m.group(1) != viewer_revision:
+        stop(f"STOPP: viewer VIEWER_COMMIT {m.group(1) if m else '?'} != viewer-byggrevision {viewer_revision}")
 
     manifests = {"t1h": (args.t1h, parse_manifest(args.t1h)), "t20m": (args.t20m, parse_manifest(args.t20m))}
     kvitto = json.loads(Path(args.kvitto).read_text())
