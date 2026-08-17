@@ -3,7 +3,7 @@
   "git_range": "2388d87..HEAD",
   "skriven_efter": "FIXVARV 1 (Sols bygggranskning)",
   "b3_placering_crates_ben3d": {
-    "beslut": "behåll crates/ben3d (motiverbar per P5/Sol: 'extraktorn i toolbox-repot bredvid befintliga verktyg, samma mönster')",
+    "beslut": "behåll crates/ben3d — SPEC-REVISION 1 R1-a (Fable) tillåter uttryckligen crates/ben3d: cargo-arbetsytans byggsystem kräver crate-katalogen; P5:s övriga avsikt (samma git-root, inget eget repo, launchers/fixturer/artefaktdata under testsuite/tools/ben3d) uppfylls oförändrat",
     "motivering": "Extraktorn är en Rust-binär som LÄNKAR motorns egna crates (rtx-nav, rtx-game) som bibliotek — G2 kräver att reglerna beräknas av motorkod i extraktorn, inte av en Python-kopia. En Rust-crate i workspace-roten är den enda plats där den kan bero på rtx-nav/rtx-game via Cargo-workspace. Launchers/fixturer/CLI-verktyg ligger däremot i testsuite/tools/ben3d/ per P5 B3 (launcherreferens kpi_daglig.py, fixturer under testsuite/tools).",
     "ovriga_b3_grindar": {
       "samma_git_root": "ja — crates/ben3d är workspace-medlem i samma repo, inget submodule/eget repo",
