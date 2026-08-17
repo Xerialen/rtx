@@ -736,8 +736,18 @@ fn fixa_apply(
 ) -> Result<Resp, String> {
     let bsp = game.nav.bsp.clone().ok_or("no bsp")?;
     let map = game.level.mapname.clone();
+    // Capacity is checked before anything is applied, not after: a full chain must refuse the apply,
+    // because committing a mutation we have no room to snapshot is the one thing the chain exists to
+    // prevent.
+    if !game.nav_patch_txns.has_room() {
+        return Err(format!(
+            "undo chain is full ({} applies deep) — undo back down or reload the map before applying '{}'",
+            game.nav_patch_txns.depth(),
+            patch.name
+        ));
+    }
     let mut keep_txn = None;
-    let resp = {
+    let mut resp = {
         let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
         let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
         let (cells0, links0, rj0, stamp0, hash0) = fixa_identity(&map, g);
@@ -836,24 +846,68 @@ fn fixa_apply(
         }
     };
     if let Some(txn) = keep_txn {
-        game.nav_patch_txn = Some(txn);
+        nav_txn_push(game, txn)?;
+        resp.audit = format!("{}{}", resp.audit, fixa_chain_line(&game.nav_patch_txns));
         invalidate_all_bot_nav(game);
     }
     Ok(Resp::Fixa(resp))
 }
 
-fn fixa_undo(game: &mut GameState, patch: &crate::nav_patch::ShelfPatch) -> Result<Resp, String> {
-    let txn = game.nav_patch_txn.take().ok_or("no apply snapshot — nothing to undo")?;
-    let map = game.level.mapname.clone();
-    let (stamp, cells, links, rj, stamp_s, hash) = {
+/// Record a published mutation on the undo chain.
+///
+/// The capacity check belongs *before* the mutation (callers do it), so a refusal here is a
+/// can't-happen. It is still handled rather than unwrapped: the recovery is to unapply what was just
+/// published, because a live graph with no snapshot behind it is precisely the state the chain
+/// exists to make impossible.
+fn nav_txn_push(game: &mut GameState, txn: crate::nav_patch::AppliedTxn) -> Result<(), String> {
+    let published = {
+        let graph = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
+        game.nav_patch_txns.push(txn, graph)
+    };
+    if let Err((txn, why)) = published {
         let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
         let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
-        let stamp = txn.unapply(g);
+        txn.unapply(g);
+        return Err(format!("{why} (the apply was rolled back)"));
+    }
+    Ok(())
+}
+
+/// One console line naming the whole undo chain, appended to the audit of anything that changes it.
+/// The depth is the operationally interesting number — how many `--undo` calls stand between the
+/// live graph and the base it started from.
+fn fixa_chain_line(stack: &crate::nav_patch::TxnStack) -> String {
+    if stack.is_empty() {
+        return "rtx: navpatch undo chain: empty (live graph is this session's base)\n".to_string();
+    }
+    format!(
+        "rtx: navpatch undo chain: depth={} [{}], next undo={}\n",
+        stack.depth(),
+        stack.names().join(" -> "),
+        stack.top_name().unwrap_or("-")
+    )
+}
+
+fn fixa_undo(game: &mut GameState, patch: &crate::nav_patch::ShelfPatch) -> Result<Resp, String> {
+    let map = game.level.mapname.clone();
+    let (undone, cells, links, rj, stamp_s, hash) = {
+        let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+        let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+        // Fail-closed: a mismatch here leaves both the live graph and the chain untouched, so the
+        // error is a refusal, not a half-undo to recover from.
+        let undone = game.nav_patch_txns.undo(&map, patch.name, g)?;
         let (cells, links, rj, stamp_s, hash) = fixa_identity(&map, g);
-        (stamp, cells, links, rj, stamp_s, hash)
+        (undone, cells, links, rj, stamp_s, hash)
     };
+    let stamp = undone.stamp_restored;
+    let left = undone.depth_left;
     invalidate_all_bot_nav(game);
-    let audit = crate::nav_patch::console_unapplied(patch.name, stamp);
+    let audit = format!(
+        "{}rtx: navpatch {} undone, {left} undo(s) left to the base\n{}",
+        crate::nav_patch::console_unapplied(undone.name, stamp),
+        undone.name,
+        fixa_chain_line(&game.nav_patch_txns)
+    );
     Ok(Resp::Fixa(proto::FixaResp {
         recipe: patch.name.to_string(),
         mode: "undo".into(),
@@ -1771,6 +1825,12 @@ fn plant_drop_resp(game: &mut GameState, from: Vec3, to: Vec3) -> Result<proto::
 /// cell nearest `tgt`, requiring `v_req` ups at the lip. The runtime flies a planted link exactly like
 /// a generated one, so a subsequent `goto <tgt>` exercises the committed-prestrafe takeoff on the real
 /// corridor. Returns the new link index and the resolved cell origins so the caller can verify routing.
+///
+/// Transactional, like a [`ShelfPatch`](crate::nav_patch::ShelfPatch) apply and for the same reason:
+/// the plant runs against a clone, so a refused endpoint leaves the live graph bit-for-bit as it was
+/// instead of half-planted, and a success leaves a snapshot on the undo chain. This is the V296 class
+/// — the fixture goes in over this command, so without it the one op the recipe most needs to be able
+/// to take back was the one op with nothing to take it back to.
 fn plant_link_resp(
     game: &mut GameState,
     from: Vec3,
@@ -1788,22 +1848,12 @@ fn plant_link_resp(
             800.0
         }
     };
-    let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
-    let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
-    let from_cell = g.nearest(from).ok_or("no cell near from")?;
-    let to_cell = g.nearest(tgt).ok_or("no cell near tgt")?;
-    let dz = g.cell_origin(to_cell).z - takeoff.z;
-    // Ballistic flight time to fall back through `dz` after a jump (vz0 = JUMP_VZ): the later root of
-    // dz = JUMP_VZ·t − ½·g·t². Only used for the planner's hot-entry pricing; the flight itself is
-    // driven by v_req + takeoff at runtime.
-    let vz0 = rtx_nav::qphys::JUMP_VZ;
-    let disc = (vz0 * vz0 - 2.0 * gravity * dz).max(0.0);
-    let airtime = (vz0 + disc.sqrt()) / gravity;
     // A hand-planted link is a curl by default (it's what we plant for the curl bring-up); the runtime
     // reads this gain to pick `air_correct` over the slalom. A fast run-up overshoots a gentle curl, so
     // the bring-up default is a firm gain that bleeds the excess onto the landing (see the harness gain
     // sweep — ~12 lands the bravado LG dead-on). An explicit `gain` on the command wins (a side-jump
     // sweep varies it per plant, and a server-wide cvar can't express that); the cvar is the fallback.
+    // Read before the graph is borrowed: a cvar lookup goes through the host, not the navmesh.
     let curl_gain = gain.filter(|g| *g > 0.0).unwrap_or_else(|| {
         let g = game.host.cvar(c"rtx_jump_curl_gain");
         if g > 0.0 {
@@ -1812,38 +1862,66 @@ fn plant_link_resp(
             12.0
         }
     });
-    // Curl-link cost the banded planner now trusts (see `banded_step`): the honest run-up travel +
-    // flight + a JumpGap-grade commitment (a rollout-certified envelope carries less risk than the
-    // +1.0 charged to a modeled speed jump). Run-up is the `from`→lip distance at the mean build speed.
-    let runup = (takeoff.xy() - g.cell_origin(from_cell).xy()).length();
-    let cost = runup / 400.0 + airtime + 0.3;
-    let tr = SpeedJumpTraversal {
-        takeoff,
-        v_req,
-        airtime,
-        chained: false,
-        curl_gain,
-        // A hand-planted link makes no claim about its run-up's width, so it keeps the uncapped weave
-        // — the harness measures the excursion rather than constraining it.
-        ..Default::default()
+    let map = game.level.mapname.clone();
+    // Same rule as `fixa --apply`: no room on the chain, no plant. Checked before the mutation, so
+    // the refusal costs nothing.
+    if !game.nav_patch_txns.has_room() {
+        return Err(format!(
+            "undo chain is full ({} applies deep) — undo back down or reload the map before planting",
+            game.nav_patch_txns.depth()
+        ));
+    }
+    let (txn, resp) = {
+        let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+        let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+        crate::nav_patch::live_txn("plan-link", &map, g, |c| {
+            let from_cell = c.nearest(from).ok_or("no cell near from")?;
+            let to_cell = c.nearest(tgt).ok_or("no cell near tgt")?;
+            let dz = c.cell_origin(to_cell).z - takeoff.z;
+            // Ballistic flight time to fall back through `dz` after a jump (vz0 = JUMP_VZ): the later
+            // root of dz = JUMP_VZ·t − ½·g·t². Only used for the planner's hot-entry pricing; the
+            // flight itself is driven by v_req + takeoff at runtime.
+            let vz0 = rtx_nav::qphys::JUMP_VZ;
+            let disc = (vz0 * vz0 - 2.0 * gravity * dz).max(0.0);
+            let airtime = (vz0 + disc.sqrt()) / gravity;
+            // Curl-link cost the banded planner now trusts (see `banded_step`): the honest run-up
+            // travel + flight + a JumpGap-grade commitment (a rollout-certified envelope carries less
+            // risk than the +1.0 charged to a modeled speed jump). Run-up is the `from`→lip distance
+            // at the mean build speed.
+            let runup = (takeoff.xy() - c.cell_origin(from_cell).xy()).length();
+            let cost = runup / 400.0 + airtime + 0.3;
+            let tr = SpeedJumpTraversal {
+                takeoff,
+                v_req,
+                airtime,
+                chained: false,
+                curl_gain,
+                // A hand-planted link makes no claim about its run-up's width, so it keeps the
+                // uncapped weave — the harness measures the excursion rather than constraining it.
+                ..Default::default()
+            };
+            let li = c.plant_speed_jump(from_cell, to_cell, cost, tr);
+            // `live_txn` rebuilds the reachability + LOD tables before publishing, so the new link is
+            // visible to steer's O(1) reachable() gate and the coarse router — otherwise a `goto`
+            // across the plant redirects to the nearest cell reachable on the pre-plant graph.
+            let (fo, to) = (c.cell_origin(from_cell), c.cell_origin(to_cell));
+            Ok(proto::PlanLinkResp {
+                link: li,
+                from_cell,
+                to_cell,
+                from: a3(fo),
+                tgt: a3(to),
+                takeoff: a3(takeoff),
+                v_req,
+                airtime,
+                cost,
+            })
+        })?
     };
-    let li = g.plant_speed_jump(from_cell, to_cell, cost, tr);
-    // Refresh the reachability + LOD tables so the new link is visible to steer's O(1) reachable()
-    // gate and the coarse router — otherwise a `goto` across the plant redirects to the nearest cell
-    // reachable on the pre-plant graph instead of pathing over it.
-    g.rebuild_derived();
-    let (fo, to) = (g.cell_origin(from_cell), g.cell_origin(to_cell));
-    Ok(proto::PlanLinkResp {
-        link: li,
-        from_cell,
-        to_cell,
-        from: a3(fo),
-        tgt: a3(to),
-        takeoff: a3(takeoff),
-        v_req,
-        airtime,
-        cost,
-    })
+    nav_txn_push(game, txn)?;
+    // A plant changes what every bot can route over, exactly like a recipe apply does.
+    invalidate_all_bot_nav(game);
+    Ok(resp)
 }
 
 /// Probe the build-time curl certifier — see [`Cmd::Probe`].

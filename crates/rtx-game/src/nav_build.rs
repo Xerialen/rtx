@@ -236,7 +236,10 @@ impl GameState {
             }
         };
         self.nav.pending = None;
-        self.nav_patch_txn = None;
+        // The whole undo chain belongs to the graph that is being replaced. Every snapshot in it is
+        // now an unrelated graph, so drop them together rather than leaving `undo` to refuse them
+        // one at a time.
+        self.nav_patch_txns.clear();
         // Map-pinned navmesh patches (see `nav_patch`): applied while the graph is still owned,
         // before the summary below counts it and before anything routes over it. Every patch
         // reports one console line — `applied`, `skipped (...)` or `failed (...)` — so a run's

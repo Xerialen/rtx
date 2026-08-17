@@ -30,6 +30,15 @@
 //! Undo (GAP 2): [`apply_txn`] keeps the pre-apply graph and [`AppliedTxn::unapply`] restores it
 //! bit-identically without process death. Build-time [`apply_for_map`] does not keep a snapshot
 //! (the default-on production path). Audit lines carry `applied`/`unapplied` plus the stamps.
+//!
+//! Chained undo (lucka A/B): the snapshots live in a [`TxnStack`], one entry per apply, not in a
+//! single slot that each new apply overwrote. `apply×N` then `undo×N` therefore walks back to the
+//! base graph bit-identically instead of stopping one recipe short of it. Undo restores a snapshot;
+//! it never runs an inverse op list, because an inverse re-appends links at *new* ids — structurally
+//! equal to the base, and not the same graph to anything that holds a link id.
+//!
+//! [`live_txn`] extends the same clone-then-publish guarantee to hand plants over the control
+//! channel (lucka C), which used to edit the live graph in place with nothing to roll back to.
 
 use glam::Vec3;
 use sha2::{Digest, Sha256};
@@ -370,13 +379,26 @@ pub enum Outcome {
 }
 
 /// Pre-apply snapshot so [`unapply`](AppliedTxn::unapply) can restore the graph without a restart.
-/// `fixa` (GAP 7) is the production consumer; cluster 1 only exposes the API.
+/// `fixa` (GAP 7) is the production consumer; held in a [`TxnStack`] so chained applies each keep
+/// their own base image.
 #[allow(dead_code)]
 pub struct AppliedTxn {
     pub name: &'static str,
     pub stamp_before: u64,
     pub stamp_after: u64,
     snapshot: NavGraph,
+}
+
+/// Names and stamps only: the snapshot is a whole graph, and printing it would bury the two numbers
+/// that actually identify the transaction.
+impl std::fmt::Debug for AppliedTxn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppliedTxn")
+            .field("name", &self.name)
+            .field("stamp_before", &self.stamp_before)
+            .field("stamp_after", &self.stamp_after)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AppliedTxn {
@@ -386,6 +408,184 @@ impl AppliedTxn {
         *graph = self.snapshot;
         self.stamp_before
     }
+}
+
+/// How deep the undo chain may go before another apply is refused.
+///
+/// Every entry is a whole `NavGraph`, so the ceiling is memory, not bookkeeping: dm3's graph clones
+/// to roughly 2 MB, which puts a full stack around 60 MB. Recipe chains are four ops at the outside;
+/// the headroom is there for hand plants during a bring-up sweep. Past the ceiling the *apply* is
+/// refused rather than the oldest snapshot dropped — dropping it would silently cost the base image,
+/// which is the exact failure this stack exists to remove.
+pub const TXN_STACK_MAX: usize = 32;
+
+/// One applied mutation and the fingerprint of the graph it produced.
+struct TxnEntry {
+    txn: AppliedTxn,
+    /// Nivå-2 of the graph this apply published. Undo checks it against the live graph before
+    /// restoring anything: a snapshot is only a valid undo for the graph it was pushed against.
+    content_after: String,
+}
+
+/// The chain of undo points behind the live graph, newest last.
+///
+/// Replaces the single `Option<AppliedTxn>` slot, which lost the base image the moment a second
+/// apply ran: the second apply overwrote the first's snapshot, so `--undo` landed on the *previous
+/// recipe*, not on the base the chain started from. With a stack, `apply×N` + `undo×N` walks back
+/// through the same intermediate graphs it walked forward through and ends bit-identically on the
+/// base.
+///
+/// Undo is snapshot **restore**, never an inverse op list. Inverting a removal re-appends the link
+/// at a new id, which passes a structural (nivå-2) comparison while the live link ids, the adjacency
+/// index and every parallel side table disagree with the base — the R2 crash class exactly (a stale
+/// ON-graph link id read against an OFF graph). A restore has no such gap: it *is* the old bytes.
+#[derive(Default)]
+pub struct TxnStack {
+    entries: Vec<TxnEntry>,
+}
+
+/// What an [`undo`](TxnStack::undo) rolled back, for the audit line.
+#[derive(Debug)]
+pub struct Undone {
+    pub name: &'static str,
+    /// Nivå-1 stamp of the graph now live again.
+    pub stamp_restored: u64,
+    /// Undo points still behind the live graph.
+    pub depth_left: usize,
+}
+
+impl TxnStack {
+    pub fn depth(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The recipe on top of the chain — the only one `undo` will roll back.
+    pub fn top_name(&self) -> Option<&'static str> {
+        self.entries.last().map(|e| e.txn.name)
+    }
+
+    /// Oldest-first names, for an audit line that shows the whole chain.
+    pub fn names(&self) -> Vec<&'static str> {
+        self.entries.iter().map(|e| e.txn.name).collect()
+    }
+
+    /// Whether another apply may be pushed. Callers check this **before** mutating, so a full stack
+    /// refuses the apply instead of committing a mutation it cannot take back.
+    pub fn has_room(&self) -> bool {
+        self.entries.len() < TXN_STACK_MAX
+    }
+
+    /// Record `txn` as the newest undo point. `live` is the graph the apply just published; its
+    /// nivå-2 is captured here as the guard `undo` will check.
+    ///
+    /// A refusal hands `txn` back rather than dropping it, so the caller can roll the apply it
+    /// already published straight back off instead of leaving a live graph with no way home.
+    pub fn push(&mut self, txn: AppliedTxn, live: &NavGraph) -> Result<(), (AppliedTxn, String)> {
+        if !self.has_room() {
+            let why = format!(
+                "undo chain is full ({TXN_STACK_MAX} applies deep) — undo back down or reload the map"
+            );
+            return Err((txn, why));
+        }
+        let content_after = graph_content_hash(live);
+        self.entries.push(TxnEntry { txn, content_after });
+        Ok(())
+    }
+
+    /// Roll the newest apply back, fail-closed.
+    ///
+    /// Both identity levels must still describe the live graph: nivå-1 catches a different-sized
+    /// graph, nivå-2 catches a same-sized one with different contents. Either mismatch means
+    /// something moved the graph out from under the chain — a foreign carve, an out-of-band plant,
+    /// a rebuild — and the snapshot on top is no longer this graph's predecessor. Restoring it then
+    /// would not be an undo; it would be a swap to an unrelated graph. So we refuse, and leave both
+    /// the live graph and the chain exactly as they were.
+    ///
+    /// `expect` names the recipe the caller asked to undo. Undoing out of order is refused for the
+    /// same reason: the audit line would name a recipe that is not what came off.
+    pub fn undo(&mut self, map: &str, expect: &'static str, live: &mut NavGraph) -> Result<Undone, String> {
+        let entry = self
+            .entries
+            .last()
+            .ok_or("no apply snapshot — nothing to undo")?;
+        if entry.txn.name != expect {
+            return Err(format!(
+                "top of the undo chain is '{}', not '{expect}' — undo in reverse order",
+                entry.txn.name
+            ));
+        }
+        let live_stamp = stamp_of(map, live);
+        if live_stamp != entry.txn.stamp_after {
+            return Err(format!(
+                "refusing undo of '{}': live graph is stamp={live_stamp}, this apply published \
+                 stamp={} — the graph changed outside the chain",
+                entry.txn.name, entry.txn.stamp_after
+            ));
+        }
+        let live_hash = graph_content_hash(live);
+        if live_hash != entry.content_after {
+            return Err(format!(
+                "refusing undo of '{}': live content_hash={live_hash}, this apply published {} — \
+                 same counts, different graph",
+                entry.txn.name, entry.content_after
+            ));
+        }
+        let entry = self.entries.pop().expect("checked above");
+        let name = entry.txn.name;
+        let stamp_restored = entry.txn.unapply(live);
+        Ok(Undone {
+            name,
+            stamp_restored,
+            depth_left: self.entries.len(),
+        })
+    }
+
+    /// Drop the whole chain. Called when the navmesh is rebuilt: the snapshots describe a graph that
+    /// no longer exists, and `undo`'s guards would refuse them one at a time anyway — clearing says
+    /// so once, up front.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+/// Run `mutate` against a **clone** of `graph`, publishing it only if the mutation succeeded.
+///
+/// This is [`apply_txn`]'s guarantee for mutations that are not a [`ShelfPatch`]: the live graph is
+/// never the thing being edited, so a refusal half-way through leaves it bit-for-bit as it was —
+/// there is no partially-planted state to detect afterwards. On success the derived tables are
+/// rebuilt on the candidate before it goes live (reachability and the LOD router answer for the
+/// pre-plant graph otherwise), and the pre-mutation snapshot comes back as an [`AppliedTxn`] for
+/// [`TxnStack`].
+///
+/// `mutate` returns the value the caller wants out of the transaction — a link id, a cell id — so
+/// nothing has to be read back off the live graph to find out what happened.
+pub fn live_txn<T>(
+    name: &'static str,
+    map: &str,
+    graph: &mut NavGraph,
+    mutate: impl FnOnce(&mut NavGraph) -> Result<T, String>,
+) -> Result<(AppliedTxn, T), String> {
+    let stamp_before = stamp_of(map, graph);
+    let snapshot = graph.clone();
+    let mut candidate = graph.clone();
+    // `?` here drops `candidate` and `snapshot` untouched: `graph` was never written to.
+    let value = mutate(&mut candidate)?;
+    candidate.rebuild_derived();
+    let stamp_after = stamp_of(map, &candidate);
+    *graph = candidate;
+    Ok((
+        AppliedTxn {
+            name,
+            stamp_before,
+            stamp_after,
+            snapshot,
+        },
+        value,
+    ))
 }
 
 /// FNV-1a-64 over `map_utf8 ++ LE32(cells) ++ LE32(links) ++ LE32(rj_links)`.
@@ -1825,5 +2025,404 @@ mod tests {
             inter_shelf_walk,
             "west-shelf cells must Walk to each other (flag must not leak)"
         );
+    }
+
+    // ---- undo chain (lucka A/B) + transactional hand plants (lucka C) --------------------------
+
+    use crate::navmesh::SpeedJumpTraversal;
+
+    /// Stronger than [`topology_eq`]: everything an undo has to put back, not just the shape.
+    ///
+    /// `topology_eq` compares cells, links (id order included) and adjacency. A restore also has to
+    /// return the *parallel* tables — the per-link taxes and the speed-jump side table — because an
+    /// inverse-op "undo" is exactly what gets those wrong: it rebuilds the same topology at new link
+    /// ids, so the shape matches while every id-keyed table has slid. Nivå-2 goes on top, which is
+    /// the machine half of the structural verdict.
+    fn bit_image_eq(a: &NavGraph, b: &NavGraph) -> bool {
+        if !topology_eq(a, b) {
+            return false;
+        }
+        if graph_content_hash(a) != graph_content_hash(b) {
+            return false;
+        }
+        for li in 0..a.links.len() as u32 {
+            if a.link_hazard_hp(li).to_bits() != b.link_hazard_hp(li).to_bits()
+                || a.link_water_extra(li).to_bits() != b.link_water_extra(li).to_bits()
+            {
+                return false;
+            }
+            match (a.speed_jump_of_link(li), b.speed_jump_of_link(li)) {
+                (None, None) => {}
+                (Some(x), Some(y)) => {
+                    if x.takeoff != y.takeoff
+                        || x.v_req.to_bits() != y.v_req.to_bits()
+                        || x.airtime.to_bits() != y.airtime.to_bits()
+                        || x.chained != y.chained
+                        || x.curl_gain.to_bits() != y.curl_gain.to_bits()
+                        || x.weave_cap.to_bits() != y.weave_cap.to_bits()
+                    {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// The shape `plant_link_resp` runs inside `live_txn`, minus the cvar reads: resolve both
+    /// endpoints, refuse if either is missing, plant a speed jump.
+    fn plant_one(g: &mut NavGraph, from: Vec3, tgt: Vec3, v_req: f32) -> Result<u32, String> {
+        let from_cell = g.nearest(from).ok_or("no cell near from")?;
+        let to_cell = g.nearest(tgt).ok_or("no cell near tgt")?;
+        let tr = SpeedJumpTraversal {
+            takeoff: from,
+            v_req,
+            airtime: 0.5,
+            chained: false,
+            curl_gain: 12.0,
+            ..Default::default()
+        };
+        Ok(g.plant_speed_jump(from_cell, to_cell, 1.5, tr))
+    }
+
+    /// Four chained hand plants, then four undos. This is the regression against the single
+    /// `Option<AppliedTxn>` slot: with one slot, plant 2 overwrote plant 1's snapshot, so the first
+    /// undo landed on the *pre-plant-2* graph and the remaining three had nothing to restore. The
+    /// intermediate assertions are the point — the chain has to walk back through the same graphs it
+    /// walked forward through, not merely end up somewhere that looks like the base.
+    #[test]
+    fn chained_plants_undo_all_the_way_back_to_a_bit_identical_base() {
+        let mut g = priced_edit_graph();
+        let mut stack = TxnStack::default();
+        let base = g.clone();
+        let mut waypoints = vec![base.clone()];
+
+        let targets = [
+            (edit_origins()[0], edit_origins()[2], 320.0_f32),
+            (edit_origins()[1], edit_origins()[2], 400.0),
+            (edit_origins()[2], edit_origins()[0], 280.0),
+            (edit_origins()[0], edit_origins()[1], 360.0),
+        ];
+        for (i, &(from, tgt, v_req)) in targets.iter().enumerate() {
+            let (txn, li) = live_txn("plan-link", "dm3", &mut g, |c| plant_one(c, from, tgt, v_req))
+                .unwrap_or_else(|e| panic!("plant {i}: {e}"));
+            assert_eq!(li as usize, base.links.len() + i, "each plant appends one link");
+            stack.push(txn, &g).expect("room on the chain");
+            waypoints.push(g.clone());
+        }
+        assert_eq!(stack.depth(), 4);
+        assert_eq!(g.links.len(), 7);
+
+        for i in (0..4).rev() {
+            let undone = stack.undo("dm3", "plan-link", &mut g).expect("undo");
+            assert_eq!(undone.depth_left, i);
+            assert!(
+                bit_image_eq(&g, &waypoints[i]),
+                "undo #{} must restore the graph the previous apply published",
+                4 - i
+            );
+        }
+        assert!(stack.is_empty());
+        assert!(bit_image_eq(&g, &base), "four undos must land on the base");
+        assert_eq!(g.links.len(), 3);
+        // The taxes are the id-keyed tables an inverse-op undo slides. Spot-check them by value.
+        assert_eq!(g.link_hazard_hp(0), 10.0);
+        assert_eq!(g.link_hazard_hp(1), 20.0);
+        assert_eq!(g.link_hazard_hp(2), 30.0);
+        assert_eq!(g.link_water_extra(2), 3.0);
+    }
+
+    /// The same chain through the recipe path: two `ShelfPatch` applies, two undos, base restored.
+    /// Both ops edit link ids, so the second apply's snapshot is taken on an already-remapped graph
+    /// — the case the single slot could not represent at all.
+    #[test]
+    fn chained_shelf_applies_undo_to_a_bit_identical_base() {
+        let mut g = priced_edit_graph();
+        let mut stack = TxnStack::default();
+        let base = g.clone();
+
+        static REMOVE: [RemoveLink; 1] = [RemoveLink {
+            id: 1,
+            from: 0,
+            to: 2,
+            kind: LinkKind::Walk,
+        }];
+        let p1 = remove_patch(&g, &REMOVE);
+        let txn1 = apply_txn(&p1, None, &mut g).expect("remove apply");
+        stack.push(txn1, &g).expect("room");
+        let after1 = g.clone();
+
+        // After the removal, old id 2 (1→2) sits at id 1. Retyping it proves the second snapshot is
+        // taken against the *remapped* graph.
+        static RETYPE: [RetypeLink; 1] = [RetypeLink {
+            id: 1,
+            from: 1,
+            to: 2,
+            old_kind: LinkKind::Walk,
+            new_kind: LinkKind::Step,
+        }];
+        let p2 = retype_patch(&g, &RETYPE);
+        let txn2 = apply_txn(&p2, None, &mut g).expect("retype apply");
+        stack.push(txn2, &g).expect("room");
+        assert_eq!(stack.depth(), 2);
+        assert_eq!(g.links[1].kind, LinkKind::Step);
+
+        stack
+            .undo("dm3", "retype-fixture", &mut g)
+            .expect("undo retype");
+        assert!(bit_image_eq(&g, &after1), "first undo lands on the post-remove graph");
+        stack
+            .undo("dm3", "remove-fixture", &mut g)
+            .expect("undo remove");
+        assert!(bit_image_eq(&g, &base), "second undo lands on the base");
+        assert_eq!(g.link_hazard_hp(1), 20.0, "the removed link's tax is back at its own id");
+    }
+
+    /// The deploy shape: four chained ops of *both* kinds — recipe applies and a hand plant —
+    /// unwound in reverse to a bit-identical base. The composed recipe is three `ShelfPatch` ops
+    /// plus the V296 plant, and the plant is the one that used to sit outside the transaction path
+    /// entirely: it mutated the live graph with nothing recorded, so the chain around it could not
+    /// be walked back through it.
+    #[test]
+    fn mixed_recipe_and_plant_chain_of_four_undoes_to_a_bit_identical_base() {
+        let mut g = priced_edit_graph();
+        let mut stack = TxnStack::default();
+        let base = g.clone();
+        let mut waypoints = vec![base.clone()];
+
+        static REMOVE: [RemoveLink; 1] = [RemoveLink {
+            id: 1,
+            from: 0,
+            to: 2,
+            kind: LinkKind::Walk,
+        }];
+        let p1 = remove_patch(&g, &REMOVE);
+        stack
+            .push(apply_txn(&p1, None, &mut g).expect("op1 remove"), &g)
+            .expect("room");
+        waypoints.push(g.clone());
+
+        let (txn2, _) = live_txn("plan-link", "dm3", &mut g, |c| {
+            plant_one(c, edit_origins()[0], edit_origins()[2], 320.0)
+        })
+        .expect("op2 plant");
+        stack.push(txn2, &g).expect("room");
+        waypoints.push(g.clone());
+
+        // Old id 2 (1→2) sits at id 1 after the removal; the plant appended at id 2 and left it there.
+        static RETYPE: [RetypeLink; 1] = [RetypeLink {
+            id: 1,
+            from: 1,
+            to: 2,
+            old_kind: LinkKind::Walk,
+            new_kind: LinkKind::Step,
+        }];
+        let p3 = retype_patch(&g, &RETYPE);
+        stack
+            .push(apply_txn(&p3, None, &mut g).expect("op3 retype"), &g)
+            .expect("room");
+        waypoints.push(g.clone());
+
+        let (txn4, _) = live_txn("plan-link", "dm3", &mut g, |c| {
+            plant_one(c, edit_origins()[1], edit_origins()[2], 400.0)
+        })
+        .expect("op4 plant");
+        stack.push(txn4, &g).expect("room");
+        waypoints.push(g.clone());
+
+        assert_eq!(stack.depth(), 4);
+        assert_eq!(
+            stack.names(),
+            vec!["remove-fixture", "plan-link", "retype-fixture", "plan-link"]
+        );
+
+        for i in (0..4).rev() {
+            let expect = stack.top_name().expect("chain is not empty");
+            let undone = stack.undo("dm3", expect, &mut g).expect("undo");
+            assert_eq!(undone.depth_left, i);
+            assert!(
+                bit_image_eq(&g, &waypoints[i]),
+                "undo #{} must restore what op {} published",
+                4 - i,
+                i
+            );
+        }
+        assert!(stack.is_empty());
+        assert!(bit_image_eq(&g, &base));
+        assert_eq!(g.links.len(), 3);
+        assert_eq!(g.links[1].kind, LinkKind::Walk, "the retype is gone with the rest");
+        assert_eq!(g.link_hazard_hp(1), 20.0);
+    }
+
+    /// Nivå-1 guard: the live graph is a different size than the one this apply published, so the
+    /// snapshot on top is not this graph's predecessor. Refuse, and change nothing.
+    #[test]
+    fn undo_refuses_when_the_graph_moved_outside_the_chain() {
+        let mut g = priced_edit_graph();
+        let mut stack = TxnStack::default();
+        let (txn, _) = live_txn("plan-link", "dm3", &mut g, |c| {
+            plant_one(c, edit_origins()[0], edit_origins()[2], 320.0)
+        })
+        .expect("plant");
+        stack.push(txn, &g).expect("room");
+
+        // Something plants outside the chain — a foreign carve, an out-of-band command.
+        plant_one(&mut g, edit_origins()[1], edit_origins()[2], 400.0).expect("out-of-band plant");
+        let live = g.clone();
+
+        let why = stack.undo("dm3", "plan-link", &mut g).expect_err("must refuse");
+        assert!(why.contains("changed outside the chain"), "{why}");
+        assert!(bit_image_eq(&g, &live), "a refused undo mutates nothing");
+        assert_eq!(stack.depth(), 1, "a refused undo keeps the chain");
+    }
+
+    /// Nivå-2 guard: same counts, different graph. This is the counts-coincidence class — nivå-1
+    /// cannot see it, and restoring on a nivå-1 match alone would swap in an unrelated graph while
+    /// reporting a clean undo.
+    #[test]
+    fn undo_refuses_a_same_counts_different_graph() {
+        let mut g = priced_edit_graph();
+        let mut stack = TxnStack::default();
+        let (txn, li) = live_txn("plan-link", "dm3", &mut g, |c| {
+            plant_one(c, edit_origins()[0], edit_origins()[2], 320.0)
+        })
+        .expect("plant");
+        stack.push(txn, &g).expect("room");
+        let stamp_pushed = stamp_of("dm3", &g);
+
+        // Swap the planted link for a different one: same cells, same link count, same rj count.
+        g.links[li as usize].to = 1;
+        g.rebuild_derived();
+        assert_eq!(stamp_of("dm3", &g), stamp_pushed, "nivå-1 is blind to this edit");
+        let live = g.clone();
+
+        let why = stack.undo("dm3", "plan-link", &mut g).expect_err("must refuse");
+        assert!(why.contains("same counts, different graph"), "{why}");
+        assert!(bit_image_eq(&g, &live), "a refused undo mutates nothing");
+        assert_eq!(stack.depth(), 1);
+    }
+
+    /// Undo is a stack, so it only ever takes the top. Asking for a recipe further down is refused
+    /// rather than served from the top, because the audit line would otherwise name a recipe that is
+    /// not the one that came off.
+    #[test]
+    fn undo_refuses_out_of_order() {
+        let mut g = priced_edit_graph();
+        let mut stack = TxnStack::default();
+
+        static REMOVE: [RemoveLink; 1] = [RemoveLink {
+            id: 1,
+            from: 0,
+            to: 2,
+            kind: LinkKind::Walk,
+        }];
+        let p1 = remove_patch(&g, &REMOVE);
+        let txn1 = apply_txn(&p1, None, &mut g).expect("remove apply");
+        stack.push(txn1, &g).expect("room");
+        let (txn2, _) = live_txn("plan-link", "dm3", &mut g, |c| {
+            plant_one(c, edit_origins()[0], edit_origins()[2], 320.0)
+        })
+        .expect("plant");
+        stack.push(txn2, &g).expect("room");
+        let live = g.clone();
+
+        let why = stack
+            .undo("dm3", "remove-fixture", &mut g)
+            .expect_err("must refuse");
+        assert!(why.contains("undo in reverse order"), "{why}");
+        assert!(bit_image_eq(&g, &live));
+        assert_eq!(stack.depth(), 2);
+        assert_eq!(stack.top_name(), Some("plan-link"));
+        assert_eq!(stack.names(), vec!["remove-fixture", "plan-link"]);
+    }
+
+    /// A full chain refuses the push and hands the transaction back, so the caller can roll the
+    /// apply off rather than leave a live graph with no snapshot behind it. Dropping the oldest
+    /// entry instead would cost the base image silently — the failure this whole stack removes.
+    #[test]
+    fn txn_stack_refuses_past_capacity_and_hands_the_txn_back() {
+        let mut g = priced_edit_graph();
+        let mut stack = TxnStack::default();
+        for i in 0..TXN_STACK_MAX {
+            let (txn, _) = live_txn("plan-link", "dm3", &mut g, |c| {
+                plant_one(c, edit_origins()[0], edit_origins()[2], 320.0 + i as f32)
+            })
+            .expect("plant");
+            stack.push(txn, &g).expect("room");
+        }
+        assert!(!stack.has_room());
+        let full = g.clone();
+
+        let (txn, _) = live_txn("plan-link", "dm3", &mut g, |c| {
+            plant_one(c, edit_origins()[1], edit_origins()[2], 999.0)
+        })
+        .expect("plant");
+        let (txn, why) = stack.push(txn, &g).expect_err("must refuse");
+        assert!(why.contains("undo chain is full"), "{why}");
+        assert_eq!(stack.depth(), TXN_STACK_MAX, "a refused push adds nothing");
+        // The handed-back transaction is what makes the caller's rollback possible.
+        txn.unapply(&mut g);
+        assert!(bit_image_eq(&g, &full), "rolled back onto the last snapshotted graph");
+    }
+
+    /// Lucka C, the core of it: a hand plant that refuses part-way through must leave the live graph
+    /// bit-for-bit as it was. The old path edited the live graph in place, so a refusal after the
+    /// first mutation left a half-planted graph with nothing to roll back to.
+    #[test]
+    fn live_txn_leaves_the_graph_untouched_when_the_mutation_refuses() {
+        let mut g = priced_edit_graph();
+        let before = g.clone();
+        let err = live_txn("plan-link", "dm3", &mut g, |c| {
+            // Plant first, *then* refuse — the half-applied shape, not a precondition that never
+            // touched anything.
+            plant_one(c, edit_origins()[0], edit_origins()[2], 320.0)?;
+            assert_eq!(c.links.len(), 4, "the clone really was mutated");
+            Err::<u32, String>("no cell near tgt".into())
+        })
+        .expect_err("must refuse");
+        assert_eq!(err, "no cell near tgt");
+        assert!(bit_image_eq(&g, &before), "a refused plant leaves live untouched");
+        assert_eq!(g.links.len(), 3);
+    }
+
+    /// `live_txn` rebuilds the derived tables before publishing. Without it the O(1) reachability
+    /// gate and the coarse router keep answering for the pre-plant graph, so a `goto` across a fresh
+    /// plant reroutes instead of taking it.
+    #[test]
+    fn live_txn_publishes_a_graph_whose_derived_tables_see_the_plant() {
+        let origins = vec![
+            Vec3::new(288.0, -844.0, 264.0),
+            Vec3::new(328.0, -800.0, 264.0),
+            Vec3::new(320.0, -768.0, -16.0),
+        ];
+        // No links at all: cell 2 is unreachable from cell 0 until the plant.
+        let mut g = NavGraph::from_topology(&origins, &[]);
+        g.rebuild_derived();
+        assert!(!g.reachable(0, 2), "precondition: nothing links 0 to 2");
+        let (txn, _) = live_txn("plan-link", "dm3", &mut g, |c| {
+            plant_one(c, origins[0], origins[2], 320.0)
+        })
+        .expect("plant");
+        assert!(g.reachable(0, 2), "the published graph's reachability sees the plant");
+        txn.unapply(&mut g);
+        assert!(!g.reachable(0, 2), "and the restored graph does not");
+    }
+
+    /// A navmesh build replaces the graph the whole chain describes, so the chain goes with it.
+    #[test]
+    fn clearing_the_chain_leaves_nothing_to_undo() {
+        let mut g = priced_edit_graph();
+        let mut stack = TxnStack::default();
+        let (txn, _) = live_txn("plan-link", "dm3", &mut g, |c| {
+            plant_one(c, edit_origins()[0], edit_origins()[2], 320.0)
+        })
+        .expect("plant");
+        stack.push(txn, &g).expect("room");
+        stack.clear();
+        assert!(stack.is_empty());
+        assert_eq!(stack.top_name(), None);
+        let why = stack.undo("dm3", "plan-link", &mut g).expect_err("nothing to undo");
+        assert!(why.contains("nothing to undo"), "{why}");
     }
 }
