@@ -1,0 +1,317 @@
+{
+  "bas_dump": "/home/xerial/lab/toolbox/dm3-base-full-graph.json",
+  "harledning": "bas + op-lista i ordning, offline i transformator.py; ingen live-apply, ingen apply-then-copy, ingen summering av delstampars delta",
+  "map": "dm3",
+  "recept_id": "haz1462-k2-v296-ram",
+  "schema": "komponat-manifest/1",
+  "slut": {
+    "cells": 5983,
+    "graph_content_hash": "26c65c62aa60537b8a3c5161eb5839bb9288d67b3136cd0d21ca95f69549f151",
+    "graph_content_hash_utan_params": "7a98d6e93bd8ebc37fb032150216f221e4d6659f51fd5bf45f27b1ff7aae45fd",
+    "graph_stamp": "15510284848814560699",
+    "kollision": null,
+    "links": 48214,
+    "map": "dm3",
+    "rj_links": 0
+  },
+  "steg": [
+    {
+      "d_cells": 0,
+      "d_links": 0,
+      "identitet": {
+        "cells": 5977,
+        "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+        "graph_content_hash_utan_params": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+        "graph_stamp": "906595427771298736",
+        "kollision": {
+          "aliases": [
+            "bas",
+            "K2+prevent",
+            "K3-retype"
+          ],
+          "cells": 5977,
+          "graph_stamp": "906595427771298736",
+          "links": 48207,
+          "rj_links": 0,
+          "warn": "VARNING: nivå-1-kollision 5977/48207 (FNV 906595427771298736) — kända namn: bas, K2+prevent, K3-retype. Nivå-1 räcker inte; läs nivå-2."
+        },
+        "links": 48207,
+        "map": "dm3",
+        "rj_links": 0
+      },
+      "index": 0,
+      "name": "haz1462-k2-v296-ram",
+      "op": "pin"
+    },
+    {
+      "bevis": {
+        "T0_efter": 0,
+        "T0_fore": 15,
+        "ankare": [
+          "1416->1461 walk",
+          "1416->1459 walk"
+        ],
+        "borttagna_id": [
+          10447,
+          10446
+        ],
+        "not": "15 tidigare rensade länkar (T=0) är traverserbara igen: remove_links_by_id bygger om adjacensen från noll och rebuild_derived kör ingen teleport-rensning. Det är motorns beteende och det syns i nivå-2."
+      },
+      "d_cells": 0,
+      "d_links": -2,
+      "harledd": false,
+      "identitet": {
+        "cells": 5977,
+        "graph_content_hash": "feb503b67a0b4a4fa394f6066fa5a3b45d373d57b154d079e2b4910329e7eb7e",
+        "graph_content_hash_utan_params": "feb503b67a0b4a4fa394f6066fa5a3b45d373d57b154d079e2b4910329e7eb7e",
+        "graph_stamp": "14344244513446609626",
+        "kollision": {
+          "aliases": [
+            "K2-ON",
+            "K2+V296-om-+0/+0"
+          ],
+          "cells": 5977,
+          "graph_stamp": "14344244513446609626",
+          "links": 48205,
+          "rj_links": 0,
+          "warn": "VARNING: nivå-1-kollision 5977/48205 (FNV 14344244513446609626) — kända namn: K2-ON, K2+V296-om-+0/+0. Nivå-1 räcker inte; läs nivå-2. PlanLink-V296 mot post-K2 är +0/+1 ⇒ 5977/48206."
+        },
+        "links": 48205,
+        "map": "dm3",
+        "rj_links": 0
+      },
+      "index": 1,
+      "name": "haz1462-k2",
+      "op": "remove_links"
+    },
+    {
+      "bevis": {
+        "befintliga_lankar_from_till_tgt": [],
+        "d_celler": 0,
+        "from": {
+          "avstand": 17.804,
+          "cell": 1167,
+          "cell_origin": [
+            96,
+            -568,
+            296
+          ],
+          "marginal": 12.079,
+          "nast_basta": 1197,
+          "nast_basta_avstand": 29.883,
+          "origin": [
+            107.0,
+            -582.0,
+            296.0
+          ]
+        },
+        "link_vid_cert": {
+          "id": 48131,
+          "not": "cert-id är inte ett ankare: id-rymden flyttas av varje tidigare op",
+          "pekar_pa_i_grafen_fore_op": "5969->5972 swim"
+        },
+        "planterad_lank": 48205,
+        "takeoff": {
+          "avstand": 20.396,
+          "cell": 1167,
+          "cell_origin": [
+            96,
+            -568,
+            296
+          ],
+          "marginal": 17.551,
+          "nast_basta": 1136,
+          "nast_basta_avstand": 37.947,
+          "origin": [
+            92.0,
+            -588.0,
+            296.0
+          ]
+        },
+        "tgt": {
+          "avstand": 10.536,
+          "cell": 1191,
+          "cell_origin": [
+            128,
+            -704,
+            328
+          ],
+          "marginal": 9.238,
+          "nast_basta": 1193,
+          "nast_basta_avstand": 19.774,
+          "origin": [
+            138.1,
+            -701.0,
+            328.0
+          ]
+        },
+        "uteslutna_lasningar": {
+          "+0/+0 (carried-cert av befintlig länk)": "utesluten: 0 länkar 1167->1191 i grafen före op:en",
+          "+1/+1 (PlanLink carvar en cell)": "utesluten: plant_link_resp kallar plant_speed_jump och innehåller ingen plant_cell — båda ändarna snappade till befintliga celler",
+          "+4/+10 (west-shelf)": "utesluten: annan receptfil, maskinhyllan z~88; den här op:ens punkter ligger på z=296/328"
+        }
+      },
+      "d_cells": 0,
+      "d_links": 1,
+      "harledd": true,
+      "identitet": {
+        "cells": 5977,
+        "graph_content_hash": "f7802d2d81fd5270eee754b03460c310c30793c79d1acb231c8172d9fabd82d1",
+        "graph_content_hash_utan_params": "d37d45b614af8ffa51443e1ba1359f3855775a31fad6e440ab576a0be2b9da3a",
+        "graph_stamp": "2907815051556140081",
+        "kollision": null,
+        "links": 48206,
+        "map": "dm3",
+        "rj_links": 0
+      },
+      "index": 2,
+      "name": "v296-vasthoppet",
+      "op": "plan_link"
+    },
+    {
+      "bevis": {
+        "bsp_not": "plant_cell/plant_drop hull-tracar geometrin och kan VÄGRA. En vägran ger Failed, aldrig ett annat delta — modellen räknar det accepterade utfallet och den förseglade delstampen är beviset att motorn accepterade.",
+        "hoppade_celler": [],
+        "hoppade_drops": [],
+        "nya_celler": [
+          {
+            "cell": 5977,
+            "origin": [
+              -360.0,
+              -784.0,
+              128.03125
+            ]
+          },
+          {
+            "cell": 5978,
+            "origin": [
+              -360.0,
+              -752.0,
+              128.03125
+            ]
+          },
+          {
+            "cell": 5979,
+            "origin": [
+              -360.0,
+              -720.0,
+              128.03125
+            ]
+          },
+          {
+            "cell": 5980,
+            "origin": [
+              -360.0,
+              -688.0,
+              128.03125
+            ]
+          },
+          {
+            "cell": 5981,
+            "origin": [
+              -360.0,
+              -656.0,
+              128.03125
+            ]
+          },
+          {
+            "cell": 5982,
+            "origin": [
+              -360.0,
+              -624.0,
+              128.03125
+            ]
+          }
+        ],
+        "nya_drops": [
+          {
+            "from_cell": 5977,
+            "link": 48206,
+            "to_cell": 698
+          },
+          {
+            "from_cell": 5978,
+            "link": 48207,
+            "to_cell": 699
+          },
+          {
+            "from_cell": 5979,
+            "link": 48208,
+            "to_cell": 700
+          },
+          {
+            "from_cell": 5980,
+            "link": 48209,
+            "to_cell": 702
+          },
+          {
+            "from_cell": 5981,
+            "link": 48210,
+            "to_cell": 703
+          },
+          {
+            "from_cell": 5982,
+            "link": 48211,
+            "to_cell": 704
+          }
+        ]
+      },
+      "d_cells": 6,
+      "d_links": 6,
+      "harledd": false,
+      "identitet": {
+        "cells": 5983,
+        "graph_content_hash": "5de5d8086db4c418dbc2d83f48022705ef3f241ffb5dcf1ab6733cf501e0e01f",
+        "graph_content_hash_utan_params": "eab18bad85d0bcb849695f7162aa4d145113524a3f34bb1aeeb4b777a0c2aca2",
+        "graph_stamp": "5140673781446876521",
+        "kollision": null,
+        "links": 48212,
+        "map": "dm3",
+        "rj_links": 0
+      },
+      "index": 3,
+      "name": "ram-rail-v2",
+      "op": "shelf_patch"
+    },
+    {
+      "bevis": {
+        "bsp_not": "plant_cell/plant_drop hull-tracar geometrin och kan VÄGRA. En vägran ger Failed, aldrig ett annat delta — modellen räknar det accepterade utfallet och den förseglade delstampen är beviset att motorn accepterade.",
+        "hoppade_celler": [],
+        "hoppade_drops": [],
+        "nya_celler": [],
+        "nya_drops": [
+          {
+            "from_cell": 733,
+            "link": 48212,
+            "to_cell": 669
+          },
+          {
+            "from_cell": 734,
+            "link": 48213,
+            "to_cell": 670
+          }
+        ]
+      },
+      "d_cells": 0,
+      "d_links": 2,
+      "harledd": false,
+      "identitet": {
+        "cells": 5983,
+        "graph_content_hash": "26c65c62aa60537b8a3c5161eb5839bb9288d67b3136cd0d21ca95f69549f151",
+        "graph_content_hash_utan_params": "7a98d6e93bd8ebc37fb032150216f221e4d6659f51fd5bf45f27b1ff7aae45fd",
+        "graph_stamp": "15510284848814560699",
+        "kollision": null,
+        "links": 48214,
+        "map": "dm3",
+        "rj_links": 0
+      },
+      "index": 4,
+      "name": "ram-prevent",
+      "op": "shelf_patch"
+    }
+  ],
+  "varningar": [
+    "VARNING: nivå-1-kollision 5977/48207 (FNV 906595427771298736) — kända namn: bas, K2+prevent, K3-retype. Nivå-1 räcker inte; läs nivå-2.",
+    "efter op 1 (haz1462-k2): VARNING: nivå-1-kollision 5977/48205 (FNV 14344244513446609626) — kända namn: K2-ON, K2+V296-om-+0/+0. Nivå-1 räcker inte; läs nivå-2. PlanLink-V296 mot post-K2 är +0/+1 ⇒ 5977/48206."
+  ]
+}

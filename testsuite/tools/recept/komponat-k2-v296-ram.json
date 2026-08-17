@@ -1,0 +1,78 @@
+{
+  "schema": "komponat/1",
+  "id": "haz1462-k2-v296-ram",
+  "map": "dm3",
+  "evidence": "Komponerat recept per WORK_LOGS/deepseek-ompinning-spec.md r2 §1: EN ordnad op-lista som pinnar bas och härleder slutstampen regelstyrt. Ordningen är del av pinnen och får inte omordnas utan ny härledning.",
+  "base": {
+    "cells": 5977,
+    "links": 48207,
+    "rj_links": 0,
+    "graph_stamp": "906595427771298736",
+    "graph_content_hash": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9"
+  },
+  "ops": [
+    {
+      "op": "remove_links",
+      "name": "haz1462-k2",
+      "kalla": "recept/haz1462-k2.json",
+      "evidence": "Enda remove-op:en, och den läser sina live-id mot en orörd bas. Ankaret är id PLUS from/to/kind — ett rått id från en annan graf får aldrig bära en apply.",
+      "links": [
+        { "id": 10447, "from": 1416, "to": 1461, "kind": "walk" },
+        { "id": 10446, "from": 1416, "to": 1459, "kind": "walk" }
+      ],
+      "expect": { "d_cells": 0, "d_links": -2 }
+    },
+    {
+      "op": "plan_link",
+      "name": "v296-vasthoppet",
+      "kalla": "~/lab/vast_296_planted.json",
+      "fixture_sha256": "00da285962f19b8e53aca279f3bbb670844282260395c6d1585ecbe435348ae8",
+      "evidence": "PlanLink 1167->1191. INGET expect: deltat är just det transformatorn ska härleda, inte det receptet ska påstå. carried är cert-metadata som inte når Cmd::PlanLink — den hashas i receptets egen nivå-2 (params-bärande), inte i den motorjämförbara.",
+      "from": [107.0, -582.0, 296.0],
+      "takeoff": [92.0, -588.0, 296.0],
+      "tgt": [138.1, -701.0, 328.0],
+      "v_req": 320.0,
+      "gain": 5.5,
+      "carried": true,
+      "anchor": { "from_cell": 1167, "to_cell": 1191 },
+      "link_vid_cert": 48131
+    },
+    {
+      "op": "shelf_patch",
+      "name": "ram-rail-v2",
+      "kalla": "recept/ram-rail-v2.json",
+      "evidence": "Sex indegree-0 rälsceller + ett Drop var öster till 670/702-linjen. Cellernas id i komponatet är INTE receptets 5977-5982 om en tidigare op allokerat celler — de re-ankras per origin.",
+      "cells": [
+        [-360.0, -784.0, 128.03125],
+        [-360.0, -752.0, 128.03125],
+        [-360.0, -720.0, 128.03125],
+        [-360.0, -688.0, 128.03125],
+        [-360.0, -656.0, 128.03125],
+        [-360.0, -624.0, 128.03125]
+      ],
+      "snap_z": 128.03125,
+      "no_auto_walk": true,
+      "drops": [
+        { "from": [-360.0, -784.0, 128.03125], "to": [-288.0, -800.0, -16.0], "to_cell": 698 },
+        { "from": [-360.0, -752.0, 128.03125], "to": [-288.0, -768.0, -16.0], "to_cell": 699 },
+        { "from": [-360.0, -720.0, 128.03125], "to": [-288.0, -736.0, -16.0], "to_cell": 700 },
+        { "from": [-360.0, -688.0, 128.03125], "to": [-288.0, -672.0, -16.0], "to_cell": 702 },
+        { "from": [-360.0, -656.0, 128.03125], "to": [-288.0, -640.0, -16.0], "to_cell": 703 },
+        { "from": [-360.0, -624.0, 128.03125], "to": [-288.0, -608.0, -16.0], "to_cell": 704 }
+      ],
+      "expect": { "d_cells": 6, "d_links": 6 }
+    },
+    {
+      "op": "shelf_patch",
+      "name": "ram-prevent",
+      "kalla": "recept/ram-prevent.json",
+      "evidence": "Två knockback-drops 733->669 och 734->670. Inga celler.",
+      "cells": [],
+      "drops": [
+        { "from": [-248.0, -704.0, 152.0], "to": [-320.0, -704.0, -16.0], "to_cell": 669 },
+        { "from": [-248.0, -672.0, 152.0], "to": [-320.0, -672.0, -16.0], "to_cell": 670 }
+      ],
+      "expect": { "d_cells": 0, "d_links": 2 }
+    }
+  ]
+}
