@@ -409,8 +409,11 @@ class T1hFonsterRegelTests(unittest.TestCase):
         td = Path(tempfile.mkdtemp(prefix="timtest-d-grans-"))
         clock = FakeClock()
         window_s = window_min * 60.0
-        # Efter första cykelns sista goto: hoppa till 99,5 % av fönstret.
-        lab = ClockLab(clock, jump_after_gotos=6, jump_to_s=0.995 * window_s)
+        # Grind för cykel 2 sker FÖRE första goto. Cykel 1 tar ~sekunder
+        # (<< 20 och << 60) så grinden släpper. Hoppet sker på cykel 2:s
+        # första goto — mitt i påbörjad cykel — till W. Kvarvarande fem
+        # ben ska ändå skrivas. Nästa grind ser elapsed ≥ W och stannar.
+        lab = ClockLab(clock, jump_after_gotos=7, jump_to_s=window_s)
         with patched_ben_clock(clock):
             n = _koda_fonster(window_min, td, lab)
         self.assertLess(n, 8, "koda_arm stack iväg — grind trasig")
