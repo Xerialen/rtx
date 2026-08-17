@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Daily KPI script K1–K8 (U3, efterlevnadslager 2).
+"""Daily KPI script K1–K3, K5–K8 (U3, efterlevnadslager 2).
 
-Data sources live in kpi_config.json — not hardcoded. A field that
-cannot be measured mechanically is ``OMÄTT`` plus why. No invented
-proxies. No rig, never ~/lab.
+K4 (kr/uppmätt minut) utgick per ägarbeslut 17/8. Data sources live
+in kpi_config.json — not hardcoded. A field that cannot be measured
+mechanically is ``OMÄTT`` plus why. No invented proxies. No rig,
+never ~/lab. K5 keeps daily_cost_usd independently of K4.
 """
 
 from __future__ import annotations
@@ -268,24 +269,6 @@ def k3(cfg: dict[str, Any], repo: Path | None, as_of: date) -> dict[str, Any]:
     )
 
 
-def k4(cfg: dict[str, Any]) -> dict[str, Any]:
-    spec = cfg.get("k4") or {}
-    source = spec.get("source") or "daily_cost_over_measured_minutes"
-    if spec.get("measured_minutes_glob"):
-        # glob configured but we still need files; handled by caller via extra
-        pass
-    daily, note = daily_cost_usd(cfg)
-    return _unmeasured(
-        "K4",
-        source,
-        "uppmätta minuter saknas (ingen T20m/T1h-kvittoglob i config, "
-        "och scriptet hittar inte på minuter ur T1h-mappar). "
-        + (f"daglig kostnad ur config: {daily:.2f} USD ({note})" if daily is not None else note),
-        target=f"<={spec.get('target_max', 3)}",
-        daily_cost_usd=daily,
-    )
-
-
 def k5(cfg: dict[str, Any], repo: Path | None, as_of: date) -> dict[str, Any]:
     spec = cfg.get("k5") or {}
     source = spec.get("source") or "daily_cost_over_agent_hours"
@@ -414,7 +397,6 @@ def compute(
         "K1": k1(cfg, dom_text, as_of, worklogs),
         "K2": k2(cfg, dom_text),
         "K3": k3(cfg, repo, as_of),
-        "K4": k4(cfg),
         "K5": k5(cfg, repo, as_of),
         "K6": k6(cfg),
         "K7": k7(cfg, worklogs, repo, as_of),

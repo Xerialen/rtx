@@ -39,11 +39,6 @@
       "testsuite/tools/recept/"
     ]
   },
-  "k4": {
-    "source": "daily_cost_over_measured_minutes",
-    "target_max": 3,
-    "measured_minutes_glob": null
-  },
   "k5": {
     "source": "daily_cost_over_agent_hours",
     "provning_over": 8,

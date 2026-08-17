@@ -80,12 +80,27 @@ class KpiTests(unittest.TestCase):
         self.assertEqual(row["value"], 2)
         td.cleanup()
 
-    def test_k2_k4_k6_unmeasured(self):
-        for fn, kid in ((kpi.k2, "K2"), (kpi.k4, "K4"), (kpi.k6, "K6")):
+    def test_k2_k6_unmeasured(self):
+        for fn, kid in ((kpi.k2, "K2"), (kpi.k6, "K6")):
             row = fn(CFG) if kid != "K2" else fn(CFG, DOM)
             self.assertEqual(row["status"], "OMÄTT", kid)
             self.assertIsNone(row["value"])
             self.assertTrue(row["why"])
+
+    def test_k4_removed_k5_keeps_daily_cost(self):
+        self.assertNotIn("k4", CFG)
+        self.assertFalse(hasattr(kpi, "k4"))
+        doc = kpi.compute(
+            cfg=CFG, as_of=date(2026, 8, 17),
+            dom_text=DOM, repo=None, worklogs=None,
+        )
+        self.assertEqual(
+            list(doc["kpis"]),
+            ["K1", "K2", "K3", "K5", "K6", "K7", "K8"],
+        )
+        self.assertNotIn("K4", doc["kpis"])
+        self.assertNotIn("K4", doc["kalla"])
+        self.assertIn("daily_cost_usd", doc["kpis"]["K5"])
 
     def test_k3_classifies_git_paths(self):
         td, repo = _git_repo()
