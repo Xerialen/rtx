@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
 """ben3d_buntar.py — genererar en bunt per H-ben (etapp 2c), deterministiskt.
 
-Kör motorns extraktor (crates/ben3d) per H-ben ur de två förseglade manifesten.
-Fork-armen mot den offline-härledda fork-dumpen, main-armen mot basdumpen
-(G11: endast geometri + observerad bana). Ingen socket/Control; ~/lab endast läst.
-Skriver buntar + ett deterministiskt sorterat index (buntindex.json).
-"""
+Kör extraktorn (crates/ben3d) per H-ben ur de två förseglade manifesten.
+Efterproduktion fyller P1-proveniensen med källhärledda SHA (binary, cargo_lock,
+cli_config, kvitto) och skriver h-index.json (P3: 97 identiteter + meta-/raw-SHA).
+Ingen socket/Control; ~/lab endast läst."""
 
 from __future__ import annotations
-
-import argparse
-import hashlib
-import json
-import subprocess
-import sys
+import argparse, hashlib, json, subprocess, sys
 from pathlib import Path
 
 
@@ -37,6 +31,8 @@ def main() -> int:
     ap.add_argument("--fork-dump-id", default="dm3-fork-v296-ram")
     ap.add_argument("--base-dump", required=True)
     ap.add_argument("--base-dump-id", default="dm3-base")
+    ap.add_argument("--kvitto", default=str(Path.home() / "lab" / "rokdeploy-kvitto-20260817.json"))
+    ap.add_argument("--cargo-lock", default=str(Path(__file__).resolve().parent.parent.parent.parent / "Cargo.lock"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--bin", default="target/debug/ben3d")
     args = ap.parse_args()
@@ -44,9 +40,7 @@ def main() -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    r = subprocess.run(
-        [args.bin, "h-index", args.t1h, args.t20m], capture_output=True, text=True
-    )
+    r = subprocess.run([args.bin, "h-index", args.t1h, args.t20m], capture_output=True, text=True)
     if r.returncode != 0:
         print("STOPP: h-index misslyckades:", r.stderr, file=sys.stderr)
         return 2
@@ -59,6 +53,9 @@ def main() -> int:
         "t1h-dataset-manifest-20260817T1536Z.sha256": Path(args.t1h),
         "t20m-dataset-manifest-20260817T1339Z.sha256": Path(args.t20m),
     }
+    binary_sha = sha(Path(args.bin).read_bytes())
+    cargo_lock_sha = sha(Path(args.cargo_lock).read_bytes())
+    kvitto_sha = sha(Path(args.kvitto).read_bytes()) if Path(args.kvitto).is_file() else "OKÄND"
 
     index_rows = []
     for row in doc["ben"]:
@@ -77,48 +74,48 @@ def main() -> int:
         if not meta.is_file() or not jsonl.is_file():
             print(f"STOPP: saknad fil {meta} / {jsonl}", file=sys.stderr)
             return 2
+        jsonl_sha = sha(jsonl.read_bytes())
         dump = args.fork_dump if arm == "fork" else args.base_dump
         dump_id = args.fork_dump_id if arm == "fork" else args.base_dump_id
         bunt_out = out / f"{ds_label}-{arm}-{row['cycle_id']}-{row['ben']}.bunt.json"
-        rr = subprocess.run(
-            [
-                args.bin, "bunt",
-                dump, dump_id,
-                str(meta), str(jsonl), str(mpath),
-                arm, ds_label, str(bunt_out),
-            ],
-            capture_output=True, text=True,
-        )
+        cli_sha = sha(json.dumps([binary_sha, "bunt", dump_id, arm, ds_label], ensure_ascii=False).encode())
+        cli = [args.bin, "bunt", dump, dump_id, str(meta), str(jsonl), str(mpath), arm, ds_label, str(bunt_out)]
+        rr = subprocess.run(cli, capture_output=True, text=True)
         if rr.returncode != 0:
             print(f"STOPP: bunt misslyckades för {rel}: {rr.stderr}", file=sys.stderr)
             return 2
         b = json.loads(bunt_out.read_text())
-        index_rows.append(
-            {
-                "ben_id": b["ben_id"],
-                "bunt_rel": bunt_out.name,
-                "bunt_sha256": sha(bunt_out.read_bytes()),
-                "bundle_payload_sha256": b["bundle_payload_sha256"],
-                "meta_sha256": row["meta_sha256"],
-                "arm": arm,
-                "dataset": ds_label,
-                "utfall": row["utfall"],
-            }
-        )
+        # P1-efterproduktion: fyll källhärledda SHA (proveniens ej i payload ⇒ payload-sha oförändrad)
+        p = b["proveniens"]
+        p["extractor"]["binary_sha256"] = binary_sha
+        p["extractor"]["cargo_lock_sha256"] = cargo_lock_sha
+        p["extractor"]["cli_config_sha256"] = cli_sha
+        p["kvitto"]["sha256"] = kvitto_sha
+        bunt_out.write_text(json.dumps(b, ensure_ascii=False, separators=(",", ":")))
+        index_rows.append({
+            "ben_id": b["ben_id"],
+            "bunt_rel": bunt_out.name,
+            "bunt_sha256": sha(bunt_out.read_bytes()),
+            "bundle_payload_sha256": b["bundle_payload_sha256"],
+            "meta_sha256": row["meta_sha256"],
+            "ra_jsonl_sha256": jsonl_sha,
+            "arm": arm,
+            "dataset": ds_label,
+            "utfall": row["utfall"],
+        })
 
     index_rows.sort(key=lambda r: r["ben_id"])
     index_doc = {
-        "schema": "ben3d-buntindex/1",
-        "n_buntar": len(index_rows),
-        "buntar": index_rows,
+        "schema": "ben3d-h-index/1",
+        "n_h": len(index_rows),
+        "konton": {},
+        "ben": index_rows,
     }
-    index_doc["index_sha256"] = sha(
-        json.dumps(index_rows, sort_keys=True, ensure_ascii=False).encode()
-    )
-    (out / "buntindex.json").write_text(
-        json.dumps(index_doc, ensure_ascii=False, indent=1) + "\n"
-    )
-    print(f"{len(index_rows)} buntar -> {out}/buntindex.json (index-sha {index_doc['index_sha256']})")
+    from collections import Counter
+    index_doc["konton"] = {f"{k[0]}:{k[1]}": v for k, v in Counter((r["dataset"], r["arm"]) for r in index_rows).items()}
+    index_doc["index_sha256"] = sha(json.dumps(index_rows, sort_keys=True, ensure_ascii=False).encode())
+    (out / "h-index.json").write_text(json.dumps(index_doc, ensure_ascii=False, indent=1) + "\n")
+    print(f"{len(index_rows)} buntar -> {out}/h-index.json (index-sha {index_doc['index_sha256']})")
     return 0
 
 

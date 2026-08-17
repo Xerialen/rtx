@@ -1,13 +1,20 @@
 {
- "schema": "ben3d-buntindex/1",
- "n_buntar": 97,
- "buntar": [
+ "schema": "ben3d-h-index/1",
+ "n_h": 97,
+ "konton": {
+  "t1h:fork": 36,
+  "t1h:main": 35,
+  "t20m:fork": 15,
+  "t20m:main": 11
+ },
+ "ben": [
   {
    "ben_id": "t1h:fork:c002:in_vast",
    "bunt_rel": "t1h-fork-c002-in_vast.bunt.json",
-   "bunt_sha256": "6967592524daec422e8b24b5a94ffcbc49920df3c66a3632f3504b25e2d13da2",
+   "bunt_sha256": "9c70906cfbf3fdb96273f636dde2d75be4d4b77c9384d1b6e41d3b99819cfdbc",
    "bundle_payload_sha256": "98923870128349c1856004ce223910ba8e0a93e812c47343fafb3cc68a468cab",
    "meta_sha256": "f34a97ef1d30821a8f83d0fabaecc222f17546a89e7fa4dc81b299ab6f84dc27",
+   "ra_jsonl_sha256": "1436bc93637eb7340ae5fbc198bac6c794a0763e41d66788e381191df9348211",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_plus_fastnad"
@@ -15,9 +22,10 @@
   {
    "ben_id": "t1h:fork:c003:in_vast",
    "bunt_rel": "t1h-fork-c003-in_vast.bunt.json",
-   "bunt_sha256": "a766fa68b4711297db0058a5b085926657da025d2d2879e0fc8f8f2a7dbce39f",
+   "bunt_sha256": "c7506578b887e5c820d8a38c66337ac45a84d5db3fd08bdfc75ea556c5db2b18",
    "bundle_payload_sha256": "83b8ab5d550e22a1190a017b0d40c9bde2a50cc676f057b4ac2d41643a373023",
    "meta_sha256": "8a02fa82598828397016f9031866454314f8d89fe6548e6d02d88a355d596c60",
+   "ra_jsonl_sha256": "5f5c8f54fc70fe6b20e568c0f7b252305dc520ec218eda29727a5fa5c756c657",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -25,9 +33,10 @@
   {
    "ben_id": "t1h:fork:c010:in_vast",
    "bunt_rel": "t1h-fork-c010-in_vast.bunt.json",
-   "bunt_sha256": "9c29a4fe268c1df6df37566509c3bafd900f9cb958ae155ceca9d3f9c6240320",
+   "bunt_sha256": "bcefc3ffd0500a68d8a750483ae3db67fd85ed70975a6736047ca1d33edfde98",
    "bundle_payload_sha256": "2e2cd416b8bae069e1facde9cf6cce44eae5c8b5cf75cdfc039e5062a9eebf6a",
    "meta_sha256": "87a4823377a77ab59545fc7cde3e82f128307ee09ad14df455cc7aba873d6838",
+   "ra_jsonl_sha256": "35b7d6c0573c744c31fccc78021a93ead4494dd79b864d84df4aadb47791383f",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_plus_fastnad"
@@ -35,9 +44,10 @@
   {
    "ben_id": "t1h:fork:c012:in_ring",
    "bunt_rel": "t1h-fork-c012-in_ring.bunt.json",
-   "bunt_sha256": "6667f635e2ef4f0873949e1a027aed184876dfd9f9769b77b201858cc3d9997a",
+   "bunt_sha256": "9a0d779946974774031834ceb77a06857c5053daa5ddb576a9c91e246dbf7923",
    "bundle_payload_sha256": "630da4dedceccd7b146ebc10a3ace9f8b60076637fe0862b9a0bd5f36d421a1a",
    "meta_sha256": "0b87d99c13c7a1d18a6f386bf502073e192cfecca127279ace69566a74c2443b",
+   "ra_jsonl_sha256": "e5c7d5cb7daf997b5c120027fdf83583d0fd5b7a053e0adce4f47dcf9d50d9f3",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -45,9 +55,10 @@
   {
    "ben_id": "t1h:fork:c013:in_tunnel",
    "bunt_rel": "t1h-fork-c013-in_tunnel.bunt.json",
-   "bunt_sha256": "ae3c3a40490b358ba6b3792ed5e826bea44ba2a847169b7c0932756a4368188f",
+   "bunt_sha256": "2301d687166eb4beca5e92c59affc0cb7251039b3b0ebb120b897fb92d2b3242",
    "bundle_payload_sha256": "fcf27876d1346d125c106b92eac9d0b8935037cf668536e14e25920f20ff2daa",
    "meta_sha256": "75da639ab62f55e09502fb8e8920410150d66e9ac6f5e272c656e0af2572bedf",
+   "ra_jsonl_sha256": "fa105e255c1997887c6ad1c2cff2e119f58fd11b51f5122217ef8c902a5494ce",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -55,9 +66,10 @@
   {
    "ben_id": "t1h:fork:c013:in_vast",
    "bunt_rel": "t1h-fork-c013-in_vast.bunt.json",
-   "bunt_sha256": "c737ca3e89d507813113ac2348984b183697f720320422b1fffb6ae4c55c4e13",
+   "bunt_sha256": "0b114574ab7a83895b9d2c461fa1f6d25546222e058eb230dbe33e1605ceeddc",
    "bundle_payload_sha256": "62591d2d7dd39834198bf3b84c74a4dba95f6d1c4eb2b05c86fbf3c33a362021",
    "meta_sha256": "5b323a06fbab85d0155b4cf00760ee4e89695c38e7958ef87695bdb70d536a11",
+   "ra_jsonl_sha256": "d3bd2f1a52a7f0efc82c13a0f8baf0ea0e595ecd3910a83777e59b238589dfcf",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -65,9 +77,10 @@
   {
    "ben_id": "t1h:fork:c016:in_ring",
    "bunt_rel": "t1h-fork-c016-in_ring.bunt.json",
-   "bunt_sha256": "3b768c19c6cc602e734cdb2945d0645041bfda0cd44cd4100aa5ff2d19695485",
+   "bunt_sha256": "031a2d348a1aa50e07be2b5de5a320e697774cbc355a734deeded9de46ed2d50",
    "bundle_payload_sha256": "fa39ee900a8c493f455e7626c3b135535650555a25fe543ec5a0964503e312d5",
    "meta_sha256": "69fdd12908229f2001cd8a9bb48454930a01b4e9975d63a6c3236c10d079ef19",
+   "ra_jsonl_sha256": "6dbc24292187cf3642d800db0399d03ee12aabfaf95444c4d4eb18a8e25191ac",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fastnad"
@@ -75,9 +88,10 @@
   {
    "ben_id": "t1h:fork:c017:in_vast",
    "bunt_rel": "t1h-fork-c017-in_vast.bunt.json",
-   "bunt_sha256": "d4a16a56611ec7b54df8ea9f9872fc9d4692b04403247ff8cd9391b05c9cc1fd",
+   "bunt_sha256": "1230bb43c4780056540ec70696315fcacf05636bfe3b327743689e4a6ead4120",
    "bundle_payload_sha256": "d9c62fc8d734619a094feff5fc9ae62dfc2816666817d205b5d93bdb83fdc6ae",
    "meta_sha256": "99e6ebcd242cc3c1b867de1a3ff3599c24f192718a9efb84154c86cd6f74fb46",
+   "ra_jsonl_sha256": "89f9d16c2c9a31d159a633b12bcfd7a1ab89d84160e5b38aedd3d4930e3f8d2e",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -85,9 +99,10 @@
   {
    "ben_id": "t1h:fork:c020:in_vast",
    "bunt_rel": "t1h-fork-c020-in_vast.bunt.json",
-   "bunt_sha256": "1c637aba930a85f1ed5bfbba5cbb8bc7ced6601717336c8fea0040b0045afa7a",
+   "bunt_sha256": "1168068f9606ebd8dc27d89e202ca122e49b17a9e62acb67f4bd713c20fe85f5",
    "bundle_payload_sha256": "147fbe8d0c02668e4cec3bcab4d2f88984fe5aa2eec063bc2b0b834919e9f0b5",
    "meta_sha256": "61125fb354cf5bab5595938d2529c8ee60e6b01e7af38a41333000ebafbaed41",
+   "ra_jsonl_sha256": "d7b5f002a274e4a9fd29a7f8b291714846f66eb401b582adfb294833f6485131",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -95,9 +110,10 @@
   {
    "ben_id": "t1h:fork:c022:in_vast",
    "bunt_rel": "t1h-fork-c022-in_vast.bunt.json",
-   "bunt_sha256": "53160c872f9e6835b9be7e9eb0ca21dfde347c5013b157dc0039d7881955743f",
+   "bunt_sha256": "f19007a408f93bed36bc1a722eea9bb4fbb48e4acf486470c900bdee7b1a1726",
    "bundle_payload_sha256": "3231629fbdd0b05b08ca8c7fce19e6e4bb23ce15af0f160183eaa1de468607b4",
    "meta_sha256": "0248e950557486105aa0f4dce308ef1a020410d3feb627737a9f74690f4167e0",
+   "ra_jsonl_sha256": "814366816949c7cff666e4349c6ba5578aab80f1217d153b6124281af9687f06",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -105,9 +121,10 @@
   {
    "ben_id": "t1h:fork:c024:in_vast",
    "bunt_rel": "t1h-fork-c024-in_vast.bunt.json",
-   "bunt_sha256": "be8fe72e77716cf5d712721f674748be8d54d98aeab37581af4e0ec89204d334",
+   "bunt_sha256": "c92c193e6d173f2a3c4c1f5ac24482f6b117d5fa7fe1079cc5bacdbf09a89bde",
    "bundle_payload_sha256": "ca3799e8249de45984d48e111904d83d0ebbf2f64ceb5d9dfd0278384f01ccf7",
    "meta_sha256": "4b9732459bb91649c031ad63ecf338b69789574d195420e9b879ff1f208ba6c9",
+   "ra_jsonl_sha256": "1d3c839a9a6dd31b01e1ca3402bcf67ed4ad71d28de15549f72df8fc2a777640",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -115,9 +132,10 @@
   {
    "ben_id": "t1h:fork:c025:in_tunnel",
    "bunt_rel": "t1h-fork-c025-in_tunnel.bunt.json",
-   "bunt_sha256": "a8a5a30b9c3fa80c957768ddb25d2262e32f7c91c588d3b6ca6730e4e8fdee81",
+   "bunt_sha256": "36d1f906cc802788f081ba8c476c7478d3b4ae65b55ebade5b2b2c465ac5af2d",
    "bundle_payload_sha256": "fc3d420f2e5c2cca83ab1da25b57a9be78546887cd23f4ea6bc59a4aa787820d",
    "meta_sha256": "11569e636a72c40d5ffe6bd20b1672a134de1c802088ea0056e7b3461399f661",
+   "ra_jsonl_sha256": "39dba79c0fc1bbaff3f767532fb479a0f87ec428f0b647779b324f9c24b00516",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -125,9 +143,10 @@
   {
    "ben_id": "t1h:fork:c027:in_ring",
    "bunt_rel": "t1h-fork-c027-in_ring.bunt.json",
-   "bunt_sha256": "fec9ab43cdda217d3709e480604bcf0eebdfefcb477f0853718bfcc719eb1370",
+   "bunt_sha256": "81dc487e26c039ea6497fccfbedfe2f933eb48fc34d3aae5664160bbd443ce53",
    "bundle_payload_sha256": "9026a91010ac4c6879612bc3dc7deb0c13a565e8a7a1fcecf1ba01ddac9ef05c",
    "meta_sha256": "f3bc8e4662cba985d7d32fafcb2df9b5441bda1f06a615d740c2ce7643005790",
+   "ra_jsonl_sha256": "a6271f0020f050a980ff58be0d74af06f3ee9034951eef82061c48088f18d5d8",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_plus_fastnad"
@@ -135,9 +154,10 @@
   {
    "ben_id": "t1h:fork:c028:in_ring",
    "bunt_rel": "t1h-fork-c028-in_ring.bunt.json",
-   "bunt_sha256": "c6571214f332f86f1d43795c10676f82250c4aec48e39c8956c57d14960c6ac8",
+   "bunt_sha256": "7e7723cf34a03978164ea8d804c80bbedc1e5d4480f943148e4070615e36ac1b",
    "bundle_payload_sha256": "1e8dd34cada45d75d77fedd2b0ffd2a366d512296046d021ebf0fdce8bc2cc61",
    "meta_sha256": "c1dda739026d549576a0900e50f4cb5a694eba0718622c0eb1560fd9e5b2630a",
+   "ra_jsonl_sha256": "bbefa616d7c86029a36e5c4e20c6d89c7a7a93f0eb259ddec984583ab8ec6a17",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -145,9 +165,10 @@
   {
    "ben_id": "t1h:fork:c028:in_tunnel",
    "bunt_rel": "t1h-fork-c028-in_tunnel.bunt.json",
-   "bunt_sha256": "27334203ed4b4f206ac7c04242849d04a9360cfc739e6ffac7ef062ea88e5737",
+   "bunt_sha256": "6da190ac14e40a3072806d00c6a67652fcdd07e83b7c46842166a4962e5cf833",
    "bundle_payload_sha256": "dea8f76777bcdf4238401b86ee94dd71f20af7a4fb7009b565b59b957f7eafa0",
    "meta_sha256": "c76e1f9152c41c9b49c3ca851ff71ca18fabdca23e9be6df732a76cf357a5526",
+   "ra_jsonl_sha256": "e4c362e4c7f7bbb2647a20d76402a736d022453df61200d58e6d995bdcf2384e",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -155,9 +176,10 @@
   {
    "ben_id": "t1h:fork:c033:in_ring",
    "bunt_rel": "t1h-fork-c033-in_ring.bunt.json",
-   "bunt_sha256": "903c029948783d35bdcb7212dd2c33e92d72a6c871083232e8b253409efff2f9",
+   "bunt_sha256": "b6d8d32aef671e3e3bac8173601a359948f361118f653da848a71398aba652f5",
    "bundle_payload_sha256": "759c897e964e813005d325fdbf5aaa21f1ed7e88896e8f4609dcc260f0d6adc7",
    "meta_sha256": "c5d4e925918bd497612ec2a72f9127d1f09753da975fc139a094c163f5af90bf",
+   "ra_jsonl_sha256": "f0a2ca8c14a7973399590deac09bd21106a1bb68323f77f86b67ece2eea6cf67",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fastnad"
@@ -165,9 +187,10 @@
   {
    "ben_id": "t1h:fork:c034:in_tunnel",
    "bunt_rel": "t1h-fork-c034-in_tunnel.bunt.json",
-   "bunt_sha256": "ceb52054d0c08bc4228c2ce00d1e5c18ffd1f538ba45a476eda5294b307272d0",
+   "bunt_sha256": "0e4a9dd7fb763f28b5db3897ce520ec7bd242f7b68396409769c883d83f4d6ee",
    "bundle_payload_sha256": "1a1b629f1803f689a3bb54c8252000aa99a834dc7164b9c6ca52eecd7eee8410",
    "meta_sha256": "473dd1d6a9f27063fcb7ed51070672c975a6fecdea55a3473eb675a411822206",
+   "ra_jsonl_sha256": "4f5fb46b3a9784ae216e5cfd1c852dacf89968ecbebc1f119021744e2bc058bd",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -175,9 +198,10 @@
   {
    "ben_id": "t1h:fork:c034:in_vast",
    "bunt_rel": "t1h-fork-c034-in_vast.bunt.json",
-   "bunt_sha256": "7f35db5a5f28985a95117e8301fe3f8cade84eb000c826d726cc4782faf263e8",
+   "bunt_sha256": "a6650e85f4440ce18813c3b20c07452399d13f8dfc1ca76e3731d18cf9a277ee",
    "bundle_payload_sha256": "7f425d0e63b430874e5d5bc33dcebd7b1becf690255ad0b0b56b88f98856ddc4",
    "meta_sha256": "2dcabbd6c3573da7d31a81ca8b2adbb1d7462b31f9fa314311efdd1f6db5b529",
+   "ra_jsonl_sha256": "306330758d031056d3c53e0b2c81907c220949a6733b466bc1cef8ae022a299a",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -185,9 +209,10 @@
   {
    "ben_id": "t1h:fork:c038:in_vast",
    "bunt_rel": "t1h-fork-c038-in_vast.bunt.json",
-   "bunt_sha256": "86b534f46d42f05b9827f7d5dd1f5968cc81343dba2f89aff60b6081532194ab",
+   "bunt_sha256": "c72a336f2e5edeba14cc328ef3c2781609c3f6ff74f9162ac8e1d50a1a05e6f2",
    "bundle_payload_sha256": "407a3dc940fbcd321feee65988023563959dba669f9a0519b2e8a9ebfef08397",
    "meta_sha256": "71121df7d530e5d81c37578a00761a77156b93c40fa69753820d072c3a8dc07f",
+   "ra_jsonl_sha256": "587d959a6d335d6f3de1f13b9fb5ee52e411c29209984bd46a3316033b6b47de",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -195,9 +220,10 @@
   {
    "ben_id": "t1h:fork:c039:in_ring",
    "bunt_rel": "t1h-fork-c039-in_ring.bunt.json",
-   "bunt_sha256": "04d9ef08bb34ac0e581892740e04b76af51350656718ca991a0d75493d133917",
+   "bunt_sha256": "0e260cd85f27cf4c408c6d5da9fc9983c7fd6ad9a78b17823a2f24d06bb52494",
    "bundle_payload_sha256": "372b22e9363536ffcc7a5272922092dcf3f9a91b5a3d955cb5d1dbddd64766bb",
    "meta_sha256": "0c301f034daef422787eb3c0bd19577b157de48a622b44008aa8298bda09c157",
+   "ra_jsonl_sha256": "c700ab664c82082c58a2eda302b288fd5ce74778cf138d70a89c6ed08f00be0b",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fastnad"
@@ -205,9 +231,10 @@
   {
    "ben_id": "t1h:fork:c039:in_tunnel",
    "bunt_rel": "t1h-fork-c039-in_tunnel.bunt.json",
-   "bunt_sha256": "3315802f5ba3712ce49892186e3d98114c339d8dc31cda2ddb2f05f24ab70e3a",
+   "bunt_sha256": "8f48d057f13b5a8a8cce14dbb10d1f38f9e7cd1132f030a5026ece2c984beb88",
    "bundle_payload_sha256": "6d917f8f53dd3dae673fd87fd1c401b82400ccb59e850233d4fc3fcb20aa3f65",
    "meta_sha256": "290c5560bb0941b19e95d8e17a20a1cdd16cc593fb0a2ab92e70f844012e4bb2",
+   "ra_jsonl_sha256": "58b0d87fc3b2b9c45a16dc34548a89409e1ad73df437e9ee8928578fd3438c67",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -215,9 +242,10 @@
   {
    "ben_id": "t1h:fork:c046:in_tunnel",
    "bunt_rel": "t1h-fork-c046-in_tunnel.bunt.json",
-   "bunt_sha256": "72daf6024f3cc4fc724fa04c2e42e56c053d5b3ebf00fd0ea9e7a7a436758a8a",
+   "bunt_sha256": "8163a149916ae0c294754d09b9fd25343eb501e2b0e5083888c2e359681d157c",
    "bundle_payload_sha256": "8d6df264b8145cd25b74eda3ffcdaca9f7c383f1e264ecb0f7b1c549fa6a52b8",
    "meta_sha256": "f1d39a206fe94820ba0aa96b9142657102e6bdf3d15ef4db985fba75dd98a01f",
+   "ra_jsonl_sha256": "5417d3cd4819aa824d1c7575399c7b62a8c5cede923d1695d9108169a5ff6fbd",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -225,9 +253,10 @@
   {
    "ben_id": "t1h:fork:c046:in_vast",
    "bunt_rel": "t1h-fork-c046-in_vast.bunt.json",
-   "bunt_sha256": "31f47e52e8dc41a7de991ff92328e9a7091009e3faea94e207c898b82be542f3",
+   "bunt_sha256": "29a3e7b23de5ed97bdc904aafc5f64d9e830f6062b8759484176ef0324af80cd",
    "bundle_payload_sha256": "398be7ef91bc07ed096af6ded9e05fc53ae2ab49f07968527e9946120bea4864",
    "meta_sha256": "197a3572d9750ad0e3af91a5d625ece5345e3ef3e96bcde59c2869603b654eb8",
+   "ra_jsonl_sha256": "ab121de48469da5f764fbbe5982fcebc2b6be73b1135b61f576f7cca0951473e",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -235,9 +264,10 @@
   {
    "ben_id": "t1h:fork:c048:in_tunnel",
    "bunt_rel": "t1h-fork-c048-in_tunnel.bunt.json",
-   "bunt_sha256": "0751913ef750e6aff8dd13a8350de98df179103fc67f485e6083c997126466b7",
+   "bunt_sha256": "0eec608019eecdbfbd6d39a1637ba6012eb6c09ab86370e720f9ccae022ff1af",
    "bundle_payload_sha256": "4feac664ccf1b05c78cc2174e99f99535b56a8ffbd5cbf1e50c3cab407afd45e",
    "meta_sha256": "26fd299f973c2af212c7074a49fd95bfd7bafbf56f8877304df39f432956120e",
+   "ra_jsonl_sha256": "06ce257607701b2f966e32559f1383de657bd1e6de86755ed11afca02258b831",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -245,9 +275,10 @@
   {
    "ben_id": "t1h:fork:c051:in_ring",
    "bunt_rel": "t1h-fork-c051-in_ring.bunt.json",
-   "bunt_sha256": "c3506dfe8d1044fd76382a96b06c18ae98e3d7ee56e1af532b96044e7a814055",
+   "bunt_sha256": "f7094475567887740dd7e43014a0616812e927b93fdfd2dd4d8404b7f0fce280",
    "bundle_payload_sha256": "84b14a575b9afb058a4ee7af313eead3e7b2efab20e338c09eee320df4b871dd",
    "meta_sha256": "8d25a70d978ccc24748e3e124ea1ae0439f4931d88b70077cf60bbb5893a6eeb",
+   "ra_jsonl_sha256": "bc533ee5c6cc57089fee029e5bc6d20119c9fcf792cd2607975c0d56d2e67b58",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fastnad"
@@ -255,9 +286,10 @@
   {
    "ben_id": "t1h:fork:c052:in_ring",
    "bunt_rel": "t1h-fork-c052-in_ring.bunt.json",
-   "bunt_sha256": "dafba93bd5786b69bdd7777c40c76c99f582042ae79a598b053c780fe89d58d0",
+   "bunt_sha256": "ea05b6ae2406df2a934ead03c6806d10937a6354d907984afae925bd26db671d",
    "bundle_payload_sha256": "c399f8d73dc32071d83a739d07003605a81389c45b01ea60db7dce3f809ccabb",
    "meta_sha256": "315f71a64b57feab346765e2a087999bee407e0d3dc02c436f706d6a2206fbc9",
+   "ra_jsonl_sha256": "3cd14936a45a17c694e6b300de305e973bbda55399856a3867e560e8580c02fd",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_plus_fastnad"
@@ -265,9 +297,10 @@
   {
    "ben_id": "t1h:fork:c052:in_tunnel",
    "bunt_rel": "t1h-fork-c052-in_tunnel.bunt.json",
-   "bunt_sha256": "bccd25d5c458521fef5fc7aa242b3738684292394bc37b2087576027b530f644",
+   "bunt_sha256": "2963c1ed2a1b6c7497d59ec2c5b5ebfa3e630a8dac1aa50d8359f282a19aef97",
    "bundle_payload_sha256": "e1cc09c0397a47fb6d74bc15f34797cec651ecc8b6828b6ff44126d297f4ca18",
    "meta_sha256": "1277d1c37949cf85fb515749160492d012ebdaba6e22ea35e2e0d4f7f9e9973a",
+   "ra_jsonl_sha256": "c73449f95cc56c4dcaeec06c91c3f8998dbef79c49d5a958c8a3718d4de1a7fc",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -275,9 +308,10 @@
   {
    "ben_id": "t1h:fork:c053:in_ring",
    "bunt_rel": "t1h-fork-c053-in_ring.bunt.json",
-   "bunt_sha256": "1975adcf598ebf1c4bdaf02ef633b79e5dd84c91627e9d5b71e657f4e484217b",
+   "bunt_sha256": "ff27161567051861e63ed9e51104b22edef2d0bfaa5ccc85c1d037c6f39b76af",
    "bundle_payload_sha256": "78ffd83e7429b9f4e36ea610776e405a5cfb01977c9b2656d6594d1203ecacdb",
    "meta_sha256": "9da8ff2ee94b6bf9ca24a51c51bc3c7d648a53a0a167fe07c011f961be221556",
+   "ra_jsonl_sha256": "5bbd370724ec7397a4f339044454f59eb874b372f091822f2972397ce326f528",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -285,9 +319,10 @@
   {
    "ben_id": "t1h:fork:c056:in_tunnel",
    "bunt_rel": "t1h-fork-c056-in_tunnel.bunt.json",
-   "bunt_sha256": "668a1bc3efd4ff21b803c7db59bde14f7b11c5c21c6c04c8c2363846c1968fab",
+   "bunt_sha256": "886a1609ed60ed2acb1553b00b4e8a64836d189ac16108d720b14dccd6eba630",
    "bundle_payload_sha256": "78870e9b3fd133b044a980f04f9f93ae616227e9174a88a6ee8a28868030cad9",
    "meta_sha256": "7f1edf3f8446de2b5e613ffecb9556fc7347b812ee5e3e1a2de19c8518e7697e",
+   "ra_jsonl_sha256": "cf2cdcaa4a01c4763a3d7298b1bfb4a06b8c20c4b7f6ca0cae5f81c61852fcb6",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -295,9 +330,10 @@
   {
    "ben_id": "t1h:fork:c063:in_tunnel",
    "bunt_rel": "t1h-fork-c063-in_tunnel.bunt.json",
-   "bunt_sha256": "0910fef0324a40d26b4b788134e72364b03aeb079aeb9b9c9309e86bc137b0ad",
+   "bunt_sha256": "0e73c7cde543eabedfd8c19ed8d22ce8795a7d264bac2080a83fa9e3d475628e",
    "bundle_payload_sha256": "11e622892122b3592079782e359e47a961d7479a83738f04d510e88116bac969",
    "meta_sha256": "1fb40135fa31a08b44f6da5480095ee91a166fe93176c667e83674335731dd7e",
+   "ra_jsonl_sha256": "f30cd4622577de12529f9de16f6aa2212599a22a02b6c4639cb838403d4bdb7a",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -305,9 +341,10 @@
   {
    "ben_id": "t1h:fork:c064:in_ring",
    "bunt_rel": "t1h-fork-c064-in_ring.bunt.json",
-   "bunt_sha256": "3372c9dfab2dcffdf8acacd51d38c8fe45320b969237c4b448266017af756491",
+   "bunt_sha256": "079cc053d2fc47a12c46917cd30e0ef7d0eba783d5212b342fa4db62a352d75d",
    "bundle_payload_sha256": "af055bfd3f93d951195c55bfc29163f69908836b9cb3229df5910e7116c842f8",
    "meta_sha256": "7a03a0b4bccb5c6ee12257c668f72a4e6505935a6de46e00e929eac65f8e6430",
+   "ra_jsonl_sha256": "bb7defecd1482084a89c7f6cba5ad1bfc1832b004a516560525677697a70577a",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fastnad"
@@ -315,9 +352,10 @@
   {
    "ben_id": "t1h:fork:c065:in_vast",
    "bunt_rel": "t1h-fork-c065-in_vast.bunt.json",
-   "bunt_sha256": "bb6a4cc5e0129a08dda839e7786b9f432a31f8440919284473eb3a07fddcbc36",
+   "bunt_sha256": "1ef61c534f8939c5ea74dc58f641893cc85eb971b44af7ca30631130647d34bf",
    "bundle_payload_sha256": "41d9c6d472f00327fcc32a330d6d193cdfb7ca8d210dd955065fa13c8a1db6fe",
    "meta_sha256": "31661f63a6e77362dd331c6cac241898d18864aaaf5f459638cdf1c2256f22cb",
+   "ra_jsonl_sha256": "94528f5af8265a7e3c4ec730c299ce55593638e80c6effbae4d92fcad6009d0f",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -325,9 +363,10 @@
   {
    "ben_id": "t1h:fork:c067:in_tunnel",
    "bunt_rel": "t1h-fork-c067-in_tunnel.bunt.json",
-   "bunt_sha256": "343d27824ae268d7d61c0d8bdfcfcda2e88e93abd5f9aa5958f633f8a783eab5",
+   "bunt_sha256": "13824478cbf0bbed5287217be38a8cd7c2baec393914b7fb94769c0441d3a1c2",
    "bundle_payload_sha256": "6941c1a6392bb203ce1fd3c9fe1d789e5d088844facd954abd38edf71df27cb3",
    "meta_sha256": "b834616b428fe2fe0a98620309c22950c768ebc78b67ce955900a6ffff2c868d",
+   "ra_jsonl_sha256": "33bd506ad036f9bf77cc78acb53432bb71c331acb83f0cd14c750936a2478491",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -335,9 +374,10 @@
   {
    "ben_id": "t1h:fork:c069:in_ring",
    "bunt_rel": "t1h-fork-c069-in_ring.bunt.json",
-   "bunt_sha256": "8b3f51e933fe370edd22c57e7b0184e87a070523f222bb471840ad579b52f4b7",
+   "bunt_sha256": "c1544c2971d0ee4634a35810736f1507d354b89e98f5e08551a6aef513f8b566",
    "bundle_payload_sha256": "a938b8562b665cb57884f58a09723ba3ac38e9f349e883c2ca0a2f80d2244212",
    "meta_sha256": "100071f5c410182629efe32be62435a6c5c1afca4fd8cef17cde31a51b30c851",
+   "ra_jsonl_sha256": "1c412132acda282c7b76daa1e2832b55b0b34a16b0ba26e47f1872e4c479c530",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -345,9 +385,10 @@
   {
    "ben_id": "t1h:fork:c073:in_vast",
    "bunt_rel": "t1h-fork-c073-in_vast.bunt.json",
-   "bunt_sha256": "f230a19aaa91f7a3c7502f1453ab132faf9611c492945c55cd246a4f1435a7b2",
+   "bunt_sha256": "cb823f93bb4247b3f931ab37217efcb23903a42b769dde8c456a737dc52f8d56",
    "bundle_payload_sha256": "25a5ac8cf72b4f4cd445e355d24c2d50f7c8e3f1631c4e55077d4473a4305cc2",
    "meta_sha256": "c8135e86a44b90c28221a3098768642e6105f6e0ac233d6ecbb8549b23d49fba",
+   "ra_jsonl_sha256": "25e98c3fb6813ca8879f466ecfcd7bdcc21633031f7a91d55450c2d469b09b9f",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -355,9 +396,10 @@
   {
    "ben_id": "t1h:fork:c074:in_vast",
    "bunt_rel": "t1h-fork-c074-in_vast.bunt.json",
-   "bunt_sha256": "eece9d0f0604092982e03232d6dbca8d038224964e09c70731e69c9dceb3ad74",
+   "bunt_sha256": "2323b7da8fe56ebc8f2acaa3470b699443cd175049c1799df56b38ae28afff21",
    "bundle_payload_sha256": "408d6e6729d6d64607b394c067f11a4ea8835cf127dc8853e9231eaccc939b7c",
    "meta_sha256": "b1f7912434c901dc2eb2c4bfa43ed862a1079ea6895b7c73eb160cd003ca9c0b",
+   "ra_jsonl_sha256": "f89e2d8c8fae6af2776200e775055bf2e6eb65576a88a12eee9c696f38334669",
    "arm": "fork",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -365,9 +407,10 @@
   {
    "ben_id": "t1h:main:c002:in_tunnel",
    "bunt_rel": "t1h-main-c002-in_tunnel.bunt.json",
-   "bunt_sha256": "e7c2f5b4e1fac3db42a7b74dc9a52d2bb799041fc4f6c9540af4618275e3e62c",
+   "bunt_sha256": "20cc17715d3dc1767d690c60ed28c7a06020c61df4a164f3d4b160c8f443fb55",
    "bundle_payload_sha256": "2153684c481ef621adac1376756ba0e548a5a2b795512ae837a1a20b3f380feb",
    "meta_sha256": "09f303f587b4ebc2d73e716a2a7d4d2f91e2b6f9eeec7e5da10457d25bc370e5",
+   "ra_jsonl_sha256": "151d87e12879d103226f4d41519db9fa8dbd7ace951094c19e9f44fc2be2bae0",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -375,9 +418,10 @@
   {
    "ben_id": "t1h:main:c003:in_tunnel",
    "bunt_rel": "t1h-main-c003-in_tunnel.bunt.json",
-   "bunt_sha256": "e5f1d08c00df2df9d46f36dd12beda011b29ad736373fe08b49f972150cfc88c",
+   "bunt_sha256": "aac86821ef3081ffd1b07d6017c0b165011047d2da9a4d35535cd637fab0f4ad",
    "bundle_payload_sha256": "fbcc9cd59c92b8dcdcd188dc0f766d5d10e53a1b8893c8f498c89835373f7852",
    "meta_sha256": "952b0f2cc97cbb16a58e3065461abfb57a8ffff4d7681f09866694ac95181f00",
+   "ra_jsonl_sha256": "5f4e96e07575d4e2ec1f827291e711984eee4ef1fc204631ed86da42ed3fdacd",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -385,9 +429,10 @@
   {
    "ben_id": "t1h:main:c003:in_vast",
    "bunt_rel": "t1h-main-c003-in_vast.bunt.json",
-   "bunt_sha256": "b28260133ec76726b4dd1dc3404181411671623ef906380d563af2a41038fd6f",
+   "bunt_sha256": "a43296ec7b5e5732dd4493c2afd1ae1237389fe17511c50c240483dd38210cd2",
    "bundle_payload_sha256": "c2d34bce75bf87e03e95f6d981e1ee663039d83d3c5021f19e79ef2a11387908",
    "meta_sha256": "cf3998a7b0dac46e6b015f69face14425d4a719fe8d6f3eb12ea9786c6050fe6",
+   "ra_jsonl_sha256": "34f9c416f3f65c6fbb5e57e882021b3204d50abadbb612a892f9aca3ca35fb7d",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -395,9 +440,10 @@
   {
    "ben_id": "t1h:main:c005:in_ring",
    "bunt_rel": "t1h-main-c005-in_ring.bunt.json",
-   "bunt_sha256": "5252c1f8ee0d6808e2a989906d0ef7e91338ef126f517074708a9fab947a7d4a",
+   "bunt_sha256": "3ec310f20ab53db4904f71868175e0987879e46cb018c20901cf06b0d7f7b7ce",
    "bundle_payload_sha256": "1cfef5411c40c05a0af71da6491f72847b79b81e81d2e73c82bbe2710f15f6e3",
    "meta_sha256": "1ed25ca86946cbb4f4e79cf5f254c439c38057b740c24017cfdfe101cb8a2101",
+   "ra_jsonl_sha256": "945cfd4b8631b97976b789cce2a0b71d2a232006b460eb813f1aa3f7f48ee5c2",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -405,9 +451,10 @@
   {
    "ben_id": "t1h:main:c010:in_vast",
    "bunt_rel": "t1h-main-c010-in_vast.bunt.json",
-   "bunt_sha256": "38afbf88b41dd85ab5eafaf6b2bedd5642693b82094c7cd6d122865de629acd9",
+   "bunt_sha256": "8a592ac3aafc9f3d8adb5e78c54124ef36192fbba3b42f741922b5c2ca8ccf96",
    "bundle_payload_sha256": "b14edbb48e7369e9d35cf2404d6434093786b8103a73d4397c5750a7c5e54134",
    "meta_sha256": "5fd2209b2418de58c719e1475ae666a7bc66cf978e64236841aae5098f91740b",
+   "ra_jsonl_sha256": "81f54847d73db477928d4cb901fee9021a3ebb4ee7e344b319380ed2530c8dff",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -415,9 +462,10 @@
   {
    "ben_id": "t1h:main:c011:in_ring",
    "bunt_rel": "t1h-main-c011-in_ring.bunt.json",
-   "bunt_sha256": "d13c5643b683ccbbac79d25255f40dea6ececafc6fedb4a83d915c67692d77b9",
+   "bunt_sha256": "5525c79624fc5ae581333eec4b4be9f43348737f607292a5e0355819819d91cd",
    "bundle_payload_sha256": "f17ae1f4fbbb74be8cffc3004e54210c383d45fc5a60179d9bdd0112f392f45c",
    "meta_sha256": "7112201ef896e9cca0c64c6da25d208a05dd0f0e8a633b571f2b6356791a59e4",
+   "ra_jsonl_sha256": "2ecf1ca97d1985baf0924346c42029bbe0d6173e42de156a63d1af1986c54477",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fastnad"
@@ -425,9 +473,10 @@
   {
    "ben_id": "t1h:main:c011:in_vast",
    "bunt_rel": "t1h-main-c011-in_vast.bunt.json",
-   "bunt_sha256": "a9952693e2d0e87c337f5c94b9d5d673361483bd0476fd74b2d6e5f95ff3cb0e",
+   "bunt_sha256": "f827d8bf08a5345f88c21e0ed58f67bbbccd37b0a252e2fa6dc7fa25482882db",
    "bundle_payload_sha256": "355bee44378413e48b07344f73f40fe60e964c7304d9ea976f3fde44d6ba6314",
    "meta_sha256": "241a2921d7ca2b3286884897e3d8f94f84e6b35eb66bd88f20509b2d94add8d6",
+   "ra_jsonl_sha256": "f59c402b16304823f330f73ed4243b293839686cf26ccaa296e9d04d17813905",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -435,9 +484,10 @@
   {
    "ben_id": "t1h:main:c013:ut_vast",
    "bunt_rel": "t1h-main-c013-ut_vast.bunt.json",
-   "bunt_sha256": "486caef8efa1683e786f4e4dd6688557317620f705dec965a523320bde8ef0c3",
+   "bunt_sha256": "c00e102111e01e7f4f5c438455c07edf8638be217b430b53cd1f1ba9f39b9951",
    "bundle_payload_sha256": "dbd2005f19a3e3b8f3192f30a4675b8a10a731f567f6ab0c7f616e8c9d14861e",
    "meta_sha256": "1ac3f5c128a570b9ef60eb6d1f377980f5d51c0568cea2c77f7a02099d79a142",
+   "ra_jsonl_sha256": "a1a74f7e4a9c593deb75e6ad5e3872532d2db2a6c5c69b52ccab4196a2f14a39",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fastnad"
@@ -445,9 +495,10 @@
   {
    "ben_id": "t1h:main:c014:in_tunnel",
    "bunt_rel": "t1h-main-c014-in_tunnel.bunt.json",
-   "bunt_sha256": "cb7999ba948ce4650fa0c8e38d2755b36e8ab5c4fb57e17b0e9ed6d02bcaf7ce",
+   "bunt_sha256": "5403454a9a7ceaafbad18c14afb71c1fcd1d5b9ca98f770458215cc6575d3295",
    "bundle_payload_sha256": "5fa376e1a57345e18e0cf2aa89bbcb4da322b92e251906df40eb822d0c83ef6a",
    "meta_sha256": "a95ac46bc48857a694ef3ce374bc3e59f9a7f638b00ad5f25ee1235879179897",
+   "ra_jsonl_sha256": "13c3fe80a63e6f2e64b0454e8f3bd41bfcf4031bff49fc05fa1116b595046520",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -455,9 +506,10 @@
   {
    "ben_id": "t1h:main:c015:in_tunnel",
    "bunt_rel": "t1h-main-c015-in_tunnel.bunt.json",
-   "bunt_sha256": "c3289028e603a9a83f9704f682fef11f31b87f9c63115a6a6ed73eec45ab6ab8",
+   "bunt_sha256": "5a4464abf049ce422c554fdaf235aa7da64478200f43f00b53cfca5eaabc0530",
    "bundle_payload_sha256": "d1d0b90d808f178e1e7ab556fbe25f3e6b4313415305597ffdc8619466647414",
    "meta_sha256": "a387c1fe90c6a63bf3759bcd3178268075f18017c3c5a5ee141c766de71629be",
+   "ra_jsonl_sha256": "41aee561c4e041355d7c5844180c48c2b466675d00b412aa932b9aed44c9bd3f",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_plus_fastnad"
@@ -465,9 +517,10 @@
   {
    "ben_id": "t1h:main:c018:in_tunnel",
    "bunt_rel": "t1h-main-c018-in_tunnel.bunt.json",
-   "bunt_sha256": "285f5b4c0a7f62570df814da0e8dbb5418bcc38f904329ec289c61cf1ca3a6e7",
+   "bunt_sha256": "16fff188b8c8152d84007d618c9094d09ac1760a43e52717676072165be5020a",
    "bundle_payload_sha256": "92821d9dde1dc515f488a15ae2def376e4341cb0732fcff6bdee919de8b737a5",
    "meta_sha256": "60aa5c52b5fc5f458be9decf259613de821d8d57f27fa60441e0b22eec2524fb",
+   "ra_jsonl_sha256": "a88f1073ba45f38b5f7fe5f23ec97a36be934016a89aedf31de9cccd8b1471a3",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -475,9 +528,10 @@
   {
    "ben_id": "t1h:main:c019:in_vast",
    "bunt_rel": "t1h-main-c019-in_vast.bunt.json",
-   "bunt_sha256": "cd29c8b80a8fade6a09ed43eb009fa39b18a9a50c4e733604b38e462bc0596e2",
+   "bunt_sha256": "55b66242e5ebf6794bbf6d6b3d340058a17f0a7a78f930e46c3581566c44aee2",
    "bundle_payload_sha256": "159b48ae977f3319c2bbc36541859f50754281babd662b4e4bec8204c35a45c2",
    "meta_sha256": "932c5e0cab9ef83feaaa932859fac5e0c3b7450f0a082571c2880164c8ffd065",
+   "ra_jsonl_sha256": "78dce3614d16b2139ed32247c7a1626b3628f46fc344fb4affb29bbca47979a5",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -485,9 +539,10 @@
   {
    "ben_id": "t1h:main:c023:in_ring",
    "bunt_rel": "t1h-main-c023-in_ring.bunt.json",
-   "bunt_sha256": "6ffd8d403a4f7b5f698bc8f1334a18d7eeb78464919d59ff77e0b3622bfe7f28",
+   "bunt_sha256": "5b8f81f1d109d86b18405704f15a3353603aa456e938b177c594e65fd9da08f1",
    "bundle_payload_sha256": "acd7842dee37501cde96940e486070d0371cf4bbb2466fd79ec3013e087a1987",
    "meta_sha256": "081a37636b4df06aed98dc6c6929ff7a60fc6d36b614d70ac6866d7416db508b",
+   "ra_jsonl_sha256": "45b7d84a505cf93610f37612040e4e2f8e3f6fe90e7bbccacec5cfe0ca1662ab",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -495,9 +550,10 @@
   {
    "ben_id": "t1h:main:c029:in_ring",
    "bunt_rel": "t1h-main-c029-in_ring.bunt.json",
-   "bunt_sha256": "70da389c132eb76d9a7604975c0bb4e863d4f32cf92f4803a6c7090b08da697c",
+   "bunt_sha256": "051e4b90a3333d19dc1f7a489f74c5590839c702705789f333e61b55891585fc",
    "bundle_payload_sha256": "f21ad3311c7bce55fc04a8e186ba37202c523d00419645ead8de047b2d4df757",
    "meta_sha256": "3e3f5e4fd59acc0de5529bda486a466391342e3d8e5fb3f45258dbc0c22f1af0",
+   "ra_jsonl_sha256": "10ff79108b5ddb32ff5ea2770831f074660c5de5e7f7da248097dfd1ce9906f9",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_plus_fastnad"
@@ -505,9 +561,10 @@
   {
    "ben_id": "t1h:main:c029:in_tunnel",
    "bunt_rel": "t1h-main-c029-in_tunnel.bunt.json",
-   "bunt_sha256": "5d8a75c5168976303e5588f039e2efe3792cf58d3bf798e04d27e230cc06aa62",
+   "bunt_sha256": "ce99dad7841151d32018d7c776347c8ded44002c78afc49b1207219dffac22d1",
    "bundle_payload_sha256": "ab7bae7a3ac2fe739660bd43a2b737cc9aca37fd547b02e903770730eab9ee4f",
    "meta_sha256": "521b2be8fe82fd80f3e5f19e1c5eb11f4e469b8ce0bd20d47a7787ddc508af49",
+   "ra_jsonl_sha256": "9dfb3257a4bfeba58d737df59e80d2e86b4bf69686d06ed37e466ccba31eb080",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -515,9 +572,10 @@
   {
    "ben_id": "t1h:main:c030:in_tunnel",
    "bunt_rel": "t1h-main-c030-in_tunnel.bunt.json",
-   "bunt_sha256": "2920bc7fcb26cc6e49c4b122302525eff0a6ec03299c76e4de18fd91dfbe7989",
+   "bunt_sha256": "82349251364cf2049a7dc9641fce9f6d9520e6bff8949090d706bc8fe1d2b18a",
    "bundle_payload_sha256": "f6a28ff0e83e8dfaf68272ea4c1403209cb3ecbf952412bd66e309f12075ebf4",
    "meta_sha256": "2e98289678aa9d64a7306498dc6755bc013f3cdbfb0ca078e5f2e714b5afb60a",
+   "ra_jsonl_sha256": "f40c74316708924d07c20adcf373985bbf21a79a0e0fab49aaca6d2333a0b3aa",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -525,9 +583,10 @@
   {
    "ben_id": "t1h:main:c039:in_tunnel",
    "bunt_rel": "t1h-main-c039-in_tunnel.bunt.json",
-   "bunt_sha256": "2bc7cc2fbff88629d1e93f3b805e78ed8904ac7a425ed3f25ea91a6a49cd54c3",
+   "bunt_sha256": "46421c55ea33cee8e6335022593e9b4a647a492e016096d564f738cb095a872a",
    "bundle_payload_sha256": "ffd51efac21a20404ef87db978558073f8c0e18a0a4afd471bd78b454afd21b7",
    "meta_sha256": "a37b4f16bae091d76ed7ed0adf83f3d745d39775147a911bd1ae45ccf3f4032c",
+   "ra_jsonl_sha256": "46d7213b4b0932b2adc86cf9d5952beee898a3fcf9fb42f96e4fa240389c4e5d",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -535,9 +594,10 @@
   {
    "ben_id": "t1h:main:c042:in_vast",
    "bunt_rel": "t1h-main-c042-in_vast.bunt.json",
-   "bunt_sha256": "b5e23e545c7729c9c98df8ff1b5e88b1ec5548b1f37f40e91d075bad7c385ce3",
+   "bunt_sha256": "112172940ce65b876739e3d467664ae871792ead9843577faf248c2e7110aa7e",
    "bundle_payload_sha256": "589b8dcc6509819df4e9706e265eca156b2dbeb125d5f77a7bc5c5cf516114a2",
    "meta_sha256": "28ef8b15e25c115ba4e0a7cce6b6b571bec52a3790f418f6504b553bc33dbaab",
+   "ra_jsonl_sha256": "c74408bb6e2a112dffe2f45330146a219c54717ec06b525e099910a33e55df39",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -545,9 +605,10 @@
   {
    "ben_id": "t1h:main:c044:in_tunnel",
    "bunt_rel": "t1h-main-c044-in_tunnel.bunt.json",
-   "bunt_sha256": "1e12c209fafbebb5c6484030642a94967af8c9cce8e32ce081aa88e10ef8be62",
+   "bunt_sha256": "5fa9aad3d2e3ca459838ec2a173c3d2be05d35c8efba05bb7cd43ebefb05439e",
    "bundle_payload_sha256": "0c5249c2ed54a9f8364fd87d9a144a187329c0eea455d13281cafbbe999385cf",
    "meta_sha256": "607f2f986b002518419c812a88b2a6d5594c768625827dcdf4f3f22a157da6f4",
+   "ra_jsonl_sha256": "70b343acd208b9210e180a41c0671f6261a5f7e6acfcddbe6cb59e18b78f7241",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -555,9 +616,10 @@
   {
    "ben_id": "t1h:main:c048:in_ring",
    "bunt_rel": "t1h-main-c048-in_ring.bunt.json",
-   "bunt_sha256": "18a65f0f0f0ad427245fbb4c89c33e336eb0ae64dbd0bb06cf7be4bcfc48368a",
+   "bunt_sha256": "fd9d70a3714f4610240824b638978e41217633e98c711675524cb7d5fa23cf83",
    "bundle_payload_sha256": "e8987eb5123bee2a958887d7d31954523b32a21f5423b9e5f903a1a04a5fefd9",
    "meta_sha256": "55ddcc917d15e11d83732c394bb2716fbd172c8410c4bbd7ba00e59560958177",
+   "ra_jsonl_sha256": "bdfc182ad3290a9163eba5b0011144dfd45a49767312b65e97ea15b74f2cdc24",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -565,9 +627,10 @@
   {
    "ben_id": "t1h:main:c050:in_ring",
    "bunt_rel": "t1h-main-c050-in_ring.bunt.json",
-   "bunt_sha256": "ff90d93b5b454f272204878a0ee0c49fdf24cfd00e9e77495a6658dd393be953",
+   "bunt_sha256": "b2ec0340728e976781eb41ab1d87e73c4833d8aee83b1f7a06cb6ddaad9e38d9",
    "bundle_payload_sha256": "f9b264af7a891763798066affbdd12e6f01dcb9d7ac997d83bfb17a7f32eb3ea",
    "meta_sha256": "6e6ec5233e0db93af65e6089df51c8ec6a578f2f453c2a1f52914df1b7618414",
+   "ra_jsonl_sha256": "3342a95e8501a0210aa875c06c29fb18e8bc27ade10a60e079eb6836068d8f6f",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fastnad"
@@ -575,9 +638,10 @@
   {
    "ben_id": "t1h:main:c050:in_vast",
    "bunt_rel": "t1h-main-c050-in_vast.bunt.json",
-   "bunt_sha256": "c79c213c981101a92397b36f6fe5f1b4f6091107cd95bc1d9531886be7ffb74d",
+   "bunt_sha256": "4c320a3420f242e0918ce74a94345f0d475819ccbc474b487be0238b4a53ed82",
    "bundle_payload_sha256": "45134bd43efd5eca183929985ee085553022d7deb5173b41a4d9f6cf706ba610",
    "meta_sha256": "599fe3272281759e91bc6ffb45c2cab133a37a6d182ec494b7631b6d1764dfb5",
+   "ra_jsonl_sha256": "b75b68cab6d536ca1c6427430982de5448c3c4162269788a85a4a2063b2271a6",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -585,9 +649,10 @@
   {
    "ben_id": "t1h:main:c053:in_ring",
    "bunt_rel": "t1h-main-c053-in_ring.bunt.json",
-   "bunt_sha256": "40e4de8aad6340bba49e0b111210340535af11e413ae9bdf343fa4cb934dce06",
+   "bunt_sha256": "dd130249b79f87fa5864a207fa34acbf20705ab785f561d358efcd33b4404998",
    "bundle_payload_sha256": "3899734dd2cb625d739aaaf9eba54bb285a30b7f03fb2ea1fca37491e6a9742a",
    "meta_sha256": "bcdeab8ae9e91f41a8f0ed0c26425ab0db558c119b4209d5335e673df83396bd",
+   "ra_jsonl_sha256": "9be44c8254ec67364d879616e6bba0bf6734dab3ccaa8d296f174c4a0d6bd9cc",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -595,9 +660,10 @@
   {
    "ben_id": "t1h:main:c055:in_ring",
    "bunt_rel": "t1h-main-c055-in_ring.bunt.json",
-   "bunt_sha256": "f1f156f31f005b25d80684f8f532085af4244ae9c36c7b5ef094f33a06d06bac",
+   "bunt_sha256": "e36feb959a98d7da043625391a19eeefea1d9e5f6343030ac1fd46e2d7aa8a52",
    "bundle_payload_sha256": "07345e026ce4555eb6a844ed2cba930ab64c1609969554eec26a01e2d777f672",
    "meta_sha256": "d3af3e5a6f010505fa444d5e2195e1ca027c3366cfba1efe972409b2312f850f",
+   "ra_jsonl_sha256": "0a89809e26f4b39e963e45b3a7162d3bcb1f3cd058e8a6ccd7bb86a14919f478",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_plus_fastnad"
@@ -605,9 +671,10 @@
   {
    "ben_id": "t1h:main:c055:in_tunnel",
    "bunt_rel": "t1h-main-c055-in_tunnel.bunt.json",
-   "bunt_sha256": "df454b729739cbac381d8cf5003a8ab10976c150f5aef6f27a322b389b2669b9",
+   "bunt_sha256": "32f7e6ff69378d023416b4113c222e6332478aa9ba417ad6af6a5b8df7cfde07",
    "bundle_payload_sha256": "3bc424be1bf9bb5fd4b302fdc50a82cbd854da1f29764c8e987b3803a4d1d763",
    "meta_sha256": "220cc7d011dd44fa808ce1cbe8dbefd0a38ec5f6cd2e1787a30cae9ca9837b05",
+   "ra_jsonl_sha256": "ad34a2a6511bb1930ce5f8c37d9c3cd06951e08161788856204b47ef898fe517",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -615,9 +682,10 @@
   {
    "ben_id": "t1h:main:c055:in_vast",
    "bunt_rel": "t1h-main-c055-in_vast.bunt.json",
-   "bunt_sha256": "1ab3cb0090b005a9619e8c6f0333eb22f1c66ddfb6fdfe5160fc321c69c60666",
+   "bunt_sha256": "309bd5e294c5d6f0c8e73b1c77e3bb7000eda65a12af5d4d3b8f856bd8db4931",
    "bundle_payload_sha256": "e6baf079cf761fcf67fb0c6fd8e4955074136718b4a106740b4516871e70c620",
    "meta_sha256": "4d4f44a1f3c73082b797dda49cb12aacfbf311ce6783e9c6f0348d6dd3aaa2ff",
+   "ra_jsonl_sha256": "e417602dd0a83534da4fad860c6df7334f946366bfa4d6c98ad1201d9f091c6c",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -625,9 +693,10 @@
   {
    "ben_id": "t1h:main:c056:in_ring",
    "bunt_rel": "t1h-main-c056-in_ring.bunt.json",
-   "bunt_sha256": "55c00e8e68a4b7f758461a33e9bbdd87ff00510dd02f08ed150a43c89d469836",
+   "bunt_sha256": "01df7587c10a4fcc06582a150cecc8b117d9d6397c4a4925ae9ddc1e9e0073f3",
    "bundle_payload_sha256": "df247e16cf2a943319f9867f6f4ffc2e3a7e2f5a40e85f63c541cfaf24a5eaf9",
    "meta_sha256": "71b3836236fd9cc2a1e4d9a25446503763ab49b12ec72707a72c9327a1e63590",
+   "ra_jsonl_sha256": "317155e2c6e1988c938ca53069e7fde0f1a907d190fbcbbb60da9e97b52986b2",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -635,9 +704,10 @@
   {
    "ben_id": "t1h:main:c058:in_ring",
    "bunt_rel": "t1h-main-c058-in_ring.bunt.json",
-   "bunt_sha256": "12c5ee88f9dd03fb60b3c1d9da464673e474caa3577fbc6513a0abf78f00153f",
+   "bunt_sha256": "ea72a7d8216547a5d201625f8f82a4e1f8b7b0af45fc26524599af0eb592b289",
    "bundle_payload_sha256": "ff758528092621e7f35b22e964b30341d07e6c99142e470c7dffefacf92056b5",
    "meta_sha256": "cbc785f691ddb62494c9a2c3a754571e877181eed55dbfc7bbf7773858ab03c6",
+   "ra_jsonl_sha256": "b6952ef49bef452260fc5a7dd775f255d11a169eb5551f00b05be9f81fbfe9f5",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -645,9 +715,10 @@
   {
    "ben_id": "t1h:main:c058:ut_tunnel",
    "bunt_rel": "t1h-main-c058-ut_tunnel.bunt.json",
-   "bunt_sha256": "e074b84abf2bbf4bfb83dde8a6b87a62c9bff4f64fb54051df4bc549148788c0",
+   "bunt_sha256": "f7bea10d943a59f65e4d0da8791ee196fb40ed9f72f9045d2c89d6bf67074cc9",
    "bundle_payload_sha256": "8daf43a0400a822122d79f038dafb69cdb3f72402d0bab7533f7393e2096ee9d",
    "meta_sha256": "bc83822994c914f56df0e66007c561b59c7f1ea63155eaf00bcaf79a5b4d2d53",
+   "ra_jsonl_sha256": "cbad92a109424e68fc44aad054030503dd337a4386e08fe94dc0f82808e65dd3",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fastnad"
@@ -655,9 +726,10 @@
   {
    "ben_id": "t1h:main:c060:in_ring",
    "bunt_rel": "t1h-main-c060-in_ring.bunt.json",
-   "bunt_sha256": "c6950adff28b0d85ab68cdbd375490021dfea35bfd2a40ff727c2ebbe1e7912d",
+   "bunt_sha256": "4d216a503658847bb6a09bf2a7cba8e369429139ba6d6f7446805765686e33b1",
    "bundle_payload_sha256": "d8c0bc07c9eb496f0bf6e83e3901f5e13c337ae26d18250f17030042260a8d50",
    "meta_sha256": "e16121239f7173fc5280cba1c6bf70369fdd014c002929c29e50a331aeafac16",
+   "ra_jsonl_sha256": "d69282eb80e457311a2260fdd59939994bcfc3055d5d94287974fd5bdf1f7cc5",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fastnad"
@@ -665,9 +737,10 @@
   {
    "ben_id": "t1h:main:c063:in_tunnel",
    "bunt_rel": "t1h-main-c063-in_tunnel.bunt.json",
-   "bunt_sha256": "e7bce3acce815f4c6133d3ad04588e1e4a724650bcf3fe6a8d4b6e3f9749556a",
+   "bunt_sha256": "4188ad284739e57c1b9af606da71f8a51921c75c90ce274aa35837121cb5b6d6",
    "bundle_payload_sha256": "13455b97abc4627d948cea65afbda989a03cf5f544f8798f11fdf7e6d2adcedb",
    "meta_sha256": "fe871bcfe33d1d374667615afcae22654c7d33a31814f076eb8943a42f711d2b",
+   "ra_jsonl_sha256": "7f65da10e979eb7fb9891783b9fa16406b956490a462c22846d62d26c392b436",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -675,9 +748,10 @@
   {
    "ben_id": "t1h:main:c064:in_vast",
    "bunt_rel": "t1h-main-c064-in_vast.bunt.json",
-   "bunt_sha256": "671d6836d13a288d1843231cb1008113504746fbb3bf0c1e822da98699472f6d",
+   "bunt_sha256": "3ef291f074ea60f02c6c4e2fae0712f2fd94c1c770a740165e4ad2022df70d82",
    "bundle_payload_sha256": "409e30711032bff492c94e06bc0c28933d6dea953c817edf30d926cb3fe96918",
    "meta_sha256": "c80f22fcaaace9e2f66712e05f608cc63e3af102b4d38d561ab1bcf05cbb3db1",
+   "ra_jsonl_sha256": "2c74cc3fa2b1334d104caf609ac8668b8b521bfff457c364cc17d85758bea31c",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -685,9 +759,10 @@
   {
    "ben_id": "t1h:main:c065:in_tunnel",
    "bunt_rel": "t1h-main-c065-in_tunnel.bunt.json",
-   "bunt_sha256": "b67bf0dee193385baa8e9975fdb4f15f8676c998e19ebddd3feae26f07eb89d9",
+   "bunt_sha256": "53cffa39291187d1637adab59bd939a8f1788aca643b582135e592be18c7ac37",
    "bundle_payload_sha256": "a6390dbe43d05d19edfe885a9cf01062d2220c63b691e2ebe1dcfa4e1dd8f664",
    "meta_sha256": "6599a0cc1fb2825170b46d1bac05048d0285e3f9bef28bd369255687ab77c9bb",
+   "ra_jsonl_sha256": "714695e5ba6cac492ffeafa1d4bf1fd8d92c959ca8e0a8a8a3ef6330c66858b0",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -695,9 +770,10 @@
   {
    "ben_id": "t1h:main:c066:in_tunnel",
    "bunt_rel": "t1h-main-c066-in_tunnel.bunt.json",
-   "bunt_sha256": "38c4e89557e5c2c3cf681d992f19a8afb9a8996c67cc05c3fd1f976deadeec4a",
+   "bunt_sha256": "d4aa4b4cb959c4d90dc0a7fef7dc94d434f62df677ec37722b5b3478fa57e848",
    "bundle_payload_sha256": "a926028a59edef2eff1f0591083528dcccbb7d5b2e14a0ca3ce7af7aea35d1ef",
    "meta_sha256": "c3814dc38106d26cf5dffebce109ba76658d047cf2515535db08fd13013638f6",
+   "ra_jsonl_sha256": "11ea00159de729d37484109b911999558a14b6d8e14ee614c8b797d78ef65c8b",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -705,9 +781,10 @@
   {
    "ben_id": "t1h:main:c069:in_tunnel",
    "bunt_rel": "t1h-main-c069-in_tunnel.bunt.json",
-   "bunt_sha256": "3690a034883b525454ee9575ca2a1083dae899aad5f70ab2bc46222be423dc47",
+   "bunt_sha256": "ca679879e00268dd9ffc5bcd8488addd957db4a439345201ffc468f39cfce7e8",
    "bundle_payload_sha256": "f82abc77667affd9cd878950e7180d42583acab650457697c1a7d8acf664316d",
    "meta_sha256": "0ad4dabc2ade2d81ba68a91a92177c21652652573da7ce0da0ac876d036e51aa",
+   "ra_jsonl_sha256": "5bb8a82614b974c7c4ddc21ea5c9c0745e519913fd171cc793c09d112880d636",
    "arm": "main",
    "dataset": "t1h",
    "utfall": "fall_efter_framme"
@@ -715,9 +792,10 @@
   {
    "ben_id": "t20m:fork:c001:in_vast",
    "bunt_rel": "t20m-fork-c001-in_vast.bunt.json",
-   "bunt_sha256": "0521b91366e578e120c6f52191644a1dc1590c0435c999ebef6c5704426efa78",
+   "bunt_sha256": "a4237679ed6a53918d65066c2895c9d5d847792ae0405bb9dc081f20ee22dfe8",
    "bundle_payload_sha256": "c176b34f6e95a0d488bbbad3425f155895ea1f15f6866c434ef0f79b7f4c6fd7",
    "meta_sha256": "96693c2364659a8a5b58e752ab5a93cd6edc5fbc0b62d73c28959cae204c61f8",
+   "ra_jsonl_sha256": "6aae355a02eef5f462ce431dfe823128ca4d05519fc37de5e2399ee741679c6b",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -725,9 +803,10 @@
   {
    "ben_id": "t20m:fork:c004:in_tunnel",
    "bunt_rel": "t20m-fork-c004-in_tunnel.bunt.json",
-   "bunt_sha256": "f92a179d0b581846596b8885bbd0b272c3fb39bdf3e438e9dbdbac02ff9a1237",
+   "bunt_sha256": "3e0dc8c8b6de24047c7bdf607b95ef48b597f0abd018e475038c94ea36906d54",
    "bundle_payload_sha256": "6b021c7896a9b0f4d041e75839ec48f8a0e158739c7b7e5b5863729b073993ba",
    "meta_sha256": "2a9b1b3960a2c7c23e0408d7cd6522198cc09214115abf39964472a9f1ec3d11",
+   "ra_jsonl_sha256": "4fa30a9eccd6943eead7c472facde01746bab084e1508a2873bba611c7130266",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -735,9 +814,10 @@
   {
    "ben_id": "t20m:fork:c006:in_vast",
    "bunt_rel": "t20m-fork-c006-in_vast.bunt.json",
-   "bunt_sha256": "d5e4bfc8af141f6200f74f92cc5d88249e548e781afd18acf3ee175215c69a72",
+   "bunt_sha256": "f8126142ea9428ed8b747325ed30b9d137bb85a31f1540a573fb7bf16e72b7aa",
    "bundle_payload_sha256": "6bed4ef4bb65a6dcb9b360adadc0f9eb60ba9edee57b919518f8ed5f450b0f14",
    "meta_sha256": "1d2f9c5ea59498a53bbdaebd2ed34f016980da341461b59990519a76f4440944",
+   "ra_jsonl_sha256": "6d0bc6c3df7a3580484a6f451e2cd9a461887290f05412abe269dfbf87834716",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fall_plus_fastnad"
@@ -745,9 +825,10 @@
   {
    "ben_id": "t20m:fork:c007:in_tunnel",
    "bunt_rel": "t20m-fork-c007-in_tunnel.bunt.json",
-   "bunt_sha256": "11d9570bec0c711328224412a1112248bc0086578d47e72ef023606ec64783b9",
+   "bunt_sha256": "d6a8331716895e1f1047d2a2456a6984c22ffa4ef14499f8d2397b63c84260fe",
    "bundle_payload_sha256": "03a8c52481c2fec4973847d2100c4bda1238321ed8a425fd2f36e9a337845424",
    "meta_sha256": "2e625e804afcb7ef9648e01e62378dc01114116b33906752f248daa07a4f66ae",
+   "ra_jsonl_sha256": "ed62a013592696cc97113c6d350ef0e489f5642dd63e841c830d0411658af79e",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -755,9 +836,10 @@
   {
    "ben_id": "t20m:fork:c008:in_ring",
    "bunt_rel": "t20m-fork-c008-in_ring.bunt.json",
-   "bunt_sha256": "44dbc95108d270e7fa9a29b52cde8b88dca24b8819e23905d7ce0cbdb186c9a1",
+   "bunt_sha256": "09d85214146e719da453c3c13b636bc172696c7684858de9c3a0de466e1bbadd",
    "bundle_payload_sha256": "397ba77bfee88f736e70579e462636077a42eda255c44ae8fa11a974c6cd9470",
    "meta_sha256": "2d29a22d2940b14b2672fdc152086604ce8ed25be1732b1ccb5df8142a0de6b8",
+   "ra_jsonl_sha256": "d9ede38a9ebcff212595f87db0b1f3872d7d61e47f700746518644ba9edc3fa7",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fastnad"
@@ -765,9 +847,10 @@
   {
    "ben_id": "t20m:fork:c010:in_ring",
    "bunt_rel": "t20m-fork-c010-in_ring.bunt.json",
-   "bunt_sha256": "23767a39611fb4700b69fc53a3be2edb5dde260ac389e15157abc3077afa18d3",
+   "bunt_sha256": "5e9385808fd2a3a2072d925779079a5f7e583babfe15666511ad4efeafc42a16",
    "bundle_payload_sha256": "3cf603fc8bcf1d1e5bf31386a1cb6ea998e7c6764ca3593da7722d02a408a9b2",
    "meta_sha256": "dbef165e428f063ac11f0fa996c27dc905a07a34653e019f2be2f7bb07ef9dc9",
+   "ra_jsonl_sha256": "c3c0465cc4831f7c63d5b947654be0eec0eeba62af73edae432d112811afc954",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -775,9 +858,10 @@
   {
    "ben_id": "t20m:fork:c011:in_vast",
    "bunt_rel": "t20m-fork-c011-in_vast.bunt.json",
-   "bunt_sha256": "ac0bbe96ec510e3c93fd02354d4f8b97c75b8e0d7b453df7d0ab79221b558238",
+   "bunt_sha256": "6a197e021ef851fb93b2c42dd50834bae379164859b0248cce660d66c231c663",
    "bundle_payload_sha256": "87c63f4b75dc206c6d3aca476e591130994882c0f765b17a25b64d72218157eb",
    "meta_sha256": "4a834c7d7a508c327257ae9d78c668295d5d2f5238c1f8504fbf2de0f66e5f1a",
+   "ra_jsonl_sha256": "060336270062953a91fb6d5d4e871209f50639d1c492beaef0ea3d88ca65ebbd",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -785,9 +869,10 @@
   {
    "ben_id": "t20m:fork:c012:in_ring",
    "bunt_rel": "t20m-fork-c012-in_ring.bunt.json",
-   "bunt_sha256": "c18f8300546e7b48fa5dd6db81937a69146f37dcea0287964206560d30264ad5",
+   "bunt_sha256": "be96480b8867f1ea8183c4e3e4a47f679b1e10a1719af6bd7f25d41bb6b368d0",
    "bundle_payload_sha256": "682ad9358a804295d502c88e95ab068840a415de77f417d32441b7ca2b34296b",
    "meta_sha256": "c8385adbfb2075593bd4425cf75892f3f7e03ac22a61cbb8cc222a3220b3b733",
+   "ra_jsonl_sha256": "b0b2840dc3dc7b901541c5e5f9d451798d1b2ad2ccf7acaa2f16c72367f775cb",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -795,9 +880,10 @@
   {
    "ben_id": "t20m:fork:c013:in_ring",
    "bunt_rel": "t20m-fork-c013-in_ring.bunt.json",
-   "bunt_sha256": "45d75b595ada8e58af5a3dd53a22b796d75889645ebdc77b14df23969af32d65",
+   "bunt_sha256": "0868544b36d83518ecbe2c6c013641d417d13528b4d32fc29bc4745b77a80601",
    "bundle_payload_sha256": "5c800b22ac246c05c7952e480bb8e0b3928eaa3e801b59aeebb5c37b6c5ee15f",
    "meta_sha256": "93b2da884634259e4212dbfa5e91a0e11c2f8904d6d1c3d8f7d873ca4e6f5228",
+   "ra_jsonl_sha256": "eca631d7362fe06e192ee07862270847973265459b347d002c3b29c199000a17",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fall_plus_fastnad"
@@ -805,9 +891,10 @@
   {
    "ben_id": "t20m:fork:c014:in_vast",
    "bunt_rel": "t20m-fork-c014-in_vast.bunt.json",
-   "bunt_sha256": "e4b14a372030e5af1e4727ab0f6a97621f98f766993419480e5b184ca033bbe8",
+   "bunt_sha256": "e8332d5cf235fd854dd3a5a586f724283cb4c232d6942f816f05f6c73ad96bc9",
    "bundle_payload_sha256": "dab8abddf2c511e0274022f500dde834d4a0f5785c6ef8c46b6aea2be10f4106",
    "meta_sha256": "bee8adff3f6c45be6b498641c6bd02b32816e45dcd9e2f5552bd21f735be932e",
+   "ra_jsonl_sha256": "fd75f0c0dbe491a70ace5c1fbf156e26ce98a8956b55c0cb18a305c5cf9ef12f",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fall_plus_fastnad"
@@ -815,9 +902,10 @@
   {
    "ben_id": "t20m:fork:c017:in_tunnel",
    "bunt_rel": "t20m-fork-c017-in_tunnel.bunt.json",
-   "bunt_sha256": "ed05c070a7c40d38cc9e37775f4742407f8f3247549cf440b53c246137ce9fa0",
+   "bunt_sha256": "08ffe0dfed97612de0c1bea7850476786d7e49d2a0ff435958ccff0f13901cfd",
    "bundle_payload_sha256": "66144a1fae2060fa8e1b04737090d0fe080ac795f359615b4a96d7173cd8116f",
    "meta_sha256": "697314583c6eb6703e1f63b4506db592dab9003a99518bc2dfad5f39ef983235",
+   "ra_jsonl_sha256": "8c2d1de4b7eb5c4ac51e6e2009e461624f354e2b8a35def1fa021c2c7ff400eb",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -825,9 +913,10 @@
   {
    "ben_id": "t20m:fork:c021:in_tunnel",
    "bunt_rel": "t20m-fork-c021-in_tunnel.bunt.json",
-   "bunt_sha256": "f8374d96e3081b82e5ec04967e306a80dcd82b1ab050947cb0b13e67fb2f7326",
+   "bunt_sha256": "3e4fed717895880c20517f15524c5eca7b8618330804e459b93d7cd9ac7835f3",
    "bundle_payload_sha256": "b7b703f5bea73076ff02818dfb5d0748b77709073f15655b7ec7087595a68581",
    "meta_sha256": "f78a8018249faec7aaa8a7bf965123daf8a2947a46b31f6ab519d8a54d05dd63",
+   "ra_jsonl_sha256": "b385dbf6fe0e3ee3f150638b70eec4a8c32b1fdd0ecf621cf19311ecc85909c5",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -835,9 +924,10 @@
   {
    "ben_id": "t20m:fork:c024:in_ring",
    "bunt_rel": "t20m-fork-c024-in_ring.bunt.json",
-   "bunt_sha256": "e5932378cd9a6ebb65be784f5af41af0492310a868c4157fc9ae947221844528",
+   "bunt_sha256": "cd3229d58248d21f155318f2d22c8b4dafbeb3a340955066be6a37aed866b28e",
    "bundle_payload_sha256": "7753a2e8f2588e52c404647928b344d36b9fb0407922e2aa4fc564520538b2ea",
    "meta_sha256": "b96f76b22eb84692165285dce0e7424fffa57fdf914ce682a1c65a19cb854866",
+   "ra_jsonl_sha256": "9620e01cb345a3f5605b2cd7d00d8824eef46d5c1bcdda8605f9850c87dbc568",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fastnad"
@@ -845,9 +935,10 @@
   {
    "ben_id": "t20m:fork:c025:in_ring",
    "bunt_rel": "t20m-fork-c025-in_ring.bunt.json",
-   "bunt_sha256": "e6dc757fe3f0327f320ca751b52b8697fe21c01a1a3a4a063e084b12d9a8283c",
+   "bunt_sha256": "c1e31a9cbf93203b8d4b9a0a6094e499573a4addec400de8fba51150332803f2",
    "bundle_payload_sha256": "6e98713e45e7b5181d00cf094e06d53cd2ba74d674a6e7cfdb26c767cebc2bd2",
    "meta_sha256": "65abe7d5220d02a3012d0a6610cbe0c4a469d121239a86a070e2c94c2f98b88c",
+   "ra_jsonl_sha256": "a264e64f7348ee4be06f8b2f84e14428a974f45d6d9a1deeb9372bd76bb3db84",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fastnad"
@@ -855,9 +946,10 @@
   {
    "ben_id": "t20m:fork:c025:in_vast",
    "bunt_rel": "t20m-fork-c025-in_vast.bunt.json",
-   "bunt_sha256": "6a1468daa3dec81f5b5cf3fa8e76f0b61f230cd6523bf270d5590258ae3371fa",
+   "bunt_sha256": "05091883b3ea7f72e8aa6094f0030167a51699d7c2711fe19f65ba2f16d7d17c",
    "bundle_payload_sha256": "3df9105eb89bf5543264b4c1daba9034e59db62f5b33cb9ac1386aad62d06c9f",
    "meta_sha256": "0c4821e029c7764a93bb93ab4523d6e2212c7c1224c1d6443fbbe1516df7bcf0",
+   "ra_jsonl_sha256": "473e58ae1c7f5e103c66f3f9db13e021ca65390aa9a1cac3b4395abecf1d82ed",
    "arm": "fork",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -865,9 +957,10 @@
   {
    "ben_id": "t20m:main:c002:in_tunnel",
    "bunt_rel": "t20m-main-c002-in_tunnel.bunt.json",
-   "bunt_sha256": "f369e17a1b6314b936f470889ade17e15c05d54edd54ccd196916fc54600bc32",
+   "bunt_sha256": "6683ec0eb0efd5674b04b65ec17be7545ad521b32da398c6de2bc460fa30a9f1",
    "bundle_payload_sha256": "86f5227ac5f2de018ea2428553919fda6a36d162431b7d0e0ee529a92f3d07c5",
    "meta_sha256": "52d5130d6bd26472509f4ca261b2d2f7d086033da158f6fd9f68cbe090924718",
+   "ra_jsonl_sha256": "79c6ce0814f09ef0b8bc8018d42be95ae798a5d975a26824ac23d7960ca261b1",
    "arm": "main",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -875,9 +968,10 @@
   {
    "ben_id": "t20m:main:c006:in_vast",
    "bunt_rel": "t20m-main-c006-in_vast.bunt.json",
-   "bunt_sha256": "a367b69405409c2bb749775718c34c93daebabd3ad5bbb6aba9e012e0b295983",
+   "bunt_sha256": "c3bd88ae8572c81666c2623e8fa854e3d9c022e1ed1054647c327aaf7a994f31",
    "bundle_payload_sha256": "fa45cb403604080dc00684496dfec4003526d61dbf0f3ed9967c0a7aa454ff77",
    "meta_sha256": "eeb3f700bed97c0df154f63fed2f796e9f8332d9b9aac75a62bcb244a51c72a6",
+   "ra_jsonl_sha256": "705a7e6727e758c8622d970d2a7003ede12631e733217ddf0ec30f104312991f",
    "arm": "main",
    "dataset": "t20m",
    "utfall": "fall_plus_fastnad"
@@ -885,9 +979,10 @@
   {
    "ben_id": "t20m:main:c007:in_tunnel",
    "bunt_rel": "t20m-main-c007-in_tunnel.bunt.json",
-   "bunt_sha256": "f48d5b450a983737114abe895ea514383196adf7e734ef083923afa2afc8c306",
+   "bunt_sha256": "e5fba7e460fc60182899a30223d01cc73455f0d05e761a1644328f9b3f87a5f7",
    "bundle_payload_sha256": "700b51eb7e253431973ae431f9149ef975d8f7ebade7606810aa18df8e20633d",
    "meta_sha256": "4c75c22daef7a2287664330357c94be70b8d8b0a9d20fb97313e974adce7b039",
+   "ra_jsonl_sha256": "a959065a242d056b6b3a8bc0a89fee4e1a95b8f3e8732b915485ee7dcbe056a8",
    "arm": "main",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -895,9 +990,10 @@
   {
    "ben_id": "t20m:main:c007:in_vast",
    "bunt_rel": "t20m-main-c007-in_vast.bunt.json",
-   "bunt_sha256": "680384861eb688576882134c56ae8b109d764fec763331c7a9b0481e196dc5db",
+   "bunt_sha256": "90dd084031edebef31a3c25cc1d12435100eec0b69c516dba0c9a0624e8b0f27",
    "bundle_payload_sha256": "956e9ba54cb89391588677e16953c3cae04729fcc4533396d830de6818057db8",
    "meta_sha256": "2ae9f9313897470b868189ea035164c3adf3f89e3a2c1dda56f25c42583cdaa9",
+   "ra_jsonl_sha256": "4f8d5fcc981e88b4afc7f0734a30bdd6c76f9b38aa920c3b477a79f98b4bd2c5",
    "arm": "main",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -905,9 +1001,10 @@
   {
    "ben_id": "t20m:main:c008:in_tunnel",
    "bunt_rel": "t20m-main-c008-in_tunnel.bunt.json",
-   "bunt_sha256": "7c6098f37fe56198bd4565e9d4ea4d972dc9c43849e06d5421efab78a21061b0",
+   "bunt_sha256": "2bf2401af28c7fc0d45a97595d13c3665a9233c5f7b74ef6c96c1aa3de78f86e",
    "bundle_payload_sha256": "934a4bb8cde2bdf01be6cd17f8f4afb46ec23f691088c70c10a36dc84d575b31",
    "meta_sha256": "93c70c9edddee00c6b7a73e34bdf40d934531f6362536e1ecdae538c95a13de8",
+   "ra_jsonl_sha256": "98acedfacb9600db2a7f8868004b4d178ef6cfb3e69b60b79d5f458f269ecc78",
    "arm": "main",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -915,9 +1012,10 @@
   {
    "ben_id": "t20m:main:c011:in_ring",
    "bunt_rel": "t20m-main-c011-in_ring.bunt.json",
-   "bunt_sha256": "67594f8f02c030c07b8b1c97006aea4faae884d08aac79c0d638b8d2e223e774",
+   "bunt_sha256": "1485740e2acb2447f4cc63b37bff29e1e179a3d9273dc7d7a79fff9e0848f558",
    "bundle_payload_sha256": "4efff3fdfbaff63b4f4f6070e5cfac8559d8ca7038462c3ec1bb4853a34766cc",
    "meta_sha256": "a5deb65d45a50c8fc86f08c2de51d6fcfdd9304ba48c51b280d349779604b0a0",
+   "ra_jsonl_sha256": "904e9431da290ecebfe2d2a22a1818c3ee49df7a3dbe04f44133cb35f35deb63",
    "arm": "main",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -925,9 +1023,10 @@
   {
    "ben_id": "t20m:main:c013:ut_vast",
    "bunt_rel": "t20m-main-c013-ut_vast.bunt.json",
-   "bunt_sha256": "f3852ceea2efef5cdeabca4ed3130d736d5c600212e3733116e7d5ba11d3e9ff",
+   "bunt_sha256": "16a697ea978942b93322c7dc562f865c0b132375907fcdf025524bbcf9d1c974",
    "bundle_payload_sha256": "7af325cdab7a1cb8dc9582dc12e6c28fe3a1c439e7d5040a29d98ce0fbd77aa3",
    "meta_sha256": "6974a1c83ec28d0557f040cc658dbf96ae35173d0d54d9f16d8ec392aec87417",
+   "ra_jsonl_sha256": "25c48f301a3367c6820550d1102f81ef60c84142a9649794a980e7d19195e85c",
    "arm": "main",
    "dataset": "t20m",
    "utfall": "fastnad"
@@ -935,9 +1034,10 @@
   {
    "ben_id": "t20m:main:c014:in_tunnel",
    "bunt_rel": "t20m-main-c014-in_tunnel.bunt.json",
-   "bunt_sha256": "1996d222735e05763cefe4fb70e8afc1b576c9c91c45a975ffb37a5238ceba9f",
+   "bunt_sha256": "deffe756935cfa4c8edd61e2eb5506d74f32911c5e2c00e72f67442b02b21079",
    "bundle_payload_sha256": "f5851685cc0e5e31770d1ee948a1c2ad5983e033fa2988ed53c1020fd583eb07",
    "meta_sha256": "469e7995f7fd739dba880ec8ee5421e6f0289062f3314f7d44b595bb692e6cd5",
+   "ra_jsonl_sha256": "f737079e0501846f19e2e2b9b572332a9bad6a8fe3b64a6854306e6bd5e33e22",
    "arm": "main",
    "dataset": "t20m",
    "utfall": "fall_plus_fastnad"
@@ -945,9 +1045,10 @@
   {
    "ben_id": "t20m:main:c015:in_ring",
    "bunt_rel": "t20m-main-c015-in_ring.bunt.json",
-   "bunt_sha256": "8fe75192a54c112592d937f7aa681f17fbcc480a9d37987123e0c7154e52eb9a",
+   "bunt_sha256": "63974eb6a39a75f918f77ce6677bb5ced275a3067e7865b85324b5e01fa6af8a",
    "bundle_payload_sha256": "398c22afd0352b8ee1b579a95beb8712ef49a38c9814d2e42df78c7444fe2ec3",
    "meta_sha256": "571d03f1ce508a37897f1b220fc4933e4039da8a17692df88083325c5afc1aeb",
+   "ra_jsonl_sha256": "af510b18a6acdc5d45f6d15b0ec9f7d50dcf3c33360a986bc0923a4b95ff1bc0",
    "arm": "main",
    "dataset": "t20m",
    "utfall": "fastnad"
@@ -955,9 +1056,10 @@
   {
    "ben_id": "t20m:main:c015:in_tunnel",
    "bunt_rel": "t20m-main-c015-in_tunnel.bunt.json",
-   "bunt_sha256": "15e0c60308e456f7af050bf3c8bad070e02c12caaf4def40727c00dc290d0ceb",
+   "bunt_sha256": "e2a41e8cbdea64210f7e66cce47b39d3cd15332ecbde0fc9040c8b684c4df17d",
    "bundle_payload_sha256": "285229d8a4a52da8fab5e919fd47618be145230d936b9c240840ae0162ebecff",
    "meta_sha256": "144ab487b7597b4677db1806f19cea194b85a73290a5b9e8817f3c7ffbe9b096",
+   "ra_jsonl_sha256": "7e9405827aa2e144310ce5ef99c7c39ebe249611203ef39a4bdda4a8ca38eed0",
    "arm": "main",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
@@ -965,13 +1067,14 @@
   {
    "ben_id": "t20m:main:c021:in_tunnel",
    "bunt_rel": "t20m-main-c021-in_tunnel.bunt.json",
-   "bunt_sha256": "315e20eeb6f2949d24836aebf457952e2ee26feac19405884ae71a8edcf84a86",
+   "bunt_sha256": "297d1421e0712167b0c459cf31b40c0f3b9202489dbd32c791796e97d27f6121",
    "bundle_payload_sha256": "23e2ec3594629d33c31a0f206e73a9737baa3723ca4b2d79215f8c029301961a",
    "meta_sha256": "8046f1cfeb58824646583c22e6cf009b0966f299fe54fa7973bd0f1379a0603b",
+   "ra_jsonl_sha256": "6787db8cbfb11d2b1ceaa7a28a2d9f8063718807732b025b6e5079f985d43d6d",
    "arm": "main",
    "dataset": "t20m",
    "utfall": "fall_efter_framme"
   }
  ],
- "index_sha256": "c1df9a066f8dc2606ec5797c223396f3935deaca2cfee2dfbf7e8c6f044595da"
+ "index_sha256": "8df4414848f283bb2e13ab53cf90a53910bb2a32fd9895811564e13eb6a74450"
 }
