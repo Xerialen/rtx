@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -19,6 +20,7 @@ from timtest_d_kluster import (
     klassa_utfall, kvot_krav_samma_measure, rapport_rad, samla_kluster,
 )  # noqa: E402
 import timtest_d  # noqa: E402
+import timtest_ben as ben  # noqa: E402
 
 
 class PortvaktTests(unittest.TestCase):
@@ -242,6 +244,179 @@ class OriginalOrordaTests(unittest.TestCase):
             got = hashlib.sha256(p.read_bytes()).hexdigest()
             self.assertEqual(got, h, name)
             self.assertFalse(os.access(p, os.W_OK), "%s ska vara 444" % name)
+
+
+# --- T1h-timslut vs --duration (grok §A4) ---------------------------------
+# Fryst koda_arm: grind ENDAST vid cykelstart
+#   if not dry and (monotonic()-t0)/60 >= minuter: break
+# Påbörjad cykel fullföljer alla sex ben. Benet klipps inte.
+
+CYKEL = ["ut_ring", "in_ring", "ut_tunnel", "in_tunnel", "ut_vast", "in_vast"]
+
+
+class FakeClock:
+    """Styrbar monotonic. time.sleep → advance, ingen riktig vägg."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def monotonic(self) -> float:
+        return self.t
+
+    def advance(self, seconds: float) -> None:
+        self.t += float(seconds)
+
+    def set(self, seconds: float) -> None:
+        self.t = float(seconds)
+
+
+@contextmanager
+def patched_ben_clock(clock: FakeClock):
+    old_mono = ben.time.monotonic
+    old_sleep = ben.time.sleep
+    ben.time.monotonic = clock.monotonic
+    ben.time.sleep = lambda s: clock.advance(float(s))
+    try:
+        yield
+    finally:
+        ben.time.monotonic = old_mono
+        ben.time.sleep = old_sleep
+
+
+class ClockLab(timtest_d.FakeLab):
+    """FakeLab utan riktig sleep. Klockan styrs; ev. hopp efter N goto."""
+
+    def __init__(self, clock: FakeClock, jump_after_gotos=None, jump_to_s=None,
+                 tick_s: float = 0.05):
+        super().__init__()
+        self.clock = clock
+        self.n_goto = 0
+        self.jump_after_gotos = jump_after_gotos
+        self.jump_to_s = jump_to_s
+        self.tick_s = tick_s
+
+    def goto(self, bot, pos):
+        super().goto(bot, pos)
+        self.n_goto += 1
+        if (self.jump_after_gotos is not None
+                and self.n_goto == self.jump_after_gotos
+                and self.jump_to_s is not None
+                and self.clock.t < self.jump_to_s):
+            self.clock.set(self.jump_to_s)
+        return {}
+
+    def request(self, cmd, timeout=8.0):
+        self.clock.advance(self.tick_s)
+        self.cmds.append(("request", cmd))
+        if cmd == "Status":
+            if self.goal is not None:
+                self.origin = list(self.goal)
+            self.t += 1.0
+            return {
+                "Status": {
+                    "time": self.t,
+                    "map": "dm3",
+                    "cells": 0,
+                    "links": 0,
+                    "bots": [{
+                        "ent": ben.BOT,
+                        "alive": True,
+                        "origin": list(self.origin),
+                        "on_ground": True,
+                    }],
+                }
+            }
+        if isinstance(cmd, dict) and "RunCmd" in cmd:
+            return {"Queued": True}
+        if isinstance(cmd, dict) and "Cell" in cmd:
+            return {"Cell": {"cell": None}}
+        if isinstance(cmd, dict) and "Set" in cmd:
+            return {}
+        raise RuntimeError("ClockLab: okänt cmd %r" % (cmd,))
+
+
+def _metas(outdir: Path, cykel: int) -> list[str]:
+    d = outdir / ("c%03d" % cykel)
+    if not d.is_dir():
+        return []
+    return [b for b in CYKEL if (d / ("%s_meta.json" % b)).is_file()]
+
+
+def _beslut(outdir: Path) -> dict:
+    """Beslut vid fönstergränsen: vilka cykler startades och om de är hela."""
+    n = 0
+    hela = []
+    while (outdir / ("c%03d" % (n + 1))).is_dir():
+        n += 1
+        hela.append(_metas(outdir, n) == CYKEL)
+    return {
+        "n_cykler": n,
+        "hela": tuple(hela),
+        "klippt_sista_ben": bool(n) and not hela[-1],
+        "c_efter_sista": (outdir / ("c%03d" % (n + 1))).is_dir(),
+    }
+
+
+def _koda_fonster(minuter: float, outdir: Path, lab: ClockLab) -> int:
+    """Samma anrop som T1h-orkestern och som timtest_d vid --duration (ej mock)."""
+    return ben.koda_arm(lab, "D", str(outdir), minuter, dry=False)
+
+
+class T1hFonsterRegelTests(unittest.TestCase):
+    """§A4: duration<cykel och mitt-i-cykel. T1h-väg och T20m-väg bit-identiska."""
+
+    def test_duration_lt_cykeltid_en_hel_cykel_t1h_eq_t20m(self):
+        """duration < en cykels vägg ⇒ en HEL cykel (inte noll, inte klippt ben).
+
+        T1h-regeln (gate vid cykelstart): elapsed≈0 < duration ⇒ starta;
+        efter cykeln elapsed ≥ duration ⇒ stopp. Samma funktion som T1h
+        (koda_arm) körs med litet fönster och med 20 min + uppskalad
+        benvägg så cykeln överskrider fönstret i båda fallen.
+        """
+        # Väg A: litet fönster, naturlig FakeLab-cykel (~sekunder) > 0.05 min.
+        a = self._kor_lt_cykel(minuter=0.01, tick_s=0.1)
+        # Väg B: 20-minutersvägen, men varje Status är 30 s så 6 ben >> 20 min.
+        b = self._kor_lt_cykel(minuter=20.0, tick_s=30.0)
+        self.assertEqual(a, b)
+        self.assertEqual(a["n_cykler"], 1)
+        self.assertEqual(a["hela"], (True,))
+        self.assertFalse(a["klippt_sista_ben"])
+        self.assertFalse(a["c_efter_sista"])
+
+    def _kor_lt_cykel(self, minuter: float, tick_s: float) -> dict:
+        td = Path(tempfile.mkdtemp(prefix="timtest-d-ltcykel-"))
+        clock = FakeClock()
+        lab = ClockLab(clock, tick_s=tick_s)
+        with patched_ben_clock(clock):
+            n = _koda_fonster(minuter, td, lab)
+        self.assertLess(n, 8, "koda_arm stack iväg — grind trasig")
+        return _beslut(td)
+
+    def test_mitt_i_cykel_fullfoljs_t1h_eq_t20m(self):
+        """Grind precis före fönstergränsen: cykeln startar och fullföljs
+        även när väggen passerar mitt i de sex benen. T1h (60) och T20m
+        (20) mot samma relativa sekvens ⇒ identiskt beslut.
+        """
+        t1h = self._kor_grans(window_min=60.0)
+        t20 = self._kor_grans(window_min=20.0)
+        self.assertEqual(t1h, t20)
+        self.assertEqual(t1h["n_cykler"], 2)
+        self.assertEqual(t1h["hela"], (True, True))
+        self.assertFalse(t1h["klippt_sista_ben"])
+        self.assertFalse(t1h["c_efter_sista"])
+
+    def _kor_grans(self, window_min: float) -> dict:
+        td = Path(tempfile.mkdtemp(prefix="timtest-d-grans-"))
+        clock = FakeClock()
+        window_s = window_min * 60.0
+        # Efter första cykelns sista goto: hoppa till 99,5 % av fönstret.
+        lab = ClockLab(clock, jump_after_gotos=6, jump_to_s=0.995 * window_s)
+        with patched_ben_clock(clock):
+            n = _koda_fonster(window_min, td, lab)
+        self.assertLess(n, 8, "koda_arm stack iväg — grind trasig")
+        # Fönstret ska ha passerats under cykel 2 (klockan ≥ window).
+        self.assertGreaterEqual(clock.t, window_s)
+        return _beslut(td)
 
 
 if __name__ == "__main__":

@@ -13,16 +13,19 @@ Klassning (timtest_ben.py:255–261, låst):
                         M1:s fall = fall till härden, inte miss efter ankomst.
   * fastnad           → fastnad-bucket
 
-Mått-identitet (punkt 8): varje rå-kvitto stämplas med `measure_id` =
-klassarens namn+version. Jämförelseverktyg VÄGRAR kvoter där täljare och
-nämnare bär olika measure_id (−36 %-läxan: fall-EPISODER ställdes mot
-fall-UTFALL). Här är klassaren `klassa_utfall` (UTFALL); den ANDRA klassen i
-läxan är fall-EPISODER (`fall_peak_drop_150`, falls-räknaren) — aldrig
-jämförbar med denna.
+Mått-identitet (punkt 8, rev 2 efter grok2-review-p8.md): varje rå-kvitto —
+per-ben `cNNN/*_meta.json`, varje klusterbucket och aggregatet — stämplas med
+`measure_id` = klassarens namn+version. Jämförelseverktyg VÄGRAR kvoter där
+täljare och nämnare bär olika measure_id, och VÄGRAR kvitton som SAKNAR
+fältet (annars blir None==None en tyst kvot — just −36 %-klassen). Här är
+klassaren `klassa_utfall` (UTFALL); den ANDRA klassen i läxan är
+fall-EPISODER (`fall_peak_drop_150`, falls-räknaren) — aldrig jämförbar med
+denna.
 """
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +87,7 @@ def _add(buckets: dict, typ: str, cell: Any, origin: list[float] | None,
     rec = buckets.setdefault(key, {
         "typ": typ,
         "cell": cell,
+        "measure_id": MEASURE_ID,
         "n": 0,
         "origins": [],
         "ben": [],
@@ -96,6 +100,32 @@ def _add(buckets: dict, typ: str, cell: Any, origin: list[float] | None,
     rec["ben"].append(meta.get("ben"))
     rec["cykler"].append(meta.get("cykel"))
     rec["utfall"].append(utfall)
+
+
+def stampa_ra_meta(outdir: Path) -> int:
+    """Stämpla varje per-ben `cNNN/*_meta.json` med measure_id (punkt 8 rev 2).
+
+    Den frysta benmätaren (`timtest_ben.py`) skriver meta utan fält — det här
+    är poststeget som lägger fältet på VARJE rå-kvitto, inte bara aggregatet.
+    Skrivningen är atomisk (temp + `os.replace`); ett befintligt measure_id som
+    redan är rätt lämnas orört. Returnerar antalet stämplade filer.
+    """
+    n = 0
+    for meta_p in sorted(outdir.glob("c*/*_meta.json")):
+        try:
+            meta = json.loads(meta_p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if meta.get("measure_id") == MEASURE_ID:
+            n += 1
+            continue
+        meta["measure_id"] = MEASURE_ID
+        tmp = meta_p.with_name(meta_p.name + ".tmp")
+        tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n",
+                       encoding="utf-8")
+        os.replace(tmp, meta_p)
+        n += 1
+    return n
 
 
 def samla_kluster(outdir: Path) -> dict:
@@ -147,25 +177,65 @@ def samla_kluster(outdir: Path) -> dict:
     }
 
 
+def _write_exclusive(path: Path, text: str) -> Path:
+    """Samma O_CREAT|O_EXCL-väg som d_kvitto.write_exclusive: vägrar att
+    skriva över ett befintligt kvitto (3785da5-klassen, punkt 8 rev 2)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(path, flags, 0o644)
+    except FileExistsError:
+        raise FileExistsError(f"refuse overwrite of existing kvitto {path}") from None
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return path
+
+
 def skriv_kluster(outdir: Path, path: Path | None = None) -> dict:
+    stampa_ra_meta(outdir)
     doc = samla_kluster(outdir)
     dest = path or (outdir / "kluster.json")
-    dest.write_text(json.dumps(doc, ensure_ascii=False, indent=1) + "\n",
-                    encoding="utf-8")
+    _write_exclusive(dest, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
     return doc
+
+
+def _saknat_measure(m: str | None) -> bool:
+    return m is None or not str(m).strip()
 
 
 def kvot_krav_samma_measure(
     taljare: int | float,
     namnare: int | float,
-    taljare_measure: str,
-    namnare_measure: str,
+    taljare_measure: str | None,
+    namnare_measure: str | None,
     *,
     etikett: str | None = None,
+    tillat_omarkta: bool = False,
 ) -> float | None:
-    """Jämförelsevägran (punkt 8 ii): beräkna kvot ENDAST om täljare och
-    nämnare bär samma measure_id. Blandmått (fall-EPISODER ställt mot
-    fall-UTFALL) är −36 %-läxan och vägras med ValueError."""
+    """Jämförelsevägran (punkt 8 ii, rev 2): beräkna kvot ENDAST om täljare och
+    nämnare bär samma measure_id.
+
+    Blandmått (fall-EPISODER ställt mot fall-UTFALL) är −36 %-läxan och vägras.
+    Saknat/tomt measure_id vägras också — två omärkta kvitton får inte bli en
+    tyst kvot (None==None är just historiska −36 %-klassen). Enda undantaget är
+    `tillat_omarkta=True` (namngivet, medvetet val av anroparen).
+    """
+    if _saknat_measure(taljare_measure) or _saknat_measure(namnare_measure):
+        if tillat_omarkta:
+            if _saknat_measure(taljare_measure):
+                taljare_measure = None
+            if _saknat_measure(namnare_measure):
+                namnare_measure = None
+            if taljare_measure == namnare_measure:
+                if not namnare:
+                    return None
+                return taljare / namnare
+        raise ValueError(
+            "vägrar kvot%s: measure_id saknas på %s — märk kvittot eller ge "
+            "explicit --tillat-omarkta (punkt 8)"
+            % ((" %s" % etikett) if etikett else "",
+               "täljare och/eller nämnare")
+        )
     if taljare_measure != namnare_measure:
         raise ValueError(
             "vägrar kvot%s: täljare measure_id=%r != nämnare measure_id=%r "
@@ -182,10 +252,18 @@ def rapport_rad(
     etikett: str,
     taljare: int,
     namnare: int,
-    measure_id: str,
+    measure_id: str | None,
+    *,
+    tillat_omarkta: bool = False,
 ) -> dict:
-    """Rapportrad med measure_id (punkt 8 iii): varje kvotrad bär sitt
-    mått-id så en granskare ser vad som jämfördes."""
+    """Rapportrad med measure_id (punkt 8 iii, rev 2): varje kvotrad bär sitt
+    mått-id. Saknat mått-id vägras — en rad utan id får inte publicera ett
+    procenttal."""
+    if _saknat_measure(measure_id) and not tillat_omarkta:
+        raise ValueError(
+            "rapport_rad %r: measure_id saknas — märk kvittot eller ge "
+            "explicit --tillat-omarkta (punkt 8)" % etikett
+        )
     return {
         "etikett": etikett,
         "measure_id": measure_id,
