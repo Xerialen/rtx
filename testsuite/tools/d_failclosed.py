@@ -476,19 +476,25 @@ def revert_last_undo() -> None:
 
 
 def graph_ident_wire(block: Mapping[str, Any]) -> dict[str, Any]:
-    """rtx-ctlproto GraphIdent. Hash is the params-free (utan) one."""
-    utan = block.get("graph_content_hash_utan_params") or block.get(
-        "graph_content_hash"
-    )
+    """rtx-ctlproto GraphIdent. Nivå-2 on the wire is the params-FREE hash.
+
+    Manifest blocks carry two SHA-256s. Only ``graph_content_hash_utan_params``
+    describes a graph the engine can have (``carried`` never reaches
+    PlanLink). Sending the params-bearing hash makes every step mismatch —
+    the engine error says "send the params-FREE hash".
+    """
+    utan = block.get("graph_content_hash_utan_params")
+    params = block.get("graph_content_hash")
+    sha = utan if utan else params
     stamp = block.get("graph_stamp") or block.get("stamp")
-    if utan is None or stamp is None:
+    if sha is None or stamp is None:
         raise FailClosed("deploy", "GraphIdent saknar stamp eller hash")
     return {
         "cells": int(block["cells"]),
         "links": int(block["links"]),
         "rj_links": int(block.get("rj_links") or 0),
         "graph_stamp": str(stamp),
-        "graph_content_hash": str(utan),
+        "graph_content_hash": str(sha),
     }
 
 

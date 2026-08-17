@@ -605,13 +605,16 @@ def run_deploy(
     motor_outcome: str | None = None
     stamp_before: str | None = None
     stamp_after: str | None = None
+    komponat_kvitto: dict[str, Any] | None = None
 
     def _run_doc(outcome: str) -> dict[str, Any]:
+        steps = list((komponat_kvitto or {}).get("steps") or receipt_ops)
         applied_names = (
-            [o["name"] for o in receipt_ops if o.get("outcome") == "ok"]
+            [o.get("name") for o in steps if o.get("outcome") == "ok"]
             if motor_outcome == "applied"
             else []
         )
+        observed = (komponat_kvitto or {}).get("observed_final")
         return {
             "schema": SCHEMA_RUN,
             "outcome": outcome,
@@ -642,13 +645,16 @@ def run_deploy(
             "slut_expected_sha256": ident_sha256(slut) if slut else None,
             "slut_observed": live,
             "slut_observed_sha256": ident_sha256(live) if live else None,
-            "ops": receipt_ops,
+            "komponat": komponat_kvitto,
+            "ops": steps,
+            "undo_name": (komponat_kvitto or {}).get("undo_name"),
+            "observed_final": observed,
             "motor_outcome": motor_outcome,
             "stamp_before": stamp_before,
             "stamp_after": stamp_after,
             "applied": applied_names,
             "freeze": ctx.as_kvitto(),
-            "n_ops": len(receipt_ops),
+            "n_ops": len(steps),
         }
 
     try:
@@ -683,10 +689,12 @@ def run_deploy(
         try:
             reply = ctl.request(wire)
             parsed = parse_komponat_reply(reply.get("data"))
+            komponat_kvitto = parsed
             motor_outcome = parsed.get("outcome")
             observed = parsed.get("observed_final") or {}
             if isinstance(observed, dict):
                 stamp_after = observed.get("graph_stamp")
+            receipt_ops = list(parsed.get("steps") or [])
             if motor_outcome != "applied":
                 verb_err = (
                     f"komponat outcome {motor_outcome!r}"
@@ -695,19 +703,6 @@ def run_deploy(
         except Exception as exc:
             verb_err = str(exc)
         live = live_identity(ctl)
-        eng_steps = list(parsed.get("steps") or [])
-        for i, op in enumerate(ops, start=1):
-            eng = eng_steps[i - 1] if i - 1 < len(eng_steps) else {}
-            outcome = eng.get("outcome")
-            if not outcome:
-                outcome = "refused" if verb_err else "ok"
-            receipt_ops.append({
-                "index": i,
-                "name": str(op.get("name") or eng.get("name") or f"op{i}"),
-                "op": str(op.get("op") or ""),
-                "outcome": outcome,
-                "reason": eng.get("reason"),
-            })
         if verb_err:
             why_pin = same_identity(live, pin)
             if why_pin:

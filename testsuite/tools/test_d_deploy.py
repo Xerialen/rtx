@@ -267,6 +267,10 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertFalse(any(_is_fixa(c, mode="apply") for c in self.engine.cmds))
         self.assertFalse(any(_is_fixa(c, mode="undo") for c in self.engine.cmds))
         self.assertFalse(any(_is_fixa(c, mode="chain") for c in self.engine.cmds))
+        self.assertEqual(doc["undo_name"], "komponat")
+        self.assertEqual(doc["komponat"]["outcome"], "applied")
+        self.assertEqual(doc["komponat"]["undo_name"], "komponat")
+        self.assertEqual(len(doc["komponat"]["steps"]), 3)
         self.assertIsNone(fc.active_deploy_context())
 
     def test_d3_pair_accepted(self):
@@ -300,6 +304,10 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertFalse(any(_is_fixa(c, mode="undo") for c in self.engine.cmds))
         self.assertTrue((self.td / "refuse" / "deploy-run.json").is_file())
         self.assertIsNone(same_identity(doc["slut_observed"], doc["pin"]))
+        self.assertEqual(doc["komponat"]["outcome"], "refused")
+        self.assertEqual(doc["undo_name"], "komponat")
+        self.assertEqual(doc["komponat"]["undo_name"], "komponat")
+        self.assertTrue(any(s.get("outcome") == "refused" for s in doc["ops"]))
 
     def test_receipt_io_failure_does_not_undo_atomic_apply(self):
         """Successful Komponat is not rolled back because a receipt write failed."""
@@ -753,6 +761,35 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertEqual(
             set(sent),
             {"from", "takeoff", "tgt", "v_req", "gain", "carried", "lock_token"},
+        )
+
+    def test_komponat_wire_sends_utan_params_not_params_hash(self):
+        """Nivå-2 on the wire is graph_content_hash_utan_params. Params-bearing
+        hash would fail every step (engine: send the params-FREE hash)."""
+        rec = json.loads(RECEPT_JSON.read_text(encoding="utf-8"))
+        man = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        wire = fc.komponat_wire_cmd(rec, man, lock_token="fable")
+        body = wire["Komponat"]
+        pin = man["steg"][0]["identitet"]
+        self.assertEqual(
+            body["base"]["graph_content_hash"],
+            pin["graph_content_hash_utan_params"],
+        )
+        for i, st in enumerate(body["steps"], start=1):
+            ident = man["steg"][i]["identitet"]
+            utan = ident["graph_content_hash_utan_params"]
+            params = ident["graph_content_hash"]
+            self.assertEqual(st["expect_after"]["graph_content_hash"], utan)
+            self.assertNotEqual(utan, params, f"steg {i} must distinguish the two hashes")
+            self.assertNotEqual(st["expect_after"]["graph_content_hash"], params)
+        slut = man["slut"]
+        self.assertEqual(
+            body["expect_final"]["graph_content_hash"],
+            slut["graph_content_hash_utan_params"],
+        )
+        self.assertNotEqual(
+            body["expect_final"]["graph_content_hash"],
+            slut["graph_content_hash"],
         )
 
     def test_komponat_wire_carries_full_payload_and_lock(self):
