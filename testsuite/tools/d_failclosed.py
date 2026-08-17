@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import pwd
 import re
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -92,17 +93,55 @@ def change_freeze_path(ctx: FreezeContext | None = None) -> Path:
     return (ctx or FreezeContext.production()).path
 
 
+def _assert_injected_write_path(path: Path) -> None:
+    """Injected writer may only touch a path under tmp, never ~/lab."""
+    abs_p = Path(os.path.abspath(path))
+    tmp_root = Path(os.path.abspath(tempfile.gettempdir()))
+    try:
+        abs_p.relative_to(tmp_root)
+    except ValueError as exc:
+        raise FailClosed(
+            "freeze",
+            f"injicerad freeze-väg {abs_p} ligger inte under tmp {tmp_root}",
+        ) from exc
+    lab = Path(os.path.abspath(Path(pwd.getpwuid(os.getuid()).pw_dir) / "lab"))
+    if abs_p == lab / ".change-freeze" or abs_p == lab or str(abs_p).startswith(str(lab) + os.sep):
+        raise FailClosed(
+            "freeze",
+            f"injicerad freeze-väg {abs_p} pekar på riktiga ~/lab",
+        )
+
+
 def write_change_freeze(
-    owner: str, note: str = "", *, freeze: FreezeContext | None = None
+    owner: str,
+    note: str = "",
+    *,
+    freeze: FreezeContext,
+    allow_production: bool = False,
 ) -> Path:
-    """Fable-writer. Apply-vägar anropar inte denna."""
+    """Fable-writer. Kräver explicit FreezeContext.
+
+    Test: FreezeContext.for_test(tmp-väg). Produktion: production()
+    + allow_production=True. Utan det skrivs aldrig passwd-hemmet.
+    """
+    if not isinstance(freeze, FreezeContext):
+        raise FailClosed("freeze", "write_change_freeze kräver explicit FreezeContext")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", owner or ""):
         raise FailClosed("freeze", f"ogiltig freeze-ägare {owner!r}")
+    if freeze.injected:
+        _assert_injected_write_path(freeze.path)
+        path = freeze.path
+    elif allow_production:
+        path = FreezeContext.production().path
+    else:
+        raise FailClosed(
+            "freeze",
+            "write_change_freeze vägrar passwd-hem utan allow_production=True",
+        )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     line = f"{owner} {ts}"
     if note:
         line += f" {note.strip()}"
-    path = change_freeze_path(freeze)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(line + "\n", encoding="utf-8")
     return path

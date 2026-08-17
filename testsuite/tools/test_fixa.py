@@ -12,6 +12,15 @@ from pathlib import Path
 import fixa
 from d_kvitto import WEST_SHELF_OFF
 from d_recipe import REGISTERED_IDS, load_recipe, on_expected
+from test_lab_guard import install_lab_guard, uninstall_lab_guard
+
+
+def setUpModule():
+    install_lab_guard()
+
+
+def tearDownModule():
+    uninstall_lab_guard()
 
 
 class FakeCtl:
@@ -79,7 +88,7 @@ class FixaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             lock = Path(tmp) / "no-lock"
             with self.assertRaises(SystemExit) as ctx:
-                fixa.require_lock(27996, lock)
+                fixa.require_lock(27996, lock, freeze=_tmp_freeze())
             self.assertIn("hold the lock", str(ctx.exception))
 
     def test_run_fixa_command_shape(self):

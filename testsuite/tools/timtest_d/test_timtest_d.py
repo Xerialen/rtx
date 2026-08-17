@@ -12,7 +12,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent))
 
+from test_lab_guard import install_lab_guard, uninstall_lab_guard  # noqa: E402
 from timtest_d_ports import EXIT_REFUSED, port_fel  # noqa: E402
 from timtest_d_kluster import (
     MEASURE_ID, MEASURE_ID_FALL_EPISODER,
@@ -21,6 +23,20 @@ from timtest_d_kluster import (
 )  # noqa: E402
 import timtest_d  # noqa: E402
 import timtest_ben as ben  # noqa: E402
+
+
+def setUpModule():
+    install_lab_guard()
+
+
+def tearDownModule():
+    uninstall_lab_guard()
+
+
+def _idle_freeze_args():
+    """--freeze-path mot tmp, fil saknas = ingen freeze. Aldrig passwd-hem."""
+    flag = str(Path(tempfile.mkdtemp(prefix="timtest-d-idlefz-")) / ".change-freeze")
+    return ["--freeze-path", flag]
 
 
 class PortvaktTests(unittest.TestCase):
@@ -45,7 +61,8 @@ class PortvaktTests(unittest.TestCase):
             r = subprocess.run(
                 [sys.executable, str(HERE / "timtest_d.py"),
                  "--port", str(port), "--game-port", str(game),
-                 "--out", "/tmp/timtest-d-should-not-exist", "--mock"],
+                 "--out", "/tmp/timtest-d-should-not-exist", "--mock",
+                 *_idle_freeze_args()],
                 cwd=str(HERE), capture_output=True, text=True,
             )
             self.assertEqual(r.returncode, EXIT_REFUSED, r.stderr)
@@ -81,6 +98,7 @@ class EnarmsMockTests(unittest.TestCase):
             "--game-port", "27595",
             "--out", td,
             "--mock",
+            *_idle_freeze_args(),
         ])
         self.assertEqual(rc, 0)
         out = Path(td)
@@ -125,6 +143,7 @@ class DurationFlagTests(unittest.TestCase):
         rc = timtest_d.main([
             "--port", "27999", "--game-port", "27595",
             "--out", td, "--mock", "--duration", "20",
+            *_idle_freeze_args(),
         ])
         self.assertEqual(rc, 0)
         man = json.loads((Path(td) / "manifest.json").read_text())
@@ -137,6 +156,7 @@ class DurationFlagTests(unittest.TestCase):
         rc = timtest_d.main([
             "--port", "27999", "--game-port", "27595",
             "--out", td, "--mock", "--minuter", "20",
+            *_idle_freeze_args(),
         ])
         self.assertEqual(rc, 0)
         man = json.loads((Path(td) / "manifest.json").read_text())
@@ -147,7 +167,7 @@ class DurationFlagTests(unittest.TestCase):
             [sys.executable, str(HERE / "timtest_d.py"),
              "--port", "27999", "--game-port", "27595",
              "--out", "/tmp/timtest-d-should-not-exist-dur",
-             "--mock", "--duration", "0"],
+             "--mock", "--duration", "0", *_idle_freeze_args()],
             cwd=str(HERE), capture_output=True, text=True,
         )
         self.assertEqual(r.returncode, EXIT_REFUSED)
@@ -159,7 +179,7 @@ class DurationFlagTests(unittest.TestCase):
             [sys.executable, str(HERE / "timtest_d.py"),
              "--port", "27990", "--game-port", "27595",
              "--out", "/tmp/timtest-d-should-not-exist-dur2",
-             "--mock", "--duration", "20"],
+             "--mock", "--duration", "20", *_idle_freeze_args()],
             cwd=str(HERE), capture_output=True, text=True,
         )
         self.assertEqual(r.returncode, EXIT_REFUSED)
@@ -393,7 +413,7 @@ class DurationLasningTests(unittest.TestCase):
             [sys.executable, str(HERE / "timtest_d.py"),
              "--port", "27999", "--game-port", "27595",
              "--out", "/tmp/timtest-d-should-not-exist-run-dur",
-             "--run", "--duration", "20"],
+             "--run", "--duration", "20", *_idle_freeze_args()],
             cwd=str(HERE), capture_output=True, text=True,
         )
         self.assertEqual(r.returncode, EXIT_REFUSED)
@@ -404,7 +424,7 @@ class DurationLasningTests(unittest.TestCase):
             [sys.executable, str(HERE / "timtest_d.py"),
              "--port", "27999", "--game-port", "27595",
              "--out", "/tmp/timtest-d-should-not-exist-run-min",
-             "--run", "--minuter", "20"],
+             "--run", "--minuter", "20", *_idle_freeze_args()],
             cwd=str(HERE), capture_output=True, text=True,
         )
         self.assertEqual(r.returncode, EXIT_REFUSED)
@@ -419,6 +439,7 @@ class DurationLasningTests(unittest.TestCase):
         rc = timtest_d.main([
             "--port", "27999", "--game-port", "27595",
             "--out", str(out), "--run", "--mock", "--gates", str(gates),
+            *_idle_freeze_args(),
         ])
         self.assertEqual(rc, 0)
         man = json.loads((out / "manifest.json").read_text())
@@ -431,7 +452,7 @@ class DurationLasningTests(unittest.TestCase):
             [sys.executable, str(HERE / "timtest_d.py"),
              "--port", "27999", "--game-port", "27595",
              "--out", "/tmp/timtest-d-should-not-exist-live-dur",
-             "--duration", "20"],
+             "--duration", "20", *_idle_freeze_args()],
             cwd=str(HERE), capture_output=True, text=True,
         )
         self.assertEqual(r.returncode, EXIT_REFUSED)

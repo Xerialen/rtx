@@ -12,6 +12,18 @@ from pathlib import Path
 
 import d_failclosed as fc
 from d_recipe import REGISTERED_IDS, load_recipe
+from test_lab_guard import (  # noqa: E402
+    LabReachError, REAL_FREEZE, REAL_LAB,
+    install_lab_guard, uninstall_lab_guard,
+)
+
+
+def setUpModule():
+    install_lab_guard()
+
+
+def tearDownModule():
+    uninstall_lab_guard()
 
 HERE = Path(__file__).resolve().parent
 RECEPT = HERE / "recept"
@@ -63,6 +75,13 @@ def _recipe(**extra):
     }
     doc.update(extra)
     return doc
+
+
+def _idle() -> fc.FreezeContext:
+    """Injected absent freeze under tmp. Never the passwd-home path."""
+    return fc.FreezeContext.for_test(
+        Path(tempfile.mkdtemp(prefix="d-fc-idle-")) / ".change-freeze"
+    )
 
 
 class _Freeze:
@@ -175,7 +194,7 @@ class CrashDetectorTests(unittest.TestCase):
         self.assertIsNotNone(why)
         self.assertIn("∉ förseglad mängd", why)
         with self.assertRaises(fc.FailClosed) as ctx:
-            fc.guard_mutation("apply", recipe=rec, live=RAIL_ON)
+            fc.guard_mutation("apply", recipe=rec, live=RAIL_ON, freeze=_idle())
         self.assertEqual(ctx.exception.gate, "crash-detector")
 
     def test_same_counts_other_hash_refused(self):
@@ -194,12 +213,12 @@ class CrashDetectorTests(unittest.TestCase):
     def test_missing_live_refused(self):
         rec = _recipe()
         with self.assertRaises(fc.FailClosed):
-            fc.guard_mutation("apply", recipe=rec, live=None)
+            fc.guard_mutation("apply", recipe=rec, live=None, freeze=_idle())
 
     def test_undo_also_checks_live(self):
         rec = _recipe()
         with self.assertRaises(fc.FailClosed) as ctx:
-            fc.guard_mutation("undo", recipe=rec, live=RAIL_ON)
+            fc.guard_mutation("undo", recipe=rec, live=RAIL_ON, freeze=_idle())
         self.assertEqual(ctx.exception.gate, "crash-detector")
 
 
@@ -307,19 +326,22 @@ class AnchorTests(unittest.TestCase):
 
 class GuardIntegrationTests(unittest.TestCase):
     def test_apply_ok_on_bas(self):
-        fc.guard_mutation("apply", recipe=_recipe(), live=BAS)
+        fc.guard_mutation("apply", recipe=_recipe(), live=BAS, freeze=_idle())
 
     def test_plant_does_not_require_live(self):
-        fc.guard_plant(_recipe())
+        fc.guard_plant(_recipe(), freeze=_idle())
 
     def test_plant_still_checks_anchors(self):
         with self.assertRaises(fc.FailClosed) as ctx:
-            fc.guard_plant(_recipe(remove_links=[{"id": 48131, "from": 1, "to": 2, "kind": "walk"}]))
+            fc.guard_plant(
+                _recipe(remove_links=[{"id": 48131, "from": 1, "to": 2, "kind": "walk"}]),
+                freeze=_idle(),
+            )
         self.assertEqual(ctx.exception.gate, "anchor")
 
     def test_unknown_verb_refused(self):
         with self.assertRaises(fc.FailClosed):
-            fc.guard_mutation("dry-run", recipe=_recipe(), live=BAS)
+            fc.guard_mutation("dry-run", recipe=_recipe(), live=BAS, freeze=_idle())
 
 
 class TerraBypassTests(unittest.TestCase):
@@ -332,12 +354,12 @@ class TerraBypassTests(unittest.TestCase):
         self.assertEqual(ctx.exception.gate, "crash-detector")
         self.assertIn("korrupt form", str(ctx.exception))
         with self.assertRaises(fc.FailClosed):
-            fc.guard_mutation("apply", recipe=rec, live=BAS)
+            fc.guard_mutation("apply", recipe=rec, live=BAS, freeze=_idle())
 
     def test_registered_apply_requires_fixture_sha(self):
         rec = dict(load_recipe(RECEPT / "haz1462-k2.json"))
         with self.assertRaises(fc.FailClosed) as ctx:
-            fc.guard_mutation("apply", recipe=rec, live=BAS)
+            fc.guard_mutation("apply", recipe=rec, live=BAS, freeze=_idle())
         self.assertEqual(ctx.exception.gate, "crash-detector")
         self.assertIn("SealedRecipe", str(ctx.exception))
 
@@ -365,7 +387,7 @@ class TerraBypassTests(unittest.TestCase):
             "on_expected": dict(BAS),
         }
         with self.assertRaises(fc.FailClosed) as ctx:
-            fc.guard_mutation("apply", recipe=rec, live=BAS)
+            fc.guard_mutation("apply", recipe=rec, live=BAS, freeze=_idle())
         self.assertEqual(ctx.exception.gate, "crash-detector")
         self.assertIn("SealedRecipe", str(ctx.exception))
 
@@ -403,7 +425,7 @@ class TerraBypassTests(unittest.TestCase):
         forged = dict(rec)
         forged["_sealed_identities"] = [("0", "f" * 64)]
         with self.assertRaises(fc.FailClosed) as ctx:
-            fc.guard_mutation("apply", recipe=forged, live=BAS)
+            fc.guard_mutation("apply", recipe=forged, live=BAS, freeze=_idle())
         self.assertIn("SealedRecipe", str(ctx.exception))
 
     def test_injected_freeze_logged_in_kvitto_record(self):
@@ -458,6 +480,39 @@ class TerraBypassTests(unittest.TestCase):
             self.assertIn("from d_failclosed import FailClosed, guard_plant", src)
             self.assertIn("guard_plant()", src)
             self.assertLess(src.index("guard_plant()"), src.index("lab = Lab"))
+
+
+class LabIsolationTests(unittest.TestCase):
+    """AVBROTT-NOT: testsviten får inte nå riktiga ~/lab/.change-freeze."""
+
+    def test_writer_requires_explicit_context(self):
+        with self.assertRaises(TypeError):
+            fc.write_change_freeze("fable")  # type: ignore[misc]
+
+    def test_writer_refuses_production_without_allow(self):
+        with self.assertRaises(fc.FailClosed) as ctx:
+            fc.write_change_freeze("fable", freeze=fc.FreezeContext.production())
+        self.assertEqual(ctx.exception.gate, "freeze")
+        self.assertIn("allow_production", str(ctx.exception))
+
+    def test_writer_refuses_injected_real_lab_path(self):
+        sneaky = fc.FreezeContext.for_test(REAL_FREEZE)
+        with self.assertRaises(fc.FailClosed) as ctx:
+            fc.write_change_freeze("fable", freeze=sneaky)
+        self.assertEqual(ctx.exception.gate, "freeze")
+
+    def test_watchdog_trips_on_real_freeze_stat(self):
+        with self.assertRaises(LabReachError):
+            fc.change_freeze_reason(fc.FreezeContext.production())
+
+    def test_watchdog_trips_on_lab_write(self):
+        with self.assertRaises(LabReachError):
+            Path(REAL_LAB, "grok-must-not-write").write_text("nope", encoding="utf-8")
+
+    def test_default_guard_mutation_would_trip_watchdog(self):
+        """Forgetting freeze= reads passwd-home — vakt, inte tyst ~/lab-stat."""
+        with self.assertRaises(LabReachError):
+            fc.guard_mutation("apply", recipe=_recipe(), live=BAS)
 
 
 if __name__ == "__main__":
