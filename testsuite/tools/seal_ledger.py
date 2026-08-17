@@ -31,6 +31,8 @@ import os
 import sys
 from pathlib import Path
 
+import facit_kalla
+
 SCHEMA = "forsegling/1"
 
 #: Fält som ingår i radens hash, i den ordning `sort_keys` ger dem. `line_sha256`
@@ -319,6 +321,14 @@ def main(argv: list[str] | None = None) -> int:
         facit = Path(args.facit)
         if not facit.is_file():
             raise Vagran(f"facit är ingen fil: {facit}")
+
+        # Vakten: observed får aldrig bli expected. Körs FÖRE allt annat skrivande,
+        # så ett facit utan hederlig källa aldrig hamnar i liggaren.
+        try:
+            kalla, kalla_noter = facit_kalla.granska(facit, args.sealed_at)
+        except facit_kalla.Vagran as exc:
+            raise Vagran(f"källkravet: {exc}") from exc
+
         sha, n = file_sha256(facit)
         rows = read_index(ledger)
         fel = verify_chain(rows)
@@ -339,7 +349,14 @@ def main(argv: list[str] | None = None) -> int:
             seal_id=seal_id_for(facit, sha),
             # Kontrasignaturen produceras här, additivt: raden får två fält till
             # utan schemabump, och en läsare som inte känner igen dem ignorerar dem.
-            extra={"sigill": sigill(sha, args.head), "sigill_alg": SIGILL_ALG},
+            extra={
+                "sigill": sigill(sha, args.head),
+                "sigill_alg": SIGILL_ALG,
+                # Vad facitet självt påstår om sina värdens ursprung, bokfört i raden
+                # så granskaren slipper öppna facitet för att se det.
+                "expected_source": kalla["expected_source"],
+                "kalla_noter": kalla_noter,
+            },
         )
         kvitto = append_row(ledger, row)
         print(kanonisk(row))

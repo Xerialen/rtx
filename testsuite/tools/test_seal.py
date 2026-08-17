@@ -20,9 +20,27 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import test_lab_guard  # noqa: F401 — suite-global lab-vakt
+import facit_kalla  # noqa: E402
 import seal_ledger as sl  # noqa: E402
 
 SEAL_SH = HERE / "seal.sh"
+
+
+def kalla_block(**over) -> dict:
+    """Ett giltigt källblock. Testerna varierar ETT fält i taget ur det här."""
+    b = {
+        "schema": facit_kalla.SCHEMA,
+        "expected_source": "derived",
+        "never_from_judged_run": True,
+        "derived_from": ["transformator.py mot dm3-base-full-graph.json"],
+    }
+    b.update(over)
+    return {k: v for k, v in b.items() if v is not ...}
+
+
+def facit_md(krav: str = "- krav: 4/4", **over) -> str:
+    """Ett facit i markdown med källblocket i ett ```json-block."""
+    return "# facit\n\n" + krav + "\n\n```json\n" + json.dumps(kalla_block(**over), indent=2) + "\n```\n"
 
 
 def git(repo: Path, *args: str) -> str:
@@ -53,7 +71,7 @@ class Bas(unittest.TestCase):
 
         self.ledger = self.tmp / "ledger"
         self.facit = self.tmp / "facit-prov.md"
-        self.facit.write_text("# facit\n\n- krav: 4/4\n", encoding="utf-8")
+        self.facit.write_text(facit_md("- krav: 4/4"), encoding="utf-8")
 
     def seal(self, facit=None, head=None, ledger=None, extra=()):
         cmd = [
@@ -102,7 +120,7 @@ class Kedjan(Bas):
     def test_andra_raden_pekar_pa_den_forsta(self):
         r1 = json.loads(self.seal().stdout)
         andra = self.tmp / "facit-tva.md"
-        andra.write_text("# facit 2\n", encoding="utf-8")
+        andra.write_text(facit_md("- krav: 8/8"), encoding="utf-8")
         r2 = json.loads(self.seal(facit=andra).stdout)
         self.assertEqual(r2["prev"], r1["line_sha256"])
         rows = sl.read_index(self.ledger)
@@ -112,7 +130,7 @@ class Kedjan(Bas):
     def tva_rader(self):
         self.seal()
         andra = self.tmp / "facit-tva.md"
-        andra.write_text("# facit 2\n", encoding="utf-8")
+        andra.write_text(facit_md("- krav: 8/8"), encoding="utf-8")
         self.seal(facit=andra)
         p = sl.index_path(self.ledger)
         return p, p.read_text(encoding="utf-8").splitlines()
@@ -166,7 +184,7 @@ class Kedjan(Bas):
         rad["sealed_by"] = "nagon-annan"
         p.write_text(sl.kanonisk(rad) + "\n", encoding="utf-8")
         andra = self.tmp / "facit-tva.md"
-        andra.write_text("# facit 2\n", encoding="utf-8")
+        andra.write_text(facit_md("- krav: 8/8"), encoding="utf-8")
         r = self.seal(facit=andra)
         self.assertEqual(r.returncode, 2)
         self.assertIn("trasig innan vi ens börjat", r.stderr)
@@ -192,7 +210,7 @@ class OExcl(Bas):
         """Samma filnamn, andra bytes — nytt seal_id, ny rad. Det är en revision,
         inte en överskrivning, och båda står kvar."""
         r1 = json.loads(self.seal().stdout)
-        self.facit.write_text("# facit\n\n- krav: 8/8\n", encoding="utf-8")
+        self.facit.write_text(facit_md("- krav: 8/8"), encoding="utf-8")
         r2 = json.loads(self.seal().stdout)
         self.assertNotEqual(r1["seal_id"], r2["seal_id"])
         self.assertEqual(len(sl.read_index(self.ledger)), 2)
@@ -332,6 +350,145 @@ class Kontrasignatur(Bas):
     def test_strict_pa_en_hel_liggare_ar_gron(self):
         self.seal()
         self.assertEqual(sl.main(["kontrasignatur", "--ledger", str(self.ledger), "--strict"]), 0)
+
+
+class Kallkravet(Bas):
+    """Vakten: observed blir ALDRIG expected."""
+
+    SEALED_AT = "2026-08-17T12:00:00Z"
+
+    def granska(self, block, sealed_at=None):
+        p = self.tmp / "f.md"
+        p.write_text("# facit\n\n```json\n" + json.dumps(block) + "\n```\n", encoding="utf-8")
+        return facit_kalla.granska(p, sealed_at or self.SEALED_AT)
+
+    def test_facit_utan_kallblock_vagras(self):
+        p = self.tmp / "naket.md"
+        p.write_text("# facit\n\n- krav: 4/4\n", encoding="utf-8")
+        r = self.seal(facit=p)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("saknar källblock", r.stderr)
+        self.assertFalse(sl.index_path(self.ledger).exists(), "ingenting skrevs")
+
+    def test_harledda_varden_gar_igenom(self):
+        block, noter = self.granska(kalla_block())
+        self.assertEqual(block["expected_source"], "derived")
+        self.assertTrue(any("derived_from" in n for n in noter))
+
+    def test_harledd_utan_kalla_vagras(self):
+        with self.assertRaises(facit_kalla.Vagran) as cm:
+            self.granska(kalla_block(derived_from=[]))
+        self.assertIn("derived_from", str(cm.exception))
+
+    def test_matt_fore_forseglingen_gar_igenom(self):
+        block, noter = self.granska(
+            kalla_block(
+                expected_source="pre-measured",
+                derived_from=...,
+                measured_at="2026-08-17T09:00:00Z",
+                measured_by="kimi tbx-d4",
+            )
+        )
+        self.assertEqual(block["expected_source"], "pre-measured")
+        self.assertTrue(any("measured_at" in n for n in noter))
+
+    def test_matt_EFTER_forseglingen_vagras(self):
+        """Kärnan i vakten. En mätning daterad efter förseglingen ÄR observed som
+        blivit expected — det finns ingen annan läsning."""
+        with self.assertRaises(facit_kalla.Vagran) as cm:
+            self.granska(
+                kalla_block(
+                    expected_source="pre-measured",
+                    derived_from=...,
+                    measured_at="2026-08-17T12:00:01Z",
+                    measured_by="kimi",
+                )
+            )
+        self.assertIn("observed som blivit expected", str(cm.exception))
+
+    def test_matt_exakt_vid_forseglingen_vagras_ocksa(self):
+        with self.assertRaises(facit_kalla.Vagran):
+            self.granska(
+                kalla_block(
+                    expected_source="pre-measured",
+                    derived_from=...,
+                    measured_at=self.SEALED_AT,
+                    measured_by="kimi",
+                )
+            )
+
+    def test_vilken_tidsstampel_som_helst_i_framtiden_vagras(self):
+        """Hängslet: regeln gäller varje `*_at`-fält, inte bara det som råkar heta
+        measured_at. Ett facit kan datera sin källa under vilket namn som helst."""
+        with self.assertRaises(facit_kalla.Vagran) as cm:
+            self.granska(kalla_block(kvitto_skrivet_at="2026-08-17T12:00:01Z"))
+        self.assertIn("nyare än förseglingen", str(cm.exception))
+
+    def test_tidsstampel_utan_tidszon_vagras(self):
+        with self.assertRaises(facit_kalla.Vagran) as cm:
+            self.granska(kalla_block(nagot_at="2026-08-17T09:00:00"))
+        self.assertIn("saknar tidszon", str(cm.exception))
+
+    def test_never_from_judged_run_maste_pastas(self):
+        for v in (False, None, "true", ...):
+            with self.subTest(v=v):
+                with self.assertRaises(facit_kalla.Vagran) as cm:
+                    self.granska(kalla_block(never_from_judged_run=v))
+                self.assertIn("never_from_judged_run", str(cm.exception))
+
+    def test_okand_kalla_vagras(self):
+        with self.assertRaises(facit_kalla.Vagran) as cm:
+            self.granska(kalla_block(expected_source="observed"))
+        self.assertIn("expected_source", str(cm.exception))
+
+    def test_none_ar_ett_uttryckligt_pastaende(self):
+        """Ett rent kontrakt utan förväntade värden får förseglas — men det ska
+        stå, inte utelämnas."""
+        block, _ = self.granska(kalla_block(expected_source="none", derived_from=...))
+        self.assertEqual(block["expected_source"], "none")
+
+    def test_json_facit_bar_blocket_som_toppnyckel(self):
+        p = self.tmp / "manifest.json"
+        p.write_text(json.dumps({"schema": "komponat-manifest/1", facit_kalla.NYCKEL: kalla_block()}), "utf-8")
+        block, _ = facit_kalla.granska(p, self.SEALED_AT)
+        self.assertEqual(block["expected_source"], "derived")
+
+    def test_tva_olika_kallblock_vagras(self):
+        p = self.tmp / "tvetydig.md"
+        p.write_text(
+            "```json\n" + json.dumps(kalla_block()) + "\n```\n"
+            "```json\n" + json.dumps(kalla_block(expected_source="none", derived_from=...)) + "\n```\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(facit_kalla.Vagran) as cm:
+            facit_kalla.granska(p, self.SEALED_AT)
+        self.assertIn("flera OLIKA källblock", str(cm.exception))
+
+    def test_pinnade_kallor_kontrolleras(self):
+        kalla = self.tmp / "kvitto.json"
+        kalla.write_text('{"n": 1}', encoding="utf-8")
+        import hashlib
+
+        sha = hashlib.sha256(kalla.read_bytes()).hexdigest()
+        block, noter = self.granska(kalla_block(sources=[{"path": str(kalla), "sha256": sha}]))
+        self.assertTrue(any("pinnade" in n for n in noter))
+
+        kalla.write_text('{"n": 2}', encoding="utf-8")
+        with self.assertRaises(facit_kalla.Vagran) as cm:
+            self.granska(kalla_block(sources=[{"path": str(kalla), "sha256": sha}]))
+        self.assertIn("har ändrats", str(cm.exception))
+
+    def test_pinnad_kalla_som_saknas_vagras(self):
+        with self.assertRaises(facit_kalla.Vagran) as cm:
+            self.granska(kalla_block(sources=[{"path": str(self.tmp / "borta.json"), "sha256": "0" * 64}]))
+        self.assertIn("finns inte", str(cm.exception))
+
+    def test_raden_bokfor_vad_facitet_pastod(self):
+        row = json.loads(self.seal().stdout)
+        self.assertEqual(row["expected_source"], "derived")
+        self.assertTrue(row["kalla_noter"])
+        # Innanför radhashen, så påståendet inte går att byta i efterhand.
+        self.assertEqual(row["line_sha256"], sl.line_hash(row))
 
 
 class Grindar(Bas):
