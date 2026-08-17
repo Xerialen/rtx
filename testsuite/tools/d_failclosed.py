@@ -92,7 +92,7 @@ class FailClosed(RuntimeError):
         super().__init__(message)
 
 
-# a564b4f registered_recipe_names() — equality, not contains (Sol villkor 6).
+# 5c66a6d registered_recipe_names() — equality, not contains (Sol villkor 6).
 ENGINE_REGISTERED_RECIPES = (
     "west-shelf",
     "ram-rail",
@@ -102,6 +102,9 @@ ENGINE_REGISTERED_RECIPES = (
     "haz1462-k2",
     "haz1462-k3",
 )
+# undoable_name = PLANT_HANDLES + registered. Handles are undo-only, never apply.
+ENGINE_UNDO_HANDLES = ("plan-cell", "plan-drop", "plan-link")
+ENGINE_UNDOABLE = ENGINE_UNDO_HANDLES + ENGINE_REGISTERED_RECIPES
 
 # Compose children. Generic LABB apply of these is a silent-deploy surface.
 COMPOSE_CHILD_IDS = frozenset({"ram-rail-v2", "ram-prevent"})

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Deploy-runner: sealed komponat-manifest/1 apply, fail-closed.
 
-Varv 3 (Sol 7670f9a): DeployContext minted from preflight seal, step/
-payload-bound; compose-child LABB apply requires campaign; rollback
-catches Exception after mutation; port pair d1|d3; lock binds unit+
-ports+token+both file shas; binaries hashed from staged files.
+Varv 3 (Sol 7670f9a + Fable 5c66a6d): DeployContext minted from
+preflight seal; compose-child LABB requires campaign; rollback
+reads undo top via fixa chain; port pair d1|d3; binaries hashed
+from staged files (qwprogs 4e71191c…).
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -46,9 +47,9 @@ SEALED_MANIFEST_SHA256 = (
 SEALED_RECEPT_SHA256 = (
     "e327251e215a7a459e356fc7fa96e4d3d18f3e2dddb4c72412757614dd0df9ec"
 )
-# B2-binär (a564b4f). Not a facit-r2 seal; runner still refuse-mismatches.
+# 5c66a6d staged qwprogs-5c66a6d-4e71191c.so. Not a facit-r2 seal.
 EXPECTED_QWPROGS_SHA256 = (
-    "65af0b5eb065c3f16f2a00a159af9b26f6c516bddc7d475a94983c73b334076b"
+    "4e71191c5dce641be593834dcf2f4736724f24685e84ea5b2b2de905087392f0"
 )
 EXPECTED_MVDSV_SHA256 = (
     "858465007c7bea52c5c790cdfdd07c0d65cce17b48110b327595bb8c2e051f15"
@@ -169,6 +170,46 @@ def live_identity(ctl) -> dict[str, Any]:
         to_cell=None,
     )
     return live_to_motor(stamp_from_reply(reply))
+
+
+def parse_chain_reply(data: dict[str, Any]) -> dict[str, Any]:
+    """Kedjedjup + hela kedjan + nästa-att-undo ur FixaResp (5c66a6d)."""
+    audit = str(data.get("audit") or "")
+    outcome = str(data.get("outcome") or "")
+    top = str(data.get("recipe") or "").strip()
+    depth = 0
+    names: list[str] = []
+    m = re.search(r"depth=(\d+)", audit)
+    if m:
+        depth = int(m.group(1))
+    m = re.search(r"\[([^\]]*)\]", audit)
+    if m and m.group(1).strip():
+        names = [p.strip() for p in m.group(1).split("->") if p.strip()]
+        depth = depth or len(names)
+    m = re.search(r"next undo=(\S+)", audit)
+    if m and m.group(1) not in {"-", ""}:
+        top = m.group(1)
+    if outcome == "empty" or "undo chain: empty" in audit:
+        top, depth, names = "", 0, []
+    return {
+        "next": top,
+        "depth": depth,
+        "names": names,
+        "outcome": outcome,
+        "audit": audit,
+    }
+
+
+def read_undo_chain(ctl) -> dict[str, Any]:
+    """Read-only. No lock. Recovery must use this, never guess the top."""
+    reply = run_fixa(
+        ctl,
+        recipe_id="west-shelf",
+        mode="chain",
+        from_cell=None,
+        to_cell=None,
+    )
+    return parse_chain_reply(reply)
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
@@ -518,8 +559,15 @@ def _undo_one(
     then: dict[str, Any],
     deploy_ctx: DeployContext,
     manifest: dict[str, Any],
-) -> None:
-    rid = applied.get("recipe_id") or PLAN_LINK_UNDO_ID
+) -> str:
+    """Undo the name `chain` reports. Never guess from applied[]."""
+    chain = read_undo_chain(ctl)
+    rid = chain.get("next") or ""
+    if not rid:
+        raise FailClosed(
+            "crash-detector",
+            "undo-kedjan är tom — chain rapporterade ingen topp",
+        )
     run_fixa(
         ctl,
         recipe_id=rid,
@@ -532,6 +580,7 @@ def _undo_one(
         deploy=True,
         deploy_ctx=deploy_ctx,
     )
+    return rid
 
 
 def _write_steg_kvitto(
@@ -602,15 +651,19 @@ def _safe_undo(
                 leftover = f"undo-waypoint {rec['name']}: {why}"
                 break
             undid.append(rec["name"])
+        except Exception as exc:
+            leftover = f"undo av {rec['name']} misslyckades: {exc}"
+            break
+        try:
             kpath = _write_steg_kvitto(
                 out, index=rec["index"], name=f"{rec['name']}-undo",
                 op="undo", outcome="undo",
                 expected=rec["before"], observed=live, manifest_sha256=man_sha,
             )
             steg_kvitton.append(str(kpath))
-        except Exception as exc:
-            leftover = f"undo av {rec['name']} misslyckades: {exc}"
-            break
+        except Exception as kexc:
+            # Graph already restored. A receipt write must not skip the next pop.
+            steg_kvitton.append(f"kvitto-skrivfel undo {rec['name']}: {kexc}")
     if leftover is None:
         why_pin = same_identity(live, pin)
         if why_pin:

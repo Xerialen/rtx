@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Mock-ctl tests for deploy-runner varv 3 (Sol 7670f9a). No rig.
+"""Mock-ctl tests for deploy-runner varv 3 (Sol 7670f9a + Fable 5c66a6d). No rig.
 
-Production-realistic mock mirrors a564b4f: patch_by_name before every
-fixa mode, exact registered_recipe_names() equality.
+Production-realistic mock mirrors 5c66a6d: registered recipes for
+apply/dry-run; undoable = plant handles + recipes; chain is read-only.
 """
 
 from __future__ import annotations
@@ -41,8 +41,8 @@ K2_MANIFEST = RECEPT / "komponat-k2-v296-ram.manifest.json"
 
 _FZ_PATCH = None
 
-# a564b4f ram_rail_v2_is_reachable_by_name_in_the_registry
-A564B4F_REGISTERED = (
+# 5c66a6d registered_recipe_names() + undoable_names()
+ENGINE_REGISTERED = (
     "west-shelf",
     "ram-rail",
     "ram-rail-v2",
@@ -51,6 +51,8 @@ A564B4F_REGISTERED = (
     "haz1462-k2",
     "haz1462-k3",
 )
+ENGINE_UNDO_HANDLES = ("plan-cell", "plan-drop", "plan-link")
+ENGINE_UNDOABLE = ENGINE_UNDO_HANDLES + ENGINE_REGISTERED
 
 
 def setUpModule():
@@ -106,13 +108,14 @@ def _v296_payload(**over):
 
 
 class ProdEngineMock:
-    """a564b4f do_fixa: patch_by_name before apply/undo/dry-run.
+    """5c66a6d do_fixa: chain before lookup; undo via undoable_name; apply via register.
 
-    PlanLink is a separate verb and does not go through the recipe table.
-    `fixa plan-link undo` is unknown recipe — leftover V296 until opus5 #4.
+    Plant handles are undo-only. PlanLink is a separate verb.
     """
 
-    REGISTERED = A564B4F_REGISTERED
+    REGISTERED = ENGINE_REGISTERED
+    UNDO_HANDLES = ENGINE_UNDO_HANDLES
+    UNDOABLE = ENGINE_UNDOABLE
 
     def __init__(self, idents, *, corrupt_after=None, refuse_apply=None):
         self.idents = [dict(x) for x in idents]
@@ -126,6 +129,28 @@ class ProdEngineMock:
     def _cur(self):
         return self.idents[self.idx]
 
+    def _chain_reply(self):
+        ident = _reply(self._cur(), "chained" if self.stack else "empty")
+        data = ident["data"]
+        if not self.stack:
+            data["recipe"] = ""
+            data["mode"] = "chain"
+            data["outcome"] = "empty"
+            data["audit"] = (
+                "rtx: navpatch undo chain: empty (live graph is this session's base)\n"
+            )
+            return ident
+        top = self.stack[-1]
+        names = " -> ".join(self.stack)
+        data["recipe"] = top
+        data["mode"] = "chain"
+        data["outcome"] = "chained"
+        data["audit"] = (
+            f"rtx: navpatch undo chain: depth={len(self.stack)} [{names}], "
+            f"next undo={top}\n"
+        )
+        return ident
+
     def request(self, cmd):
         self.cmds.append(cmd)
         if isinstance(cmd, dict) and "PlanLink" in cmd:
@@ -136,11 +161,31 @@ class ProdEngineMock:
         if len(parts) < 3 or parts[0] != "fixa":
             raise RuntimeError(f"okänt cmd {cmd!r}")
         rid, mode = parts[1], parts[2]
+        if mode == "chain":
+            return self._chain_reply()
+        if mode == "undo":
+            if rid not in self.UNDOABLE:
+                raise fc.FailClosed(
+                    "deploy",
+                    f"unknown undo target {rid!r}; undoable: {list(self.UNDOABLE)}",
+                )
+            if not self.stack:
+                raise fc.FailClosed("deploy", "no apply snapshot — nothing to undo")
+            if self.stack[-1] != rid:
+                raise fc.FailClosed(
+                    "deploy",
+                    f"top of the undo chain is '{self.stack[-1]}', not '{rid}' "
+                    f"— undo in reverse order",
+                )
+            self.stack.pop()
+            if self.idx <= 0:
+                raise RuntimeError("undo under bas")
+            self.idx -= 1
+            return _reply(self._cur(), "undone")
         if rid not in self.REGISTERED:
-            known = list(self.REGISTERED)
             raise fc.FailClosed(
                 "deploy",
-                f"unknown recipe {rid!r}; registered: {known}",
+                f"unknown recipe {rid!r}; registered: {list(self.REGISTERED)}",
             )
         if mode == "dry-run":
             return _reply(self._cur(), "dry_run_ok")
@@ -148,19 +193,6 @@ class ProdEngineMock:
             if self.refuse_apply and rid == self.refuse_apply:
                 raise fc.FailClosed("deploy", f"steg {rid} vägrad")
             return self._push(rid, "applied")
-        if mode == "undo":
-            if not self.stack:
-                raise RuntimeError("undo under tom stack")
-            if self.stack[-1] != rid:
-                raise fc.FailClosed(
-                    "deploy",
-                    f"unknown recipe {rid!r}; stacktop {self.stack[-1]!r}",
-                )
-            self.stack.pop()
-            if self.idx <= 0:
-                raise RuntimeError("undo under bas")
-            self.idx -= 1
-            return _reply(self._cur(), "undone")
         raise RuntimeError(f"okänt cmd {cmd!r}")
 
     def _push(self, name, outcome):
@@ -233,10 +265,14 @@ class DeployRunnerTests(unittest.TestCase):
         args.update(kw)
         return run_deploy(ctl, **args)
 
-    def test_engine_register_mirrors_a564b4f(self):
-        self.assertEqual(fc.ENGINE_REGISTERED_RECIPES, A564B4F_REGISTERED)
-        self.assertEqual(list(fc.ENGINE_REGISTERED_RECIPES), list(A564B4F_REGISTERED))
+    def test_engine_register_and_undo_handles_mirror_5c66a6d(self):
+        self.assertEqual(fc.ENGINE_REGISTERED_RECIPES, ENGINE_REGISTERED)
+        self.assertEqual(fc.ENGINE_UNDO_HANDLES, ENGINE_UNDO_HANDLES)
+        self.assertEqual(fc.ENGINE_UNDOABLE, ENGINE_UNDOABLE)
         self.assertNotIn("plan-link", fc.ENGINE_REGISTERED_RECIPES)
+        for h in ENGINE_UNDO_HANDLES:
+            self.assertIn(h, fc.ENGINE_UNDOABLE)
+            self.assertNotIn(h, fc.ENGINE_REGISTERED_RECIPES)
 
     def test_sealed_bytes(self):
         self.assertEqual(file_sha256(MANIFEST), SEALED_MANIFEST_SHA256)
@@ -274,48 +310,56 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertEqual(doc["outcome"], "applied")
         self.assertEqual(doc["unit"], "tbx-d3")
 
-    def test_avvikelse_steg_2_undos_rail_planlink_unknown(self):
-        """a564b4f: rail undo works; plan-link undo is unknown recipe (opus5 #4)."""
+    def test_avvikelse_steg_2_full_undo_via_chain(self):
+        """Recovery reads chain top, then undoes that name — including plan-link."""
         ctl = ProdEngineMock(self.idents, corrupt_after=2)
-        with self.assertRaises(fc.FailClosed) as cm:
-            self._run(ctl, outdir=self.td / "abort")
-        self.assertEqual(cm.exception.gate, "crash-detector")
-        self.assertIn("unknown recipe", str(cm.exception))
+        doc = self._run(ctl, outdir=self.td / "abort")
+        self.assertEqual(doc["outcome"], "aborted")
+        self.assertIn("steg 2", doc["abort_reason"] or "")
+        self.assertEqual(doc["undid"], ["ram-rail-v2", "v296-vasthoppet"])
+        self.assertEqual(ctl.idx, 0)
+        self.assertEqual(ctl.stack, [])
+        chains = [c for c in ctl.cmds if isinstance(c, str) and c.endswith(" chain")]
+        undos = [c for c in ctl.cmds if isinstance(c, str) and " undo " in f" {c} "]
+        self.assertGreaterEqual(len(chains), 2)
+        self.assertTrue(any("fixa plan-link undo" in c for c in undos))
+        self.assertTrue(any("fixa ram-rail-v2 undo" in c for c in undos))
+        self.assertFalse(any("fixa compose undo" in c for c in undos))
+        self.assertFalse(any("plan_link" in c for c in undos))
         self.assertTrue((self.td / "abort" / "deploy-run.json").is_file())
-        run = json.loads((self.td / "abort" / "deploy-run.json").read_text())
-        self.assertEqual(run["undid"], ["ram-rail-v2"])
-        self.assertEqual(ctl.idx, 1)
-        self.assertIn("plan-link", ctl.stack)
 
-    def test_apply_refuse_after_v296_writes_receipt(self):
+    def test_apply_refuse_after_v296_undos_via_chain(self):
         ctl = ProdEngineMock(self.idents, refuse_apply="ram-rail-v2")
-        with self.assertRaises(fc.FailClosed) as cm:
-            self._run(ctl, outdir=self.td / "refuse")
-        self.assertIn("unknown recipe", str(cm.exception))
+        doc = self._run(ctl, outdir=self.td / "refuse")
+        self.assertEqual(doc["outcome"], "aborted")
+        self.assertEqual(doc["applied"], ["v296-vasthoppet"])
+        self.assertEqual(doc["undid"], ["v296-vasthoppet"])
+        self.assertEqual(ctl.idx, 0)
+        self.assertTrue(any(
+            isinstance(c, str) and c.endswith(" chain") for c in ctl.cmds
+        ))
+        self.assertTrue(any(
+            isinstance(c, str) and "fixa plan-link undo" in c for c in ctl.cmds
+        ))
         self.assertTrue((self.td / "refuse" / "deploy-run.json").is_file())
-        run = json.loads((self.td / "refuse" / "deploy-run.json").read_text())
-        self.assertEqual(run["applied"], ["v296-vasthoppet"])
-        self.assertEqual(ctl.idx, 1)
 
     def test_f4_oserror_after_apply_still_undos_and_writes_run(self):
         """Sol F4: I/O after mutation must not skip undo/receipt."""
         ctl = ProdEngineMock(self.idents)
-        real_write = __import__("d_deploy")._write_steg_kvitto
 
         def boom(*a, **k):
             raise OSError("disk full")
 
         with mock.patch("d_deploy._write_steg_kvitto", side_effect=boom):
-            with self.assertRaises(fc.FailClosed) as cm:
-                self._run(ctl, outdir=self.td / "io")
+            doc = self._run(ctl, outdir=self.td / "io")
+        self.assertEqual(doc["outcome"], "aborted")
         self.assertTrue((self.td / "io" / "deploy-run.json").is_file())
         self.assertGreaterEqual(ctl.n_apply, 1)
-        run = json.loads((self.td / "io" / "deploy-run.json").read_text())
-        self.assertEqual(run["outcome"], "aborted")
-        self.assertTrue(run["applied"])
-        # a564b4f cannot pop plan-link; leftover is recorded, receipt exists.
-        self.assertIn("unknown recipe", str(cm.exception))
-        del real_write
+        self.assertEqual(ctl.idx, 0)
+        self.assertIn("disk full", doc["abort_reason"] or "")
+        self.assertTrue(any(
+            isinstance(c, str) and "fixa plan-link undo" in c for c in ctl.cmds
+        ))
 
     def test_frysflagga_vagrar(self):
         fc.write_change_freeze("fable", freeze=self.ctx)
@@ -649,6 +693,61 @@ class DeployRunnerTests(unittest.TestCase):
             from_cell=None, to_cell=None, freeze=self.ctx, lock_token="fable",
         )
         self.assertEqual(ctl.n_apply, 1)
+
+    def test_plant_handles_never_appliable(self):
+        import fixa
+        ctl = ProdEngineMock(self.idents)
+        for h in ENGINE_UNDO_HANDLES:
+            with self.subTest(h=h):
+                with self.assertRaises(fc.FailClosed) as cm:
+                    fixa.run_fixa(
+                        ctl, recipe_id=h, mode="apply",
+                        from_cell=None, to_cell=None, freeze=self.ctx,
+                    )
+                self.assertIn("undo-handtag", str(cm.exception))
+        self.assertEqual(ctl.n_apply, 0)
+        self.assertFalse(any(
+            isinstance(c, str) and " apply" in c for c in ctl.cmds
+        ))
+
+    def test_undo_typo_refused_as_unknown_target(self):
+        ctl = ProdEngineMock(self.idents)
+        ctl.stack.append("plan-link")
+        ctl.idx = 1
+        for typo in ("plan_link", "planlink", "plan-links", "PLAN-LINK", "compose"):
+            with self.subTest(typo=typo):
+                with self.assertRaises(fc.FailClosed) as cm:
+                    ctl.request(f"fixa {typo} undo")
+                self.assertIn("unknown undo target", str(cm.exception))
+        self.assertEqual(ctl.stack, ["plan-link"])
+
+    def test_chain_is_read_only_and_names_top(self):
+        from d_deploy import read_undo_chain
+        ctl = ProdEngineMock(self.idents)
+        empty = read_undo_chain(ctl)
+        self.assertEqual(empty["next"], "")
+        self.assertEqual(empty["depth"], 0)
+        self.assertEqual(empty["outcome"], "empty")
+        ctl.stack.extend(["plan-link", "ram-rail-v2"])
+        ctl.idx = 2
+        chained = read_undo_chain(ctl)
+        self.assertEqual(chained["next"], "ram-rail-v2")
+        self.assertEqual(chained["depth"], 2)
+        self.assertEqual(chained["names"], ["plan-link", "ram-rail-v2"])
+        self.assertFalse(any(
+            isinstance(c, str) and (" apply" in c or " undo " in f" {c} ")
+            for c in ctl.cmds
+        ))
+        self.assertTrue(all(
+            isinstance(c, str) and c.endswith(" chain") for c in ctl.cmds
+        ))
+
+    def test_qwprogs_pin_is_5c66a6d(self):
+        from d_deploy import EXPECTED_QWPROGS_SHA256
+        self.assertEqual(
+            EXPECTED_QWPROGS_SHA256,
+            "4e71191c5dce641be593834dcf2f4736724f24685e84ea5b2b2de905087392f0",
+        )
 
 
 if __name__ == "__main__":

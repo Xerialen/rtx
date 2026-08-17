@@ -92,6 +92,7 @@ def _send_fixa(
     """ENDA muterande ctl-ingången. Frys + stampgrind bor här, inte hos anroparen."""
     from d_failclosed import (
         COMPOSE_CHILD_IDS,
+        ENGINE_UNDO_HANDLES,
         KOMPONAT_SCHEMAN,
         FreezeContext,
         consume_deploy_apply,
@@ -113,6 +114,13 @@ def _send_fixa(
         if token:
             cmd += f" lock {token}"
         return parse_fixa_reply(ctl.request(cmd)["data"])
+
+    if mode_l == "apply" and recipe_id in ENGINE_UNDO_HANDLES:
+        raise FailClosed(
+            "deploy",
+            f"{recipe_id} är undo-handtag, aldrig apply-bart "
+            f"(handtag {list(ENGINE_UNDO_HANDLES)})",
+        )
 
     if mode_l in {"apply", "undo", "plant"}:
         rec = recipe if recipe is not None else load_recipe(recipe_path(recipe_id))
@@ -138,7 +146,10 @@ def _send_fixa(
             if mode_l == "plant":
                 guard_plant(rec, freeze=ctx, deploy=want_deploy)
             else:
-                ident = _ctl("dry-run", None)
+                # Identity via a registered recipe. Plant handles have no dry-run/apply.
+                ident_id = "west-shelf" if mode_l == "undo" else recipe_id
+                ident_cmd = f"fixa {ident_id} dry-run"
+                ident = parse_fixa_reply(ctl.request(ident_cmd)["data"])
                 live = stamp_from_reply(ident)
                 guard_mutation(
                     mode_l, recipe=rec, live=live, freeze=ctx, deploy=want_deploy
