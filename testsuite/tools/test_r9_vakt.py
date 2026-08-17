@@ -111,6 +111,28 @@ class R9Tests(unittest.TestCase):
         self.assertEqual(rc, 0)
         td.cleanup()
 
+    def test_samling_stopp_verbatim_from_domfil(self):
+        # Ordagrant ur WORK_LOGS/kimi-testprotokoll-domar.md (rad 657).
+        heading = (
+            "## DOM TURNERING-K1/K2/K3 + RAM-SJALVBEVIS — STOPP "
+            "(EJ KÖRBARA: turneringsrunnern existerar inte; gäller ALLA fyra armar) "
+            "— 2026-08-16 18:28 CEST (lanister date -u 16:28:14 UTC)"
+        )
+        rows = r9.parse_stopp(heading + "\n")
+        self.assertEqual(
+            [r["punkt"] for r in rows],
+            ["TURNERING-K1", "TURNERING-K2", "TURNERING-K3", "RAM-SJALVBEVIS"],
+        )
+        self.assertTrue(all(r["day"] == "2026-08-16" for r in rows))
+        doc = r9.lint(heading + "\n", grind_days=[], since=date(2026, 8, 16))
+        self.assertEqual(
+            [a["punkt"] for a in doc["alarms"]],
+            ["TURNERING-K1", "TURNERING-K2", "TURNERING-K3", "RAM-SJALVBEVIS"],
+        )
+        # Same-day grind still clears the collection (one grind covers all four).
+        doc_ok = r9.lint(heading + "\n", grind_days=["2026-08-16"], since=date(2026, 8, 16))
+        self.assertTrue(doc_ok["ok"])
+
     def test_onabart_json_has_no_alarms(self):
         td = tempfile.TemporaryDirectory()
         repo = Path(td.name) / "empty"

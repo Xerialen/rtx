@@ -24,8 +24,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Iterable
 
+from varvtrappa import HEAD, named_punkter, punkt_id
+
 DEFAULT_DOMFIL = Path("/home/xerial/dev/buzz-4on4/WORK_LOGS/kimi-testprotokoll-domar.md")
-HEAD = re.compile(r"^## DOM\s+(\S+)\s+—\s+(.*)$")
 DATE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 GRIND_HINT = re.compile(
     r"(r1_vakt|varvtrappa|wip_lint|r9_vakt|lasfil|las_fil|\.github/workflows/)",
@@ -64,18 +65,32 @@ def split_repo_spec(spec: str) -> tuple[str | None, str]:
 
 
 def parse_stopp(text: str) -> list[dict[str, str]]:
+    """STOPP-rubriker, en rad per namngiven punkt.
+
+    Title parse is varvtrappa's (HEAD + named_punkter) — one domfil
+    parser, not a third heading regex.
+    """
     rows: list[dict[str, str]] = []
     for line in text.splitlines():
         m = HEAD.match(line.strip())
         if not m:
             continue
-        rest = m.group(2).upper()
-        if "STOPP" not in rest:
+        title, rest = m.group(1), m.group(2)
+        if "STOPP" not in rest.upper():
             continue
         dm = DATE.search(line)
         if not dm:
             continue
-        rows.append({"raw": m.group(1), "day": dm.group(1), "heading": line.strip()})
+        heading = line.strip()
+        for raw in named_punkter(title):
+            rows.append(
+                {
+                    "raw": raw,
+                    "punkt": punkt_id(raw),
+                    "day": dm.group(1),
+                    "heading": heading,
+                }
+            )
     return rows
 
 
@@ -165,7 +180,7 @@ def lint(
         if day < since:
             continue
         if s["day"] not in known:
-            alarms.append({"punkt": s["raw"], "day": s["day"], "heading": s["heading"][:160]})
+            alarms.append({"punkt": s["punkt"], "day": s["day"], "heading": s["heading"][:160]})
     return {
         "n_stopp": len(stopps),
         "n_since": sum(1 for s in stopps if date.fromisoformat(s["day"]) >= since),
