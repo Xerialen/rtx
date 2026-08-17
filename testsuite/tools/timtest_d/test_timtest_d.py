@@ -481,5 +481,15 @@ class DurationLasningTests(unittest.TestCase):
         self.assertIn("CLI --duration bara med --mock/--dry", r.stderr)
 
 
+class T1hGatesTests(unittest.TestCase):
+    def test_t1h_gates_lasas_av_samma_lasare(self):
+        p = HERE.parent / "recept" / "timtest-t1h-gates.json"
+        self.assertEqual(timtest_d.las_gates_duration(p), 60.0)
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        self.assertEqual(doc["protocol"], "T1h")
+        self.assertEqual(timtest_d.las_gates_duration(
+            HERE.parent / "recept" / "timtest-d-gates.json"), 20.0)
+
+
 if __name__ == "__main__":
     unittest.main()
