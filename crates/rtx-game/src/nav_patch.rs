@@ -125,6 +125,42 @@ pub fn patch_by_name(name: &str) -> Option<&'static ShelfPatch> {
         .find(|p| p.name == name)
 }
 
+/// The name a hand-planted cell goes onto the undo chain under.
+pub const TXN_PLAN_CELL: &str = "plan-cell";
+/// The name a hand-planted drop goes onto the undo chain under.
+pub const TXN_PLAN_DROP: &str = "plan-drop";
+/// The name a hand-planted speed jump (the V296 class) goes onto the undo chain under.
+pub const TXN_PLAN_LINK: &str = "plan-link";
+
+/// Undo handles for the hand-plant verbs. Not recipes — there is no `ShelfPatch` to look up and
+/// nothing to `--apply`; a plant arrives over `PlanCell` / `PlanDrop` / `PlanLink`. What they need
+/// is a *name*, so `fixa --undo` can ask for the snapshot the plant left on the chain.
+///
+/// Without them the chain was write-only from the control channel's point of view: `do_fixa`
+/// resolved the recipe through [`patch_by_name`] before dispatching, so `fixa --undo plan-link`
+/// died on `unknown recipe` and a planted V296 could only be removed by reloading the map. The
+/// snapshot existed and was unreachable (Sols review av `7670f9a`, F5).
+///
+/// The set is closed on purpose: a typo must still be refused, not silently accepted as "some
+/// plant or other".
+pub const PLANT_HANDLES: &[&str] = &[TXN_PLAN_CELL, TXN_PLAN_DROP, TXN_PLAN_LINK];
+
+/// Resolve a name `fixa --undo` may ask for to its `'static` form, or `None` if it is neither a
+/// registered recipe nor a plant handle. The `'static` lifetime is what lets the undo chain compare
+/// against what it actually recorded instead of against a caller-supplied string.
+pub fn undoable_name(name: &str) -> Option<&'static str> {
+    PLANT_HANDLES
+        .iter()
+        .copied()
+        .chain(registered_recipe_names())
+        .find(|&n| n == name)
+}
+
+/// Everything `fixa --undo` accepts, for an error message that lists the real alternatives.
+pub fn undoable_names() -> impl Iterator<Item = &'static str> {
+    PLANT_HANDLES.iter().copied().chain(registered_recipe_names())
+}
+
 /// Every named recipe `fixa` may apply (west-shelf + ram + HAZ-1462 tournament).
 pub fn registered_recipe_names() -> impl Iterator<Item = &'static str> {
     PATCHES
@@ -2535,6 +2571,67 @@ mod tests {
         assert!(bit_image_eq(&g, &base), "hela fixturen är borta, bit för bit");
         assert_eq!(g.cells.len(), base.cells.len());
         assert!(stack.is_empty());
+    }
+
+    /// The undo chain must be reachable under the exact name the control channel sends.
+    ///
+    /// This is Sols F5 in one test. `do_fixa` used to resolve every recipe through
+    /// [`patch_by_name`] *before* dispatching, so `fixa --undo plan-link` died on
+    /// `unknown recipe plan-link` and a planted V296 stayed live: the snapshot existed and no verb
+    /// could reach it. The sequence below is what `do_fixa` now performs — resolve the wire name to
+    /// a `'static` handle, then pop the chain with it — minus the `GameState` plumbing a unit test
+    /// cannot stand up.
+    #[test]
+    fn plan_link_undo_is_reachable_under_its_control_channel_name() {
+        let mut g = priced_edit_graph();
+        let mut stack = TxnStack::default();
+        let base = g.clone();
+
+        let (txn, _) = live_txn(TXN_PLAN_LINK, "dm3", &mut g, |c| {
+            plant_one(c, edit_origins()[0], edit_origins()[2], 320.0)
+        })
+        .expect("plant");
+        stack.push(txn, &g).expect("room");
+        assert_eq!(stack.top_name(), Some(TXN_PLAN_LINK));
+
+        // Vad runnern skickar över tråden är en sträng, inte en `&'static str`.
+        let wire = String::from("plan-link");
+        let resolved = undoable_name(&wire).expect("plan-link måste gå att ange för undo");
+        let undone = stack.undo("dm3", resolved, &mut g).expect("undo");
+
+        assert_eq!(undone.name, TXN_PLAN_LINK);
+        assert_eq!(undone.depth_left, 0);
+        assert!(bit_image_eq(&g, &base), "snapshot-restore, inte invers-op");
+    }
+
+    /// The handles are exactly the three plant verbs, and nothing else resolves.
+    #[test]
+    fn undoable_names_cover_the_plants_and_the_recipes_and_nothing_more() {
+        assert_eq!(PLANT_HANDLES, &["plan-cell", "plan-drop", "plan-link"]);
+        for h in PLANT_HANDLES {
+            assert_eq!(undoable_name(h), Some(*h));
+            assert!(patch_by_name(h).is_none(), "{h} är ett handtag, inte ett recept");
+        }
+        for r in registered_recipe_names() {
+            assert_eq!(undoable_name(r), Some(r), "recept måste också gå att undo:a");
+        }
+        // Ett stavfel får inte glida igenom som "någon plantering".
+        for typo in ["plan_link", "planlink", "plan-links", "", "PLAN-LINK"] {
+            assert_eq!(undoable_name(typo), None, "{typo:?}");
+        }
+        let alla: Vec<_> = undoable_names().collect();
+        assert_eq!(alla.len(), PLANT_HANDLES.len() + registered_recipe_names().count());
+    }
+
+    /// A plant handle is undoable but not appliable: there is no `ShelfPatch` behind it, and
+    /// `fixa --apply plan-link` must stay an error rather than become a second planting verb.
+    #[test]
+    fn plant_handles_are_undoable_but_never_appliable() {
+        for h in PLANT_HANDLES {
+            assert!(undoable_name(h).is_some());
+            assert!(patch_by_name(h).is_none());
+            assert!(!registered_recipe_names().any(|n| n == *h));
+        }
     }
 
     /// A refused plant leaves the live graph untouched — the `PlanCell` / `PlanDrop` shape.

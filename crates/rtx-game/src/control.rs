@@ -539,6 +539,21 @@ fn do_fixa(
     lock_token: String,
 ) -> Result<Resp, String> {
     fixa_require_lock(&mode, &lock_token)?;
+    // `chain` is read-only and names nothing: it reports what the undo chain holds, which is what a
+    // runner needs *before* it can ask for an undo by name.
+    if mode == "chain" {
+        return fixa_chain(game);
+    }
+    // Undo resolves against the undo chain, not against the recipe table. A hand plant
+    // (`plan-cell` / `plan-drop` / `plan-link`) has no `ShelfPatch` to look up — insisting on one
+    // here is exactly what made a planted V296 unremovable over the control channel.
+    if mode == "undo" {
+        let name = crate::nav_patch::undoable_name(&recipe).ok_or_else(|| {
+            let known: Vec<&str> = crate::nav_patch::undoable_names().collect();
+            format!("unknown undo target {recipe:?}; undoable: {known:?}")
+        })?;
+        return fixa_undo(game, name);
+    }
     let patch = crate::nav_patch::patch_by_name(&recipe).ok_or_else(|| {
         let known: Vec<&str> = crate::nav_patch::registered_recipe_names().collect();
         format!("unknown recipe {recipe:?}; registered: {known:?}")
@@ -549,9 +564,38 @@ fn do_fixa(
     match mode.as_str() {
         "dry-run" => fixa_dry_run(game, patch, from, to),
         "apply" => fixa_apply(game, patch, from, to),
-        "undo" => fixa_undo(game, patch),
-        other => Err(format!("fixa mode {other:?} (want dry-run|apply|undo)")),
+        other => Err(format!("fixa mode {other:?} (want dry-run|apply|undo|chain)")),
     }
+}
+
+/// Read-only view of the undo chain: how deep it is and what comes off next.
+///
+/// A runner that has to recover — after a crash, a refused step, or someone else's plant — cannot
+/// name the top of the chain unless it can read it. Without this the only way to learn the chain
+/// was to attempt an undo and parse the refusal, which means guessing at a mutating verb.
+fn fixa_chain(game: &GameState) -> Result<Resp, String> {
+    let map = game.level.mapname.clone();
+    let g = game.nav.graph.as_ref().ok_or("navmesh not ready")?;
+    let (cells, links, rj, stamp, hash) = fixa_identity(&map, g);
+    let stack = &game.nav_patch_txns;
+    Ok(Resp::Fixa(proto::FixaResp {
+        recipe: stack.top_name().unwrap_or("").to_string(),
+        mode: "chain".into(),
+        outcome: if stack.is_empty() { "empty".into() } else { "chained".into() },
+        reason: None,
+        map,
+        cells,
+        links,
+        rj_links: rj,
+        stamp: stamp.clone(),
+        content_hash: hash,
+        stamp_before: None,
+        stamp_after: Some(stamp),
+        astar_before: None,
+        astar_after: None,
+        astar_next_best: None,
+        audit: fixa_chain_line(stack),
+    }))
 }
 
 /// `RTX_RIG_LOCK` overrides so tests never touch the live `~/lab/.rig-lock`.
@@ -573,7 +617,9 @@ pub(crate) fn fixa_require_lock(mode: &str, token: &str) -> Result<(), String> {
 
 pub(crate) fn fixa_require_lock_at(mode: &str, token: &str, path: &std::path::Path) -> Result<(), String> {
     match mode {
-        "dry-run" => Ok(()),
+        // Read-only verbs. `chain` reports what the undo chain holds and touches nothing, so
+        // requiring the lock would only mean a runner has to take it to find out whether it needs to.
+        "dry-run" | "chain" => Ok(()),
         "apply" | "undo" => {
             let tok = token.trim();
             if tok.is_empty() {
@@ -590,7 +636,7 @@ pub(crate) fn fixa_require_lock_at(mode: &str, token: &str, path: &std::path::Pa
             }
             Ok(())
         }
-        other => Err(format!("fixa mode {other:?} (want dry-run|apply|undo)")),
+        other => Err(format!("fixa mode {other:?} (want dry-run|apply|undo|chain)")),
     }
 }
 
@@ -888,14 +934,20 @@ fn fixa_chain_line(stack: &crate::nav_patch::TxnStack) -> String {
     )
 }
 
-fn fixa_undo(game: &mut GameState, patch: &crate::nav_patch::ShelfPatch) -> Result<Resp, String> {
+/// Roll the top of the undo chain back by snapshot-restore.
+///
+/// `name` is a registered recipe **or** a plant handle (`plan-cell` / `plan-drop` / `plan-link`) —
+/// both go onto the same chain, and both come off the same way. It arrives here already resolved to
+/// its `'static` form, so what the chain compares against is a name the engine itself owns and not a
+/// string the caller made up.
+fn fixa_undo(game: &mut GameState, name: &'static str) -> Result<Resp, String> {
     let map = game.level.mapname.clone();
     let (undone, cells, links, rj, stamp_s, hash) = {
         let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
         let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
         // Fail-closed: a mismatch here leaves both the live graph and the chain untouched, so the
         // error is a refusal, not a half-undo to recover from.
-        let undone = game.nav_patch_txns.undo(&map, patch.name, g)?;
+        let undone = game.nav_patch_txns.undo(&map, name, g)?;
         let (cells, links, rj, stamp_s, hash) = fixa_identity(&map, g);
         (undone, cells, links, rj, stamp_s, hash)
     };
@@ -909,7 +961,7 @@ fn fixa_undo(game: &mut GameState, patch: &crate::nav_patch::ShelfPatch) -> Resu
         fixa_chain_line(&game.nav_patch_txns)
     );
     Ok(Resp::Fixa(proto::FixaResp {
-        recipe: patch.name.to_string(),
+        recipe: undone.name.to_string(),
         mode: "undo".into(),
         outcome: "undone".into(),
         reason: None,
@@ -1784,7 +1836,7 @@ fn plant_cell_resp(game: &mut GameState, pos: Vec3) -> Result<proto::PlanCellRes
     let (txn, resp) = {
         let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
         let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
-        crate::nav_patch::live_txn("plan-cell", &map, g, |c| {
+        crate::nav_patch::live_txn(crate::nav_patch::TXN_PLAN_CELL, &map, g, |c| {
             let (cell, links_created) = c
                 .plant_cell(&bsp, pos)
                 .ok_or("cell position is not standable dry floor")?;
@@ -1829,7 +1881,7 @@ fn plant_drop_resp(game: &mut GameState, from: Vec3, to: Vec3) -> Result<proto::
     let (txn, resp) = {
         let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
         let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
-        crate::nav_patch::live_txn("plan-drop", &map, g, |c| {
+        crate::nav_patch::live_txn(crate::nav_patch::TXN_PLAN_DROP, &map, g, |c| {
             let resolve = |c: &rtx_nav::navmesh::NavGraph, p: Vec3, what: &str| {
                 c.cell_within(p, REACH_XY, REACH_Z)
                     .ok_or_else(|| format!("no cell within {REACH_XY}/{REACH_Z} of {what} {p:?}"))
@@ -1912,7 +1964,7 @@ fn plant_link_resp(
     let (txn, resp) = {
         let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
         let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
-        crate::nav_patch::live_txn("plan-link", &map, g, |c| {
+        crate::nav_patch::live_txn(crate::nav_patch::TXN_PLAN_LINK, &map, g, |c| {
             let from_cell = c.nearest(from).ok_or("no cell near from")?;
             let to_cell = c.nearest(tgt).ok_or("no cell near tgt")?;
             let dz = c.cell_origin(to_cell).z - takeoff.z;
@@ -2407,6 +2459,54 @@ mod tests {
         let err = fixa_require_lock_at("apply", "not-the-lock", &p).unwrap_err();
         assert!(err.contains("does not match"), "{err}");
         let _ = std::fs::remove_file(p);
+    }
+
+    /// `chain` reads the undo chain and mutates nothing, so it must not demand the rig lock —
+    /// otherwise a runner has to take the lock to find out whether it needs to.
+    #[test]
+    fn fixa_chain_does_not_require_token() {
+        let missing = std::env::temp_dir().join("rtx-fixa-lock-absent-chain");
+        let _ = std::fs::remove_file(&missing);
+        assert!(fixa_require_lock_at("chain", "", &missing).is_ok());
+        assert!(fixa_require_lock_at("chain", "anything", &missing).is_ok());
+    }
+
+    /// Undo still demands the lock. Making the plant handles reachable must not open a verb that
+    /// mutates the live graph without one.
+    #[test]
+    fn fixa_undo_of_a_plant_handle_still_requires_the_lock() {
+        let missing = std::env::temp_dir().join("rtx-fixa-lock-absent-undo");
+        let _ = std::fs::remove_file(&missing);
+        let err = fixa_require_lock_at("undo", "", &missing).unwrap_err();
+        assert!(err.contains("requires lock_token"), "{err}");
+        let err = fixa_require_lock_at("undo", "some-token", &missing).unwrap_err();
+        assert!(err.contains("no rig-lock"), "{err}");
+    }
+
+    /// The names `fixa --undo` accepts are the ones the plant verbs actually record.
+    ///
+    /// Sols F5: `do_fixa` resolved every name through the recipe table first, so `plan-link` was
+    /// rejected before the undo chain was ever consulted. The chain held the snapshot; no verb could
+    /// name it.
+    #[test]
+    fn plant_handles_are_undo_targets_over_the_control_channel() {
+        for wire in ["plan-cell", "plan-drop", "plan-link"] {
+            let resolved =
+                crate::nav_patch::undoable_name(wire).unwrap_or_else(|| panic!("{wire} måste gå att undo:a"));
+            assert_eq!(resolved, wire);
+            assert!(
+                crate::nav_patch::patch_by_name(wire).is_none(),
+                "{wire} får inte finnas som recept — det är ett undo-handtag"
+            );
+        }
+        assert!(crate::nav_patch::undoable_name("plan_link").is_none(), "stavfel vägras");
+    }
+
+    #[test]
+    fn fixa_mode_error_lists_chain() {
+        let missing = std::env::temp_dir().join("rtx-fixa-lock-absent-mode");
+        let err = fixa_require_lock_at("rensa", "x", &missing).unwrap_err();
+        assert!(err.contains("dry-run|apply|undo|chain"), "{err}");
     }
 
     #[test]
