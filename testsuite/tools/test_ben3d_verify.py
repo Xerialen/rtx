@@ -6,6 +6,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "ben3d"))
+REV = "0" * 40
 sys.path.insert(0, str(HERE))
 from ben3d_verify import canonical, sha  # noqa: E402
 import graphstamp  # noqa: E402
@@ -42,8 +43,9 @@ class VerifyTests(unittest.TestCase):
         (td / "in_vast.jsonl").write_text(jsonl)
         manifest = f"{_sha_b(meta.encode())}  in_vast_meta.json\n{_sha_b(jsonl.encode())}  in_vast.jsonl\n"
         (td / "m.sha256").write_text(manifest)
-        for f in ["bin", "viewer.html", "Cargo.lock"]:
+        for f in ["bin", "Cargo.lock"]:
             (td / f).write_bytes(b"x")
+        (td / "viewer.html").write_text(f'const VIEWER_COMMIT = "{REV}";\n')
         bin_sha = _sha_b((td / "bin").read_bytes())
         cargo_sha = _sha_b((td / "Cargo.lock").read_bytes())
         kvitto_sha = _sha_b((td / "kvitto.json").read_bytes())
@@ -66,9 +68,9 @@ class VerifyTests(unittest.TestCase):
                     "grafdump": {"id": "dm3-fork-v296-ram", "path": str(td/"fork.json"), "schema": "qw-nav-graph/1", "byte_sha256": fork_sha, "map": "dm3", "cells": 2, "links": 1,
                                  "graph_stamp": str(graphstamp.graph_stamp(mname, nc, nl, rj)), "graph_content_hash": fork_doc["graph_content_hash"]},
                     "kvitto": {"medlem": "kvitto", "sha256": kvitto_sha, "slut_observed": kvitto["slut_observed"]},
-                    "extractor": {"commit": "x", "motor_crate_commit": "x", "cargo_lock_sha256": cargo_sha, "binary_sha256": bin_sha, "cli_config_sha256": cli_sha, "restore_schema": "qw-nav-graph/1", "dump_schema": "qw-nav-graph/1"},
+                    "extractor": {"commit": REV, "motor_crate_commit": REV, "cargo_lock_sha256": cargo_sha, "binary_sha256": bin_sha, "cli_config_sha256": cli_sha, "restore_schema": "qw-nav-graph/1", "dump_schema": "qw-nav-graph/1"},
                     "matt": {"measure_id": "k", "falls_measure_id": "f", "qwprogs_sha256": "x", "cvarvarden": {}},
-                    "viewer": {"commit": "x", "bundle_schema": "ben3d-bunt/1"},
+                    "viewer": {"commit": REV, "bundle_schema": "ben3d-bunt/1"},
                     "bundle_payload_sha256": "x",
                     "farg1_policy": {"regel": "x", "sj_okand": 0, "non_sj_rackhall": 1, "speed_source": "x"},
                     "main_arm": None,
@@ -83,7 +85,8 @@ class VerifyTests(unittest.TestCase):
                 "--buntar", str(buntar), "--t1h", str(td / "m.sha256"), "--t20m", str(td / "m.sha256"),
                 "--fork-dump", str(td / "fork.json"), "--base-dump", str(td / "base.json"),
                 "--kvitto", str(td / "kvitto.json"), "--extractor-bin", str(td / "bin"),
-                "--viewer", str(td / "viewer.html"), "--cargo-lock", str(td / "Cargo.lock"), "--n", "2"]
+                "--viewer", str(td / "viewer.html"), "--cargo-lock", str(td / "Cargo.lock"),
+                "--revision", REV, "--n", "2"]
         r = subprocess.run(args, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("2 buntar OK", r.stdout)
