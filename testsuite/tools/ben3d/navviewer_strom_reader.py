@@ -1,42 +1,25 @@
 #!/usr/bin/env python3
 """navviewer_strom_reader.py — formatläsare för navviewer-sidan (offline).
 
-En ANDRA, oberoende läsare av ben3d-strom/1 (ej samma kod som CLI-läsaren):
-konsumerar den numrerade strömmen och returnerar det navviewern behöver — header
-(preliminär proveniens), per-tick-records med payload_sha256, samt status
-LIVE/OFÖRSEGLAD STRÖM tills ett giltigt end binder slutroten (B6/A6d)."""
+Oberoende läsare av ben3d-strom/1 (egen konsumtionsloop, inte samma kod som
+CLI-läsaren). Samma D3-terminalgrind: abort permanent terminal, end terminalt +
+unikt + förbjudet efter abort + binder exakt seq/tickantal + slutrot JÄMFÖRS mot
+omräknad ben3d-rot/1 ur header/ticks (LIVE/OFÖRSEGLAD STRÖM tills giltigt end)."""
 
 from __future__ import annotations
-import hashlib, json, re
+import json
 from pathlib import Path
 
-SCHEMA = "ben3d-strom/1"
-HEX64 = re.compile(r"^[0-9a-f]{64}$")
-
-
-def _canon(v):
-    if v is None: return "null"
-    if v is True: return "true"
-    if v is False: return "false"
-    if isinstance(v, int): return str(v)
-    if isinstance(v, float): raise ValueError("flyttal — num-as-string")
-    if isinstance(v, str):
-        return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
-    if isinstance(v, list): return "[" + ",".join(_canon(e) for e in v) + "]"
-    if isinstance(v, dict):
-        return "{" + ",".join(_canon(k) + ":" + _canon(v[k]) for k in sorted(v)) + "}"
-    raise ValueError("okänd typ")
-
-
-def _sha(s: str) -> str:
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+from ben3d_strom import SCHEMA, canonical, sha, stream_rot
 
 
 def consume(path: str) -> dict:
-    """Navviewer-konsumtion av strömmen: {stream_id, status, ticks, proveniens}."""
     out = {"stream_id": None, "status": "LIVE/OFÖRSEGLAD STRÖM", "proveniens": None,
            "ticks": [], "slutrot": None, "fel": []}
     last_seq = 0
+    aborted = False
+    ended = False
+    seen = set()
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             line = line.rstrip("\n")
@@ -50,26 +33,44 @@ def consume(path: str) -> dict:
             if rec.get("schema") != SCHEMA:
                 out["fel"].append("schema")
                 continue
+            if out["stream_id"] is not None and rec.get("stream_id") != out["stream_id"]:
+                out["fel"].append("stream_id-byte")
+            out["stream_id"] = rec.get("stream_id")
             typ = rec.get("typ")
             if typ == "header":
-                out["stream_id"] = rec["stream_id"]
+                if out["proveniens"] is not None or out["ticks"]:
+                    out["fel"].append("header ej först/unik")
                 out["proveniens"] = rec.get("proveniens")
             elif typ == "tick":
-                if rec.get("payload_sha256") != _sha(_canon(rec["payload"])):
+                if aborted or ended:
+                    out["fel"].append("tick efter terminal")
+                    continue
+                if rec.get("payload_sha256") != sha(canonical(rec["payload"])):
                     out["fel"].append("payload_sha256")
                     continue
+                if rec["seq"] in seen:
+                    continue
+                seen.add(rec["seq"])
                 if rec["seq"] != last_seq + 1:
                     out["fel"].append(f"gap seq {rec['seq']}")
                 last_seq = rec["seq"]
                 out["ticks"].append({"tick_id": rec["tick_id"], "seq": rec["seq"],
-                                     "payload_sha256": rec["payload_sha256"]})
-            elif typ == "end":
-                if rec["seq"] == last_seq + 1 and rec["antal_ticks"] == len(out["ticks"]) \
-                   and HEX64.match(str(rec.get("slutrot", ""))) and not out["fel"]:
-                    out["status"] = "FRUSEN"
-                    out["slutrot"] = rec["slutrot"]
-                else:
-                    out["fel"].append("end binder ej sista seq/tickantal/slutrot")
+                                     "payload_sha256": rec["payload_sha256"], "payload": rec["payload"]})
             elif typ == "abort":
-                out["status"] = "LIVE/OFÖRSEGLAD STRÖM"  # abort => aldrig frysbar
+                aborted = True
+                out["status"] = "LIVE/OFÖRSEGLAD STRÖM"
+            elif typ == "end":
+                if aborted:
+                    out["fel"].append("end efter abort — permanent terminal, aldrig frysbar")
+                elif ended:
+                    out["fel"].append("end ej unik")
+                else:
+                    rot = stream_rot(out["proveniens"] or {}, [t["payload"] for t in out["ticks"]])
+                    if (rec["seq"] == last_seq + 1 and rec["antal_ticks"] == len(out["ticks"])
+                            and rec.get("slutrot") == rot and not out["fel"]):
+                        out["status"] = "FRUSEN"
+                        out["slutrot"] = rot
+                        ended = True
+                    else:
+                        out["fel"].append(f"end binder ej seq/tickantal/slutrot (rot {rot})")
     return out

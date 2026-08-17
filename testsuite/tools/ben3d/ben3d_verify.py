@@ -56,6 +56,12 @@ def stop(msg: str):
     sys.exit(2)
 
 
+def git_head() -> str:
+    import subprocess
+    r = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def parse_manifest(path: str) -> dict[str, str]:
     m = {}
     for line in Path(path).read_text().splitlines():
@@ -85,6 +91,7 @@ def main() -> int:
     ap.add_argument("--extractor-bin", required=True)
     ap.add_argument("--viewer", required=True)
     ap.add_argument("--cargo-lock", required=True)
+    ap.add_argument("--revision", default=None, help="ren byggrevision (git rev-parse HEAD)")
     ap.add_argument("--n", type=int, default=97)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
@@ -92,6 +99,15 @@ def main() -> int:
     buntar = sorted(Path(args.buntar).glob("*.bunt.json"))
     if len(buntar) != args.n:
         stop(f"STOPP: {len(buntar)} buntar != {args.n}")
+    revision = args.revision or git_head()
+    if not revision:
+        stop("STOPP: ingen byggrevision (--revision) och git HEAD oläsligt")
+    # viewerns inbäddade VIEWER_COMMIT måste matcha byggrevisionen
+    viewer_text = Path(args.viewer).read_text()
+    import re as _re
+    m = _re.search(r'const VIEWER_COMMIT = "([0-9a-f]{40})"', viewer_text)
+    if not m or m.group(1) != revision:
+        stop(f"STOPP: viewer VIEWER_COMMIT {m.group(1) if m else '?'} != byggrevision {revision}")
 
     manifests = {"t1h": (args.t1h, parse_manifest(args.t1h)), "t20m": (args.t20m, parse_manifest(args.t20m))}
     kvitto = json.loads(Path(args.kvitto).read_text())
@@ -184,6 +200,10 @@ def main() -> int:
         exp_cli = sha(json.dumps([bin_sha, "bunt", dump_id, arm, ds], ensure_ascii=False))
         if e.get("cli_config_sha256") != exp_cli:
             stop(f"STOPP: cli_config_sha256 i {f.name} != faktisk")
+        if e.get("commit") != revision:
+            stop(f"STOPP: extractor.commit {e.get('commit')} != byggrevision {revision} i {f.name}")
+        if prov["viewer"].get("commit") != revision:
+            stop(f"STOPP: viewer.commit {prov['viewer'].get('commit')} != byggrevision {revision} i {f.name}")
         ben.append({"ben_id": b["ben_id"], "bundle_payload_sha256": got, "proveniens_sha256": prov_sha})
 
     ben.sort(key=lambda r: r["ben_id"])

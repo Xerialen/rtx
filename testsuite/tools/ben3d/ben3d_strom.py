@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """ben3d_strom.py — ben3d-strom/1 (D3) + CLI tail/validering.
 
-D3-livscykel: `end` måste binda sista seq + tickantal + GILTIG slutrot (64-hex SHA),
-annars fail-closed; `abort` lämnar strömmen OFÖRSEGLAD. Frysning får ENDAST ske från
-ett giltigt `end`. Monoton seq, dubblett=ignoreras+räknas, lucka=markeras (G7),
-partiell sista rad=väntar. Ingen socket/rigg."""
+D3-terminalgrind: abort är PERMANENT terminal (efterföljande end får ALDRIG frysa);
+giltigt end är terminalt + unikt, samma stream_id, förbjudet efter abort, binder
+exakt föregående seq + tickantal, och slutroten JÄMFÖRS mot den omräknade
+ben3d-rot/1 ur header/ticks (inte bara 64-hex-regex). Ingen socket/rigg."""
 
 from __future__ import annotations
-import argparse, hashlib, json, re, sys
+import argparse, hashlib, json, sys
 from pathlib import Path
 
 SCHEMA = "ben3d-strom/1"
-HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def canonical(v) -> str:
@@ -19,7 +18,7 @@ def canonical(v) -> str:
     if v is True: return "true"
     if v is False: return "false"
     if isinstance(v, int): return str(v)
-    if isinstance(v, float): raise ValueError("flyttal i ström — ben3d-num-as-string/1 gäller")
+    if isinstance(v, float): raise ValueError("flyttal — num-as-string")
     if isinstance(v, str):
         out = ['"']
         for c in v:
@@ -44,6 +43,11 @@ def canonical(v) -> str:
 
 def sha(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def stream_rot(proveniens: dict, tick_payloads: list) -> str:
+    """D2-stil rot ur header/ticks — slutroten som ett giltigt end måste bära."""
+    return sha(canonical({"schema": "ben3d-rot/1", "proveniens": proveniens, "ticks": tick_payloads}))
 
 
 def make_header(stream_id, proveniens=None):
@@ -81,22 +85,19 @@ def validate_record(rec):
     if typ == "tick":
         if rec.get("tick_id") == "-" or not rec.get("ben_id"):
             raise StromError("tick saknar tick_id/ben_id")
-        want = sha(canonical(rec["payload"]))
-        if rec.get("payload_sha256") != want:
+        if rec.get("payload_sha256") != sha(canonical(rec["payload"])):
             raise StromError("payload_sha256 mismatch")
     else:
         if rec.get("tick_id") != "-":
             raise StromError(f"{typ} ska ha tick_id='-'")
-    if typ == "end":
-        if not isinstance(rec.get("antal_ticks"), int):
-            raise StromError("end saknar antal_ticks")
-        if not HEX64.match(str(rec.get("slutrot", ""))):
-            raise StromError("end saknar GILTIG slutrot (64-hex SHA)")
+    if typ == "end" and not isinstance(rec.get("antal_ticks"), int):
+        raise StromError("end saknar antal_ticks")
     return True
 
 
 class Stream:
-    """En numrerad read-only-ström: frysbar ENDAST från ett giltigt end (D3)."""
+    """Numrerad read-only-ström. Frysbar ENDAST från ett giltigt, terminalt, unikt end
+    med korrekt slutrot; abort är permanent terminal (D3)."""
 
     def __init__(self, path):
         self.path = path
@@ -104,6 +105,10 @@ class Stream:
         self.ticks = []
         self.seen_seq = set()
         self.last_seq = 0
+        self.stream_id = None
+        self.header_prov = None
+        self.aborted = False
+        self.ended = False
         self.status = "LIVE/OFÖRSEGLAD STRÖM"
         self.errors = []
 
@@ -119,23 +124,45 @@ class Stream:
                 except (json.JSONDecodeError, StromError, ValueError) as e:
                     self.errors.append(str(e))
                     continue
-                s = rec["seq"]
-                if rec["typ"] == "tick":
+                typ = rec["typ"]
+                if self.stream_id is not None and rec["stream_id"] != self.stream_id:
+                    self.errors.append("stream_id-byte")
+                self.stream_id = rec["stream_id"]
+                if typ == "header":
+                    if self.records:
+                        self.errors.append("header ej först/unik")
+                    else:
+                        self.header_prov = rec.get("proveniens")
+                    self.records.append(rec)
+                elif typ == "tick":
+                    if self.aborted or self.ended:
+                        self.errors.append("tick efter terminal")
+                        continue
+                    s = rec["seq"]
                     if s in self.seen_seq:
-                        continue  # dubblett ignoreras
+                        continue  # dubblett ignoreras (räknas ej som fel)
                     self.seen_seq.add(s)
                     if s != self.last_seq + 1:
                         self.errors.append(f"gap: seq {s} != {self.last_seq + 1}")
                     self.last_seq = s
                     self.ticks.append(rec)
-                elif rec["typ"] == "end":
-                    # giltigt end binder sista seq + tickantal => frysbar
-                    if s == self.last_seq + 1 and rec["antal_ticks"] == len(self.ticks) and not self.errors:
-                        self.status = "FRUSEN"
-                    else:
-                        self.errors.append("end binder ej sista seq/tickantal")
+                elif typ == "abort":
+                    self.aborted = True
+                    self.status = "LIVE/OFÖRSEGLAD STRÖM"
                     self.records.append(rec)
-                else:
+                elif typ == "end":
+                    if self.aborted:
+                        self.errors.append("end efter abort — permanent terminal, aldrig frysbar")
+                    elif self.ended:
+                        self.errors.append("end ej unik")
+                    else:
+                        rot = stream_rot(self.header_prov or {}, [t["payload"] for t in self.ticks])
+                        if (rec["seq"] == self.last_seq + 1 and rec["antal_ticks"] == len(self.ticks)
+                                and rec["slutrot"] == rot and not self.errors):
+                            self.status = "FRUSEN"
+                            self.ended = True
+                        else:
+                            self.errors.append(f"end binder ej seq/tickantal/slutrot (rot {rot})")
                     self.records.append(rec)
         return self
 
