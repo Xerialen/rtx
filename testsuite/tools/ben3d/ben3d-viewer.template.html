@@ -41,6 +41,7 @@ canvas{display:block;position:fixed;inset:0;z-index:1}
  <button id="play">▶</button>
  <select id="spd"><option value="0.5">0,5×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
  <input type="range" id="scrub" min="0" max="1000" value="0">
+ <button id="zoomin" title="zooma in">+</button><button id="zoomout" title="zooma ut">−</button><button id="resetcam" title="återställ kamera (låst isometri)">⟲ kamera</button>
  <button id="provbtn">Proveniens</button>
 </div>
 <div id="legend">
@@ -103,10 +104,20 @@ function sha256hex(s){
   let out="";for(const x of H)out+=x.toString(16).padStart(8,"0");return out;
 }
 
-// ---- isometri (G6): x+y i skärmplan 30°, z vertikalt, låst kamera ----
+// ---- kamera (R3-b): default LÅST isometri (G6), zoom + fri rotation = presentation ----
+// Kamerans läge ingår INTE i scen-identiteten; scene-SHA-domänen är oförändrad.
 const C30=Math.cos(Math.PI/6), S30=Math.sin(Math.PI/6);
-let SCALE=1,OX=0,OY=0;
+let SCALE=1, worldCx=0, worldCy=0;  // base-fit (låst isometri)
+let yaw=0, pitch=0, zoom=1;         // presentation: rotation/zoom, EJ i scene-SHA
 const cv=document.getElementById("c"), ctx=cv.getContext("2d");
+function isoProj(x,y,z){const sx=(x-y)*C30, sy=(x+y)*S30-z; return [sx,sy];}
+function rot(x,y,z){
+  const x1=x*Math.cos(yaw)-y*Math.sin(yaw);
+  const y1=x*Math.sin(yaw)+y*Math.cos(yaw);
+  const y2=y1*Math.cos(pitch)-z*Math.sin(pitch);
+  const z2=y1*Math.sin(pitch)+z*Math.cos(pitch);
+  return [x1,y2,z2];
+}
 function fit(){
   const dpr=window.devicePixelRatio||1;
   cv.width=innerWidth*dpr; cv.height=innerHeight*dpr;
@@ -114,13 +125,15 @@ function fit(){
   ctx.setTransform(dpr,0,0,dpr,0,0);
   let minx=1e9,maxx=-1e9,miny=1e9,maxy=-1e9;
   for(const arm of ["fork","base"]){const g=DATA.geo[arm]; if(!g)continue;
-    for(let i=0;i<g.cells.length;i+=3){const x=g.cells[i],y=g.cells[i+1],z=g.cells[i+2];const sx=(x-y)*C30,sy=(x+y)*S30-z;
-      minx=Math.min(minx,sx);maxx=Math.max(maxx,sx);miny=Math.min(miny,sy);maxy=Math.max(maxy,sy);}}
+    for(let i=0;i<g.cells.length;i+=3){const p=isoProj(g.cells[i],g.cells[i+1],g.cells[i+2]);
+      minx=Math.min(minx,p[0]);maxx=Math.max(maxx,p[0]);miny=Math.min(miny,p[1]);maxy=Math.max(maxy,p[1]);}}
   const w=maxx-minx,h=maxy-miny;
   SCALE=Math.min(innerWidth*0.94/w, innerHeight*0.90/h);
-  OX=innerWidth/2-(minx+maxx)/2*SCALE; OY=innerHeight/2-(miny+maxy)/2*SCALE;
+  worldCx=(minx+maxx)/2; worldCy=(miny+maxy)/2;
 }
-function sp(x,y,z){const sx=(x-y)*C30, sy=(x+y)*S30-z; return [sx*SCALE+OX, sy*SCALE+OY];}
+function sp(x,y,z){const r=rot(x,y,z); const p=isoProj(r[0],r[1],r[2]);
+  return [innerWidth/2+(p[0]-worldCx)*SCALE*zoom, innerHeight/2+(p[1]-worldCy)*SCALE*zoom];}
+function resetCam(){yaw=0;pitch=0;zoom=1;meshCv=cur?buildMesh(cur.geo):null;draw();}
 
 let meshCv=null;
 function buildMesh(geoArm){
@@ -138,7 +151,7 @@ function buildMesh(geoArm){
 }
 
 let cur=null, playT=0, playing=false, lastFrame=0;
-const KLASS_COLOR={0:"var(--blue)",1:"var(--okand)",2:"var(--red)"};
+const KLASS_COLOR={0:"#3b82f6",1:"#94a3b8",2:"#dc2626"};  // räckhåll/okänd/blockerad — konkreta hex (canvas stöder ej CSS-var)
 
 function err(m){const e=document.getElementById("err");e.textContent=m;e.style.display="block";}
 function clearErr(){document.getElementById("err").style.display="none";}
@@ -173,7 +186,7 @@ function draw(){
       for(const [li, klass] of list){
         const a=g.links[li*4], b=g.links[li*4+1];
         const pa=sp(g.cells[a*3],g.cells[a*3+1],g.cells[a*3+2]), pb=sp(g.cells[b*3],g.cells[b*3+1],g.cells[b*3+2]);
-        ctx.strokeStyle=KLASS_COLOR[klass]||"var(--okand)"; ctx.lineWidth=klass===0?2.5:1.5;
+        ctx.strokeStyle=KLASS_COLOR[klass]||"#94a3b8"; ctx.lineWidth=klass===0?2.5:1.5;
         ctx.globalAlpha=klass===0?1:0.85;
         ctx.beginPath();ctx.moveTo(pa[0],pa[1]);ctx.lineTo(pb[0],pb[1]);ctx.stroke();
       }
@@ -184,7 +197,7 @@ function draw(){
   const pc=sp(g.cells[cell*3],g.cells[cell*3+1],g.cells[cell*3+2]);
   ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.strokeRect(pc[0]-4,pc[1]-4,8,8);
   // OBSERVERAD BANA (guld) — BROTT vid dt-/teleportluckor (G7)
-  ctx.strokeStyle="var(--gold)";ctx.lineWidth=2.5;ctx.beginPath();
+  ctx.strokeStyle="#e0a832";ctx.lineWidth=2.5;ctx.beginPath();
   let pen=false, prev=null;
   for(let k=0;k<=i;k++){
     const c2=cur.ticks[k][4]; const p=sp(g.cells[c2*3],g.cells[c2*3+1],g.cells[c2*3+2]);
@@ -266,6 +279,16 @@ document.getElementById("arm").onchange=()=>{populate();loadBen(document.getElem
 document.getElementById("ben").onchange=e=>{loadBen(document.getElementById("dataset").value+":"+document.getElementById("arm").value+":"+e.target.value);};
 document.getElementById("provbtn").onclick=()=>{const p=document.getElementById("prov");if(cur){p.textContent=JSON.stringify(cur.provFull,null,1);p.style.display="block";}};
 document.getElementById("prov").onclick=()=>{document.getElementById("prov").style.display="none";};
+let dragging=false, lx=0, ly=0;
+cv.addEventListener("pointerdown",e=>{dragging=true;lx=e.clientX;ly=e.clientY;cv.setPointerCapture(e.pointerId);});
+cv.addEventListener("pointermove",e=>{if(!dragging)return;
+  yaw+=(e.clientX-lx)*0.005; pitch=Math.max(-1.5,Math.min(1.5,pitch+(e.clientY-ly)*0.005)); lx=e.clientX;ly=e.clientY;
+  meshCv=cur?buildMesh(cur.geo):null; draw();});
+cv.addEventListener("pointerup",()=>dragging=false);
+cv.addEventListener("wheel",e=>{e.preventDefault(); zoom=Math.max(0.2,Math.min(8,zoom*(e.deltaY<0?1.1:0.9))); meshCv=cur?buildMesh(cur.geo):null; draw();},{passive:false});
+document.getElementById("zoomin").onclick=()=>{zoom=Math.min(8,zoom*1.25);meshCv=cur?buildMesh(cur.geo):null;draw();};
+document.getElementById("zoomout").onclick=()=>{zoom=Math.max(0.2,zoom*0.8);meshCv=cur?buildMesh(cur.geo):null;draw();};
+document.getElementById("resetcam").onclick=resetCam;
 window.addEventListener("resize",()=>{fit();meshCv=cur?buildMesh(cur.geo):null;draw();});
 fit(); populate(); applyURL();
 </script>

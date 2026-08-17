@@ -56,6 +56,7 @@ def main() -> int:
         p = b["proveniens"]
         prov_sha = sha(canonical(p))
         bundles[b["ben_id"]] = {
+            "ben_id": b["ben_id"],
             "arm": arm,
             "geo": "fork" if arm == "fork" else "base",
             "dataset": b["ben_id"].split(":")[0],
