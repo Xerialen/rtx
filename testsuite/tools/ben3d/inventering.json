@@ -1,0 +1,129 @@
+{
+  "schema": "ben3d-inventering/1",
+  "extraktcommit": "0e7d63a2ceb38c038a187f2c5c8bc98bcdc73d00",
+  "skrivet_utc": "2026-08-17T18:00:00Z",
+  "styrande_manifest": [
+    {
+      "id": "t20m-dataset-manifest-20260817T1339Z.sha256",
+      "sha256": "50a1fe88cde7b2a5a0f25062c90d396cff4dbe6b9fd305faeb91a308898495ee",
+      "path": "~/lab/t20m-dataset-manifest-20260817T1339Z.sha256",
+      "form": "sha256sum-lista: <sha>  <relativ sökväg>"
+    },
+    {
+      "id": "t1h-dataset-manifest-20260817T1536Z.sha256",
+      "sha256": "a55e946e94ffcb0e7341aecd44415fc581a26e0f0c974b5890192663d42325b8",
+      "path": "~/lab/t1h-dataset-manifest-20260817T1536Z.sha256",
+      "form": "sha256sum-lista: <sha>  <relativ sökväg>"
+    }
+  ],
+  "kandidater": [
+    {
+      "kandidat": "qw-nav-viewer",
+      "path": "crates/rtx-nav-view/ (toolbox-repot)",
+      "revision": "extraktcommit 0e7d63a2",
+      "undersokt_api": "main.rs bygger NavGraph via build_navmesh(BSP, stock loadout); ritar BSP + navmesh (en färg per LinkKind, ballistiska bågar); live-overlay via rtx-ctlproto mot körande instans (pollar botens rutt)",
+      "read_only_kontroll": "körd: cargo build -p rtx-nav-view; ingen socket i offline-vägen",
+      "beslut": "adapt",
+      "ateranvand_del": "länkmönstret mot rtx-nav som bibliotek + LinkKind-färg/bågritning (referens för viewerns geometriprojektion); INTE wgpu-viewern (artefakten är HTML, ej desktop)",
+      "evidens": "crates/rtx-nav-view/src/{main,geom,gpu,live}.rs; Cargo.toml [dependencies] rtx-nav.workspace"
+    },
+    {
+      "kandidat": "exec-show",
+      "path": "~/dev/buzz-4on4/exec-show/index.html + referens-viewer.html + traces.json",
+      "revision": "sha256 index c5d3d954…720b, referens 3789ea59…f2ad",
+      "undersokt_api": "självbärande HTML; proj3/cam/scr canvas-projektion (map view + FPV); play/paus/scrubber/hastighet; traces.json [[t,[x,y,z]],…] inbäddad",
+      "read_only_kontroll": "körd: filer lästa, inget exekverat",
+      "beslut": "adapt",
+      "ateranvand_del": "projektions-/spelloop-motorn ur referens-viewer.html (proj3/cam/scr, play-loopen) som mall för ben3d-viewerns iso-rendering",
+      "evidens": "exec-show/SPEC.md §Viewer ('kopiera friskt kart-/FPV-motorn ur referens-viewer.html')"
+    },
+    {
+      "kandidat": "exec-show2",
+      "path": "~/dev/buzz-4on4/exec-show2/index.html + traces2.json",
+      "revision": "sha256 03923d8d…e0af",
+      "undersokt_api": "samma motor som exec-show; fyra kolumner, två FPV-feeds + delad kartvy, 'live'-semantik med ärlighetsbadge",
+      "read_only_kontroll": "körd: fil läst",
+      "beslut": "adapt",
+      "ateranvand_del": "ärlighetsbadge-mönstret (live/frusen-märkning) som referens för P6-badges; INTE FPV-delen (ben3d är isometrisk mesh-vy)",
+      "evidens": "exec-show2/SPEC.md §'Live'-semantiken"
+    },
+    {
+      "kandidat": "navmesh-doctor",
+      "path": "~/dev/buzz-4on4/navmesh-doctor/ (TOOLMANIFEST.md + runbooks/)",
+      "revision": "TOOLMANIFEST.md vid byggstart",
+      "undersokt_api": "verktygslåda + runbooks (graph-dump, stamping, bsp-probe, obducera, heatmap) med exakta kommandon; doktorns CLI-bedömningsmönster",
+      "read_only_kontroll": "körd: runbooks lästa (graph-dump.md, stamping.md, obducera.md)",
+      "beslut": "adapt",
+      "ateranvand_del": "runbook-mönstret (B4/B6: CLI-tail + 3D-samma-ström) + stamping/graph-dump-invarianterna som verifieringsreferens för ben3d_verify",
+      "evidens": "navmesh-doctor/runbooks/{graph-dump,stamping,obducera}.md"
+    },
+    {
+      "kandidat": "graphstamp.py / dumpläsare",
+      "path": "testsuite/tools/graphstamp.py",
+      "revision": "sha256 5d0183c7…cb783 (extraktcommit)",
+      "undersokt_api": "graph_stamp (FNV-1a-64), canonical_inventory (C/L-poster), graph_content_hash (params-fri/bärande), link_param_fields, dump_link_record",
+      "read_only_kontroll": "körd: python3 -m unittest test_graphstamp (grön)",
+      "beslut": "reuse",
+      "ateranvand_del": "stamp-/nivå-2-semantiken (G1b) som extraktorns grafidentitet; kontraktet att matcha dess hash mot körkvittot",
+      "evidens": "testsuite/tools/graphstamp.py + test_graphstamp.py"
+    },
+    {
+      "kandidat": "timtest_d-spårläsare",
+      "path": "testsuite/tools/timtest_d/timtest_d_kluster.py + timtest_ben.py",
+      "revision": "kluster sha256 39d4e438…5e4f",
+      "undersokt_api": "läser cNNN/<ben>_meta.json (utfall, falls, measure_id) + cNNN/<ben>.jsonl (per-frame {t,wall,players[origin]}); klassa_utfall@r6",
+      "read_only_kontroll": "körd: python3 -m unittest test_timtest_d (grön)",
+      "beslut": "reuse",
+      "ateranvand_del": "H-klassningen klassa_utfall@r6 (P3) + spårformatet ({t, players[].origin}) som extraktorns indataläsning; measure_id/falls_measure_id för G3",
+      "evidens": "testsuite/tools/timtest_d/timtest_d_kluster.py:klassa_utfall + samla_kluster"
+    },
+    {
+      "kandidat": "toolbox-extraktionsmönster",
+      "path": "testsuite/tools/ (obducera-mönstret: d_sjalvbevis/d_ram_sjalvbevis + launcher kpi_daglig.py)",
+      "revision": "extraktcommit 0e7d63a2",
+      "undersokt_api": "launcher-mönstret kpi_daglig.py (argparse + fixturtester i testsuite/tools, hermetisk tmp-input); extraktionsloopen i d_ram_sjalvbevis (läsa frysta filer → per-ben-dokument)",
+      "read_only_kontroll": "körd: kpi_daglig.py + test_kpi_daglig.py lästa",
+      "beslut": "reuse",
+      "ateranvand_del": "launcher-/testmönstret (P5 B3: kpi_daglig.py som gränssnittsreferens, fixturer under testsuite/tools)",
+      "evidens": "testsuite/tools/kpi_daglig.py + test_kpi_daglig.py"
+    }
+  ],
+  "komponenter": {
+    "dataset/H-index": {
+      "narmaste_verktyg": "timtest_d_kluster.py (samla_kluster) + datasetmanifesten",
+      "beslut": "adapt",
+      "gap": "P3-algoritmen kräver universum över manifestmedlemmarna + stopp vid varje avvikelse; klustern aggregerar, extraktorn behöver per-ben-identitet"
+    },
+    "dump-restore/stamp": {
+      "narmaste_verktyg": "graphstamp.py (nivå-1/nivå-2) + transformator.py (Graf.from_dump med link_ids)",
+      "beslut": "reuse",
+      "gap": "transformatorn är Python; extraktorn är Rust och måste restore NavGraph med bevarade link_ids ur dump-JSON — byggs mot rtx-nav som bibliotek, med transformatorns from_dump som spec"
+    },
+    "regelutvärdering": {
+      "narmaste_verktyg": "rtx-nav (banded_step, chain_entry_blocked, nearest, find_path*) som bibliotek",
+      "beslut": "reuse",
+      "gap": "ingen befintlig offline-utvärderare; extraktorn anropar motorns funktioner direkt (G2)"
+    },
+    "bunt/proveniens": {
+      "narmaste_verktyg": "seal_ledger.py (kanonisk rad + sha-kedja) + d_kvitto (O_EXCL-kvitto)",
+      "beslut": "adapt",
+      "gap": "P1/D1/D2 kräver RFC 8785 + ben3d-num-as-string/1 + bundle_payload_sha256; seal_ledger kanoniserar med sort_keys, inte RFC 8785 — ny kanoniserare behövs"
+    },
+    "viewer/rendering": {
+      "narmaste_verktyg": "exec-show/referens-viewer.html (proj3/cam/scr) + rtx-nav-view (LinkKind-färger/bågar)",
+      "beslut": "adapt",
+      "gap": "isometrisk navmesh-vy (x+y 30°, z vertikal) med per-länk-färgklasser — exec-show har kart-/FPV-projektion, inte iso-mesh; motorn återanvänds, projektionen skrivs om per G6"
+    },
+    "playback/UI": {
+      "narmaste_verktyg": "exec-show (play/paus/scrub/hastighet/HUD)",
+      "beslut": "reuse",
+      "gap": "benväljare + tick-URL (?dataset=&arm=&ben=&tick=) + fristående HUD + ärlighetsbadges — exec-show:s spelloop återanvänds, URL/HUD byggs nytt per P2/P6"
+    },
+    "launcher/verifiering": {
+      "narmaste_verktyg": "kpi_daglig.py (launcher) + seal_ledger.py verify (räkna om kedja)",
+      "beslut": "adapt",
+      "gap": "ben3d_verify per P4/D1-D2 (räkna om varje bunt + rot ur förseglade bytes) — seal_ledger:s verify-mönster återanvänds, men rotobjektet är nytt"
+    }
+  },
+  "beslut_sammanfattning": "reuse: graphstamp.py, timtest_d-spårläsare, toolbox-extraktionsmönster, playback/UI-motor. adapt: qw-nav-viewer (länkmönster+projektion), exec-show (projektion), exec-show2 (badges), navmesh-doctor (runbook/verify), dump-restore (motorns rtx-nav), bunt/proveniens (kanonisering), viewer-rendering (iso-mesh). reject: ingen — alla sju kandidater bidrar."
+}
