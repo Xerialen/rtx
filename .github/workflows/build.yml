@@ -22,6 +22,32 @@ jobs:
       - name: Test (network client)
         run: cargo test --locked -p rtx-game --features netclient
 
+  # U5b: when a facit file (facit-kalla/1) changed, seal.sh publishes a
+  # ledger row. Already-sealed is OK. No Fable lock token.
+  seal:
+    name: seal-preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Seal producer
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          extra=()
+          if [ -n "${BASE}" ] && [ "${BASE}" != "0000000000000000000000000000000000000000" ]; then
+            extra+=(--base "${BASE}")
+          fi
+          python3 testsuite/tools/seal_preflight.py --by ci --ledger testsuite/seals "${extra[@]}"
+      - name: Publish ledger
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: forsegling-ledger
+          path: testsuite/seals/
+          if-no-files-found: ignore
+
   build:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
