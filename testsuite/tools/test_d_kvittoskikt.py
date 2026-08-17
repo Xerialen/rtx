@@ -16,6 +16,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import test_lab_guard  # noqa: F401 — suite-global lab-vakt
 from d_kvitto import (  # noqa: E402
     foreign_kvitto_entries,
     recipe_kvitto_paths,
@@ -32,6 +33,23 @@ from verify_d_kvitto import verify  # noqa: E402
 
 LAB_R3B = Path.home() / "lab" / "turnering-k1-r3b"
 TD = HERE / "testdata" / "kvittoskikt"
+
+_FZ_PATCH = None
+
+
+def setUpModule():
+    import test_lab_guard
+    test_lab_guard.install_lab_guard(suite_global=True)
+    global _FZ_PATCH
+    _ctx, _FZ_PATCH = test_lab_guard.inject_test_freeze()
+
+
+def tearDownModule():
+    global _FZ_PATCH
+    if _FZ_PATCH is not None:
+        _FZ_PATCH.stop()
+        _FZ_PATCH = None
+
 
 
 def _live_pair(stem: str) -> tuple[Path, Path]:

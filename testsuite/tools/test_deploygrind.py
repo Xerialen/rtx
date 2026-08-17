@@ -15,6 +15,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import test_lab_guard  # noqa: F401 — suite-global lab-vakt
 from d_failclosed import (  # noqa: E402
     DEPLOY_OK,
     KANDA_STATUSAR,
@@ -32,7 +33,7 @@ RECEPT = HERE / "recept"
 
 def tinat(tmp: Path) -> FreezeContext:
     """En freeze-kontext utan frysning, så grinden vi testar är den som talar."""
-    return FreezeContext(path=tmp / "ingen-frysning")
+    return FreezeContext.for_test(tmp / "ingen-frysning")
 
 
 class Statuslasning(unittest.TestCase):

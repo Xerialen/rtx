@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import test_lab_guard  # noqa: F401 — suite-global lab-vakt
 import unittest
 
 from d_kvitto import WEST_SHELF_OFF
@@ -29,6 +30,23 @@ from d_strata import (
     profiles_ok,
     stratum_ok,
 )
+
+_FZ_PATCH = None
+
+
+def setUpModule():
+    import test_lab_guard
+    test_lab_guard.install_lab_guard(suite_global=True)
+    global _FZ_PATCH
+    _ctx, _FZ_PATCH = test_lab_guard.inject_test_freeze()
+
+
+def tearDownModule():
+    global _FZ_PATCH
+    if _FZ_PATCH is not None:
+        _FZ_PATCH.stop()
+        _FZ_PATCH = None
+
 
 
 def _recipe_with_on() -> dict:

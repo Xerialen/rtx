@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import test_lab_guard  # noqa: F401 — suite-global lab-vakt
 import os
 import subprocess
 import tempfile

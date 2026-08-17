@@ -14,6 +14,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
+import test_lab_guard  # noqa: F401 — suite-global lab-vakt
 from test_lab_guard import install_lab_guard, uninstall_lab_guard  # noqa: E402
 from timtest_d_ports import EXIT_REFUSED, port_fel  # noqa: E402
 from timtest_d_kluster import (

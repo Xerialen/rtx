@@ -12,6 +12,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import test_lab_guard  # noqa: F401 — suite-global lab-vakt
 from d_ram_sjalvbevis import (  # noqa: E402
     HARDKATALOG_SHA256,
     attribute_pair,
@@ -29,6 +30,23 @@ H2_CELLS = [
     1372, 1319, 1267, 1216, 1191, 1160, 1129, 1096, 1063, 1028, 991, 952,
     909, 859, 806, 702, 670, 638, 4627, 581, 554, 530, 506, 478, 447, 403,
 ]
+
+_FZ_PATCH = None
+
+
+def setUpModule():
+    import test_lab_guard
+    test_lab_guard.install_lab_guard(suite_global=True)
+    global _FZ_PATCH
+    _ctx, _FZ_PATCH = test_lab_guard.inject_test_freeze()
+
+
+def tearDownModule():
+    global _FZ_PATCH
+    if _FZ_PATCH is not None:
+        _FZ_PATCH.stop()
+        _FZ_PATCH = None
+
 
 
 def _live(stem: str, suffix: str) -> Path:

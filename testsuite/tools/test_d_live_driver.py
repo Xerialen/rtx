@@ -34,10 +34,30 @@ from d_recipe import load_gates, load_recipe, on_expected  # noqa: E402
 from d_sjalvbevis import classify_trial  # noqa: E402
 from d_strata import STRATA, direction_dot, pair_start_vel_ok, vh  # noqa: E402
 from verify_d_kvitto import verify  # noqa: E402
+import d_failclosed as fc  # noqa: E402
+import test_lab_guard  # noqa: F401 — suite-global vakt
+from unittest.mock import patch
 
 
 QW = "49f6f330fa6e199169ea2ddaf564134499a561724c229417c1017a65a7cc2133"
 MV = "858465007c7bea52c5c790cdfdd07c0d65cce17b48110b327595bb8c2e051f15"
+
+_FZ_PATCH = None
+
+
+def setUpModule():
+    import test_lab_guard
+    test_lab_guard.install_lab_guard(suite_global=True)
+    global _FZ_PATCH
+    _ctx, _FZ_PATCH = test_lab_guard.inject_test_freeze()
+
+
+def tearDownModule():
+    global _FZ_PATCH
+    if _FZ_PATCH is not None:
+        _FZ_PATCH.stop()
+        _FZ_PATCH = None
+
 
 
 class FakeClock:

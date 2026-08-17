@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Monkeypatch-vakt: tester får inte nå ~/lab/.change-freeze eller skriva i ~/lab.
+"""Suite-global lab-vakt: tester får inte nå ~/lab/.change-freeze.
 
-Installeras i setUpModule för grindtesterna. Jämför sökvägar med
-os.path.abspath (ingen resolve/stat) så vakten inte själv rör filen.
+Installeras av sitecustomize/conftest/import — gäller varje test i
+testsuite/tools, inte bara de tre moduler som anropar setUpModule.
+Jämför sökvägar med os.path.abspath (ingen resolve/stat).
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ REAL_LAB = os.path.join(REAL_HOME, "lab")
 REAL_FREEZE = os.path.join(REAL_LAB, ".change-freeze")
 
 _installed = False
+_suite_global = False
 _orig: dict = {}
 
 
@@ -48,8 +50,15 @@ def check_write(p) -> None:
         raise LabReachError(f"test skrev under riktiga ~/lab: {_abspath(p)}")
 
 
-def install_lab_guard() -> None:
-    global _installed
+def install_lab_guard(*, suite_global: bool = False) -> None:
+    """Install the freeze/lab I/O tripwire.
+
+    suite_global=True: later uninstall_lab_guard() is a no-op so one
+    module's tearDownModule cannot unmask the rest of the suite.
+    """
+    global _installed, _suite_global
+    if suite_global:
+        _suite_global = True
     if _installed:
         return
     _orig["Path.is_file"] = Path.is_file
@@ -160,8 +169,9 @@ def install_lab_guard() -> None:
 
 
 def uninstall_lab_guard() -> None:
+    """No-op when the suite-global vakt is on (Sol varv-3 lucka)."""
     global _installed
-    if not _installed:
+    if _suite_global or not _installed:
         return
     Path.is_file = _orig["Path.is_file"]  # type: ignore[method-assign]
     Path.exists = _orig["Path.exists"]  # type: ignore[method-assign]
@@ -180,3 +190,55 @@ def uninstall_lab_guard() -> None:
     os.makedirs = _orig["os.makedirs"]
     _orig.clear()
     _installed = False
+
+
+def _hook_unittest() -> None:
+    """Any unittest load in this process installs the suite-global vakt."""
+    import unittest
+
+    loader = unittest.TestLoader
+    if getattr(loader, "_lab_guard_hooked", False):
+        return
+
+    orig_mod = loader.loadTestsFromModule
+    orig_name = loader.loadTestsFromName
+    orig_names = loader.loadTestsFromNames
+
+    def loadTestsFromModule(self, module, *a, **k):
+        install_lab_guard(suite_global=True)
+        return orig_mod(self, module, *a, **k)
+
+    def loadTestsFromName(self, name, module=None):
+        install_lab_guard(suite_global=True)
+        return orig_name(self, name, module)
+
+    def loadTestsFromNames(self, names, module=None):
+        install_lab_guard(suite_global=True)
+        return orig_names(self, names, module)
+
+    loader.loadTestsFromModule = loadTestsFromModule  # type: ignore[method-assign]
+    loader.loadTestsFromName = loadTestsFromName  # type: ignore[method-assign]
+    loader.loadTestsFromNames = loadTestsFromNames  # type: ignore[method-assign]
+    loader._lab_guard_hooked = True  # type: ignore[attr-defined]
+
+
+def inject_test_freeze():
+    """Explicit FreezeContext.for_test(tmp) as FreezeContext.production().
+
+    Call from a test module's setUpModule (stop the patcher in
+    tearDownModule) so guard_mutation(freeze=None) never stats passwd-home.
+    """
+    import tempfile
+    from unittest.mock import patch
+
+    import d_failclosed as fc
+
+    flag = Path(tempfile.mkdtemp(prefix="suite-fz-")) / ".change-freeze"
+    ctx = fc.FreezeContext.for_test(flag)
+    patcher = patch.object(fc.FreezeContext, "production", return_value=ctx)
+    patcher.start()
+    return ctx, patcher
+
+
+_hook_unittest()
+install_lab_guard(suite_global=True)

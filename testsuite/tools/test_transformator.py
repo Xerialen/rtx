@@ -23,6 +23,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import test_lab_guard  # noqa: F401 — suite-global lab-vakt
 import graphstamp  # noqa: E402
 import transformator as tr  # noqa: E402
 

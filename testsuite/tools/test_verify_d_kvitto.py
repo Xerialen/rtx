@@ -12,6 +12,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import test_lab_guard  # noqa: F401 — suite-global lab-vakt
 from d_kvitto import (  # noqa: E402
     SCHEMA,
     WEST_SHELF_OFF,
@@ -84,6 +85,23 @@ def _valid(**overrides) -> dict:
     )
     kwargs.update(overrides)
     return make_kvitto(**kwargs)
+
+_FZ_PATCH = None
+
+
+def setUpModule():
+    import test_lab_guard
+    test_lab_guard.install_lab_guard(suite_global=True)
+    global _FZ_PATCH
+    _ctx, _FZ_PATCH = test_lab_guard.inject_test_freeze()
+
+
+def tearDownModule():
+    global _FZ_PATCH
+    if _FZ_PATCH is not None:
+        _FZ_PATCH.stop()
+        _FZ_PATCH = None
+
 
 
 class VerifyTests(unittest.TestCase):
