@@ -1,0 +1,30 @@
+{
+  "schema": "graphstamp-kollision/1",
+  "note": "Kända nivå-1-namnkollisioner (samma cells/links/FNV, olika grafer). graphstamp.py varnar i klartext vid träff. Nivå-1 räcker inte — läs nivå-2 och recept-id. Inte en uttömmande katalog, bara de namnkrockar komponatet redan sett.",
+  "entries": [
+    {
+      "cells": 5977,
+      "links": 48207,
+      "rj_links": 0,
+      "graph_stamp": "906595427771298736",
+      "aliases": ["bas", "K2+prevent", "K3-retype"],
+      "warn": "VARNING: nivå-1-kollision 5977/48207 (FNV 906595427771298736) — kända namn: bas, K2+prevent, K3-retype. Nivå-1 räcker inte; läs nivå-2."
+    },
+    {
+      "cells": 5983,
+      "links": 48213,
+      "rj_links": 0,
+      "graph_stamp": "8774822664048001128",
+      "aliases": ["rail-ON", "komponat-med-fel-V296"],
+      "warn": "VARNING: nivå-1-kollision 5983/48213 (FNV 8774822664048001128) — kända namn: rail-ON, komponat-med-fel-V296 (+0/+0-räkning). Nivå-1 räcker inte; läs nivå-2. Rätt V296-apply är +0/+1 ⇒ 5983/48214."
+    },
+    {
+      "cells": 5977,
+      "links": 48205,
+      "rj_links": 0,
+      "graph_stamp": "14344244513446609626",
+      "aliases": ["K2-ON", "K2+V296-om-+0/+0"],
+      "warn": "VARNING: nivå-1-kollision 5977/48205 (FNV 14344244513446609626) — kända namn: K2-ON, K2+V296-om-+0/+0. Nivå-1 räcker inte; läs nivå-2. PlanLink-V296 mot post-K2 är +0/+1 ⇒ 5977/48206."
+    }
+  ]
+}
