@@ -475,6 +475,118 @@ def revert_last_undo() -> None:
         sess.next_index += 1
 
 
+def graph_ident_wire(block: Mapping[str, Any]) -> dict[str, Any]:
+    """rtx-ctlproto GraphIdent. Hash is the params-free (utan) one."""
+    utan = block.get("graph_content_hash_utan_params") or block.get(
+        "graph_content_hash"
+    )
+    stamp = block.get("graph_stamp") or block.get("stamp")
+    if utan is None or stamp is None:
+        raise FailClosed("deploy", "GraphIdent saknar stamp eller hash")
+    return {
+        "cells": int(block["cells"]),
+        "links": int(block["links"]),
+        "rj_links": int(block.get("rj_links") or 0),
+        "graph_stamp": str(stamp),
+        "graph_content_hash": str(utan),
+    }
+
+
+def komponat_op_wire(op: Mapping[str, Any]) -> dict[str, Any]:
+    """KomponatOp: Recipe {name} or PlanLink {from,takeoff,tgt,v_req,gain}.
+
+    ``carried`` is fixture metadata and does not travel (proto comment).
+    """
+    kind = str(op.get("op") or "")
+    if kind == "plan_link":
+        return {
+            "PlanLink": {
+                "from": [float(x) for x in op["from"]],
+                "takeoff": [float(x) for x in op["takeoff"]],
+                "tgt": [float(x) for x in op["tgt"]],
+                "v_req": float(op["v_req"]),
+                "gain": float(op["gain"]),
+            }
+        }
+    if kind == "shelf_patch":
+        rid = Path(str(op.get("kalla") or op.get("name") or "")).stem
+        if not rid:
+            raise FailClosed("deploy", "shelf_patch saknar kalla/name")
+        return {"Recipe": {"name": rid}}
+    raise FailClosed("deploy", f"okänd komponat-op {kind!r}")
+
+
+def komponat_wire_cmd(
+    recept: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    *,
+    lock_token: str,
+) -> dict[str, Any]:
+    """Cmd::Komponat — rtx-ctlproto (opus5). Whole compose, one round-trip."""
+    token = str(lock_token or "").strip()
+    if not token:
+        raise FailClosed("lock", "komponat kräver lock_token ur låskontraktet")
+    steg = list(manifest.get("steg") or [])
+    if not steg:
+        raise FailClosed("deploy", "manifest saknar steg")
+    mut = [s for s in steg if str(s.get("op") or "") != "pin"]
+    ops = list(recept.get("ops") or [])
+    if len(ops) != len(mut):
+        raise FailClosed(
+            "deploy",
+            f"komponat-wire: recept ops={len(ops)} ≠ manifest-mut={len(mut)}",
+        )
+    pin_block = steg[0].get("identitet") or steg[0]
+    steps: list[dict[str, Any]] = []
+    prev = pin_block
+    for op, st in zip(ops, mut):
+        after = st.get("identitet") or st
+        steps.append({
+            "name": str(st.get("name") or op.get("name") or ""),
+            "op": komponat_op_wire(op),
+            "expect_before": graph_ident_wire(prev),
+            "expect_after": graph_ident_wire(after),
+        })
+        prev = after
+    slut = manifest.get("slut")
+    if not isinstance(slut, Mapping):
+        raise FailClosed("deploy", "manifest saknar slut-identitet")
+    return {
+        "Komponat": {
+            "recept_id": str(recept.get("id") or manifest.get("recept_id") or ""),
+            "base": graph_ident_wire(pin_block),
+            "steps": steps,
+            "expect_final": graph_ident_wire(slut),
+            "lock_token": token,
+        }
+    }
+
+
+def parse_komponat_reply(data: Any) -> dict[str, Any]:
+    """Unwrap Resp::Komponat (Control unwraps the single key)."""
+    if isinstance(data, dict) and "Komponat" in data and len(data) == 1:
+        data = data["Komponat"]
+    if not isinstance(data, dict):
+        return {
+            "outcome": None,
+            "reason": None,
+            "steps": [],
+            "base": None,
+            "observed_final": None,
+            "undo_name": None,
+            "recept_id": None,
+        }
+    return {
+        "outcome": data.get("outcome"),
+        "reason": data.get("reason"),
+        "steps": list(data.get("steps") or []),
+        "base": data.get("base"),
+        "observed_final": data.get("observed_final"),
+        "undo_name": data.get("undo_name"),
+        "recept_id": data.get("recept_id"),
+    }
+
+
 def planlink_wire_cmd(
     payload: Mapping[str, Any], *, lock_token: str | None = None
 ) -> dict[str, Any]:

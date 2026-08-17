@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Deploy-runner: sealed komponat-manifest/1 apply, fail-closed.
+"""Deploy-runner: sealed komponat-manifest/1 via one atomic Komponat verb.
 
-Varv 4 (Sol 70571a7 V2/V3/V5): ticket from hashed files only;
-lost-reply recovery via engine chain; lock owner+ts validated;
-expected binary hashes not caller-overridable.
+Preflight (manifest-sha, status, pin, lock, binary pin) is unchanged.
+The deploy path sends the whole op-list as one structured Komponat cmd.
+Per-step apply/undo and chain-top reads stay lab tools, not deploy.
 """
 
 from __future__ import annotations
@@ -34,12 +34,12 @@ from d_failclosed import (
     check_change_freeze,
     check_deploy_status,
     clear_deploy_context,
+    komponat_wire_cmd,
     mint_deploy_context,
     op_payload_sha256,
-    parse_chain_reply,
+    parse_komponat_reply,
     read_engine_chain,
     sealed_binary_shas,
-    send_plan_link,
 )
 from d_kvitto import write_exclusive
 from fixa import run_fixa, stamp_from_reply
@@ -53,7 +53,6 @@ EXPECTED_QWPROGS_SHA256 = SEALED_QWPROGS_SHA256
 EXPECTED_MVDSV_SHA256 = SEALED_MVDSV_SHA256
 
 SCHEMA_RUN = "deploy-run/1"
-SCHEMA_STEG = "deploy-steg-kvitto/1"
 LOCK_REQUIRED = (
     "owner",
     "unit",
@@ -537,13 +536,6 @@ def preflight(
     why = same_identity(live, pin)
     if why:
         raise FailClosed("crash-detector", f"pin=bas misslyckades: {why}")
-    chain0 = read_undo_chain(ctl)
-    if chain0.get("depth", 0) != 0 or chain0.get("next"):
-        raise FailClosed(
-            "crash-detector",
-            f"deploy-preflight kräver tom undo-kedja, kedjan är "
-            f"depth={chain0.get('depth')} next={chain0.get('next')!r}",
-        )
     seal = _issue_preflight_seal_from_files(
         manifest_path=manifest_path,
         recept_path=recept_path,
@@ -551,178 +543,6 @@ def preflight(
         mvdsv_path=mvdsv_path,
     )
     return man, rec, live, man_sha, rec_sha, lock_fields, qw_sha, mv_sha, unit_id, seal
-
-
-def _apply_one(
-    ctl,
-    op: dict[str, Any],
-    *,
-    freeze: FreezeContext,
-    lock_token: str | None,
-    before: dict[str, Any],
-    after: dict[str, Any],
-    deploy_ctx: DeployContext,
-    manifest: dict[str, Any],
-) -> None:
-    kind = str(op.get("op") or "")
-    syn = _step_recipe(manifest, [before, after])
-    if kind == "plan_link":
-        payload = {
-            "from": op["from"],
-            "takeoff": op["takeoff"],
-            "tgt": op["tgt"],
-            "v_req": float(op["v_req"]),
-            "gain": float(op["gain"]),
-        }
-        if op.get("carried"):
-            payload["carried"] = True
-        send_plan_link(
-            ctl, payload, recipe=syn, freeze=freeze,
-            deploy=True, deploy_ctx=deploy_ctx, lock_token=lock_token,
-        )
-        return
-    if kind == "shelf_patch":
-        rid = Path(str(op.get("kalla") or op.get("name") or "")).stem
-        if not rid:
-            raise FailClosed("deploy", "shelf_patch saknar kalla/name")
-        run_fixa(
-            ctl,
-            recipe_id=rid,
-            mode="apply",
-            from_cell=None,
-            to_cell=None,
-            lock_token=lock_token,
-            recipe=syn,
-            freeze=freeze,
-            deploy=True,
-            deploy_ctx=deploy_ctx,
-        )
-        return
-    raise FailClosed("deploy", f"okänd op {kind!r}")
-
-
-def _undo_one(
-    ctl,
-    *,
-    freeze: FreezeContext,
-    lock_token: str | None,
-    live: dict[str, Any],
-    deploy_ctx: DeployContext,
-    manifest: dict[str, Any],
-) -> str:
-    """Undo the name `chain` reports. Never guess from applied[]."""
-    chain = read_undo_chain(ctl)
-    rid = chain.get("next") or ""
-    if not rid:
-        raise FailClosed(
-            "crash-detector",
-            "undo-kedjan är tom — chain rapporterade ingen topp",
-        )
-    run_fixa(
-        ctl,
-        recipe_id=rid,
-        mode="undo",
-        from_cell=None,
-        to_cell=None,
-        lock_token=lock_token,
-        recipe=_step_recipe(manifest, [live, live]),
-        freeze=freeze,
-        deploy=True,
-        deploy_ctx=deploy_ctx,
-    )
-    return rid
-
-
-def _write_steg_kvitto(
-    outdir: Path,
-    *,
-    index: int,
-    name: str,
-    op: str,
-    outcome: str,
-    expected: dict[str, Any],
-    observed: dict[str, Any] | None,
-    manifest_sha256: str,
-    note: str = "",
-) -> Path:
-    exp = live_to_motor(expected)
-    obs = live_to_motor(observed) if observed else None
-    doc = {
-        "schema": SCHEMA_STEG,
-        "steg": index,
-        "name": name,
-        "op": op,
-        "outcome": outcome,
-        "expected_motor": exp,
-        "expected_motor_sha256": ident_sha256(exp),
-        "expected_params_hash": exp.get("graph_content_hash_params"),
-        "observed_motor": obs,
-        "observed_motor_sha256": ident_sha256(obs) if obs else None,
-        "manifest_sha256": manifest_sha256,
-        "note": note,
-        "written_at": _utc(),
-    }
-    path = outdir / f"steg-{index:02d}-{name}.json"
-    body = json.dumps(doc, indent=2, sort_keys=True) + "\n"
-    if path.exists():
-        _write_reserved(path, body)
-    else:
-        write_exclusive(path, body)
-    return path
-
-
-def _safe_undo(
-    ctl,
-    applied: list[dict[str, Any]],
-    *,
-    live: dict[str, Any],
-    pin: dict[str, Any],
-    freeze: FreezeContext,
-    lock_token: str | None,
-    deploy_ctx: DeployContext,
-    out: Path,
-    man_sha: str,
-    steg_kvitton: list[str],
-    manifest: dict[str, Any],
-) -> tuple[dict[str, Any], list[str], str | None]:
-    """Pop every engine frame above the sealed empty baseline. Chain is truth."""
-    undid: list[str] = []
-    leftover: str | None = None
-    idx = 0
-    live = live_identity(ctl)
-    while True:
-        chain = read_undo_chain(ctl)
-        if int(chain.get("depth") or 0) <= 0:
-            break
-        name = chain.get("next") or ""
-        if not name:
-            leftover = "kedja djupare än bas men chain rapporterade ingen topp"
-            break
-        idx += 1
-        try:
-            _undo_one(
-                ctl, freeze=freeze, lock_token=lock_token,
-                live=live, deploy_ctx=deploy_ctx, manifest=manifest,
-            )
-            live = live_identity(ctl)
-            undid.append(name)
-        except Exception as exc:
-            leftover = f"undo av {name} misslyckades: {exc}"
-            break
-        try:
-            kpath = _write_steg_kvitto(
-                out, index=idx, name=f"{name}-undo",
-                op="undo", outcome="undo",
-                expected=pin, observed=live, manifest_sha256=man_sha,
-            )
-            steg_kvitton.append(str(kpath))
-        except Exception as kexc:
-            steg_kvitton.append(f"kvitto-skrivfel undo {name}: {kexc}")
-    if leftover is None:
-        why_pin = same_identity(live, pin)
-        if why_pin:
-            leftover = f"undo nådde inte bas: {why_pin}"
-    return live, undid, leftover
 
 
 def _write_run(path: Path, doc: dict[str, Any]) -> None:
@@ -768,11 +588,8 @@ def run_deploy(
     out.mkdir(parents=True, exist_ok=True)
     run_path = out / "deploy-run.json"
     deploy_ctx: DeployContext | None = None
-    applied: list[dict[str, Any]] = []
-    steg_kvitton: list[str] = []
     abort_reason: str | None = None
     leftover: str | None = None
-    undid: list[str] = []
     man: dict[str, Any] = {}
     live: dict[str, Any] | None = None
     man_sha = ""
@@ -784,8 +601,17 @@ def run_deploy(
     pin: dict[str, Any] = {}
     slut: dict[str, Any] = {}
     token = lock_token or ""
+    receipt_ops: list[dict[str, Any]] = []
+    motor_outcome: str | None = None
+    stamp_before: str | None = None
+    stamp_after: str | None = None
 
     def _run_doc(outcome: str) -> dict[str, Any]:
+        applied_names = (
+            [o["name"] for o in receipt_ops if o.get("outcome") == "ok"]
+            if motor_outcome == "applied"
+            else []
+        )
         return {
             "schema": SCHEMA_RUN,
             "outcome": outcome,
@@ -816,28 +642,14 @@ def run_deploy(
             "slut_expected_sha256": ident_sha256(slut) if slut else None,
             "slut_observed": live,
             "slut_observed_sha256": ident_sha256(live) if live else None,
-            "applied": [a["name"] for a in applied],
-            "undid": undid,
-            "steg_kvitton": steg_kvitton,
+            "ops": receipt_ops,
+            "motor_outcome": motor_outcome,
+            "stamp_before": stamp_before,
+            "stamp_after": stamp_after,
+            "applied": applied_names,
             "freeze": ctx.as_kvitto(),
-            "n_ops": len(applied) if abort_reason else 3,
+            "n_ops": len(receipt_ops),
         }
-
-    _undo_done = False
-
-    def _best_effort_undo() -> None:
-        nonlocal live, undid, leftover, _undo_done
-        if _undo_done or deploy_ctx is None:
-            return
-        _undo_done = True
-        try:
-            live, undid, leftover = _safe_undo(
-                ctl, applied, live=live or {}, pin=pin, freeze=ctx,
-                lock_token=token, deploy_ctx=deploy_ctx, out=out,
-                man_sha=man_sha, steg_kvitton=steg_kvitton, manifest=man,
-            )
-        except Exception as undo_exc:
-            leftover = f"undo-recovery misslyckades: {undo_exc}"
 
     try:
         (
@@ -860,76 +672,57 @@ def run_deploy(
         pin = motor_ident(man["steg"][0].get("identitet") or man["steg"][0])
         slut = motor_ident(man["slut"])
         ops = list(recept.get("ops") or [])
-        steg_mut = mutating_steg(man)
-        reserved = ["deploy-run.json"]
-        for i, st in enumerate(steg_mut, start=1):
-            reserved.append(f"steg-{i:02d}-{st['name']}.json")
-            reserved.append(f"steg-{i:02d}-{st['name']}-undo.json")
-        _reserve_outdir(out, reserved)
+        _reserve_outdir(out, ["deploy-run.json"])
 
         deploy_ctx = mint_deploy_context(seal, bound_steps(recept))
         token = lock_token or lock_fields.get("token") or ""
-
-        for i, (op, steg) in enumerate(zip(ops, steg_mut), start=1):
-            want = motor_ident(steg.get("identitet") or steg)
-            name = str(steg.get("name") or op.get("name") or f"op{i}")
-            kind = str(op.get("op") or steg.get("op") or "")
-            rid = Path(str(op.get("kalla") or name)).stem
-            if kind == "plan_link":
-                rid = PLAN_LINK_UNDO_ID
-            try:
-                _apply_one(
-                    ctl, op, freeze=ctx, lock_token=token,
-                    before=live, after=want, deploy_ctx=deploy_ctx,
-                    manifest=man,
+        stamp_before = pin.get("graph_stamp")
+        wire = komponat_wire_cmd(recept, man, lock_token=token)
+        verb_err: str | None = None
+        parsed: dict[str, Any] = {}
+        try:
+            reply = ctl.request(wire)
+            parsed = parse_komponat_reply(reply.get("data"))
+            motor_outcome = parsed.get("outcome")
+            observed = parsed.get("observed_final") or {}
+            if isinstance(observed, dict):
+                stamp_after = observed.get("graph_stamp")
+            if motor_outcome != "applied":
+                verb_err = (
+                    f"komponat outcome {motor_outcome!r}"
+                    + (f": {parsed.get('reason')}" if parsed.get("reason") else "")
                 )
-                chain = read_undo_chain(ctl)
-                if chain.get("next") != rid:
-                    abort_reason = (
-                        f"steg {i} ({name}): motor-topp {chain.get('next')!r} "
-                        f"≠ förväntad {rid!r}"
-                    )
-                    break
-                applied.append({
-                    "index": i, "name": name, "op": kind,
-                    "recipe_id": rid, "before": live, "after": want,
-                })
-                live = live_identity(ctl)
-                why = same_identity(live, want)
-                if why:
-                    abort_reason = f"steg {i} ({name}): {why}"
-                    kpath = _write_steg_kvitto(
-                        out, index=i, name=name, op=kind, outcome="avvikelse",
-                        expected=want, observed=live, manifest_sha256=man_sha,
-                        note=abort_reason,
-                    )
-                    steg_kvitton.append(str(kpath))
-                    break
-                kpath = _write_steg_kvitto(
-                    out, index=i, name=name, op=kind, outcome="ok",
-                    expected=want, observed=live, manifest_sha256=man_sha,
+        except Exception as exc:
+            verb_err = str(exc)
+        live = live_identity(ctl)
+        eng_steps = list(parsed.get("steps") or [])
+        for i, op in enumerate(ops, start=1):
+            eng = eng_steps[i - 1] if i - 1 < len(eng_steps) else {}
+            outcome = eng.get("outcome")
+            if not outcome:
+                outcome = "refused" if verb_err else "ok"
+            receipt_ops.append({
+                "index": i,
+                "name": str(op.get("name") or eng.get("name") or f"op{i}"),
+                "op": str(op.get("op") or ""),
+                "outcome": outcome,
+                "reason": eng.get("reason"),
+            })
+        if verb_err:
+            why_pin = same_identity(live, pin)
+            if why_pin:
+                leftover = (
+                    f"motorbugg: komponat icke-OK men live ≠ utgångsstamp: {why_pin}"
                 )
-                steg_kvitton.append(str(kpath))
-            except Exception as exc:
-                abort_reason = f"steg {i} ({name}) vägrades: {exc}"
-                # Commit-status unknown: motor chain is truth, not applied[].
-                chain = read_undo_chain(ctl)
-                if chain.get("next") and chain.get("next") != rid:
-                    abort_reason += (
-                        f" | motor-topp {chain.get('next')!r} ≠ {rid!r}"
-                    )
-                break
-
-        if not abort_reason:
+                abort_reason = f"{verb_err} | {leftover}"
+            else:
+                abort_reason = verb_err
+        else:
             why_slut = same_identity(live, slut)
             if why_slut:
                 abort_reason = f"slutverifiering: {why_slut}"
-
-        if abort_reason:
-            _best_effort_undo()
     except Exception as exc:
         abort_reason = abort_reason or str(exc)
-        _best_effort_undo()
         doc = _run_doc("aborted")
         _write_run(run_path, doc)
         doc["run_kvitto"] = str(run_path)
@@ -945,7 +738,6 @@ def run_deploy(
     outcome = "aborted" if abort_reason else "applied"
     if leftover:
         outcome = "aborted"
-        abort_reason = (abort_reason or "") + f" | KRITISKT RESTTILLSTÅND: {leftover}"
     doc = _run_doc(outcome)
     _write_run(run_path, doc)
     doc["run_kvitto"] = str(run_path)

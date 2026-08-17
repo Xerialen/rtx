@@ -120,6 +120,10 @@ def _is_planlink(cmd) -> bool:
     return isinstance(cmd, dict) and "PlanLink" in cmd
 
 
+def _is_komponat(cmd) -> bool:
+    return isinstance(cmd, dict) and "Komponat" in cmd
+
+
 def _is_fixa(cmd, mode: str | None = None, recipe: str | None = None) -> bool:
     if not isinstance(cmd, dict) or "Fixa" not in cmd:
         return False
@@ -236,7 +240,11 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertEqual(doc["outcome"], "applied")
         self.assertIsNone(doc["abort_reason"])
         self.assertEqual(doc["applied"], ["v296-vasthoppet", "ram-rail-v2", "ram-prevent"])
-        self.assertEqual(doc["undid"], [])
+        self.assertEqual(doc["motor_outcome"], "applied")
+        self.assertEqual(
+            [o["name"] for o in doc["ops"]],
+            ["v296-vasthoppet", "ram-rail-v2", "ram-prevent"],
+        )
         self.assertEqual(doc["slut_observed"]["cells"], 5983)
         self.assertEqual(doc["slut_observed"]["links"], 48216)
         self.assertIsNone(same_identity(doc["slut_observed"], doc["slut_expected"]))
@@ -247,8 +255,18 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertEqual(doc["lock_owner"], "fable")
         self.assertEqual(doc["ctl_port"], 27996)
         self.assertEqual(doc["unit"], "tbx-d1")
-        self.assertTrue(any(_is_planlink(c) for c in self.engine.cmds))
-        self.assertFalse(any(_is_fixa(c, recipe="compose") for c in self.engine.cmds))
+        komponat = [c for c in self.engine.cmds if _is_komponat(c)]
+        self.assertEqual(len(komponat), 1)
+        body = komponat[0]["Komponat"]
+        self.assertEqual(len(body["steps"]), 3)
+        self.assertTrue(body["lock_token"])
+        self.assertEqual(body["recept_id"], "v296-ram")
+        self.assertIn("base", body)
+        self.assertIn("expect_final", body)
+        self.assertFalse(any(_is_planlink(c) for c in self.engine.cmds))
+        self.assertFalse(any(_is_fixa(c, mode="apply") for c in self.engine.cmds))
+        self.assertFalse(any(_is_fixa(c, mode="undo") for c in self.engine.cmds))
+        self.assertFalse(any(_is_fixa(c, mode="chain") for c in self.engine.cmds))
         self.assertIsNone(fc.active_deploy_context())
 
     def test_d3_pair_accepted(self):
@@ -257,49 +275,51 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertEqual(doc["outcome"], "applied")
         self.assertEqual(doc["unit"], "tbx-d3")
 
-    def test_avvikelse_steg_2_full_undo_via_chain(self):
-        """Recovery reads chain top, then undoes that name — including plan-link."""
-        self._boot(corrupt_after=2)
+    def test_applied_wrong_slut_aborts_without_step_undo(self):
+        """Engine said applied but live ≠ slut. Deploy does not chain-undo."""
+        self._boot(corrupt_after=True)
         doc = self._run(outdir=self.td / "abort")
         self.assertEqual(doc["outcome"], "aborted")
-        self.assertIn("steg 2", doc["abort_reason"] or "")
-        self.assertEqual(doc["undid"], ["ram-rail-v2", "plan-link"])
-        self.assertEqual(self.engine.idx, 0)
-        self.assertEqual(self.engine.stack, [])
-        chains = [c for c in self.engine.cmds if _is_fixa(c, mode="chain")]
-        undos = [c for c in self.engine.cmds if _is_fixa(c, mode="undo")]
-        self.assertGreaterEqual(len(chains), 2)
-        self.assertTrue(any(_is_fixa(c, mode="undo", recipe="plan-link") for c in undos))
-        self.assertTrue(any(_is_fixa(c, mode="undo", recipe="ram-rail-v2") for c in undos))
-        self.assertFalse(any(_is_fixa(c, mode="undo", recipe="compose") for c in undos))
-        self.assertFalse(any(_is_fixa(c, mode="undo", recipe="plan_link") for c in undos))
+        self.assertIn("slutverifiering", doc["abort_reason"] or "")
+        self.assertEqual(self.engine.idx, 3)
+        self.assertFalse(any(_is_fixa(c, mode="chain") for c in self.engine.cmds))
+        self.assertFalse(any(_is_fixa(c, mode="undo") for c in self.engine.cmds))
         self.assertTrue((self.td / "abort" / "deploy-run.json").is_file())
 
-    def test_apply_refuse_after_v296_undos_via_chain(self):
+    def test_verb_refuse_stays_on_start_stamp(self):
+        """Atomic fail: no mutation, live is still the pin. No chain read."""
         self._boot(refuse_apply="ram-rail-v2")
         doc = self._run(outdir=self.td / "refuse")
         self.assertEqual(doc["outcome"], "aborted")
-        self.assertEqual(doc["applied"], ["v296-vasthoppet"])
-        self.assertEqual(doc["undid"], ["plan-link"])
+        self.assertIn("ram-rail-v2", doc["abort_reason"] or "")
+        self.assertEqual(doc["applied"], [])
+        self.assertIsNone(doc["leftover"])
         self.assertEqual(self.engine.idx, 0)
-        self.assertTrue(any(_is_fixa(c, mode="chain") for c in self.engine.cmds))
-        self.assertTrue(any(_is_fixa(c, mode="undo", recipe="plan-link") for c in self.engine.cmds))
+        self.assertEqual(self.engine.stack, [])
+        self.assertFalse(any(_is_fixa(c, mode="chain") for c in self.engine.cmds))
+        self.assertFalse(any(_is_fixa(c, mode="undo") for c in self.engine.cmds))
         self.assertTrue((self.td / "refuse" / "deploy-run.json").is_file())
+        self.assertIsNone(same_identity(doc["slut_observed"], doc["pin"]))
 
-    def test_f4_oserror_after_apply_still_undos_and_writes_run(self):
-        """Sol F4: I/O after mutation must not skip undo/receipt."""
+    def test_receipt_io_failure_does_not_undo_atomic_apply(self):
+        """Successful Komponat is not rolled back because a receipt write failed."""
+        calls = {"n": 0}
 
-        def boom(*a, **k):
-            raise OSError("disk full")
+        def boom(path, text):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("disk full")
+            Path(path).write_text(text, encoding="utf-8")
 
-        with mock.patch("d_deploy._write_steg_kvitto", side_effect=boom):
+        with mock.patch("d_deploy._write_reserved", side_effect=boom):
             doc = self._run(outdir=self.td / "io")
-        self.assertEqual(doc["outcome"], "aborted")
-        self.assertTrue((self.td / "io" / "deploy-run.json").is_file())
-        self.assertGreaterEqual(self.engine.n_apply, 1)
-        self.assertEqual(self.engine.idx, 0)
-        self.assertIn("disk full", doc["abort_reason"] or "")
-        self.assertTrue(any(_is_fixa(c, mode="undo", recipe="plan-link") for c in self.engine.cmds))
+        self.assertEqual(doc["outcome"], "applied")
+        self.assertEqual(self.engine.idx, 3)
+        self.assertFalse(any(_is_fixa(c, mode="undo") for c in self.engine.cmds))
+        self.assertTrue(
+            (self.td / "io" / "deploy-run.json").is_file()
+            or (self.td / "io" / "deploy-run-recovery.json").is_file()
+        )
 
     def test_frysflagga_vagrar(self):
         fc.write_change_freeze("fable", freeze=self.ctx)
@@ -667,19 +687,19 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertEqual(self.engine.n_apply, 0)
         self.assertIsNone(fc.active_deploy_context())
 
-    def test_v3_reply_lost_after_commit_undos_via_chain(self):
-        """Sol V3: PlanLink commits, reply lost, applied empty — motor chain is truth."""
-        self._boot(drop_reply_after_commit=1)
-        doc = self._run(outdir=self.td / "lost")
-        self.assertEqual(doc["outcome"], "aborted")
-        self.assertIn("reply lost after commit", doc["abort_reason"] or "")
-        self.assertEqual(self.engine.idx, 0)
-        self.assertEqual(self.engine.stack, [])
-        self.assertTrue(any(_is_fixa(c, mode="chain") for c in self.engine.cmds))
-        self.assertTrue(any(_is_fixa(c, mode="undo", recipe="plan-link") for c in self.engine.cmds))
+    def test_non_ok_after_commit_is_motorbugg(self):
+        """Non-OK reply after the verb mutated: atomicity broken → motorbugg."""
+        self._boot(drop_reply_after_commit=True)
+        with self.assertRaises(fc.FailClosed) as cm:
+            self._run(outdir=self.td / "lost")
+        self.assertEqual(cm.exception.gate, "crash-detector")
+        self.assertIn("motorbugg", str(cm.exception))
+        self.assertEqual(self.engine.idx, 3)
+        self.assertFalse(any(_is_fixa(c, mode="chain") for c in self.engine.cmds))
+        self.assertFalse(any(_is_fixa(c, mode="undo") for c in self.engine.cmds))
         self.assertTrue((self.td / "lost" / "deploy-run.json").is_file())
         run = json.loads((self.td / "lost" / "deploy-run.json").read_text())
-        self.assertIn("plan-link", run.get("undid") or [])
+        self.assertIn("motorbugg", run.get("leftover") or "")
 
     def test_v5_attacker_lock_refused(self):
         """Sol V5: owner=attacker, ts=garbage, self-written lock."""
@@ -729,13 +749,36 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertEqual(recv["lock_token"], "fable")
         self.assertAlmostEqual(float(recv["gain"]), 5.5, places=5)
         self.assertEqual(self.engine.last_planlink_sha, fc.planlink_payload_sha256(recv))
-        self.assertTrue(any(_is_planlink(c) for c in self.engine.cmds))
         sent = next(c["PlanLink"] for c in self.engine.cmds if _is_planlink(c))
-        self.assertEqual(fc.planlink_payload_sha256(payload), fc.SEALED_V296_PAYLOAD_SHA256)
         self.assertEqual(
             set(sent),
             {"from", "takeoff", "tgt", "v_req", "gain", "carried", "lock_token"},
         )
+
+    def test_komponat_wire_carries_full_payload_and_lock(self):
+        rec = json.loads(RECEPT_JSON.read_text(encoding="utf-8"))
+        man = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        wire = fc.komponat_wire_cmd(rec, man, lock_token="fable")
+        body = wire["Komponat"]
+        steps = body["steps"]
+        self.assertEqual(len(steps), 3)
+        self.assertEqual(body["lock_token"], "fable")
+        self.assertEqual(body["recept_id"], rec["id"])
+        self.assertEqual(body["base"]["cells"], 5977)
+        self.assertEqual(body["expect_final"]["cells"], 5983)
+        pl = steps[0]["op"]["PlanLink"]
+        self.assertEqual(fc.op_payload_sha256(rec["ops"][0]), fc.SEALED_V296_PAYLOAD_SHA256)
+        self.assertNotIn("carried", pl)
+        self.assertNotIn("lock_token", pl)
+        self.assertAlmostEqual(float(pl["gain"]), 5.5, places=5)
+        self.assertEqual(steps[1]["op"]["Recipe"]["name"], "ram-rail-v2")
+        self.assertEqual(steps[2]["op"]["Recipe"]["name"], "ram-prevent")
+        self.ctl.request(wire)
+        self.assertIsNotNone(self.engine.last_komponat)
+        recv = self.engine.last_planlink
+        self.assertIsNotNone(recv)
+        self.assertAlmostEqual(float(recv["gain"]), 5.5, places=5)
+        self.assertNotIn("carried", recv)
 
 
 if __name__ == "__main__":

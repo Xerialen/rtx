@@ -33,7 +33,15 @@ class EngineSession:
     UNDO_HANDLES = ENGINE_UNDO_HANDLES
     UNDOABLE = ENGINE_UNDOABLE
 
-    def __init__(self, idents, *, corrupt_after=None, refuse_apply=None, drop_reply_after_commit=None):
+    def __init__(
+        self,
+        idents,
+        *,
+        corrupt_after=None,
+        refuse_apply=None,
+        drop_reply_after_commit=None,
+        motorbugg_on_fail=False,
+    ):
         self.idents = [dict(x) for x in idents]
         self.idx = 0
         self.cmds: list = []
@@ -41,9 +49,11 @@ class EngineSession:
         self.corrupt_after = corrupt_after
         self.refuse_apply = refuse_apply
         self.drop_reply_after_commit = drop_reply_after_commit
+        self.motorbugg_on_fail = motorbugg_on_fail
         self.n_apply = 0
         self.last_planlink: dict[str, Any] | None = None
         self.last_planlink_sha: str | None = None
+        self.last_komponat: dict[str, Any] | None = None
 
     def _cur(self):
         return self.idents[self.idx]
@@ -88,6 +98,8 @@ class EngineSession:
             if not str((cmd["PlanDrop"] or {}).get("lock_token") or "").strip():
                 raise EngineRefuse("plant requires lock_token")
             raise EngineRefuse("PlanDrop not used by deploy-runner")
+        if isinstance(cmd, dict) and "Komponat" in cmd:
+            return self._komponat(cmd["Komponat"] or {})
         if isinstance(cmd, dict) and "Fixa" in cmd:
             body = cmd["Fixa"]
             return self._fixa(str(body.get("recipe") or ""), str(body.get("mode") or ""))
@@ -143,13 +155,107 @@ class EngineSession:
         self.n_apply += 1
         self.stack.append(name)
         self.idx = min(self.idx + 1, len(self.idents) - 1)
-        ident = dict(self.idents[self.idx])
-        if self.drop_reply_after_commit is not None and self.n_apply == self.drop_reply_after_commit:
+        return dict(self.idents[self.idx])
+
+    def _ident(self, live: dict[str, Any] | None = None) -> dict[str, Any]:
+        m = live_to_motor(live if live is not None else self._cur())
+        return {
+            "cells": m["cells"],
+            "links": m["links"],
+            "rj_links": m["rj_links"],
+            "graph_stamp": m["graph_stamp"],
+            "graph_content_hash": m["graph_content_hash"],
+        }
+
+    def _komponat_refused(self, body: dict[str, Any], reason: str, steps=None):
+        return {
+            "Komponat": {
+                "recept_id": str(body.get("recept_id") or ""),
+                "outcome": "refused",
+                "reason": reason,
+                "base": body.get("base") or self._ident(),
+                "observed_final": self._ident(),
+                "steps": list(steps or []),
+                "undo_name": "komponat",
+                "audit": f"rtx: komponat refused ({reason}) — live graph untouched\n",
+            }
+        }
+
+    def _komponat(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Atomic compose matching rtx-ctlproto Cmd::Komponat."""
+        self.last_komponat = dict(body)
+        if not str(body.get("lock_token") or "").strip():
+            raise EngineRefuse("apply requires lock_token (rig-lock)")
+        steps_in = list(body.get("steps") or [])
+        planned: list[tuple[str, str, dict[str, Any]]] = []
+        for step in steps_in:
+            if not isinstance(step, dict):
+                return self._komponat_refused(body, f"unsupported step {step!r}")
+            name = str(step.get("name") or "")
+            op = step.get("op") or {}
+            if not isinstance(op, dict):
+                return self._komponat_refused(body, f"unsupported op {op!r}")
+            if "PlanLink" in op:
+                payload = dict(op["PlanLink"] or {})
+                planned.append((name, "plan-link", payload))
+            elif "Recipe" in op:
+                rid = str((op["Recipe"] or {}).get("name") or "")
+                if rid not in self.REGISTERED:
+                    return self._komponat_refused(
+                        body, f"unknown recipe {rid!r}"
+                    )
+                if self.refuse_apply and rid == self.refuse_apply:
+                    done = [
+                        {"name": n, "outcome": "ok", "reason": None,
+                         "observed": None, "link": None}
+                        for n, _, _ in planned
+                    ]
+                    done.append({
+                        "name": name, "outcome": "refused",
+                        "reason": f"steg {rid} vägrad",
+                        "observed": None, "link": None,
+                    })
+                    return self._komponat_refused(body, f"steg {rid} vägrad", done)
+                planned.append((name, rid, {}))
+            else:
+                return self._komponat_refused(body, f"unsupported komponat op {op!r}")
+        if not planned:
+            return self._komponat_refused(body, "komponat without steps — nothing to apply")
+        results: list[dict[str, Any]] = []
+        for name, kind, payload in planned:
+            if kind == "plan-link":
+                self.last_planlink = payload
+                self.last_planlink_sha = planlink_payload_sha256(payload)
+                self._push("plan-link")
+                link: int | None = 48131
+            else:
+                self._push(kind)
+                link = None
+            results.append({
+                "name": name,
+                "outcome": "ok",
+                "reason": None,
+                "observed": self._ident(),
+                "link": link,
+            })
+        if self.drop_reply_after_commit:
             raise EngineRefuse("reply lost after commit")
-        if self.corrupt_after is not None and self.n_apply == self.corrupt_after:
+        if self.corrupt_after:
+            ident = dict(self.idents[self.idx])
             ident["graph_content_hash"] = "ab" * 32
             self.idents[self.idx] = ident
-        return ident
+        return {
+            "Komponat": {
+                "recept_id": str(body.get("recept_id") or ""),
+                "outcome": "applied",
+                "reason": None,
+                "base": body.get("base") or self._ident(self.idents[0]),
+                "observed_final": self._ident(),
+                "steps": results,
+                "undo_name": "komponat",
+                "audit": "rtx: komponat applied\n",
+            }
+        }
 
     def _push_planlink(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._push("plan-link")
