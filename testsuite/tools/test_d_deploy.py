@@ -717,7 +717,7 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertFalse(any(_is_fixa(c, mode="apply") or _is_fixa(c, mode="undo") for c in self.engine.cmds))
         self.assertTrue(all(_is_fixa(c, mode="chain") for c in self.engine.cmds if _is_fixa(c)))
 
-    def test_qwprogs_pin_is_3187fa6(self):
+    def test_qwprogs_pin_is_a10f1ea(self):
         """Vakten som fällde slutsvepet, nu mot rätt bygge.
 
         Den pekade på 79c8457 (02bf8d0d…) och gjorde sitt jobb: konstanten hade
@@ -726,11 +726,16 @@ class DeployRunnerTests(unittest.TestCase):
         noll förekomster av Komponat i ctlproto; 3fe70a8c-bygget hade Komponat-verbet; 3187fa6 lade till RemoveLinks-op:en.
         Liggaren r2e förseglar 3fe70a8c som slutsvepets binär — koden rättas i
         linje med förseglingen, inte tvärtom (Fables procedurbeslut 13:1xZ).
+
+        M1 18/8: bumpad till a10f1ea (6b64efc7…) för kantvaktsprovet, under Sols
+        sigill och mot den exakta förseglade fil-SHA:n. Facit v2
+        1b501a1c…, förseglat 14:31:14Z. Återbumpas till 65be9bda efter provet
+        enligt facitets §7 — vakten ska då peka tillbaka.
         """
         from d_deploy import EXPECTED_QWPROGS_SHA256
         self.assertEqual(
             EXPECTED_QWPROGS_SHA256,
-            "65be9bdab2b3790c5d05a79c27003e6fa16039ba220c3067b259c9092015d71f",
+            "6b64efc7f5f127a94fb903e889aee2c1eeb72496e06f464e5b51c04343b2600c",
         )
 
     def test_v2_self_issued_ticket_refused(self):
