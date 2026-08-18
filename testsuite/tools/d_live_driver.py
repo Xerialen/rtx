@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 import json
 
+import undo_bevis  # noqa: E402
 from d_kvitto import (  # noqa: E402
     astar_from_route_resp,
     astar_path,
@@ -217,6 +218,7 @@ class LiveTrialDriver:
         now: Callable[[], float] = time.monotonic,
         stratum_at: str | None = None,
         runtime_dir: Path | None = None,
+        bevis_ledger: Path | None = None,
     ) -> None:
         why = refuse_ra(ctl_port, game_port)
         if why:
@@ -236,6 +238,14 @@ class LiveTrialDriver:
         self.now = now
         self.stratum_at = stratum_at or gate.get("heldout_stratum_at")
         self.runtime_dir = Path(runtime_dir) if runtime_dir else DEFAULT_MVDSV.parent
+        # Armväxling undo:ar hundratals gånger per session, så bevisen tar radform
+        # i stället för en fil per växling — samma fält, samma händelse-id, en
+        # bokföring som går att läsa. Ingen undo utan rad.
+        #
+        # INGEN default: en outsagd liggarsökväg blev först runtime_dir, och första
+        # testkörningen skrev nio rader in i tbx-d1:s LEVANDE runtime-katalog. En
+        # bekväm default för bokföring skriver bokföringen på fel ställe tyst.
+        self.bevis_ledger = Path(bevis_ledger) if bevis_ledger else None
         self.arm = "off"
         self._ent: int | None = None
         self.last_stamps: dict[str, dict] = {}
@@ -386,7 +396,7 @@ class LiveTrialDriver:
         self._apply_arm_cvars("on")
         return ident
 
-    def undo(self) -> dict:
+    def undo(self, *, handelse: str = "armväxling ON→OFF") -> dict:
         if not self.lock_token:
             raise RuntimeError("fixa undo requires lock_token")
         live = self.identity()
@@ -395,10 +405,41 @@ class LiveTrialDriver:
         self.quiesce()
         rid = self.recipe.get("id") or "west-shelf"
         cmd = f"fixa {rid} undo lock {self.lock_token}"
-        d = self.request(cmd)["data"]
-        if d.get("outcome") != "undone":
+        # Liggarraden reserveras före mutationen och skrivs efter den. Ett undo som
+        # inte lämnat en rad rapporteras inte som undone — en obevisad undo och en
+        # undo som aldrig kördes ser likadana ut i efterhand.
+        if self.bevis_ledger is None:
             raise RuntimeError(
-                f"fixa undo failed ({d.get('outcome')}): {d.get('reason')}. "
+                "undo kräver bevis_ledger — beviset är en del av operationen. "
+                "Kör med --kvitto-dir, eller sätt bevis_ledger explicit"
+            )
+        res = undo_bevis.reservera(self.bevis_ledger, ledger=True)
+        vantat = {
+            k: (self.recipe.get("off") or {}).get(k)
+            for k in ("cells", "links", "rj_links", "graph_stamp", "graph_content_hash")
+            if (self.recipe.get("off") or {}).get(k) is not None
+        }
+        holder: dict = {}
+
+        def _undo():
+            holder["d"] = self.request(cmd)["data"]
+            return holder["d"]
+
+        ut = undo_bevis.undo_med_bevis(
+            las_identitet=self.identity,
+            gor_undo=_undo,
+            reservation=res,
+            unit=undo_bevis.UNIT_FOR_CTL.get(self.ctl_port, f"ctl-{self.ctl_port}"),
+            ctl_port=self.ctl_port,
+            handelse=handelse,
+            variant=rid,
+            forvantat=vantat or None,
+            fore=live,
+        )
+        d = holder["d"]
+        if ut["utfall"] != undo_bevis.UNDONE:
+            raise RuntimeError(
+                f"fixa undo failed ({ut['utfall']}): {d.get('reason')}. "
                 f"Restart ONLY toolbox-d-test in OFF: {RESTART}"
             )
         return self.confirm("off")

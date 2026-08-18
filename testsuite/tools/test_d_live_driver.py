@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+import itertools
 import tempfile
 import unittest
 from pathlib import Path
@@ -250,6 +251,19 @@ class MockCtl:
         raise RuntimeError(f"unsupported mock cmd {cmd!r}")
 
 
+_LEDGERDIR = tempfile.TemporaryDirectory(prefix="undoledger-")
+_LEDGER_N = itertools.count()
+
+
+def _ledger_path() -> Path:
+    """Egen liggare per drivare, städad när processen dör.
+
+    Ingen default i drivaren: den första versionen föll tillbaka på runtime_dir och
+    skrev nio testrader in i tbx-d1:s levande runtime-katalog.
+    """
+    return Path(_LEDGERDIR.name) / f"undo-bevis-{next(_LEDGER_N)}.jsonl"
+
+
 def _driver(ctl=None, token="fable", port=27996, game=27592, stratum_at=None) -> tuple[LiveTrialDriver, MockCtl, FakeClock]:
     ctl = ctl or MockCtl()
     clock = FakeClock()
@@ -270,6 +284,7 @@ def _driver(ctl=None, token="fable", port=27996, game=27592, stratum_at=None) ->
         sleep=clock.sleep,
         now=clock.now,
         stratum_at=locus,
+        bevis_ledger=_ledger_path(),
     )
     return drv, ctl, clock
 
@@ -946,6 +961,48 @@ class DemoRecordTests(unittest.TestCase):
             )
         self.assertNotIn("demo_file", doc)
         self.assertEqual(verify(doc), [])
+
+
+class UndoLiggaren(unittest.TestCase):
+    """Armväxlingens undo lämnar en rad, annars rapporterar den inte undone."""
+
+    def test_varje_undo_lamnar_en_rad(self):
+        drv, ctl, _ = _driver()
+        drv.prepare()
+        drv.confirm("off")
+        drv.apply()
+        drv.undo()
+        rader = [json.loads(r) for r in Path(drv.bevis_ledger).read_text().splitlines()]
+        self.assertEqual(len(rader), 1)
+        self.assertEqual(rader[0]["ctl_port"], 27996)
+        self.assertEqual(rader[0]["unit"], "tbx-d1")
+        self.assertIn("armväxling", rader[0]["handelse"])
+        self.assertEqual(len(rader[0]["handelse_id"]), 64)
+
+    def test_tva_vaxlingar_ger_tva_atskilda_rader(self):
+        drv, ctl, _ = _driver()
+        drv.prepare()
+        drv.confirm("off")
+        for _ in range(2):
+            drv.apply()
+            drv.undo()
+        rader = [json.loads(r) for r in Path(drv.bevis_ledger).read_text().splitlines()]
+        self.assertEqual(len(rader), 2)
+        self.assertNotEqual(
+            rader[0]["handelse_id"], rader[1]["handelse_id"],
+            "två växlingar mot samma graf måste ändå gå att skilja åt",
+        )
+
+    def test_utan_liggare_vagras_undo(self):
+        """Ingen tyst default: den första skrev testrader i tbx-d1:s runtime-katalog."""
+        drv, ctl, _ = _driver()
+        drv.bevis_ledger = None
+        drv.prepare()
+        drv.confirm("off")
+        drv.apply()
+        with self.assertRaises(RuntimeError) as cm:
+            drv.undo()
+        self.assertIn("bevis_ledger", str(cm.exception))
 
 
 if __name__ == "__main__":

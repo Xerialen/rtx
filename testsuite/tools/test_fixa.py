@@ -125,6 +125,34 @@ class FixaTests(unittest.TestCase):
         self.assertIn("fixa west-shelf apply lock fable", ctl.cmds)
         self.assertTrue(any("dry-run" in c for c in ctl.cmds))
 
+    def test_undo_utan_bevisreservation_vagras(self):
+        """Beviset är en del av operationen: sändvägen släpper inte igenom en
+        obevisad undo, lika lite som den släpper igenom en fryst apply."""
+        import d_failclosed as fc
+
+        ctl = FakeCtl(self._stamp_reply("undone"))
+        with self.assertRaises(fc.FailClosed) as cm:
+            fixa.run_fixa(
+                ctl, recipe_id="west-shelf", mode="undo",
+                from_cell=None, to_cell=None, lock_token="fable",
+                freeze=_tmp_freeze(),
+            )
+        self.assertEqual(cm.exception.gate, "undo-bevis")
+        self.assertEqual(ctl.cmds, [], "inget fick skickas")
+
+    def test_undo_med_reservation_slapps_igenom(self):
+        import tempfile as _tf
+
+        ctl = FakeCtl(self._stamp_reply("undone"))
+        with _tf.TemporaryDirectory() as tmp:
+            res = fixa.undo_bevis.reservera(Path(tmp) / "b.json")
+            fixa.run_fixa(
+                ctl, recipe_id="west-shelf", mode="undo",
+                from_cell=None, to_cell=None, lock_token="fable",
+                freeze=_tmp_freeze(), bevis=res,
+            )
+        self.assertTrue(any("undo" in c for c in ctl.cmds))
+
     def test_run_fixa_apply_refused_when_frozen(self):
         """Terra bypass: run_fixa AND _send_fixa refuse apply under freeze."""
         import d_failclosed as fc

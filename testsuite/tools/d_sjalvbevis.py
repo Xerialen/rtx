@@ -550,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
         ctl_port=args.port,
         game_port=args.game_port,
         lock_path=lock_path,
+        bevis_ledger=(args.kvitto_dir / "undo-bevis.jsonl") if args.kvitto_dir else None,
         stratum_at=locus,
     )
     try:

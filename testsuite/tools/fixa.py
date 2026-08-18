@@ -21,6 +21,7 @@ from d_failclosed import FailClosed, FreezeContext, change_freeze_reason, guard_
 from d_recipe import load_recipe, on_expected, recipe_path  # noqa: E402
 from d_strata import FORBIDDEN_CTL, FORBIDDEN_GAME  # noqa: E402
 from verify_d_kvitto import verify  # noqa: E402
+import undo_bevis  # noqa: E402
 
 RIG_LOCK = Path.home() / "lab" / ".rig-lock"
 
@@ -88,8 +89,14 @@ def _send_fixa(
     freeze=None,
     deploy: bool = False,
     deploy_ctx=None,
+    bevis=None,
 ) -> dict:
-    """ENDA muterande ctl-ingången. Frys + stampgrind bor här, inte hos anroparen."""
+    """ENDA muterande ctl-ingången. Frys + stampgrind bor här, inte hos anroparen.
+
+    ``bevis`` är en ``undo_bevis.Reservation`` och KRÄVS för mode ``undo``: beviset
+    är en del av operationen, inte ett efterarbete, och grinden sitter här av samma
+    skäl som frysen gör det — här finns ingen väg förbi.
+    """
     from d_failclosed import (
         COMPOSE_CHILD_IDS,
         ENGINE_UNDO_HANDLES,
@@ -106,6 +113,14 @@ def _send_fixa(
     )
 
     mode_l = (mode or "").strip().lower()
+
+    if mode_l == "undo" and bevis is None:
+        raise FailClosed(
+            "undo-bevis",
+            "undo utan reserverad bevissökväg — reservera med "
+            "undo_bevis.reservera() före anropet. En undo utan bevis och en undo "
+            "som aldrig kördes ser likadana ut i efterhand",
+        )
 
     def _ctl(mode_now: str, token: str | None) -> dict:
         cmd = f"fixa {recipe_id} {mode_now}"
@@ -176,6 +191,7 @@ def run_fixa(
     freeze=None,
     deploy: bool = False,
     deploy_ctx=None,
+    bevis=None,
 ) -> dict:
     """Alias till _send_fixa — ingen ogrindad sändväg."""
     return _send_fixa(
@@ -189,6 +205,7 @@ def run_fixa(
         freeze=freeze,
         deploy=deploy,
         deploy_ctx=deploy_ctx,
+        bevis=bevis,
     )
 
 
@@ -266,6 +283,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fixture", type=Path)
     ap.add_argument("--kvitto", type=Path)
     ap.add_argument("--lock", type=Path, default=RIG_LOCK)
+    ap.add_argument("--bevis", type=Path, help="bevissökväg; krävs med --undo")
+    ap.add_argument("--handelse", help="varför undo:t görs; krävs med --undo")
     ap.add_argument("--commit", default="unknown")
     ap.add_argument("--binary-sha256", default="00" * 32)
     ap.add_argument("--seed", type=int, default=0)
@@ -315,19 +334,78 @@ def main(argv: list[str] | None = None) -> int:
     token = None
     if mode_s in {"apply", "undo"}:
         token = lock_token_from_file(args.lock)
+
+    res = None
+    if mode_s == "undo":
+        if not args.bevis or not (args.handelse or "").strip():
+            print(
+                "--undo kräver --bevis och --handelse: beviset är en del av "
+                "operationen, inte ett efterarbete",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            # Före socketen. En upptagen sökväg ska kosta en vägran, inte ett
+            # genomfört undo som inte går att styrka.
+            res = undo_bevis.reservera(args.bevis)
+        except undo_bevis.Vagran as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+
     ctl = Control(args.host, args.port)
     try:
         try:
-            reply = run_fixa(
-                ctl,
-                recipe_id=args.recept,
-                mode=mode_s,
-                from_cell=args.from_cell,
-                to_cell=args.to_cell,
-                lock_token=token,
-                recipe=recipe,
-            )
+            if mode_s == "undo":
+                unit = undo_bevis.UNIT_FOR_CTL.get(args.port, f"ctl-{args.port}")
+
+                def _las():
+                    d = run_fixa(
+                        ctl, recipe_id=args.recept, mode="dry-run",
+                        from_cell=None, to_cell=None, recipe=recipe,
+                    )
+                    return {
+                        "cells": d.get("cells"),
+                        "links": d.get("links"),
+                        "graph_stamp": d.get("stamp"),
+                        "graph_content_hash": d.get("content_hash"),
+                    }
+
+                holder = {}
+
+                def _undo():
+                    holder["reply"] = run_fixa(
+                        ctl, recipe_id=args.recept, mode="undo",
+                        from_cell=args.from_cell, to_cell=args.to_cell,
+                        lock_token=token, recipe=recipe, bevis=res,
+                    )
+                    return holder["reply"]
+
+                utfall = undo_bevis.undo_med_bevis(
+                    las_identitet=_las, gor_undo=_undo, reservation=res,
+                    unit=unit, ctl_port=args.port,
+                    handelse=args.handelse, variant=args.recept,
+                )
+                reply = dict(holder["reply"])
+                # Motorns utfall står kvar under sitt eget namn; det RAPPORTERADE
+                # utfallet är det som passerat bevisningen.
+                reply["motor_outcome"] = reply.get("outcome")
+                reply["outcome"] = utfall["utfall"]
+                reply["bevis"] = utfall["bevis_path"]
+                reply["handelse_id"] = utfall["bevis"]["handelse_id"]
+            else:
+                reply = run_fixa(
+                    ctl,
+                    recipe_id=args.recept,
+                    mode=mode_s,
+                    from_cell=args.from_cell,
+                    to_cell=args.to_cell,
+                    lock_token=token,
+                    recipe=recipe,
+                )
         except FailClosed as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        except undo_bevis.Vagran as exc:
             print(str(exc), file=sys.stderr)
             return 2
         except (KeyError, TypeError, ValueError) as exc:
@@ -337,9 +415,13 @@ def main(argv: list[str] | None = None) -> int:
         ctl.close()
     ended = datetime.now(timezone.utc).isoformat()
     print(json.dumps({k: reply.get(k) for k in (
-        "recipe", "mode", "outcome", "reason", "stamp", "content_hash",
-        "cells", "links", "audit",
-    )}, indent=2))
+        "recipe", "mode", "outcome", "motor_outcome", "bevis", "handelse_id",
+        "reason", "stamp", "content_hash", "cells", "links", "audit",
+    ) if k in reply or k in {"recipe", "mode", "outcome", "reason", "stamp",
+                             "content_hash", "cells", "links", "audit"}}, indent=2))
+    if mode_s == "undo" and reply.get("outcome") == undo_bevis.UNDONE_OBEVISAD:
+        print("undo utan bevis — rapporteras inte som undone", file=sys.stderr)
+        return 1
 
     if mode_s == "apply" and args.kvitto:
         issued = started
