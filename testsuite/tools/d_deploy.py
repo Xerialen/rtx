@@ -219,18 +219,30 @@ def bind_ops(recept: dict[str, Any], manifest: dict[str, Any]) -> None:
             "deploy",
             f"recept map {recept.get('map')!r} ≠ manifest map {manifest.get('map')!r}",
         )
+    # Antalet steg är komponatets, inte apparatens. Trean var v296-ram-komponatets
+    # op-antal och låste runnern vid just det receptet; på/av-provets varianter är
+    # ett op var och kunde därför inte köras alls. Kravet generaliseras till
+    # "sammanhängande 0..N med pin först", medan den parvisa projektionskontrollen
+    # nedan står orörd — det är DEN som uppfyller Sols F2 (extra/saknad/omkastad op
+    # vägras), inte siffran.
     steg = list(manifest.get("steg") or [])
-    if [s.get("index") for s in steg] != [0, 1, 2, 3]:
-        raise FailClosed("deploy", "manifest kräver exakt stegindex 0..3")
+    if not steg:
+        raise FailClosed("deploy", "manifest saknar steg")
+    if [s.get("index") for s in steg] != list(range(len(steg))):
+        raise FailClosed(
+            "deploy",
+            f"manifest kräver sammanhängande stegindex 0..{len(steg) - 1}, fick "
+            f"{[s.get('index') for s in steg]}",
+        )
     if str(steg[0].get("op") or "") != "pin":
         raise FailClosed("deploy", "steg 0 måste vara pin")
     mut = mutating_steg(manifest)
     ops = list(recept.get("ops") or [])
-    if len(ops) != 3 or len(mut) != 3:
+    if len(ops) < 1 or len(ops) != len(mut):
         raise FailClosed(
             "deploy",
-            f"förseglad op-ordning är 3 steg, fick recept={len(ops)} "
-            f"manifest-mut={len(mut)}",
+            f"op-antalet måste vara minst 1 och lika i recept och manifest, fick "
+            f"recept={len(ops)} manifest-mut={len(mut)}",
         )
     for i, (op, st) in enumerate(zip(ops, mut), start=1):
         if int(st.get("index") or -1) != i:
