@@ -1,0 +1,100 @@
+{
+  "bas_dump": "/home/xerial/ben3d-ut/dm3-fork-full-graph.json",
+  "harledning": "bas + op-lista i ordning, offline i transformator.py; ingen live-apply, ingen apply-then-copy, ingen summering av delstampars delta",
+  "map": "dm3",
+  "recept_id": "paav-f-v1",
+  "schema": "komponat-manifest/1",
+  "slut": {
+    "cells": 5983,
+    "graph_content_hash": "f3b6640e332b72a7afe3e03ea95dd7d71fdf3d422aeec6e424183a405342b3d4",
+    "graph_content_hash_utan_params": "f3b6640e332b72a7afe3e03ea95dd7d71fdf3d422aeec6e424183a405342b3d4",
+    "graph_stamp": "15510284848814560699",
+    "kollision": {
+      "aliases": [
+        "deploy-v296-ram op2 (efter rail, mellansteg)",
+        "komponat-k2-v296-ram SLUT (EJ-DEPLOY)"
+      ],
+      "cells": 5983,
+      "graph_stamp": "15510284848814560699",
+      "links": 48214,
+      "niva2": {
+        "deploy_op2_utan_params": "cab98ac22f356bc3",
+        "k2_slut_utan_params": "7a98d6e93bd8ebc3"
+      },
+      "rj_links": 0,
+      "warn": "VARNING: nivå-1-kollision 5983/48214 (FNV 15510284848814560699) — kända namn: deploy-v296-ram op2 (efter rail, mellansteg), komponat-k2-v296-ram SLUT (EJ-DEPLOY). En counts/FNV-läsare kan inte skilja ett HALVAPPLICERAT deploy-komponat från det färdiga K2-komponatet. Kräv nivå-2 för dom (cab98ac2… vs 7a98d6e9…; opus5 0c8554b)."
+    },
+    "links": 48214,
+    "map": "dm3",
+    "rj_links": 0
+  },
+  "status": "DEPLOY-KANDIDAT",
+  "status_skal": "På/av-prov av fables trediagnos: Ta bort direktlänkarna 1416↔1461 (10447 + 10779).",
+  "steg": [
+    {
+      "d_cells": 0,
+      "d_links": 0,
+      "identitet": {
+        "cells": 5983,
+        "graph_content_hash": "cd800200cad72431e0cbfe0a2fc947bd94309e334103d6cc0abd076155ecf051",
+        "graph_content_hash_utan_params": "cd800200cad72431e0cbfe0a2fc947bd94309e334103d6cc0abd076155ecf051",
+        "graph_stamp": "11908727279900740725",
+        "kollision": null,
+        "links": 48216,
+        "map": "dm3",
+        "rj_links": 0
+      },
+      "index": 0,
+      "name": "paav-f-v1",
+      "op": "pin"
+    },
+    {
+      "bevis": {
+        "T0_efter": 0,
+        "T0_fore": 15,
+        "ankare": [
+          "1416->1461 walk",
+          "1461->1416 walk"
+        ],
+        "borttagna_id": [
+          10447,
+          10779
+        ],
+        "not": "15 tidigare rensade länkar (T=0) är traverserbara igen: remove_links_by_id bygger om adjacensen från noll och rebuild_derived kör ingen teleport-rensning. Det är motorns beteende och det syns i nivå-2."
+      },
+      "d_cells": 0,
+      "d_links": -2,
+      "harledd": false,
+      "identitet": {
+        "cells": 5983,
+        "graph_content_hash": "f3b6640e332b72a7afe3e03ea95dd7d71fdf3d422aeec6e424183a405342b3d4",
+        "graph_content_hash_utan_params": "f3b6640e332b72a7afe3e03ea95dd7d71fdf3d422aeec6e424183a405342b3d4",
+        "graph_stamp": "15510284848814560699",
+        "kollision": {
+          "aliases": [
+            "deploy-v296-ram op2 (efter rail, mellansteg)",
+            "komponat-k2-v296-ram SLUT (EJ-DEPLOY)"
+          ],
+          "cells": 5983,
+          "graph_stamp": "15510284848814560699",
+          "links": 48214,
+          "niva2": {
+            "deploy_op2_utan_params": "cab98ac22f356bc3",
+            "k2_slut_utan_params": "7a98d6e93bd8ebc3"
+          },
+          "rj_links": 0,
+          "warn": "VARNING: nivå-1-kollision 5983/48214 (FNV 15510284848814560699) — kända namn: deploy-v296-ram op2 (efter rail, mellansteg), komponat-k2-v296-ram SLUT (EJ-DEPLOY). En counts/FNV-läsare kan inte skilja ett HALVAPPLICERAT deploy-komponat från det färdiga K2-komponatet. Kräv nivå-2 för dom (cab98ac2… vs 7a98d6e9…; opus5 0c8554b)."
+        },
+        "links": 48214,
+        "map": "dm3",
+        "rj_links": 0
+      },
+      "index": 1,
+      "name": "paav-f",
+      "op": "remove_links"
+    }
+  ],
+  "varningar": [
+    "efter op 1 (paav-f): VARNING: nivå-1-kollision 5983/48214 (FNV 15510284848814560699) — kända namn: deploy-v296-ram op2 (efter rail, mellansteg), komponat-k2-v296-ram SLUT (EJ-DEPLOY). En counts/FNV-läsare kan inte skilja ett HALVAPPLICERAT deploy-komponat från det färdiga K2-komponatet. Kräv nivå-2 för dom (cab98ac2… vs 7a98d6e9…; opus5 0c8554b)."
+  ]
+}

@@ -120,6 +120,32 @@ SEALED_MANIFEST_SHA256 = (
 SEALED_RECEPT_SHA256 = (
     "e327251e215a7a459e356fc7fa96e4d3d18f3e2dddb4c72412757614dd0df9ec"
 )
+
+# Vilka recept som ÖVERHUVUDTAGET får deployas, som en förseglad mängd i stället
+# för ett enda värde: recept-sha -> dess bundna manifest-sha.
+#
+# Konstanterna ovan band runnern vid v296-ram-komponatet, vilket var rätt så länge
+# det var det enda som fanns. På/av-provet deployar tre varianter till, och en
+# ensam konstant kan inte uttrycka det. Mängden är fortfarande en IDENTITET och
+# inte en öppning: ett recept vars sha inte står här vägras, och står det här måste
+# manifestet vara exakt den bundna motparten — ett giltigt recept med ett annat
+# giltigt manifest är lika förbjudet som ett okänt recept.
+#
+# Poster (Fables beslut 00:5xZ, Sols kontrasignatur på mängden):
+#   v296-ram   deploy-komponatet, oförändrat
+#   paav-g/f/o på/av-provets varianter, härledda mot fork-dumpen 1ee4a971…
+SEALED_DEPLOYABLE: dict[str, str] = {
+    # recept-sha256                                                     manifest-sha256
+    SEALED_RECEPT_SHA256: SEALED_MANIFEST_SHA256,
+    "98e9612048d4837df2dc7f165c9bf57537fcbda31f8b92a333812c5e3b224739":
+        "07cee24ed8cca3223c78ad8d4521b99266a5c7f892c16333ce8eed3494f447a8",
+    "96becff3a9cede458b9f6ada261f87e9fadfe6cb9f7dca04b81f26bd1cf57a41":
+        "1c9692eb4f886bc5112954c3e504f8beea8d5abe0eb6579465a877923dc0b0a9",
+    "12f28cf1e3189a2450d357b92f950112eb02cae15331ee5738b21e7e91fb2698":
+        "666015d6b65d72abd84a61d09700b345ff9e8b35cbdb0f6ab4f4afef34be1615",
+}
+
+
 SEALED_QWPROGS_SHA256 = (
     "3fe70a8c6b22308901b3f4d1691d8f0988d56daa3cb958ff04ef21d82b6468e5"
 )
@@ -134,6 +160,29 @@ ALLOWED_DEPLOY_PAIRS: dict[str, tuple[int, int]] = {
     "tbx-d1": (27996, 27592),
     "tbx-d3": (27998, 27594),
 }
+
+
+def sealed_manifest_for(recept_sha256: str, gate: str = "deploy-context") -> str:
+    """Det förseglade manifestets sha för ett förseglat recept.
+
+    Vägrar okänt recept. Uppslaget ersätter jämförelsen mot en ensam konstant och
+    behåller dess innebörd: bara förseglade byten får deployas, och parbindningen
+    recept↔manifest är en del av förseglingen — inte två oberoende kontroller som
+    råkar passera var för sig.
+
+    `gate` finns för att vägran ska behålla sin gamla etikett på varje anropsplats:
+    runnerns förkontroll har alltid svarat `crash-detector`, preflight-sigillet
+    `deploy-context`. Att slå ihop dem hade ändrat taxonomin för en kontroll som
+    inte ändrats i sak.
+    """
+    man = SEALED_DEPLOYABLE.get((recept_sha256 or "").strip().lower())
+    if man is None:
+        raise FailClosed(
+            gate,
+            f"recept SHA-256 {recept_sha256} står inte i den förseglade mängden "
+            f"({len(SEALED_DEPLOYABLE)} poster) — okänd identitet vägras oavsett filnamn",
+        )
+    return man
 
 
 @dataclass(frozen=True)
@@ -254,15 +303,14 @@ def _issue_preflight_seal_from_files(
     rec_sha = _file_sha256(rec_path)
     qw_sha = _file_sha256(qw_path)
     mv_sha = _file_sha256(mv_path)
-    if man_sha != SEALED_MANIFEST_SHA256:
+    # Uppslag i den förseglade mängden: okänt recept vägras, och manifestet måste
+    # vara just det som är bundet till receptet.
+    want_man = sealed_manifest_for(rec_sha)
+    if man_sha != want_man:
         raise FailClosed(
             "deploy-context",
-            f"preflight-sigill: manifest SHA {man_sha} ≠ förseglad",
-        )
-    if rec_sha != SEALED_RECEPT_SHA256:
-        raise FailClosed(
-            "deploy-context",
-            f"preflight-sigill: recept SHA {rec_sha} ≠ förseglad",
+            f"preflight-sigill: manifest SHA {man_sha} ≠ {want_man}, det manifest "
+            f"receptet {rec_sha} är bundet till",
         )
     want_q, want_m = sealed_binary_shas()
     if qw_sha != want_q:
@@ -294,10 +342,10 @@ def mint_deploy_context(seal: PreflightSeal, steps: tuple[BoundStep, ...] | list
             "deploy-context",
             "DeployContext är inte självaktiverbar — saknar runner-preflight",
         )
-    if seal.manifest_sha256 != SEALED_MANIFEST_SHA256 or seal.recept_sha256 != SEALED_RECEPT_SHA256:
+    if seal.manifest_sha256 != sealed_manifest_for(seal.recept_sha256):
         raise FailClosed(
             "deploy-context",
-            "preflight-sigill binder inte de förseglade manifest-/receptbyten",
+            "preflight-sigill binder inte ett förseglat recept-/manifestpar",
         )
     if _active_session is not None:
         raise FailClosed("deploy-context", "deploy-kontext redan aktiv")

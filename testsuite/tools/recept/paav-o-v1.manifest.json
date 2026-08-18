@@ -1,0 +1,94 @@
+{
+  "bas_dump": "/home/xerial/ben3d-ut/dm3-fork-full-graph.json",
+  "harledning": "bas + op-lista i ordning, offline i transformator.py; ingen live-apply, ingen apply-then-copy, ingen summering av delstampars delta",
+  "map": "dm3",
+  "recept_id": "paav-o-v1",
+  "schema": "komponat-manifest/1",
+  "slut": {
+    "cells": 5983,
+    "graph_content_hash": "8297ada3b16f70a204837150e9020b53d0d5af5968c5a661367ac967e95e0d0d",
+    "graph_content_hash_utan_params": "8297ada3b16f70a204837150e9020b53d0d5af5968c5a661367ac967e95e0d0d",
+    "graph_stamp": "8774822664048001128",
+    "kollision": {
+      "aliases": [
+        "rail-ON",
+        "komponat-med-fel-V296"
+      ],
+      "cells": 5983,
+      "graph_stamp": "8774822664048001128",
+      "links": 48213,
+      "rj_links": 0,
+      "warn": "VARNING: nivå-1-kollision 5983/48213 (FNV 8774822664048001128) — kända namn: rail-ON, komponat-med-fel-V296 (+0/+0-räkning). Nivå-1 räcker inte; läs nivå-2. Rätt V296-apply är +0/+1 ⇒ 5983/48214."
+    },
+    "links": 48213,
+    "map": "dm3",
+    "rj_links": 0
+  },
+  "status": "DEPLOY-KANDIDAT",
+  "status_skal": "På/av-prov av opuss trediagnos: Klipp de tre hörngenande länkarna (10084 + 10447 + 10779).",
+  "steg": [
+    {
+      "d_cells": 0,
+      "d_links": 0,
+      "identitet": {
+        "cells": 5983,
+        "graph_content_hash": "cd800200cad72431e0cbfe0a2fc947bd94309e334103d6cc0abd076155ecf051",
+        "graph_content_hash_utan_params": "cd800200cad72431e0cbfe0a2fc947bd94309e334103d6cc0abd076155ecf051",
+        "graph_stamp": "11908727279900740725",
+        "kollision": null,
+        "links": 48216,
+        "map": "dm3",
+        "rj_links": 0
+      },
+      "index": 0,
+      "name": "paav-o-v1",
+      "op": "pin"
+    },
+    {
+      "bevis": {
+        "T0_efter": 0,
+        "T0_fore": 15,
+        "ankare": [
+          "1367->1461 jump",
+          "1416->1461 walk",
+          "1461->1416 walk"
+        ],
+        "borttagna_id": [
+          10084,
+          10447,
+          10779
+        ],
+        "not": "15 tidigare rensade länkar (T=0) är traverserbara igen: remove_links_by_id bygger om adjacensen från noll och rebuild_derived kör ingen teleport-rensning. Det är motorns beteende och det syns i nivå-2."
+      },
+      "d_cells": 0,
+      "d_links": -3,
+      "harledd": false,
+      "identitet": {
+        "cells": 5983,
+        "graph_content_hash": "8297ada3b16f70a204837150e9020b53d0d5af5968c5a661367ac967e95e0d0d",
+        "graph_content_hash_utan_params": "8297ada3b16f70a204837150e9020b53d0d5af5968c5a661367ac967e95e0d0d",
+        "graph_stamp": "8774822664048001128",
+        "kollision": {
+          "aliases": [
+            "rail-ON",
+            "komponat-med-fel-V296"
+          ],
+          "cells": 5983,
+          "graph_stamp": "8774822664048001128",
+          "links": 48213,
+          "rj_links": 0,
+          "warn": "VARNING: nivå-1-kollision 5983/48213 (FNV 8774822664048001128) — kända namn: rail-ON, komponat-med-fel-V296 (+0/+0-räkning). Nivå-1 räcker inte; läs nivå-2. Rätt V296-apply är +0/+1 ⇒ 5983/48214."
+        },
+        "links": 48213,
+        "map": "dm3",
+        "rj_links": 0
+      },
+      "index": 1,
+      "name": "paav-o",
+      "op": "remove_links"
+    }
+  ],
+  "varningar": [
+    "efter op 1 (paav-o): VARNING: nivå-1-kollision 5983/48213 (FNV 8774822664048001128) — kända namn: rail-ON, komponat-med-fel-V296 (+0/+0-räkning). Nivå-1 räcker inte; läs nivå-2. Rätt V296-apply är +0/+1 ⇒ 5983/48214."
+  ]
+}

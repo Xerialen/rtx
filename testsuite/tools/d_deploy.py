@@ -27,6 +27,7 @@ from d_failclosed import (
     LOCK_TS_WINDOW_S,
     PLAN_LINK_UNDO_ID,
     SEALED_MANIFEST_SHA256,
+    sealed_manifest_for,
     SEALED_MVDSV_SHA256,
     SEALED_QWPROGS_SHA256,
     SEALED_RECEPT_SHA256,
@@ -509,17 +510,16 @@ def preflight(
     manifest_path = Path(manifest_path)
     recept_path = Path(recept_path)
     man_sha = file_sha256(manifest_path)
-    if man_sha != SEALED_MANIFEST_SHA256:
-        raise FailClosed(
-            "crash-detector",
-            f"manifest SHA-256 {man_sha} ≠ förseglad {SEALED_MANIFEST_SHA256} "
-            f"(okänd identitet vägras oavsett filnamn)",
-        )
     rec_sha = file_sha256(recept_path)
-    if rec_sha != SEALED_RECEPT_SHA256:
+    # Receptet slås upp i den förseglade mängden; manifestet måste vara dess bundna
+    # motpart. Ett giltigt recept med ett annat giltigt manifest är lika förbjudet
+    # som ett okänt recept — parbindningen ÄR förseglingen.
+    want_man = sealed_manifest_for(rec_sha, gate="crash-detector")
+    if man_sha != want_man:
         raise FailClosed(
             "crash-detector",
-            f"recept SHA-256 {rec_sha} ≠ förseglad {SEALED_RECEPT_SHA256}",
+            f"manifest SHA-256 {man_sha} ≠ {want_man} (manifestet som är bundet till "
+            f"recept {rec_sha}) — okänd identitet vägras oavsett filnamn",
         )
     man = load_manifest(manifest_path)
     rec = load_recept(recept_path)
