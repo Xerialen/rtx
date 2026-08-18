@@ -2,8 +2,11 @@
 """facts2_lint — vägra dashboard vars facts2-block ljuger om hårda tal.
 
 Vägrar om:
-  (a) detail-kategoriernas tal inte summerar till value-radens hard-antal
-      (antingen numeratörn eller N−numeratörn, så både H/N och success/N går),
+  (a) detail-kategoriernas tal inte summerar till suffixet (= N hard)
+      och till value-radens hard (N − success). Suffixet är en
+      kontrollsumma, inte en kategori, och är obligatoriskt när
+      kategorier finns. Format:
+      'X stuck · Y fell+stuck · Z fell-then-arrived (= N hard)'
   (b) banner-summan inte matchar radsumman (täljare och nämnare),
   (c) ordet "raw" förekommer i detail eller value.
 
@@ -21,6 +24,8 @@ from pathlib import Path
 RAW_RE = re.compile(r"\braw\b", re.I)
 FRAC_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 NUM_RE = re.compile(r"\d+")
+# Kontrollsumma längst bak: '(= 5 hard)' — inte en kategori.
+HARD_SUFFIX_RE = re.compile(r"\(\s*=\s*(\d+)\s*hard\s*\)\s*$", re.I)
 NOFAIL_RE = re.compile(
     r"^\s*(no failures|inga fel|inga hårda|none|—|-)?\s*$", re.I
 )
@@ -71,23 +76,38 @@ def _stat_blocks(doc: dict):
     return blocks
 
 
-def _detail_nums(detail) -> list[int]:
+def _parse_detail(detail) -> tuple[list[int], int | None, bool]:
+    """Returnera (kategorital, suffix-N eller None, har_kategorier).
+
+    Suffixet '(= N hard)' lyfts ur före kategorisumman så att N inte
+    räknas som en extra kategori.
+    """
     if detail is None:
-        return []
+        return [], None, False
     if isinstance(detail, dict):
-        out = []
-        for v in detail.values():
+        suffix = detail.get("hard")
+        if suffix is not None:
+            suffix = int(suffix)
+        cats: list[int] = []
+        for k, v in detail.items():
+            if str(k).lower() in {"hard", "n", "checksum"}:
+                continue
             if isinstance(v, bool):
                 continue
             if isinstance(v, (int, float)):
-                out.append(int(v))
+                cats.append(int(v))
             elif isinstance(v, str):
-                out.extend(int(x) for x in NUM_RE.findall(v))
-        return out
-    s = str(detail)
+                cats.extend(int(x) for x in NUM_RE.findall(v))
+        return cats, suffix, bool(cats)
+    s = str(detail).strip()
     if NOFAIL_RE.match(s):
-        return []
-    return [int(x) for x in NUM_RE.findall(s)]
+        return [], None, False
+    m = HARD_SUFFIX_RE.search(s)
+    suffix = int(m.group(1)) if m else None
+    body = s[: m.start()].strip() if m else s
+    body = re.sub(r"[\s·,;]+$", "", body)
+    cats = [int(x) for x in NUM_RE.findall(body)]
+    return cats, suffix, bool(cats)
 
 
 def _value_frac(value) -> tuple[int, int] | None:
@@ -134,15 +154,34 @@ def lint(doc: dict) -> dict:
             a, n = frac
             row_num += a
             row_den += n
-            nums = _detail_nums(detail)
-            total = sum(nums)
-            hard = a if total == a else (n - a if total == (n - a) else None)
+            cats, suffix, has_cats = _parse_detail(detail)
+            cat_sum = sum(cats)
+            hard_from_value = n - a  # value är success/N
             checked += 1
-            if hard is None:
+            if has_cats:
+                if suffix is None:
+                    errors.append(
+                        "%s[%d]: kategorier finns men suffix '(= N hard)' saknas "
+                        "(value=%r detail=%r)"
+                        % (bname, i, value, detail)
+                    )
+                elif cat_sum != suffix:
+                    errors.append(
+                        "%s[%d]: kategorisumma %d ≠ suffix %d "
+                        "(value=%r detail=%r)"
+                        % (bname, i, cat_sum, suffix, value, detail)
+                    )
+                elif suffix != hard_from_value:
+                    errors.append(
+                        "%s[%d]: suffix %d ≠ N−success %d "
+                        "(value=%r detail=%r)"
+                        % (bname, i, suffix, hard_from_value, value, detail)
+                    )
+            elif hard_from_value != 0:
                 errors.append(
-                    "%s[%d]: detail-summa %d ≠ value-hard %d och ≠ N-success %d "
+                    "%s[%d]: inga kategorier men N−success = %d "
                     "(value=%r detail=%r)"
-                    % (bname, i, total, a, n - a, value, detail)
+                    % (bname, i, hard_from_value, value, detail)
                 )
         if banner is not None:
             bf = _value_frac(banner)

@@ -28,12 +28,24 @@ def _page(doc: dict) -> str:
 GOOD = {
     "ours_column": {
         "stats": [
-            {"route": "in_ring", "value": "64/75", "detail": "F 2 · S 7 · M 2"},
-            {"route": "in_vast", "value": "73/75", "detail": "F 0 · S 0 · M 2"},
+            {
+                "route": "in_ring",
+                "value": "64/75",
+                "detail": "2 stuck · 9 fell-then-arrived (= 11 hard)",
+            },
+            {
+                "route": "in_vast",
+                "value": "73/75",
+                "detail": "2 fell-then-arrived (= 2 hard)",
+            },
         ],
         "banner": "137/150",
     }
 }
+
+# Exakta rader ur dagens dashboard (lintfix-regression).
+DASH_VALUE = "70/75"
+DASH_DETAIL = "1 stuck · 4 fell-then-arrived (= 5 hard)"
 
 
 class Facts2Lint(unittest.TestCase):
@@ -41,22 +53,59 @@ class Facts2Lint(unittest.TestCase):
         r = fl.lint(GOOD)
         self.assertTrue(r["ok"], r["errors"])
 
-    def test_detail_summerar_inte_till_hard(self):
+    def test_dashboardrad_70_75_passerar(self):
+        doc = {"rows": [{"value": DASH_VALUE, "detail": DASH_DETAIL}]}
+        r = fl.lint(doc)
+        self.assertTrue(r["ok"], r["errors"])
+
+    def test_dashboardrad_suffix_6_vagras(self):
         doc = {
             "rows": [
-                {"value": "11/75", "detail": "F 2 · S 2 · M 2"},
+                {
+                    "value": DASH_VALUE,
+                    "detail": "1 stuck · 4 fell-then-arrived (= 6 hard)",
+                }
             ]
         }
         r = fl.lint(doc)
         self.assertFalse(r["ok"])
-        self.assertTrue(any("detail-summa" in e for e in r["errors"]))
+        joined = " ".join(r["errors"])
+        self.assertTrue("kategorisumma" in joined or "suffix" in joined, r["errors"])
+
+    def test_kategorisumma_skiljer_fran_suffix_vagras(self):
+        doc = {
+            "rows": [
+                {
+                    "value": DASH_VALUE,
+                    "detail": "2 stuck · 4 fell-then-arrived (= 5 hard)",
+                }
+            ]
+        }
+        r = fl.lint(doc)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("kategorisumma" in e for e in r["errors"]))
+
+    def test_suffix_saknas_nar_kategorier_finns_vagras(self):
+        doc = {"rows": [{"value": "70/75", "detail": "1 stuck · 4 fell-then-arrived"}]}
+        r = fl.lint(doc)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("suffix" in e for e in r["errors"]))
+
+    def test_detail_summerar_inte_till_hard(self):
+        doc = {
+            "rows": [
+                {"value": "11/75", "detail": "F 2 · S 2 · M 2 (= 6 hard)"},
+            ]
+        }
+        r = fl.lint(doc)
+        self.assertFalse(r["ok"])
 
     def test_banner_matchar_inte_radsumma(self):
         doc = {
             "ours_column": {
                 "stats": [
-                    {"value": "64/75", "detail": "F 2 · S 7 · M 2"},
-                    {"value": "73/75", "detail": "F 0 · S 0 · M 2"},
+                    {"value": "64/75", "detail": "2 stuck · 9 fell-then-arrived (= 11 hard)"},
+                    {"value": "73/75", "detail": "2 fell-then-arrived (= 2 hard)"},
                 ],
                 "banner": "100/150",
             }
