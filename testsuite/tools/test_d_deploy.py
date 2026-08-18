@@ -675,20 +675,20 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertFalse(any(_is_fixa(c, mode="apply") or _is_fixa(c, mode="undo") for c in self.engine.cmds))
         self.assertTrue(all(_is_fixa(c, mode="chain") for c in self.engine.cmds if _is_fixa(c)))
 
-    def test_qwprogs_pin_is_72d5733(self):
+    def test_qwprogs_pin_is_3187fa6(self):
         """Vakten som fällde slutsvepet, nu mot rätt bygge.
 
         Den pekade på 79c8457 (02bf8d0d…) och gjorde sitt jobb: konstanten hade
         aldrig bumpats när Komponat-verbet landade i 72d5733, så den förseglade
         runnern vägrade den binär den förseglade monteringen kräver. 79c8457 har
-        noll förekomster av Komponat i ctlproto; 3fe70a8c-bygget har verbet.
+        noll förekomster av Komponat i ctlproto; 3fe70a8c-bygget hade Komponat-verbet; 3187fa6 lade till RemoveLinks-op:en.
         Liggaren r2e förseglar 3fe70a8c som slutsvepets binär — koden rättas i
         linje med förseglingen, inte tvärtom (Fables procedurbeslut 13:1xZ).
         """
         from d_deploy import EXPECTED_QWPROGS_SHA256
         self.assertEqual(
             EXPECTED_QWPROGS_SHA256,
-            "3fe70a8c6b22308901b3f4d1691d8f0988d56daa3cb958ff04ef21d82b6468e5",
+            "65be9bdab2b3790c5d05a79c27003e6fa16039ba220c3067b259c9092015d71f",
         )
 
     def test_v2_self_issued_ticket_refused(self):
