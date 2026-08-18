@@ -41,7 +41,7 @@
   "cells": 5983,
   "links": 48214,
   "graph_stamp": "15510284848814560699",
-  "graph_content_hash": "f7304f47d27ca1694ce1b7187a0a4d8a16e6b10bb207cff91982a9afe757c9bc"
+  "graph_content_hash": "f3b6640e332b72a7afe3e03ea95dd7d71fdf3d422aeec6e424183a405342b3d4"
  },
- "harledd_slut_skal": "nivå-1 FNV + params-fri nivå-2 (graphstamp.py) efter remove_links — verifieras vid apply-dry-run."
+ "harledd_slut_skal": "nivå-1 FNV + params-fri nivå-2 efter remove_links; nivå-2 modellerar motorns remove_links_by_id: kvarvarande länkar re-pushas till adjacency (T=1), så de 15 ursprungligen T=0-länkarna normaliseras till T=1 — verifieras vid apply-dry-run."
 }
