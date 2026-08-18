@@ -574,6 +574,54 @@ mod tests {
         assert!(!tube_ok(Offset { lateral: 12.0, dz: 0.0 }, true, true, f1));
     }
 
+    /// Bälte och hängslen: hela sanningstabellen på en läpp, med båda vakterna var för
+    /// sig och tillsammans (deepseeks anmärkning på b9fcee8).
+    ///
+    /// Poängen är raderna där **en** vakt släpper igenom och kombinationen inte gör det.
+    /// F1 och F2 är två triggers för samma korrigering, men de triggar på olika saker:
+    /// F1 på hur långt ut boten är, F2 på att marken bytt sort. En bot som certifierades
+    /// på läppen och står kvar där har inget byte för F2 att se; en bot som just lämnat
+    /// läppen är inte längre på den för F1 att mäta mot. Var för sig har de varsitt hål,
+    /// och hålen överlappar inte.
+    #[test]
+    fn kombinationen_pa_lappen_tacker_bada_halen() {
+        let av = EdgeGuard::default();
+        let f1 = EdgeGuard { narrow: true, recert: false };
+        let f2 = EdgeGuard { narrow: false, recert: true };
+        let bada = EdgeGuard { narrow: true, recert: true };
+
+        // (lateral, på läpp nu, på läpp vid cert, av, F1, F2, båda)
+        let fall = [
+            // Nattens fall: certifierat på punktgolv uppströms, nu 22 u ut på läppen.
+            (22.0, true, false, true, false, false, false),
+            // Certifierat PÅ läppen och kvar där: inget byte, så F2 ser ingenting.
+            // Det är F1:s hål-täckning.
+            (22.0, true, true, true, false, true, false),
+            // Just lämnat läppen, fortfarande 22 u ut: F1 mäter mot vanlig mark och
+            // släpper igenom. Det är F2:s hål-täckning.
+            (22.0, false, true, true, true, false, false),
+            // Nära linjen på läppen, inget byte: ingen vakt har skäl att lapsa.
+            (4.0, true, true, true, true, true, true),
+            // Vanlig mark, inget byte: allt inert (riskytan ska vara läpparna).
+            (22.0, false, false, true, true, true, true),
+        ];
+
+        for (lat, nu, vid_cert, v_av, v_f1, v_f2, v_bada) in fall {
+            let off = Offset { lateral: lat, dz: 0.0 };
+            let namn = format!("lat={lat} läpp_nu={nu} läpp_cert={vid_cert}");
+            assert_eq!(tube_ok(off, nu, vid_cert, av), v_av, "utan vakt: {namn}");
+            assert_eq!(tube_ok(off, nu, vid_cert, f1), v_f1, "F1: {namn}");
+            assert_eq!(tube_ok(off, nu, vid_cert, f2), v_f2, "F2: {namn}");
+            assert_eq!(tube_ok(off, nu, vid_cert, bada), v_bada, "F1+F2: {namn}");
+            // Kombinationen får aldrig vara slappare än den strängaste enskilda.
+            assert!(
+                tube_ok(off, nu, vid_cert, bada) <= (tube_ok(off, nu, vid_cert, f1)
+                    && tube_ok(off, nu, vid_cert, f2)),
+                "kombinationen får inte släppa igenom mer än F1 och F2 var för sig: {namn}"
+            );
+        }
+    }
+
     /// A route running off a cliff certifies nothing: every look-ahead carries the bot over the lip.
     /// That `None` is the honest boxed state the fallback brakes exist for.
     #[test]
