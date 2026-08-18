@@ -137,11 +137,14 @@ SEALED_RECEPT_SHA256 = (
 SEALED_DEPLOYABLE: dict[str, str] = {
     # recept-sha256                                                     manifest-sha256
     SEALED_RECEPT_SHA256: SEALED_MANIFEST_SHA256,
-    "98e9612048d4837df2dc7f165c9bf57537fcbda31f8b92a333812c5e3b224739":
+    # paav-g-v1
+    "e527361b26f1b3fb6c0bc0f87b92dd295b65e89997fccfda9e5f1d74051e2121":
         "07cee24ed8cca3223c78ad8d4521b99266a5c7f892c16333ce8eed3494f447a8",
-    "96becff3a9cede458b9f6ada261f87e9fadfe6cb9f7dca04b81f26bd1cf57a41":
+    # paav-f-v1
+    "58f220e41c4942a883087e67a6d5e70cfa994157e1eccdea7ac1a0d04d0653be":
         "1c9692eb4f886bc5112954c3e504f8beea8d5abe0eb6579465a877923dc0b0a9",
-    "12f28cf1e3189a2450d357b92f950112eb02cae15331ee5738b21e7e91fb2698":
+    # paav-o-v1
+    "5dde67b3c68155583eacf32993edd393b7dd1cbb18d407fc32db65021c9281ad":
         "666015d6b65d72abd84a61d09700b345ff9e8b35cbdb0f6ab4f4afef34be1615",
 }
 
@@ -162,6 +165,12 @@ ALLOWED_DEPLOY_PAIRS: dict[str, tuple[int, int]] = {
 }
 
 
+#: De enda etiketter ett uppslag i den förseglade mängden får vägra under. Sluten,
+#: för att en fri sträng hade låtit en anropare döpa om sin egen vägran till något
+#: en grind längre ut inte känner igen.
+SEALED_LOOKUP_GATES = frozenset({"crash-detector", "deploy-context"})
+
+
 def sealed_manifest_for(recept_sha256: str, gate: str = "deploy-context") -> str:
     """Det förseglade manifestets sha för ett förseglat recept.
 
@@ -175,6 +184,13 @@ def sealed_manifest_for(recept_sha256: str, gate: str = "deploy-context") -> str
     `deploy-context`. Att slå ihop dem hade ändrat taxonomin för en kontroll som
     inte ändrats i sak.
     """
+    if gate not in SEALED_LOOKUP_GATES:
+        raise FailClosed(
+            "deploy-context",
+            f"sealed_manifest_for: okänd gate {gate!r} — tillåtna "
+            f"{'/'.join(sorted(SEALED_LOOKUP_GATES))}. En fri gate-sträng hade låtit "
+            f"en anropare döpa om sin egen vägran.",
+        )
     man = SEALED_DEPLOYABLE.get((recept_sha256 or "").strip().lower())
     if man is None:
         raise FailClosed(
@@ -350,8 +366,18 @@ def mint_deploy_context(seal: PreflightSeal, steps: tuple[BoundStep, ...] | list
     if _active_session is not None:
         raise FailClosed("deploy-context", "deploy-kontext redan aktiv")
     bound = tuple(steps)
-    if len(bound) != 3:
-        raise FailClosed("deploy-context", "kontext kräver exakt de tre komponatstegen")
+    # Antalet steg är komponatets, inte apparatens — samma princip som bind_ops.
+    # Trean band kontexten vid v296-ram-komponatet; på/av-provets varianter är ett
+    # op var. Det som ska hålla är att stegen är EXAKT de bundna, i ordning och utan
+    # hål — och det kontrolleras här, inte av en siffra.
+    if not bound:
+        raise FailClosed("deploy-context", "kontext kräver minst ett komponatsteg")
+    if [s.index for s in bound] != list(range(1, len(bound) + 1)):
+        raise FailClosed(
+            "deploy-context",
+            f"kontextens steg måste vara sammanhängande 1..{len(bound)}, fick "
+            f"{[s.index for s in bound]}",
+        )
     _preflight_ticket = None
     ctx = DeployContext(
         token=secrets.token_hex(16),
