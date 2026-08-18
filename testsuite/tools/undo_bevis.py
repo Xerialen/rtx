@@ -31,6 +31,17 @@ skrivningen fela när grafen redan är ändrad, och då står man med precis det
 gränsen ska förhindra: en genomförd undo som inte går att styrka. Reservationen
 flyttar den möjliga felkällan till före mutationen, där den bara kostar en vägran.
 
+FRYSGRINDEN
+-----------
+Verktyget talar ctlproto direkt via ``labctl`` och gick därför förbi ändringsfrysen:
+``check_change_freeze`` sitter i ``fixa.py`` och ``d_deploy.py``, inte i motorn, så en
+undo härifrån kunde köras rakt igenom en satt flagga. Hittat 18/8 när flaggan stod för
+grok2:s räkning av M1-runda 3 — vägen användes inte, men den fanns.
+
+Grinden ligger nu i ``undo_med_bevis``, alltså i den enda funktion varje undo-väg går
+genom, och före både reservationen och identitetsläsningen: en fryst rigg ska kosta en
+vägran innan något rörs, inte efter.
+
 Ingen riggkontakt utöver den ctl-port som anges.
 """
 
@@ -44,6 +55,10 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from d_failclosed import FreezeContext, check_change_freeze  # noqa: E402
 
 SCHEMA = "undo-bevis/1"
 SCHEMA_LEDGER = "undo-bevis-ledger/1"
@@ -219,6 +234,7 @@ def undo_med_bevis(
     ts: str | None = None,
     forvantat: dict | None = None,
     fore: dict | None = None,
+    freeze: FreezeContext | None = None,
 ) -> dict:
     """Läs före → undo → läs efter → skriv bevis → rapportera.
 
@@ -227,6 +243,9 @@ def undo_med_bevis(
     ``undone-obevisad`` i meddelandet — undo:t har hänt och får inte tystas, men det
     får inte heller rapporteras som styrkt.
     """
+    # Frysen först av allt: före reservationen, före identitetsläsningen, före socketen.
+    # En fryst rigg ska kosta en vägran innan något rörs.
+    check_change_freeze(freeze if freeze is not None else FreezeContext.production())
     if not str(handelse).strip():
         raise Vagran("handelse får inte vara tom; det är den som skiljer två bevis åt")
     # Ordningstalet läses FÖRE mutationen, av samma skäl som sökvägen reserveras
@@ -338,6 +357,11 @@ def main(argv=None) -> int:
         print(f"  bevis: {ut['bevis_path']}")
         return 0 if bevis["bitidentisk_mot_forvantat"] and ut["utfall"] == UNDONE else 1
     except Vagran as exc:
+        print(f"VÄGRAR: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # FailClosed från frysgrinden
+        if type(exc).__name__ != "FailClosed":
+            raise
         print(f"VÄGRAR: {exc}", file=sys.stderr)
         return 2
 

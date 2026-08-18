@@ -188,8 +188,13 @@ class Operationen(unittest.TestCase):
             las_identitet=las, gor_undo=undo,
             reservation=ub.reservera(ut),
             unit="tbx-d3", ctl_port=27998,
-            handelse="riggstädning efter dom", variant="O", **kw
+            handelse="riggstädning efter dom", variant="O",
+            freeze=self.tinat(), **kw
         )
+
+    def tinat(self):
+        """Injicerad frysning som inte finns. Enhetstester läser aldrig ~/lab."""
+        return ub.FreezeContext.for_test(self.td / "ingen-frysning")
 
     def test_ordningen_ar_las_undo_las_skriv(self):
         ut = self.td / "b.json"
@@ -218,6 +223,7 @@ class Operationen(unittest.TestCase):
                 gor_undo=lambda: self.fail("undo får inte köras"),
                 reservation=ub.reservera(self.td / "b.json"),
                 unit="tbx-d3", ctl_port=27998, handelse="  ", variant="O",
+                freeze=self.tinat(),
             )
 
     def test_misslyckad_bevisskrivning_efter_mutation_tystas_inte(self):
@@ -232,10 +238,68 @@ class Operationen(unittest.TestCase):
                 ub.undo_med_bevis(
                     las_identitet=lambda: FORE, gor_undo=lambda: {"outcome": "undone"},
                     reservation=res, unit="tbx-d3", ctl_port=27998,
-                    handelse="riggstädning", variant="O",
+                    handelse="riggstädning", variant="O", freeze=self.tinat(),
                 )
         self.assertIn(ub.UNDONE_OBEVISAD, str(cm.exception))
         self.assertIn("undo genomfört", str(cm.exception))
+
+
+class Frysgrinden(unittest.TestCase):
+    """Hålet som fanns i morse: verktyget talar ctlproto direkt och gick förbi frysen.
+
+    `check_change_freeze` sitter i fixa.py och d_deploy.py, inte i motorn, så en undo
+    härifrån kunde köras rakt igenom en satt flagga. Grinden ligger nu i
+    `undo_med_bevis` — den enda funktion varje undo-väg går genom.
+    """
+
+    def setUp(self):
+        self.td = Path(tempfile.mkdtemp(prefix="frys-"))
+        self.addCleanup(shutil.rmtree, self.td, ignore_errors=True)
+        self.flagga = self.td / "flagga"
+
+    def _kor(self, freeze):
+        rord = []
+        return ub.undo_med_bevis(
+            las_identitet=lambda: (rord.append("las"), FORE)[1],
+            gor_undo=lambda: (rord.append("undo"), {"outcome": "undone"})[1],
+            reservation=ub.reservera(self.td / "b.json"),
+            unit="tbx-d3", ctl_port=27998,
+            handelse="riggstädning", variant="O", freeze=freeze,
+        ), rord
+
+    def test_satt_flagga_vagrar_innan_nagot_rors(self):
+        self.flagga.write_text("fable 2026-08-18T18:38:30Z räkning pågår\n", encoding="utf-8")
+        rord = []
+        with self.assertRaises(Exception) as cm:
+            ub.undo_med_bevis(
+                las_identitet=lambda: (rord.append("las"), FORE)[1],
+                gor_undo=lambda: (rord.append("undo"), {"outcome": "undone"})[1],
+                reservation=ub.reservera(self.td / "b.json"),
+                unit="tbx-d3", ctl_port=27998,
+                handelse="riggstädning", variant="O",
+                freeze=ub.FreezeContext.for_test(self.flagga),
+            )
+        self.assertEqual(type(cm.exception).__name__, "FailClosed")
+        self.assertEqual(rord, [], "varken identitet eller undo fick köras")
+
+    def test_ingen_flagga_slapper_igenom(self):
+        ut, rord = self._kor(ub.FreezeContext.for_test(self.flagga))
+        self.assertEqual(ut["utfall"], ub.UNDONE)
+        self.assertEqual(rord, ["las", "undo", "las"])
+
+    def test_grinden_ligger_fore_reservationen_i_cli(self):
+        """CLI:t reserverar före socketen; grinden ska ändå vägra utan att lämna spår
+        som hindrar en senare, tillåten körning."""
+        self.flagga.write_text("fable 2026-08-18T18:38:30Z räkning pågår\n", encoding="utf-8")
+        res = ub.reservera(self.td / "c.json")
+        with self.assertRaises(Exception):
+            ub.undo_med_bevis(
+                las_identitet=lambda: FORE, gor_undo=lambda: {"outcome": "undone"},
+                reservation=res, unit="tbx-d3", ctl_port=27998,
+                handelse="riggstädning", variant="O",
+                freeze=ub.FreezeContext.for_test(self.flagga),
+            )
+        self.assertEqual(res.path.stat().st_size, 0, "reservationen är tom, inte ett halvskrivet bevis")
 
 
 if __name__ == "__main__":

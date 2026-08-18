@@ -435,6 +435,8 @@ class LiveTrialDriver:
             variant=rid,
             forvantat=vantat or None,
             fore=live,
+            # Ingen egen FreezeContext i drivaren: None ger produktionsflaggan, vilket
+            # är rätt för en levande mätrigg — armväxling ska stoppas av en frysning.
         )
         d = holder["d"]
         if ut["utfall"] != undo_bevis.UNDONE:
