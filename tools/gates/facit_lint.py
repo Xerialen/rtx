@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""facit_lint — nio obligatoriska klausuler + grind-1 unit-korsning.
+"""facit_lint — nio mallklausuler, eller addendumkrav vid '# ADDENDUM'.
 
 Validerar ett facitutkast mot PLANS/FACIT-MALL.md. Syskon-addendum
 (`<stam>-addendum.md`) läses automatiskt. Unit-tilldelning korsas mot
 d_failclosed.ALLOWED_DEPLOY_PAIRS (d1/d3 tillåtna; d2/d4/RA vägras som
 deploy-mål).
+
+Filer vars första icke-tomma rad är ett '# ADDENDUM'-huvud går inte
+genom de nio klausulerna. De valideras mot addendumkraven: referens
+till moderfacitets sha, tidsstämpel, vilken § som tolkas, och
+beslutsfattare.
 
 Exit 0 = komplett. Exit 2 = brist (förseglingsscriptet ska vägra).
 Ingen socket, ingen ~/lab i tester.
@@ -125,8 +130,63 @@ CLAUSES: list[tuple[str, str, list[str]]] = [
 ]
 
 
+# Addendumläge (första icke-tomma raden är '# ADDENDUM…'). Minst en
+# träff per krav. Kalibrerat så M1-addendum1 passerar; ett dokument
+# utan sha / tid / § / beslutsfattare vägras.
+ADDENDUM_KRAV: list[tuple[str, str, list[str]]] = [
+    (
+        "moder_sha",
+        "refererar moderfacitets sha",
+        [
+            r"sha256\s*[:=]?\s*[0-9a-f]{8,}",
+            r"\bsha\s+[0-9a-f]{8,}",
+            r"\([0-9a-f]{8,}[.…)]",
+        ],
+    ),
+    (
+        "tidsstamplad",
+        "tidsstämplad",
+        [
+            r"20\d{2}-\d{2}-\d{2}",
+            r"\b\d{1,2}:\d{2}\s*(?:Z|z)\b",
+            r"\b\d{1,2}:\d[0-9xX](?:Z|z)?\b",
+        ],
+    ),
+    (
+        "paragraf",
+        "anger vilken § som tolkas",
+        [
+            r"§\s*\d+",
+            r"paragraf\s+\d+",
+            r"klausul\s+\d+",
+        ],
+    ),
+    (
+        "beslutsfattare",
+        "beslutsfattare angiven",
+        [
+            r"beslut\s*:",
+            r"beslutsfattare",
+            r"förseglat\s+av",
+            r"ägarorder",
+            r"ägarens\s+(direkta\s+)?order",
+        ],
+    ),
+]
+
+
 def _norm(text: str) -> str:
     return text.replace("\u00a0", " ").lower()
+
+
+def is_addendum(text: str) -> bool:
+    """True iff the first non-empty line is a '# ADDENDUM' heading."""
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        return bool(re.match(r"^#\s*ADDENDUM\b", s, re.I))
+    return False
 
 
 def gather_text(facit_path: Path, addendum: Path | None) -> str:
@@ -225,11 +285,62 @@ def lint(text: str) -> dict:
     }
 
 
+def lint_addendum(text: str) -> dict:
+    blob = _norm(text)
+    krav = []
+    for cid, title, pats in ADDENDUM_KRAV:
+        hits = [p for p in pats if re.search(p, blob, re.I)]
+        krav.append(
+            {
+                "id": cid,
+                "title": title,
+                "ok": len(hits) >= 1,
+                "hits": hits,
+            }
+        )
+    missing = [c["id"] for c in krav if not c["ok"]]
+    return {
+        "ok": not missing,
+        "mode": "addendum",
+        "missing": missing,
+        "addendum_krav": krav,
+        "clauses": [],
+        "units": {
+            "ok": True,
+            "assigned": [],
+            "allowed": {},
+            "errors": [],
+        },
+    }
+
+
 def lint_path(facit: str | Path, addendum: str | Path | None = None) -> dict:
     p = Path(facit)
+    raw = p.read_text(encoding="utf-8")
+    if is_addendum(raw):
+        if addendum is not None:
+            return {
+                "ok": False,
+                "mode": "addendum",
+                "missing": [],
+                "addendum_krav": [],
+                "clauses": [],
+                "units": {
+                    "ok": True,
+                    "assigned": [],
+                    "allowed": {},
+                    "errors": [],
+                },
+                "facit": str(p),
+                "error": "addendumläge tar inte --addendum",
+            }
+        report = lint_addendum(raw)
+        report["facit"] = str(p)
+        return report
     ad = Path(addendum) if addendum else None
     text = gather_text(p, ad)
     report = lint(text)
+    report["mode"] = "facit"
     report["facit"] = str(p)
     return report
 
@@ -242,6 +353,20 @@ def main(argv: list[str] | None = None) -> int:
     report = lint_path(args.facit, args.addendum)
     json.dump(report, sys.stdout, ensure_ascii=False, indent=1)
     sys.stdout.write("\n")
+    if report.get("mode") == "addendum":
+        if report.get("error"):
+            print("STOPP: %s" % report["error"], file=sys.stderr)
+            return 2
+        if not report["ok"]:
+            print("STOPP: addendum ofullständigt", file=sys.stderr)
+            for m in report["missing"]:
+                print("  saknar krav:", m, file=sys.stderr)
+            return 2
+        print(
+            "OK: addendum (moder-sha · tidsstämpel · § · beslutsfattare)",
+            file=sys.stderr,
+        )
+        return 0
     if not report["ok"]:
         print("STOPP: facit ofullständigt", file=sys.stderr)
         for m in report["missing"]:

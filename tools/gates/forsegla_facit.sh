@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# forsegla_facit.sh — enda sanktionerade vägen att försegla ett facit.
+# forsegla_facit.sh — enda sanktionerade vägen att försegla ett facit
+# eller ett addendum.
 #
-# Kör facit_lint. Vägrar vid brist (exit 2). Annars sha256 + chmod 0444
-# på facitet (och ev. addendum) samt sidokvitto <fil>.sha256, plus en
-# kvittorad med UTC-tidsstämpel på stdout.
+# Kör facit_lint. Linten känner igen '# ADDENDUM'-huvud och validerar
+# då addendumkraven (moder-sha · tidsstämpel · § · beslutsfattare) i
+# stället för mallens nio klausuler. Vägrar vid brist (exit 2).
+# Annars samma sha256 + chmod 0444 + sidokvitto <fil>.sha256 +
+# kvittorad med UTC-tidsstämpel på stdout — oavsett läge.
 #
 #   forsegla_facit.sh <facit.md> [--addendum <fil>]
+#   forsegla_facit.sh <addendum.md>
 #
 # Manuell chmod ska inte förekomma i flödet.
 # Ingen riggkontakt.
@@ -15,7 +19,7 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LINT="$HERE/facit_lint.py"
 
 if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
-    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
 fi
 

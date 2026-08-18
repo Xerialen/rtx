@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""facit_lint + forsegla_facit: v3 passerar, utan cykeldefinition vägras.
+"""facit_lint + forsegla_facit: fullfacit och addendumläge.
+
+v3 passerar; utan cykeldefinition vägras. Addendum med de fyra
+kraven passerar; ofullständigt addendum vägras. Fullfacitvägen
+är oförändrad (nio klausuler, samma CLI-rad).
 
 Hermetiska fixturer. Ingen ~/lab.
 """
@@ -28,7 +32,21 @@ DATA = HERE / "testdata" / "facit"
 V3 = DATA / "nattens-v3.md"
 V3ADD = DATA / "nattens-v3-addendum.md"
 NOCYC = DATA / "utan-cykel.md"
+ADD_OK = DATA / "komplett-addendum.md"
+ADD_M1 = DATA / "m1-addendum1.md"
 FORSEGLA = GATES / "forsegla_facit.sh"
+FACIT_CLAUSE_IDS = [
+    "grund",
+    "cykeldefinition",
+    "paritet",
+    "referensarm",
+    "jamforande_dom",
+    "kontrollvarden",
+    "staende_slutklausul",
+    "addendum_regel",
+    "domskala",
+]
+ADDENDUM_KRAV_IDS = ["moder_sha", "tidsstamplad", "paragraf", "beslutsfattare"]
 
 
 class FacitLintTests(unittest.TestCase):
@@ -92,6 +110,181 @@ class ForseglaTests(unittest.TestCase):
         mode = stat.S_IMODE(fac.stat().st_mode)
         self.assertEqual(mode, 0o444)
         td.cleanup()
+
+
+class AddendumLageTests(unittest.TestCase):
+    def test_huvud_kanner_igen_addendum(self):
+        self.assertTrue(fl.is_addendum(ADD_OK.read_text(encoding="utf-8")))
+        self.assertTrue(fl.is_addendum(ADD_M1.read_text(encoding="utf-8")))
+        self.assertFalse(fl.is_addendum(V3.read_text(encoding="utf-8")))
+        self.assertFalse(fl.is_addendum(""))
+
+    def test_komplett_addendum_passerar(self):
+        r = fl.lint_path(ADD_OK)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["mode"], "addendum")
+        self.assertEqual(r["missing"], [])
+        self.assertEqual(
+            [k["id"] for k in r["addendum_krav"]], ADDENDUM_KRAV_IDS
+        )
+        self.assertTrue(all(k["ok"] for k in r["addendum_krav"]))
+
+    def test_m1_addendum1_passerar(self):
+        """Kvällens grindgap: just det här dokumentet vägrades av nioklausulvägen."""
+        r = fl.lint_path(ADD_M1)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["mode"], "addendum")
+        self.assertEqual(r["missing"], [])
+
+    def test_addendum_saknar_varje_krav(self):
+        base = ADD_OK.read_text(encoding="utf-8")
+        mutants = {
+            "moder_sha": base.replace("sha abcdef01deadbeef", "utan hash"),
+            "tidsstamplad": base.replace("2026-08-18T18:24:20Z", "någon gång"),
+            "paragraf": base.replace("§8", "en klausul"),
+            "beslutsfattare": base.replace(
+                "Beslut: Fable på ägarens direkta order.", "ingen namngiven."
+            ),
+        }
+        for krav, text in mutants.items():
+            with self.subTest(krav=krav):
+                r = fl.lint_addendum(text)
+                self.assertFalse(r["ok"], r)
+                self.assertIn(krav, r["missing"])
+                self.assertEqual(r["mode"], "addendum")
+
+    def test_utan_addendumhuvud_gar_fullfacitvagen(self):
+        text = ADD_OK.read_text(encoding="utf-8").replace(
+            "# ADDENDUM till", "# FACIT till", 1
+        )
+        td = tempfile.TemporaryDirectory()
+        p = Path(td.name) / "inte-addendum.md"
+        p.write_text(text, encoding="utf-8")
+        r = fl.lint_path(p)
+        self.assertEqual(r.get("mode"), "facit")
+        self.assertFalse(r["ok"])
+        self.assertIn("cykeldefinition", r["missing"])
+        td.cleanup()
+
+    def test_cli_addendum_exit_och_meddelande(self):
+        import io
+        from contextlib import redirect_stderr
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = fl.main([str(ADD_OK)])
+        self.assertEqual(rc, 0)
+        self.assertIn("OK: addendum", err.getvalue())
+        self.assertNotIn("nio klausuler", err.getvalue())
+
+        td = tempfile.TemporaryDirectory()
+        bad = Path(td.name) / "bad.md"
+        bad.write_text("# ADDENDUM tomt\n", encoding="utf-8")
+        err2 = io.StringIO()
+        with redirect_stderr(err2):
+            rc2 = fl.main([str(bad)])
+        self.assertEqual(rc2, 2)
+        self.assertIn("STOPP: addendum ofullständigt", err2.getvalue())
+        self.assertIn("saknar krav:", err2.getvalue())
+        td.cleanup()
+
+    def test_addendum_plus_addendumflagga_vagras(self):
+        import io
+        from contextlib import redirect_stderr
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = fl.main([str(ADD_OK), "--addendum", str(ADD_M1)])
+        self.assertEqual(rc, 2)
+        self.assertIn("addendumläge tar inte --addendum", err.getvalue())
+
+
+class AddendumForseglaTests(unittest.TestCase):
+    def test_forseglar_komplett_addendum(self):
+        td = tempfile.TemporaryDirectory()
+        src = Path(td.name) / "addendum.md"
+        src.write_text(ADD_OK.read_text(encoding="utf-8"), encoding="utf-8")
+        rc = subprocess.run(
+            ["bash", str(FORSEGLA), str(src)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(rc.returncode, 0, rc.stderr + rc.stdout)
+        self.assertIn("FORSEGLAD", rc.stdout)
+        sidecar = Path(str(src) + ".sha256")
+        self.assertTrue(sidecar.exists())
+        kv = sidecar.read_text(encoding="utf-8")
+        self.assertRegex(kv, r"^[0-9a-f]{64}  addendum\.md\n$")
+        self.assertEqual(stat.S_IMODE(src.stat().st_mode), 0o444)
+        self.assertEqual(stat.S_IMODE(sidecar.stat().st_mode), 0o444)
+        td.cleanup()
+
+    def test_vagrar_ofullstandigt_addendum_utan_chmod(self):
+        td = tempfile.TemporaryDirectory()
+        src = Path(td.name) / "addendum.md"
+        src.write_text("# ADDENDUM saknar allt\n", encoding="utf-8")
+        before = src.stat().st_mode
+        rc = subprocess.run(
+            ["bash", str(FORSEGLA), str(src)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(rc.returncode, 2, rc.stderr)
+        self.assertFalse(Path(str(src) + ".sha256").exists())
+        self.assertEqual(src.stat().st_mode, before)
+        td.cleanup()
+
+    def test_addendum_flagga_forseglar_inte_sidofil(self):
+        """Piggyback: --addendum på addendumfil får inte 0444:a junk."""
+        td = tempfile.TemporaryDirectory()
+        src = Path(td.name) / "addendum.md"
+        junk = Path(td.name) / "junk.md"
+        src.write_text(ADD_OK.read_text(encoding="utf-8"), encoding="utf-8")
+        junk.write_text("skräp utan krav\n", encoding="utf-8")
+        src_mode = src.stat().st_mode
+        junk_mode = junk.stat().st_mode
+        rc = subprocess.run(
+            ["bash", str(FORSEGLA), str(src), "--addendum", str(junk)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(rc.returncode, 2, rc.stderr)
+        self.assertFalse(Path(str(src) + ".sha256").exists())
+        self.assertFalse(Path(str(junk) + ".sha256").exists())
+        self.assertEqual(src.stat().st_mode, src_mode)
+        self.assertEqual(junk.stat().st_mode, junk_mode)
+        td.cleanup()
+
+
+class FullfacitVagOforandradTests(unittest.TestCase):
+    def test_nio_klausuler_samma_id_och_utfall(self):
+        r = fl.lint_path(V3, V3ADD)
+        self.assertEqual(r.get("mode"), "facit")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["missing"], [])
+        self.assertEqual([c["id"] for c in r["clauses"]], FACIT_CLAUSE_IDS)
+        self.assertTrue(all(c["ok"] for c in r["clauses"]))
+        self.assertTrue(r["units"]["ok"])
+
+    def test_lint_funktionen_rors_inte_av_addendumlage(self):
+        """lint() är nioklausulmotorn; addendumtext där ska fortfarande fällas."""
+        r = fl.lint(ADD_OK.read_text(encoding="utf-8"))
+        self.assertFalse(r["ok"])
+        self.assertIn("cykeldefinition", r["missing"])
+        self.assertNotIn("mode", r)
+
+    def test_cli_fullfacit_meddelande_oforandrat(self):
+        import io
+        from contextlib import redirect_stderr
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = fl.main([str(V3), "--addendum", str(V3ADD)])
+        self.assertEqual(rc, 0)
+        self.assertEqual(err.getvalue().strip(), "OK: nio klausuler + grind-1")
 
 
 if __name__ == "__main__":
