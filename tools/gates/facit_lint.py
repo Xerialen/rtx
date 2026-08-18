@@ -8,8 +8,9 @@ deploy-mål).
 
 Filer vars första icke-tomma rad är ett '# ADDENDUM'-huvud går inte
 genom de nio klausulerna. De valideras mot addendumkraven: referens
-till moderfacitets sha, tidsstämpel, vilken § som tolkas, och
-beslutsfattare.
+till moderfacitets sha (full 64-hex, och den sha ska tillhöra en
+förseglad syskonfil: 0444 + sha-match + sidokvitto), tidsstämpel,
+vilken § som tolkas, och beslutsfattare.
 
 Exit 0 = komplett. Exit 2 = brist (förseglingsscriptet ska vägra).
 Ingen socket, ingen ~/lab i tester.
@@ -18,8 +19,10 @@ Ingen socket, ingen ~/lab i tester.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -131,16 +134,18 @@ CLAUSES: list[tuple[str, str, list[str]]] = [
 
 
 # Addendumläge (första icke-tomma raden är '# ADDENDUM…'). Minst en
-# träff per krav. Kalibrerat så M1-addendum1 passerar; ett dokument
-# utan sha / tid / § / beslutsfattare vägras.
+# träff per krav. moder_sha är full 64-hex *och* en förseglad
+# syskonfil (0444 + innehållssha + sidokvitto) — inte ett prefix i
+# rubriken.
+_FULL_SHA = r"[0-9a-fA-F]{64}"
 ADDENDUM_KRAV: list[tuple[str, str, list[str]]] = [
     (
         "moder_sha",
-        "refererar moderfacitets sha",
+        "refererar moderfacitets sha (64-hex + förseglad syskonfil)",
         [
-            r"sha256\s*[:=]?\s*[0-9a-f]{8,}",
-            r"\bsha\s+[0-9a-f]{8,}",
-            r"\([0-9a-f]{8,}[.…)]",
+            r"sha256\s*[:=]?\s*" + _FULL_SHA + r"\b",
+            r"\bsha\s+" + _FULL_SHA + r"\b",
+            r"\(" + _FULL_SHA + r"[.…)]",
         ],
     ),
     (
@@ -187,6 +192,72 @@ def is_addendum(text: str) -> bool:
             continue
         return bool(re.match(r"^#\s*ADDENDUM\b", s, re.I))
     return False
+
+
+def extract_moder_shas(text: str) -> list[str]:
+    """Full 64-hex cited as sha / sha256 / (hex…). Prefixer räknas inte."""
+    blob = _norm(text)
+    found: list[str] = []
+    for pat in (
+        r"sha256\s*[:=]?\s*(" + _FULL_SHA + r")\b",
+        r"\bsha\s+(" + _FULL_SHA + r")\b",
+        r"\((" + _FULL_SHA + r")[.…)]",
+    ):
+        for m in re.finditer(pat, blob, re.I):
+            h = m.group(1).lower()
+            if h not in found:
+                found.append(h)
+    return found
+
+
+def is_sealed_facit(path: Path, cited: str) -> bool:
+    """True iff path is a sealed facit: 0444, content sha == cited, sidecar match."""
+    try:
+        st = path.stat()
+    except OSError:
+        return False
+    if not path.is_file():
+        return False
+    if stat.S_IMODE(st.st_mode) != 0o444:
+        return False
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    if digest != cited.lower():
+        return False
+    side = Path(str(path) + ".sha256")
+    try:
+        if not side.is_file():
+            return False
+        if stat.S_IMODE(side.stat().st_mode) != 0o444:
+            return False
+        line = side.read_text(encoding="utf-8").strip().split()
+    except OSError:
+        return False
+    return bool(line) and line[0].lower() == cited.lower()
+
+
+def find_sealed_parent(
+    cited_shas: list[str], search_dir: Path
+) -> Path | None:
+    """Same-directory *.md that is not itself an addendum and is sealed."""
+    if not cited_shas or not search_dir.is_dir():
+        return None
+    try:
+        cands = sorted(search_dir.glob("*.md"))
+    except OSError:
+        return None
+    for md in cands:
+        try:
+            if is_addendum(md.read_text(encoding="utf-8")):
+                continue
+        except OSError:
+            continue
+        for cited in cited_shas:
+            if is_sealed_facit(md, cited):
+                return md
+    return None
 
 
 def gather_text(facit_path: Path, addendum: Path | None) -> str:
@@ -285,19 +356,40 @@ def lint(text: str) -> dict:
     }
 
 
-def lint_addendum(text: str) -> dict:
+def lint_addendum(
+    text: str, search_dir: str | Path | None = None
+) -> dict:
     blob = _norm(text)
+    cited = extract_moder_shas(text)
+    parent: Path | None = None
+    if cited and search_dir is not None:
+        parent = find_sealed_parent(cited, Path(search_dir))
     krav = []
     for cid, title, pats in ADDENDUM_KRAV:
         hits = [p for p in pats if re.search(p, blob, re.I)]
-        krav.append(
-            {
-                "id": cid,
-                "title": title,
-                "ok": len(hits) >= 1,
-                "hits": hits,
-            }
-        )
+        ok = len(hits) >= 1
+        extra: dict = {}
+        if cid == "moder_sha":
+            extra["cited"] = cited
+            extra["parent"] = str(parent) if parent is not None else None
+            if not cited:
+                ok = False
+                extra["reason"] = "ingen full 64-hex"
+            elif parent is None:
+                ok = False
+                extra["reason"] = (
+                    "ingen förseglad moderfil (0444 + sha-match) i samma katalog"
+                )
+            else:
+                ok = True
+        item = {
+            "id": cid,
+            "title": title,
+            "ok": ok,
+            "hits": hits,
+        }
+        item.update(extra)
+        krav.append(item)
     missing = [c["id"] for c in krav if not c["ok"]]
     return {
         "ok": not missing,
@@ -334,7 +426,7 @@ def lint_path(facit: str | Path, addendum: str | Path | None = None) -> dict:
                 "facit": str(p),
                 "error": "addendumläge tar inte --addendum",
             }
-        report = lint_addendum(raw)
+        report = lint_addendum(raw, search_dir=p.parent)
         report["facit"] = str(p)
         return report
     ad = Path(addendum) if addendum else None

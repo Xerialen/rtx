@@ -2,14 +2,16 @@
 """facit_lint + forsegla_facit: fullfacit och addendumläge.
 
 v3 passerar; utan cykeldefinition vägras. Addendum med de fyra
-kraven passerar; ofullständigt addendum vägras. Fullfacitvägen
-är oförändrad (nio klausuler, samma CLI-rad).
+kraven passerar (moder_sha = 64-hex + förseglad syskonfil);
+ofullständigt addendum vägras. Fullfacitvägen är oförändrad
+(nio klausuler, samma CLI-rad).
 
 Hermetiska fixturer. Ingen ~/lab.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 import subprocess
@@ -47,6 +49,26 @@ FACIT_CLAUSE_IDS = [
     "domskala",
 ]
 ADDENDUM_KRAV_IDS = ["moder_sha", "tidsstamplad", "paragraf", "beslutsfattare"]
+
+
+def _seal_parent(d: Path, name: str = "moder.md") -> tuple[Path, str]:
+    p = d / name
+    p.write_text("# FACIT testharnes\nminimalt.\n", encoding="utf-8")
+    digest = hashlib.sha256(p.read_bytes()).hexdigest()
+    side = Path(str(p) + ".sha256")
+    side.write_text("%s  %s\n" % (digest, name), encoding="utf-8")
+    os.chmod(p, 0o444)
+    os.chmod(side, 0o444)
+    return p, digest
+
+
+def _addendum_text(sha: str) -> str:
+    return (
+        "# ADDENDUM till testharnes-facit (sha %s) — FÖRE armslut\n\n"
+        "Tidsstämpel 2026-08-18T18:24:20Z.\n"
+        "Tolkning av §8: ersättningsmodell vid otillgänglig pool.\n"
+        "Beslut: Fable på ägarens direkta order.\n" % sha
+    )
 
 
 class FacitLintTests(unittest.TestCase):
@@ -120,7 +142,12 @@ class AddendumLageTests(unittest.TestCase):
         self.assertFalse(fl.is_addendum(""))
 
     def test_komplett_addendum_passerar(self):
-        r = fl.lint_path(ADD_OK)
+        td = tempfile.TemporaryDirectory()
+        d = Path(td.name)
+        parent, digest = _seal_parent(d)
+        add = d / "addendum.md"
+        add.write_text(_addendum_text(digest), encoding="utf-8")
+        r = fl.lint_path(add)
         self.assertTrue(r["ok"], r)
         self.assertEqual(r["mode"], "addendum")
         self.assertEqual(r["missing"], [])
@@ -128,18 +155,69 @@ class AddendumLageTests(unittest.TestCase):
             [k["id"] for k in r["addendum_krav"]], ADDENDUM_KRAV_IDS
         )
         self.assertTrue(all(k["ok"] for k in r["addendum_krav"]))
+        sha_krav = next(k for k in r["addendum_krav"] if k["id"] == "moder_sha")
+        self.assertEqual(sha_krav["cited"], [digest])
+        self.assertEqual(sha_krav["parent"], str(parent))
+        td.cleanup()
 
-    def test_m1_addendum1_passerar(self):
-        """Kvällens grindgap: just det här dokumentet vägrades av nioklausulvägen."""
+    def test_m1_addendum1_kort_prefix_vagras(self):
+        """Kort prefix (1b501a1c…) räcker inte — deepseeks rek."""
         r = fl.lint_path(ADD_M1)
-        self.assertTrue(r["ok"], r)
         self.assertEqual(r["mode"], "addendum")
-        self.assertEqual(r["missing"], [])
+        self.assertFalse(r["ok"], r)
+        self.assertIn("moder_sha", r["missing"])
+
+    def test_kort_sha_i_rubrik_vagras(self):
+        r = fl.lint_path(ADD_OK)
+        self.assertEqual(r["mode"], "addendum")
+        self.assertFalse(r["ok"], r)
+        self.assertIn("moder_sha", r["missing"])
+
+    def test_full_sha_utan_forseglad_moder_vagras(self):
+        td = tempfile.TemporaryDirectory()
+        fake = "ab" * 32
+        add = Path(td.name) / "addendum.md"
+        add.write_text(_addendum_text(fake), encoding="utf-8")
+        r = fl.lint_path(add)
+        self.assertFalse(r["ok"], r)
+        self.assertIn("moder_sha", r["missing"])
+        sha_krav = next(k for k in r["addendum_krav"] if k["id"] == "moder_sha")
+        self.assertEqual(sha_krav["cited"], [fake])
+        self.assertIsNone(sha_krav["parent"])
+        td.cleanup()
+
+    def test_full_sha_moder_inte_0444_vagras(self):
+        td = tempfile.TemporaryDirectory()
+        d = Path(td.name)
+        parent, digest = _seal_parent(d)
+        os.chmod(parent, 0o644)
+        add = d / "addendum.md"
+        add.write_text(_addendum_text(digest), encoding="utf-8")
+        r = fl.lint_path(add)
+        self.assertFalse(r["ok"], r)
+        self.assertIn("moder_sha", r["missing"])
+        td.cleanup()
+
+    def test_full_sha_utan_sidecar_vagras(self):
+        td = tempfile.TemporaryDirectory()
+        d = Path(td.name)
+        parent, digest = _seal_parent(d)
+        os.chmod(Path(str(parent) + ".sha256"), 0o644)
+        Path(str(parent) + ".sha256").unlink()
+        add = d / "addendum.md"
+        add.write_text(_addendum_text(digest), encoding="utf-8")
+        r = fl.lint_path(add)
+        self.assertFalse(r["ok"], r)
+        self.assertIn("moder_sha", r["missing"])
+        td.cleanup()
 
     def test_addendum_saknar_varje_krav(self):
-        base = ADD_OK.read_text(encoding="utf-8")
+        td = tempfile.TemporaryDirectory()
+        d = Path(td.name)
+        _parent, digest = _seal_parent(d)
+        base = _addendum_text(digest)
         mutants = {
-            "moder_sha": base.replace("sha abcdef01deadbeef", "utan hash"),
+            "moder_sha": base.replace("sha " + digest, "utan hash"),
             "tidsstamplad": base.replace("2026-08-18T18:24:20Z", "någon gång"),
             "paragraf": base.replace("§8", "en klausul"),
             "beslutsfattare": base.replace(
@@ -148,10 +226,11 @@ class AddendumLageTests(unittest.TestCase):
         }
         for krav, text in mutants.items():
             with self.subTest(krav=krav):
-                r = fl.lint_addendum(text)
+                r = fl.lint_addendum(text, search_dir=d)
                 self.assertFalse(r["ok"], r)
                 self.assertIn(krav, r["missing"])
                 self.assertEqual(r["mode"], "addendum")
+        td.cleanup()
 
     def test_utan_addendumhuvud_gar_fullfacitvagen(self):
         text = ADD_OK.read_text(encoding="utf-8").replace(
@@ -170,15 +249,19 @@ class AddendumLageTests(unittest.TestCase):
         import io
         from contextlib import redirect_stderr
 
+        td = tempfile.TemporaryDirectory()
+        d = Path(td.name)
+        _parent, digest = _seal_parent(d)
+        add = d / "addendum.md"
+        add.write_text(_addendum_text(digest), encoding="utf-8")
         err = io.StringIO()
         with redirect_stderr(err):
-            rc = fl.main([str(ADD_OK)])
+            rc = fl.main([str(add)])
         self.assertEqual(rc, 0)
         self.assertIn("OK: addendum", err.getvalue())
         self.assertNotIn("nio klausuler", err.getvalue())
 
-        td = tempfile.TemporaryDirectory()
-        bad = Path(td.name) / "bad.md"
+        bad = d / "bad.md"
         bad.write_text("# ADDENDUM tomt\n", encoding="utf-8")
         err2 = io.StringIO()
         with redirect_stderr(err2):
@@ -202,8 +285,10 @@ class AddendumLageTests(unittest.TestCase):
 class AddendumForseglaTests(unittest.TestCase):
     def test_forseglar_komplett_addendum(self):
         td = tempfile.TemporaryDirectory()
-        src = Path(td.name) / "addendum.md"
-        src.write_text(ADD_OK.read_text(encoding="utf-8"), encoding="utf-8")
+        d = Path(td.name)
+        _parent, digest = _seal_parent(d)
+        src = d / "addendum.md"
+        src.write_text(_addendum_text(digest), encoding="utf-8")
         rc = subprocess.run(
             ["bash", str(FORSEGLA), str(src)],
             check=False,
