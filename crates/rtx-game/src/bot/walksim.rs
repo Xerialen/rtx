@@ -69,6 +69,57 @@ pub const Z_TOL: f32 = 48.0;
 /// moment it starts, instead of waiting the ~25 ticks free-fall needs to show up as depth. Matches
 /// [`hopsim`](super::hopsim)'s `MAX_FALL`, the same "past this it's an edge, not a step down".
 const VOID_PROBE: f32 = 64.0;
+/// Hur djupt under origo **punkthullen** sonderas för att skilja ett trappsteg från en
+/// avgrund. grok2:s dm3-svep mätte alla 54 häng-off-läppar: trapporna bottnar på 32–48 u,
+/// de tretton djupa remsorna på ≥176 u. 128 ligger med marginal åt båda håll.
+pub const LIP_PROBE: f32 = 128.0;
+
+/// Hur bred tuben får vara när mitten hänger över djupt tomrum.
+///
+/// [`LATERAL_TOL`] är 32 u överallt, och det är bredare än golvet där punktgolvet tagit
+/// slut: dm3:s L-hylla har 27 u ståbar mark norr om kordan, så ett certifikat kan vara
+/// "färskt" 22 u ut på en remsa som slutar 5 u längre bort. Talet är inte trimmat mot
+/// mätdata — det är en halv cell, samma storleksordning som fläktens minsta lateral.
+pub const LATERAL_TOL_LIP: f32 = 8.0;
+
+/// Hänger mitten över djupt tomrum?
+///
+/// **Punkthullen, inte spelarhullen.** `hull1` är "skulle en spelare få plats", och på
+/// en häng-off BÄR den — kroppens södra kant vilar på läppen medan origo hänger i luften.
+/// Därför kan [`over_void`], som spårar hull1, aldrig se en häng-off. `hull0` är den
+/// punktspårning QuakeC:s `traceline` gör, och den ser det verkliga golvet.
+pub fn over_lip(bsp: &crate::bsp::Bsp, p: Vec3) -> bool {
+    let t = bsp.hull0_trace(p, p - Vec3::Z * LIP_PROBE);
+    t.fraction >= 1.0 && !t.all_solid && !t.start_solid
+}
+
+/// Vilka kantvakter som är påslagna. Båda av som förval — binären är då
+/// beteendemässigt oförändrad, och armarna skiljs åt av cvarer i stället för av byggen.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct EdgeGuard {
+    /// **F1** — smalna tuben där mitten hänger över djupt tomrum.
+    pub narrow: bool,
+    /// **F2** — låt certifikatet lapsa när underlaget byter karaktär.
+    pub recert: bool,
+}
+
+/// Färskhetsvillkorets **rumsdel**: täcker beviset fortfarande marken under boten?
+///
+/// Tidsdelen (`WALK_RECERT`) och bendelen (`legs`) ägs av steeraren. Den här delen är
+/// den som brast: invarianten *"a plan is never flown past the ground it was proven
+/// over"* håller längs bågen men inte tvärs den, för tuben är lika bred överallt medan
+/// golvet inte är det.
+pub fn tube_ok(off: Offset, over_lip_now: bool, over_lip_at_cert: bool, guard: EdgeGuard) -> bool {
+    if off.dz.abs() > Z_TOL {
+        return false;
+    }
+    if guard.recert && over_lip_now != over_lip_at_cert {
+        return false;
+    }
+    let tol = if guard.narrow && over_lip_now { LATERAL_TOL_LIP } else { LATERAL_TOL };
+    off.lateral <= tol
+}
+
 /// Ticks between arc-progress checks.
 const PROGRESS_WINDOW: usize = 15;
 /// Arc-length the cursor must gain per [`PROGRESS_WINDOW`] (≈40 ups average) or the roll is wedged —
@@ -612,8 +663,9 @@ mod tests {
         // Färskhetsregeln i steer.rs: certifikatet lever om boten är kvar i tuben.
         let off = off_line(&pts, pa_hyllan.origin).expect("på rutten");
         assert!(
-            off.lateral <= LATERAL_TOL && off.dz.abs() <= Z_TOL,
-            "påfarten ligger i tuben ({} u) — det är därför certifikatet överlever hit",
+            tube_ok(off, true, false, EdgeGuard::default()),
+            "utan kantvakt godkänner färskhetsregeln påfarten ({} u) — det är därför \
+             certifikatet överlever hit",
             off.lateral
         );
 
@@ -623,6 +675,88 @@ mod tests {
             "ett certifikat som färskhetsregeln fortfarande godkänner ({cert:?}) rullar \
              till Fell från påfarten — planen flygs över mark den inte bevisades över"
         );
+    }
+
+    /// Läppsonden mot riktig geometri: den ser häng-offen där `over_void` inte kan.
+    #[test]
+    fn dm3_lappsonden_ser_hangoffen() {
+        let Some((bsp, _)) = dm3_lhyllan() else {
+            eprintln!("RTX_TEST_MAPS not set; skipping");
+            return;
+        };
+        // Påfarten: hull1 bär (kroppens södra kant vilar på läppen), punktgolvet är slut.
+        assert!(over_lip(&bsp, PAFART), "påfarten ska läsas som läpp");
+        // Inne på hyllan, söder om punktläppen −834: riktigt golv under mitten.
+        assert!(
+            !over_lip(&bsp, Vec3::new(272.0, -850.0, 264.0)),
+            "inne på hyllan är det golv, inte läpp"
+        );
+        // Trappsteget under: 16 u ner, inte en avgrund. LIP_PROBE ska skona det.
+        assert!(
+            !over_lip(&bsp, Vec3::new(232.0, -850.0, 248.0)),
+            "ett trappsteg är ingen läpp — annars blir bots rädda för trappor"
+        );
+    }
+
+    /// F1 och F2 lapsar certifikatet på läppen; utan vakt gör ingen av dem det.
+    ///
+    /// Det är hela fixen uttryckt som ett påstående: certifikatet ska inte överleva in
+    /// på mark av en annan sort än den det bevisades över. Att det lapsar betyder att
+    /// steeraren certifierar om — och på plats väljer fläkten en kortare sikt, vilket
+    /// `dm3_langsta_sikten_gar_av_nordkanten` visar.
+    #[test]
+    fn kantvakterna_lapsar_certifikatet_pa_lappen() {
+        let Some((_, pts)) = dm3_lhyllan() else {
+            eprintln!("RTX_TEST_MAPS not set; skipping");
+            return;
+        };
+        let off = off_line(&pts, PAFART).expect("på rutten");
+        assert!(off.lateral > LATERAL_TOL_LIP, "påfarten ligger utanför den smalnade tuben");
+        assert!(off.lateral <= LATERAL_TOL, "men innanför den globala — det är luckan");
+
+        let av = EdgeGuard::default();
+        let f1 = EdgeGuard { narrow: true, recert: false };
+        let f2 = EdgeGuard { narrow: false, recert: true };
+
+        // Certifierat uppströms på punktgolv (over_lip_at_cert = false), nu på läpp.
+        assert!(tube_ok(off, true, false, av), "utan vakt överlever certifikatet");
+        assert!(!tube_ok(off, true, false, f1), "F1 ska lapsa det");
+        assert!(!tube_ok(off, true, false, f2), "F2 ska lapsa det");
+    }
+
+    /// Ingen av vakterna får ändra något utanför läpparna — det är villkoret för att
+    /// riskytan ska vara grok2:s tretton remsor och inte hela kartan.
+    #[test]
+    fn kantvakterna_ar_inerta_pa_vanlig_mark() {
+        let off = Offset { lateral: 20.0, dz: 0.0 };
+        for guard in [
+            EdgeGuard::default(),
+            EdgeGuard { narrow: true, recert: false },
+            EdgeGuard { narrow: false, recert: true },
+            EdgeGuard { narrow: true, recert: true },
+        ] {
+            assert!(
+                tube_ok(off, false, false, guard),
+                "på vanlig mark ska {guard:?} vara inert"
+            );
+        }
+        // …och lika inert för en bot som certifierades på läpp och står kvar på läpp:
+        // F2 triggar på BYTE, inte på att marken är en läpp.
+        assert!(tube_ok(
+            Offset { lateral: 20.0, dz: 0.0 },
+            true,
+            true,
+            EdgeGuard { narrow: false, recert: true }
+        ));
+    }
+
+    /// F1 smalnar tuben, den stänger den inte: en bot som håller sig nära linjen behåller
+    /// sitt certifikat även på en läpp.
+    #[test]
+    fn f1_slapper_igenom_den_som_haller_linjen() {
+        let f1 = EdgeGuard { narrow: true, recert: false };
+        assert!(tube_ok(Offset { lateral: 4.0, dz: 0.0 }, true, true, f1));
+        assert!(!tube_ok(Offset { lateral: 12.0, dz: 0.0 }, true, true, f1));
     }
 
     /// A route running off a cliff certifies nothing: every look-ahead carries the bot over the lip.

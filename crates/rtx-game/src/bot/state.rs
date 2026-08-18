@@ -152,6 +152,9 @@ pub struct BotState {
     /// grounded wish and the reactive edge margin/ledge brakes stand down; `None` means unproven
     /// ground, and the brakes are armed.
     pub walk: Option<WalkGuide>,
+    /// Senast loggade föraren (diagnos, `rtx_bot_walkdiag`). Tom sträng = inget loggat
+    /// än; fältet är inert när cvaren är av.
+    pub walkdiag_forare: Forare,
     /// Earliest time to re-attempt a walk certification after one found nothing — the boxed back-off,
     /// so a bot the rollout can't certify doesn't re-roll the whole failing fan every frame.
     pub walk_retry: f32,
@@ -448,7 +451,15 @@ pub struct WalkGuide {
     pub legs: [u32; WALK_LEGS],
     /// How many of `legs` are valid — link id 0 is a real id, so a sentinel won't do.
     pub n: u8,
+    /// Hängde mitten över djupt tomrum när planen certifierades? F2 lapsar certifikatet
+    /// när det svaret ändras: beviset rullades över en sorts mark, och en häng-off är
+    /// en annan sort.
+    pub over_lip: bool,
 }
+
+/// Senast loggade föraren (diagnos, `rtx_bot_walkdiag`). Statisk sträng: loggen skrivs
+/// vid byte, så fältet behöver bara kunna jämföras och skrivas ut.
+pub type Forare = &'static str;
 
 /// How many leading route legs a [`WalkGuide`] remembers. The rollout looks 12 legs down the
 /// corridor; the window only has to be long enough that ordinary leg advancement stays inside it.

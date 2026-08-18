@@ -109,6 +109,16 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // down — they become the fallback for "no trackable line exists" rather than the first
         // responder, which is what made a bot brake mid-stride on a stair diagonal. See `bot::walksim`.
         ("rtx_bot_walkplan", Bool(true)),
+        // F1: smalna gångcertifikatets tub där mitten hänger över djupt tomrum
+        // (`walksim::LATERAL_TOL_LIP`). Av som förval — binären är oförändrad tills
+        // någon slår på den, och armarna skiljs åt av cvarer i stället för av byggen.
+        ("rtx_bot_edge_narrow", Bool(false)),
+        // F2: låt gångcertifikatet lapsa när underlaget byter karaktär (punktgolv <->
+        // häng-off) i stället för bara på klockan. Av som förval.
+        ("rtx_bot_edge_recert", Bool(false)),
+        // Diagnos: skriv ut aktiv WalkPlan och vilken förare som äger ramen när något
+        // av det ändras. Av som förval; ingen kod i heta vägen när den är av.
+        ("rtx_bot_walkdiag", Bool(false)),
         // A bot's health weights how willing it is to shortcut through lava/slime: hurt bots detour,
         // healthy (or armored, or biosuited) ones clip the corner. `0` prices every bot as a bare
         // spawn — hazards still cost, but the same to everyone. See `bot::bot_hazard_strength`.
