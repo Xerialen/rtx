@@ -3070,6 +3070,47 @@ mod tests {
         }
     }
 
+    /// deepseeks rekommendation ur 3187fa6-granskningen: en tvålänkslista där det
+    /// ANDRA ankaret är fel.
+    ///
+    /// Commitmeddelandet påstod att alla specar verifieras innan någon länk tas
+    /// bort. Det påståendet förtjänar ett test som bevisar det: går verifieringen
+    /// länk för länk hade den första redan varit borta när den andra föll, och
+    /// grafen hade stått i ett läge ingen bett om.
+    #[test]
+    fn komponat_remove_links_verifies_every_anchor_before_removing_any() {
+        let live = kmp_graph();
+        let mut g = live.clone();
+        g.insert_link(Link { from: 0, to: 1, kind: LinkKind::Walk, cost: 1.0 });
+        g.insert_link(Link { from: 1, to: 2, kind: LinkKind::Walk, cost: 1.0 });
+        g.rebuild_derived();
+        let (a, b) = (g.links.len() as u32 - 2, g.links.len() as u32 - 1);
+        let ident = kmp_ident(&g);
+        let fore = g.clone();
+
+        // Första ankaret stämmer, det andra inte.
+        let steps = vec![proto::KomponatStep {
+            name: "andra-ankaret-fel".into(),
+            op: proto::KomponatOp::RemoveLinks {
+                links: vec![
+                    proto::RemoveLinkSpec { id: a, from: 0, to: 1, kind: "walk".into() },
+                    proto::RemoveLinkSpec { id: b, from: 1, to: 9, kind: "walk".into() },
+                ],
+            },
+            expect_before: ident.clone(),
+            expect_after: ident.clone(),
+        }];
+        let resp = kmp_refuse(&g, &steps, &ident, &ident);
+        assert!(
+            resp.reason.as_deref().unwrap().contains("ankaret håller inte"),
+            "{resp:?}"
+        );
+        // Kärnan: den FÖRSTA länken står kvar. Ingen halv borttagning.
+        assert_eq!(kmp_ident(&g), kmp_ident(&fore));
+        assert_eq!(g.links.len(), fore.links.len());
+        assert!(g.links.iter().any(|l| l.from == 0 && l.to == 1 && l.kind == LinkKind::Walk));
+    }
+
     #[test]
     fn komponat_remove_links_refuses_an_unknown_id_and_an_unknown_kind() {
         let live = kmp_graph();
