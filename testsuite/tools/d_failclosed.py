@@ -138,8 +138,8 @@ SEALED_DEPLOYABLE: dict[str, str] = {
     # recept-sha256                                                     manifest-sha256
     SEALED_RECEPT_SHA256: SEALED_MANIFEST_SHA256,
     # paav-g-v1
-    "e527361b26f1b3fb6c0bc0f87b92dd295b65e89997fccfda9e5f1d74051e2121":
-        "07cee24ed8cca3223c78ad8d4521b99266a5c7f892c16333ce8eed3494f447a8",
+    "e078395955935faa28f72ab326bb6fe14dddc645fa006d92608a005a1bb9fdee":
+        "b6f7a7f65c4ec761f145af0c4974ff702e3c8bd92a595409997e22926537ae84",
     # paav-f-v1
     "58f220e41c4942a883087e67a6d5e70cfa994157e1eccdea7ac1a0d04d0653be":
         "1c9692eb4f886bc5112954c3e504f8beea8d5abe0eb6579465a877923dc0b0a9",

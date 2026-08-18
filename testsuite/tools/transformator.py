@@ -341,8 +341,59 @@ def op_remove_links(graf: Graf, op: dict) -> dict:
     return bevis
 
 
+def _kalla_payload(op: dict) -> dict:
+    """Nyttolasten för en `shelf_patch`-op som bara bär ett NAMN.
+
+    Motorn slår upp namnet i sin egen förseglade tabell; transformatorn har ingen
+    sådan tabell och läser i stället den förseglade receptfil `kalla` pekar ut.
+    Det är samma byten motortabellen speglar, och `d_recipe.FIXTURE_SHA256` pinnar
+    dem — så härledningen följer den förseglade källan i stället för en kopia av
+    nyttolasten i två filer som kan glida isär.
+
+    Bär op:en redan sin nyttolast (som ram-recepten gör) läses ingen fil.
+    """
+    if any(op.get(k) for k in ("cells", "drops", "remove_links", "retype_links")):
+        return op
+    kalla = op.get("kalla")
+    namn = op.get("name")
+    if not kalla:
+        raise Vagran(
+            f"op '{namn}': shelf_patch utan nyttolast OCH utan kalla — "
+            f"transformatorn kan varken räkna eller slå upp den"
+        )
+    p = HERE / kalla if not Path(kalla).is_absolute() else Path(kalla)
+    if not p.is_file():
+        raise Vagran(f"op '{namn}': kalla {p} finns inte")
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise Vagran(f"op '{namn}': kalla {p} är inte JSON: {exc}") from exc
+    if doc.get("id") != namn:
+        raise Vagran(
+            f"op '{namn}': kalla {p.name} har id {doc.get('id')!r} — namnet i op:en "
+            f"måste vara receptets eget, annars härleds fel post"
+        )
+    # Pinnad byte: samma sigill motorns apply-kedja kräver av fixturen.
+    try:
+        from d_recipe import FIXTURE_SHA256
+    except Exception:  # pragma: no cover - d_recipe finns i samma katalog
+        FIXTURE_SHA256 = {}
+    vantad = FIXTURE_SHA256.get(namn)
+    if vantad:
+        har = hashlib.sha256(p.read_bytes()).hexdigest()
+        if har != vantad:
+            raise Vagran(
+                f"op '{namn}': kalla {p.name} är {har}, förseglad {vantad} — "
+                f"fixturen har ändrats sedan den pinnades"
+            )
+    return {**op, **{k: doc.get(k) or [] for k in ("cells", "drops", "remove_links", "retype_links")},
+            "snap_z": doc.get("snap_z", op.get("snap_z")),
+            "no_auto_walk": doc.get("no_auto_walk", op.get("no_auto_walk"))}
+
+
 def op_shelf_patch(graf: Graf, op: dict) -> dict:
-    """``apply_one``: celler i tabellordning, sedan drops i tabellordning."""
+    """``apply_one``: celler, drops, removes och retypes — i motorns ordning."""
+    op = _kalla_payload(op)
     if op.get("cells") and not op.get("no_auto_walk"):
         raise Vagran(
             f"op '{op.get('name')}': plantering med auto-Walk går inte att räkna "
@@ -380,11 +431,41 @@ def op_shelf_patch(graf: Graf, op: dict) -> dict:
             continue
         nya_drops.append({"link": graf.insert_link(fc, tc, "drop"), "from_cell": fc, "to_cell": tc})
 
+    # apply_one kör removes och retypes EFTER celler och drops. Transformatorn
+    # ignorerade dem tidigare — ofarligt för ram-recepten, som är rena tillägg, men
+    # tyst fel för varje shelf_patch som tar bort något. Fångades av expect-grinden
+    # på paav-g (d_links: fick 0, receptet säger -1) innan den hann göra skada.
+    borttagna = []
+    if op.get("remove_links"):
+        for spec in op["remove_links"]:
+            _anchor_gate(graf, spec)
+        graf.remove_links_by_id([int(s["id"]) for s in op["remove_links"]])
+        borttagna = [int(s["id"]) for s in op["remove_links"]]
+    omtypade = []
+    for spec in op.get("retype_links") or []:
+        lid = int(spec["id"])
+        if lid >= len(graf.links):
+            raise Vagran(f"op '{op.get('name')}': retype av okänt länk-id {lid}")
+        l = graf.links[lid]
+        vill = (int(spec["from"]), int(spec["to"]), str(spec["old_kind"]).lower())
+        if (l["from"], l["to_cell"], l["kind"]) != vill:
+            raise Vagran(
+                f"op '{op.get('name')}': retype-ankaret håller inte på id {lid}"
+            )
+        l["kind"] = str(spec["new_kind"]).lower()
+        omtypade.append(lid)
+
     return {
         "nya_celler": nya_celler,
         "hoppade_celler": hoppade_celler,
         "nya_drops": nya_drops,
         "hoppade_drops": hoppade_drops,
+        # Bara när de finns: v296-komponatets manifest är FÖRSEGLAT (bcba5897…) och
+        # dess bevisblock måste förbli byte-identiskt. Ett fält som alltid skrivs,
+        # även tomt, hade ändrat varje tidigare manifest — och därmed en sha som
+        # facitet, mängden, QA:s order och monteringskvittona alla pekar på.
+        **({"borttagna_lankar": borttagna} if borttagna else {}),
+        **({"omtypade_lankar": omtypade} if omtypade else {}),
         "bsp_not": (
             "plant_cell/plant_drop hull-tracar geometrin och kan VÄGRA. En vägran "
             "ger Failed, aldrig ett annat delta — modellen räknar det accepterade "

@@ -36,15 +36,14 @@
     },
     {
       "bevis": {
-        "T0_efter": 0,
-        "T0_fore": 15,
-        "ankare": [
-          "1416->1461 walk"
-        ],
-        "borttagna_id": [
+        "borttagna_lankar": [
           10447
         ],
-        "not": "15 tidigare rensade länkar (T=0) är traverserbara igen: remove_links_by_id bygger om adjacensen från noll och rebuild_derived kör ingen teleport-rensning. Det är motorns beteende och det syns i nivå-2."
+        "bsp_not": "plant_cell/plant_drop hull-tracar geometrin och kan VÄGRA. En vägran ger Failed, aldrig ett annat delta — modellen räknar det accepterade utfallet och den förseglade delstampen är beviset att motorn accepterade.",
+        "hoppade_celler": [],
+        "hoppade_drops": [],
+        "nya_celler": [],
+        "nya_drops": []
       },
       "d_cells": 0,
       "d_links": -1,
@@ -60,8 +59,8 @@
         "rj_links": 0
       },
       "index": 1,
-      "name": "paav-g",
-      "op": "remove_links"
+      "name": "haz1462-k1",
+      "op": "shelf_patch"
     }
   ],
   "varningar": []
