@@ -572,6 +572,37 @@ def graph_ident_wire(block: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+#: Op-arterna Komponat-verbet faktiskt uttrycker. Receptets art måste stå här, och
+#: det ska kontrolleras FÖRE kontrasignatur — inte upptäckas vid apply.
+#:
+#: Nattens läxa 18/8: alla tre på/av-varianterna var författade som `remove_links`
+#: när verbet bara kunde `Recipe` och `PlanLink`. Recepten skrevs mot vad MOTORN kan
+#: göra i grafen, inte mot vad VERBET kan uttrycka — två olika mängder, och skarven
+#: kontrollerades ingenstans. Den här mängden är skarven, gjord kontrollerbar.
+KOMPONAT_OP_ARTER = frozenset({"shelf_patch", "plan_link", "remove_links"})
+
+
+def validate_op_arter(recept: Mapping[str, Any]) -> None:
+    """Varje op:s art måste vara en verbet uttrycker, och payloaden måste gå att bygga.
+
+    Körs före allt annat i preflighten. Att bara jämföra artnamnet hade missat en op
+    med rätt art och trasig payload, så kontrollen bygger faktiskt wire-formen och
+    kastar bort den — det är den enda kontroll som bevisar att op:en går att skicka.
+    """
+    ops = list(recept.get("ops") or [])
+    if not ops:
+        raise FailClosed("deploy", "receptet har inga ops")
+    for i, op in enumerate(ops, start=1):
+        art = str(op.get("op") or "")
+        if art not in KOMPONAT_OP_ARTER:
+            raise FailClosed(
+                "deploy",
+                f"op {i} ({op.get('name')!r}) har art {art!r} som Komponat-verbet inte "
+                f"uttrycker — kända: {', '.join(sorted(KOMPONAT_OP_ARTER))}",
+            )
+        komponat_op_wire(op)
+
+
 def komponat_op_wire(op: Mapping[str, Any]) -> dict[str, Any]:
     """KomponatOp: Recipe {name} or PlanLink {from,takeoff,tgt,v_req,gain}.
 
@@ -593,7 +624,31 @@ def komponat_op_wire(op: Mapping[str, Any]) -> dict[str, Any]:
         if not rid:
             raise FailClosed("deploy", "shelf_patch saknar kalla/name")
         return {"Recipe": {"name": rid}}
-    raise FailClosed("deploy", f"okänd komponat-op {kind!r}")
+    if kind == "remove_links":
+        links = list(op.get("links") or [])
+        if not links:
+            raise FailClosed("deploy", "remove_links utan länkar")
+        ut = []
+        for i, l in enumerate(links):
+            saknas = [k for k in ("id", "from", "to", "kind") if k not in l]
+            if saknas:
+                raise FailClosed(
+                    "deploy",
+                    f"remove_links[{i}] saknar {', '.join(saknas)} — ett rått länk-id "
+                    f"utan ankare pekar på fel länk i en annan graf med full säkerhet",
+                )
+            ut.append({
+                "id": int(l["id"]),
+                "from": int(l["from"]),
+                "to": int(l["to"]),
+                "kind": str(l["kind"]).lower(),
+            })
+        return {"RemoveLinks": {"links": ut}}
+    raise FailClosed(
+        "deploy",
+        f"okänd komponat-op {kind!r} — verbet uttrycker "
+        f"{', '.join(sorted(KOMPONAT_OP_ARTER))}",
+    )
 
 
 def komponat_wire_cmd(
@@ -733,6 +788,18 @@ def op_payload_sha256(op: Mapping[str, Any]) -> str:
     kind = str(op.get("op") or "")
     if kind == "plan_link":
         return planlink_payload_sha256(op)
+    if kind == "remove_links":
+        # Ankarna ÄR nyttolasten: id ensamt säger inget om vilken länk som menas.
+        kanon = json.dumps(
+            [
+                {"id": int(l["id"]), "from": int(l["from"]), "to": int(l["to"]),
+                 "kind": str(l["kind"]).lower()}
+                for l in (op.get("links") or [])
+            ],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(f"remove_links:{kanon}".encode("utf-8")).hexdigest()
     return shelf_payload_sha256(str(op.get("name") or ""), str(op.get("kalla") or "") or None)
 
 

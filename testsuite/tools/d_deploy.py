@@ -27,6 +27,7 @@ from d_failclosed import (
     LOCK_TS_WINDOW_S,
     PLAN_LINK_UNDO_ID,
     SEALED_MANIFEST_SHA256,
+    validate_op_arter,
     sealed_manifest_for,
     SEALED_MVDSV_SHA256,
     SEALED_QWPROGS_SHA256,
@@ -262,6 +263,9 @@ def bound_steps(recept: dict[str, Any]) -> tuple[BoundStep, ...]:
         name = str(op.get("name") or f"op{i}")
         if kind == "plan_link":
             rid = PLAN_LINK_UNDO_ID
+        elif kind == "remove_links":
+            # Ingen tabellpost att namnge; komponatet är ändå EN undo-post.
+            rid = "komponat"
         else:
             rid = Path(str(op.get("kalla") or name)).stem
         out.append(
@@ -523,6 +527,9 @@ def preflight(
         )
     man = load_manifest(manifest_path)
     rec = load_recept(recept_path)
+    # Nattens läxa, som en grind: receptets op-arter mot verbets ordförråd, före
+    # allt annat. Upptäcktes den vid apply kostade den ett helt varv.
+    validate_op_arter(rec)
     check_deploy_status(man, deploy=True)
     check_deploy_status(rec, deploy=True)
     bind_ops(rec, man)
