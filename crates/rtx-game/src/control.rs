@@ -691,7 +691,7 @@ pub fn komponat_apply(
                 }
                 Some(p) => patches.push(Some(p)),
             },
-            proto::KomponatOp::PlanLink { .. } => patches.push(None),
+            proto::KomponatOp::PlanLink { .. } | proto::KomponatOp::RemoveLinks { .. } => patches.push(None),
         }
     }
 
@@ -760,6 +760,47 @@ pub fn komponat_apply(
                 match plant_speed_jump_into(&mut cand, v3(*from), v3(*takeoff), v3(*tgt), *v_req, curl_gain, gravity) {
                     Ok(r) => link = Some(r.link),
                     Err(why) => stoppa!(why),
+                }
+            }
+            (proto::KomponatOp::RemoveLinks { links }, None) => {
+                if links.is_empty() {
+                    stoppa!("RemoveLinks utan länkar".to_string());
+                }
+                // Ankargrinden, ord för ord som `apply_one`s remove-väg: id:t säger var
+                // vi ska titta, ankaret säger vad som MÅSTE stå där. Ett rått id från en
+                // annan graf pekar på fel länk med full säkerhet, och det är den enda
+                // farliga formen — därför verifieras alla innan någon tas bort.
+                let mut ids = Vec::with_capacity(links.len());
+                for spec in links {
+                    let Some(want_kind) = crate::nav_patch::kind_from_token(&spec.kind) else {
+                        stoppa!(format!("okänd länkart {:?} på id {}", spec.kind, spec.id));
+                    };
+                    match cand.links.get(spec.id as usize) {
+                        None => stoppa!(format!(
+                            "länk-id {} finns inte ({} länkar)",
+                            spec.id,
+                            cand.links.len()
+                        )),
+                        Some(l) if l.from == spec.from && l.to == spec.to && l.kind == want_kind => {
+                            ids.push(spec.id)
+                        }
+                        Some(l) => stoppa!(format!(
+                            "ankaret håller inte: id {} är {}->{} {}, receptet säger {}->{} {}",
+                            spec.id,
+                            l.from,
+                            l.to,
+                            crate::nav_patch::kind_token(l.kind),
+                            spec.from,
+                            spec.to,
+                            spec.kind
+                        )),
+                    }
+                }
+                // Samma anrop recepten går genom. T-återuppståndelsen följer med av sig
+                // själv: adjacensen byggs om från noll, vilket är den semantik motorn
+                // redan bekräftat empiriskt mot K2-ankaret och paav-g:s apply.
+                if let Err(why) = cand.remove_links_by_id(&ids) {
+                    stoppa!(why);
                 }
             }
             _ => unreachable!("patches[] is built from steps[] in the same order"),
@@ -2786,7 +2827,7 @@ mod tests {
 
     // ---- komponat: ett atomärt verb ----------------------------------------------------------
 
-    use crate::navmesh::NavGraph;
+    use crate::navmesh::{Link, LinkKind, NavGraph};
 
     /// Fyra celler: ram-prevents två källor och deras två landningar. Nog för att `ram-prevent`
     /// ska kunna appliceras utan BSP (`insert_link`-vägen), och nog för en PlanLink.
@@ -2844,6 +2885,10 @@ mod tests {
                 )
                 .expect("plant");
             }
+            proto::KomponatOp::RemoveLinks { links } => {
+                let ids: Vec<u32> = links.iter().map(|l| l.id).collect();
+                c.remove_links_by_id(&ids).expect("remove");
+            }
         }
         c.rebuild_derived();
         kmp_ident(&c)
@@ -2896,6 +2941,10 @@ mod tests {
                     )
                     .unwrap();
                 }
+                proto::KomponatOp::RemoveLinks { links } => {
+                    let ids: Vec<u32> = links.iter().map(|l| l.id).collect();
+                    nxt.remove_links_by_id(&ids).unwrap();
+                }
             }
             nxt.rebuild_derived();
             cur = nxt;
@@ -2947,6 +2996,145 @@ mod tests {
         assert_eq!(resp.undo_name, crate::nav_patch::TXN_KOMPONAT);
         // +1 speedjump, +2 drops.
         assert_eq!(published.links.len(), live.links.len() + 3);
+    }
+
+    fn kmp_remove(id: u32, from: u32, to: u32, kind: &str) -> proto::KomponatOp {
+        proto::KomponatOp::RemoveLinks {
+            links: vec![proto::RemoveLinkSpec {
+                id,
+                from,
+                to,
+                kind: kind.into(),
+            }],
+        }
+    }
+
+    /// Ett komponat kan ta bort en länk som inte har någon tabellpost.
+    ///
+    /// Det var det som saknades i på/av-provet: alla tre diagnoserna var rena
+    /// borttagningar, och bara en av dem råkade sammanfalla med ett registrerat
+    /// recept. Tabellen är fortfarande enda PLANTERAREN — den här op:en kan inte
+    /// skapa något.
+    #[test]
+    fn komponat_remove_links_takes_a_link_with_no_table_entry() {
+        let live = kmp_graph();
+        // 0->1 walk finns inte i någon ShelfPatch; den ska ändå gå att ta bort.
+        let mut med_lank = live.clone();
+        med_lank.insert_link(Link { from: 0, to: 1, kind: LinkKind::Walk, cost: 1.0 });
+        med_lank.rebuild_derived();
+        let li = med_lank.links.len() as u32 - 1;
+
+        let op = kmp_remove(li, 0, 1, "walk");
+        let before = kmp_ident(&med_lank);
+        let after = kmp_after(&med_lank, &op);
+        let steps = vec![proto::KomponatStep {
+            name: "prov-remove".into(),
+            op,
+            expect_before: before.clone(),
+            expect_after: after.clone(),
+        }];
+        let (published, resp) = kmp_run(&med_lank, &steps, &before, &after).expect("komponat");
+        assert_eq!(resp.outcome, "applied");
+        assert_eq!(published.links.len(), med_lank.links.len() - 1);
+        assert!(!published.links.iter().any(|l| l.from == 0 && l.to == 1 && l.kind == LinkKind::Walk));
+    }
+
+    /// Ankaret är hela skyddet: id:t säger var vi ska titta, ankaret vad som måste stå där.
+    #[test]
+    fn komponat_remove_links_refuses_a_mismatched_anchor() {
+        let live = kmp_graph();
+        let mut g = live.clone();
+        g.insert_link(Link { from: 0, to: 1, kind: LinkKind::Walk, cost: 1.0 });
+        g.rebuild_derived();
+        let li = g.links.len() as u32 - 1;
+        let ident = kmp_ident(&g);
+        let fore = g.clone();
+
+        for (from, to, kind, vad) in [
+            (9u32, 1u32, "walk", "fel from"),
+            (0, 9, "walk", "fel to"),
+            (0, 1, "drop", "fel art"),
+        ] {
+            let steps = vec![proto::KomponatStep {
+                name: vad.into(),
+                op: kmp_remove(li, from, to, kind),
+                expect_before: ident.clone(),
+                expect_after: ident.clone(),
+            }];
+            let resp = kmp_refuse(&g, &steps, &ident, &ident);
+            assert!(
+                resp.reason.as_deref().unwrap().contains("ankaret håller inte"),
+                "{vad}: {resp:?}"
+            );
+            assert_eq!(kmp_ident(&g), kmp_ident(&fore), "{vad}: en vägran muterar inget");
+        }
+    }
+
+    #[test]
+    fn komponat_remove_links_refuses_an_unknown_id_and_an_unknown_kind() {
+        let live = kmp_graph();
+        let ident = kmp_ident(&live);
+        let fall = [
+            (9999u32, "walk", "finns inte"),
+            (0, "krypa", "okänd länkart"),
+        ];
+        for (id, kind, vantat) in fall {
+            let steps = vec![proto::KomponatStep {
+                name: "prov".into(),
+                op: kmp_remove(id, 0, 1, kind),
+                expect_before: ident.clone(),
+                expect_after: ident.clone(),
+            }];
+            let resp = kmp_refuse(&live, &steps, &ident, &ident);
+            assert!(resp.reason.as_deref().unwrap().contains(vantat), "{vantat}: {resp:?}");
+        }
+    }
+
+    #[test]
+    fn komponat_remove_links_refuses_an_empty_list() {
+        let live = kmp_graph();
+        let ident = kmp_ident(&live);
+        let steps = vec![proto::KomponatStep {
+            name: "tom".into(),
+            op: proto::KomponatOp::RemoveLinks { links: vec![] },
+            expect_before: ident.clone(),
+            expect_after: ident.clone(),
+        }];
+        let resp = kmp_refuse(&live, &steps, &ident, &ident);
+        assert!(resp.reason.as_deref().unwrap().contains("utan länkar"), "{resp:?}");
+    }
+
+    /// Samma T-semantik som recepten: adjacensen byggs om, så en rensad länk (T=0)
+    /// blir traverserbar igen. Det är den semantik motorn bekräftade empiriskt mot
+    /// K2-ankaret och vid paav-g:s apply — den nya op-arten får inte avvika.
+    #[test]
+    fn komponat_remove_links_resurrects_pruned_links_like_the_recipes_do() {
+        let mut g = NavGraph::from_topology(
+            &[
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(32.0, 0.0, 0.0),
+                Vec3::new(64.0, 0.0, 0.0),
+            ],
+            &[Link { from: 0, to: 1, kind: LinkKind::Walk, cost: 1.0 }],
+        );
+        g.insert_pruned_link(Link { from: 1, to: 2, kind: LinkKind::Walk, cost: 1.0 });
+        g.rebuild_derived();
+        assert!(!g.reachable(1, 2), "den rensade länken är inte i adjacensen");
+
+        let ident = kmp_ident(&g);
+        let op = kmp_remove(0, 0, 1, "walk");
+        let after = kmp_after(&g, &op);
+        let steps = vec![proto::KomponatStep {
+            name: "väck".into(),
+            op,
+            expect_before: ident.clone(),
+            expect_after: after.clone(),
+        }];
+        let (published, _) = kmp_run(&g, &steps, &ident, &after).expect("komponat");
+        assert!(
+            published.reachable(1, 2),
+            "den rensade länken ska vara tillbaka i adjacensen efter en remove"
+        );
     }
 
     /// Ordern i klartext: en avvikelse i op 2 ska lämna basen bit-identisk.

@@ -286,6 +286,29 @@ pub enum KomponatOp {
         #[serde(default)]
         gain: Option<f32>,
     },
+    /// Remove existing links by id, for a diagnosis that has no table entry.
+    ///
+    /// The table stays the only *planter*: this op cannot create anything. It exists because a
+    /// composed recipe may need to close an edge the sealed table has no recipe for, and the
+    /// alternative — adding a `ShelfPatch` per diagnosis — would mean a rebuild and a new binary
+    /// for every experiment.
+    ///
+    /// A raw link id is meaningless across graphs, so each spec carries its anchor and the engine
+    /// refuses unless the live link matches `from`/`to`/`kind` exactly. That is the same gate
+    /// `apply_one` applies to a recipe's `remove_links`, and it is what makes an id on the wire
+    /// safe: the id says *where to look*, the anchor says *what must be there*.
+    RemoveLinks { links: Vec<RemoveLinkSpec> },
+}
+
+/// One link a [`KomponatOp::RemoveLinks`] takes out, with the anchor that proves it is the right one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveLinkSpec {
+    /// Live link index in the graph the step's `expect_before` pins.
+    pub id: u32,
+    pub from: u32,
+    pub to: u32,
+    /// Link kind token as the dump writes it (`walk`, `jump`, `drop`, …), lowercase.
+    pub kind: String,
 }
 
 /// One step of a composed recipe, with the identities the manifest derived for it.
