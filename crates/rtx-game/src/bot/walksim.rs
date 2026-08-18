@@ -488,6 +488,143 @@ mod tests {
         assert!(off.lateral <= LATERAL_TOL, "drifted off the lane: {}", off.lateral);
     }
 
+    /// Bygg dm3:s L-hylla ur riktig BSP och ge armarnas rutt 1367→1416→1459→1461.
+    ///
+    /// Basgrafen har genvägen 1416→1461 (L10447) och A\* tar den; de mätta armarna gick
+    /// den aldrig (attributionen: noll gångna ingångar via den i båda armarna). Den
+    /// maskas därför bort, annars certifierar fixturen en rutt ingen bot körde.
+    ///
+    /// Syntetisk höjdfältshull duger inte här: `0b8d237` slog fast att den ljuger om
+    /// den här sortens geometri, och min egen sond bekräftade det — den lät la=96
+    /// falla alltid, medan riggen släpper igenom 87–96 % av samma passager. Mot riktig
+    /// BSP finns häng-off-remsan av sig själv, i både hull0 och hull1.
+    #[cfg(test)]
+    fn dm3_lhyllan() -> Option<(crate::bsp::Bsp, Vec<Vec3>)> {
+        let dir = std::env::var("RTX_TEST_MAPS").ok()?;
+        let bytes = std::fs::read(std::path::Path::new(&dir).join("dm3.bsp")).ok()?;
+        let bsp = crate::bsp::Bsp::parse(&bytes).expect("parse dm3");
+        let graph = rtx_nav::navmesh::build_navmesh(
+            &bsp, Vec::new(), Vec::new(), Vec::new(), None, false,
+            Some(rtx_nav::navmesh::SpeedJumpParams {
+                gravity: 800.0, accel: 10.0, maxspeed: 320.0,
+                friction: 4.0, stopspeed: 100.0, curl: true,
+            }), None,
+        );
+        let costs = rtx_nav::navmesh::LinkCosts::default();
+        let c1367 = graph.nearest(Vec3::new(256.0, -844.0, 264.0))?;
+        let c1416 = graph.nearest(Vec3::new(288.0, -844.0, 264.0))?;
+        let c1461 = graph.nearest(Vec3::new(328.0, -800.0, 264.0))?;
+        let mask: Vec<u32> = (0..)
+            .take_while(|&i| graph.has_link(i))
+            .filter(|&i| graph.link_source(i) == c1416 && graph.link_target(i) == c1461)
+            .collect();
+        let route = graph.find_path_masked(c1367, c1461, &costs, &mask)?;
+        let pts: Vec<Vec3> = std::iter::once(graph.cell_origin(c1367))
+            .chain(route.iter().map(|&l| graph.cell_origin(graph.link_target(l))))
+            .collect();
+        Some((bsp, pts))
+    }
+
+    /// Den mätta påfarten: första 264-kontakt vid (242, −822), 22 u norr om 1367:s
+    /// origo (36/36 hårda ben, median 22,5 u; `opus5-m1-lateralmatning-protokoll.md`).
+    const PAFART: Vec3 = Vec3::new(242.0, -822.0, 264.0);
+
+    fn pafart_state(spd: f32, bearing_deg: f32) -> PmState {
+        let r = bearing_deg.to_radians();
+        PmState {
+            origin: PAFART,
+            vel: Vec3::new(spd * r.cos(), spd * r.sin(), 0.0),
+            on_ground: true,
+            jump_held: false,
+        }
+    }
+
+    /// Karaktärisering, mot riktig geometri: den längsta sikten går av nordkanten.
+    ///
+    /// Detta är fyndet som annars tyst kan gå sönder igen — samma skäl som
+    /// `0b8d237` pinnade sitt trapptest. Att `plan_walk` väljer bort la=96 här är
+    /// halva poängen; den andra halvan är att fältdatan säger att 449 av 480 ben ändå
+    /// FLÖG la=96 (2,6–3,0° anpassningsfel mot 11–14° för alternativen). Ingen av dem
+    /// kan ha certifierats på hyllan.
+    #[test]
+    fn dm3_langsta_sikten_gar_av_nordkanten() {
+        let Some((bsp, pts)) = dm3_lhyllan() else {
+            eprintln!("RTX_TEST_MAPS not set; skipping");
+            return;
+        };
+        let p = PmParams::default();
+        for (spd, bar) in [(236.0f32, 29.0f32), (200.0, 7.0)] {
+            let st = pafart_state(spd, bar);
+            for &lat in LATERALS.iter() {
+                let plan = WalkPlan { lookahead: LOOKAHEADS[0], lateral: lat };
+                assert_eq!(
+                    roll_walk(&bsp, &no_hazard, &[], &pts, st, plan, &p),
+                    WalkRollout::Fell,
+                    "la=96 lat={lat} borde gå av nordkanten vid {spd} ups {bar}°"
+                );
+            }
+            let vald = plan_walk(&bsp, &no_hazard, &[], &pts, st, &p)
+                .expect("någon kortare sikt håller");
+            assert!(
+                vald.lookahead < LOOKAHEADS[0],
+                "certifieraren får inte välja den längsta sikten här: {vald:?}"
+            );
+        }
+    }
+
+    /// RÖTT TEST — defekten, inte fenomenet.
+    ///
+    /// Ett certifikat utfärdas uppströms (i trappan, där den längsta sikten håller) och
+    /// är enligt färskhetsregeln fortfarande giltigt på hyllan: boten ligger inom
+    /// `LATERAL_TOL` från ruttlinjen, och `w.legs` bär åtta ben så benbytet river det
+    /// inte. Men rullat från hyllans påfart faller samma plan.
+    ///
+    /// Invarianten som brister står i `bot/mod.rs`: *"a plan is never flown past the
+    /// ground it was proven over"*. Den håller i TID — 0,3 s omcertifiering mot 0,52 s
+    /// horisont — men inte i RUM: tuben är 32 u bred och plattan har 27 u golv norr om
+    /// kordan (grok2:s steplandningssvep).
+    ///
+    /// Testet ska vara RÖTT tills F1 eller F2 landar. Det påstår inte hur det ska
+    /// lagas, bara att ett färskt certifikat inte får rulla till `Fell`.
+    /// `ignore` tills fixen landar: testet ÄR rött och ska vara det, men en röd svit
+    /// är allas problem och inte bara mitt. Körs med
+    /// `cargo test -- --ignored rott_farskt_certifikat` (kräver `RTX_TEST_MAPS`).
+    #[test]
+    #[ignore = "rött tills F1 eller F2 landar — dokumenterar defekten"]
+    fn rott_farskt_certifikat_far_inte_falla() {
+        let Some((bsp, pts)) = dm3_lhyllan() else {
+            eprintln!("RTX_TEST_MAPS not set; skipping");
+            return;
+        };
+        let p = PmParams::default();
+        // Uppströms: trappsteget 1314 → 1367, dit boten kommer med fart österut.
+        let uppstroms = PmState {
+            origin: Vec3::new(224.0, -844.0, 248.0),
+            vel: Vec3::new(220.0, 0.0, 0.0),
+            on_ground: true,
+            jump_held: false,
+        };
+        let Some(cert) = plan_walk(&bsp, &no_hazard, &[], &pts, uppstroms, &p) else {
+            panic!("uppströms borde certifiera");
+        };
+
+        let pa_hyllan = pafart_state(236.0, 29.0);
+        // Färskhetsregeln i steer.rs: certifikatet lever om boten är kvar i tuben.
+        let off = off_line(&pts, pa_hyllan.origin).expect("på rutten");
+        assert!(
+            off.lateral <= LATERAL_TOL && off.dz.abs() <= Z_TOL,
+            "påfarten ligger i tuben ({} u) — det är därför certifikatet överlever hit",
+            off.lateral
+        );
+
+        assert_ne!(
+            roll_walk(&bsp, &no_hazard, &[], &pts, pa_hyllan, cert, &p),
+            WalkRollout::Fell,
+            "ett certifikat som färskhetsregeln fortfarande godkänner ({cert:?}) rullar \
+             till Fell från påfarten — planen flygs över mark den inte bevisades över"
+        );
+    }
+
     /// A route running off a cliff certifies nothing: every look-ahead carries the bot over the lip.
     /// That `None` is the honest boxed state the fallback brakes exist for.
     #[test]
