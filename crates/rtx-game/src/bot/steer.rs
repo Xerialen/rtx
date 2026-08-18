@@ -2073,6 +2073,34 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // what made a bot brake mid-stride on a stair diagonal. Skipped whenever another driver owns the
     // feet (bhop/speed-jump/hook/rj/airborne), in water (pmove models none of it), or on a magnet
     // detour, which deliberately steps off the line the rollout would certify.
+    // Diagnosinstrumentet (steg 3): vilken förare äger ramen? Logga vid BYTE, inte per
+    // tick — 77 Hz gånger antal bots är brus, och det som bär information är övergången.
+    if host.cvar_bool(c"rtx_bot_walkdiag") {
+        let forare = if on_air {
+            "air"
+        } else if in_water {
+            "water"
+        } else if bhop_active || bot.bhop.phase != bhop::Phase::Off {
+            "bhop"
+        } else if sj_active {
+            "speedjump"
+        } else if hook_engaged {
+            "hook"
+        } else if rj_engaged {
+            "rj"
+        } else if magnet_bend {
+            "magnet"
+        } else {
+            "walk"
+        };
+        if bot.walkdiag_forare != forare {
+            host.conprint(&cstring(&format!(
+                "rtx bot{client}: forare {} -> {forare}\n",
+                bot.walkdiag_forare
+            )));
+            bot.walkdiag_forare = forare;
+        }
+    }
     let walk_corridor = host.cvar_bool(c"rtx_bot_walkplan")
         && !on_air
         && !in_water
@@ -2086,6 +2114,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // The line the walk certifier, its freshness check and the aim point all share, built once so
     // they cannot disagree about where the route is.
     let route_line: Option<Vec<Vec3>> = walk_line_pts(graph, bot, cur_leg);
+    // Kantvakterna (F1/F2), båda av som förval. Läppsonden körs bara när en gångplan
+    // är aktuell — en hull0-spårning per ram och bot, inte per tick i fläkten.
+    let guard = walksim::EdgeGuard {
+        narrow: host.cvar_bool(c"rtx_bot_edge_narrow"),
+        recert: host.cvar_bool(c"rtx_bot_edge_recert"),
+    };
+    let over_lip_now = walk_corridor
+        && (guard.narrow || guard.recert || host.cvar_bool(c"rtx_bot_walkdiag"))
+        && bsp.is_some_and(|b| walksim::over_lip(b, origin));
     if !walk_corridor {
         bot.walk = None; // another driver owns the frame, or this isn't ground to certify
     } else if on_ground {
@@ -2096,8 +2133,9 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             now - w.since <= WALK_RECERT
                 && cur_leg.is_some_and(|l| w.legs[..w.n as usize].contains(&l))
                 && route_line.as_ref().is_some_and(|pts| {
-                    walksim::off_line(pts, origin)
-                        .is_some_and(|off| off.lateral <= walksim::LATERAL_TOL && off.dz.abs() <= walksim::Z_TOL)
+                    walksim::off_line(pts, origin).is_some_and(|off| {
+                        walksim::tube_ok(off, over_lip_now, w.over_lip, guard)
+                    })
                 })
         });
         if !fresh {
@@ -2151,15 +2189,29 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                             let n = tail.len().min(state::WALK_LEGS);
                             let mut legs = [0u32; state::WALK_LEGS];
                             legs[..n].copy_from_slice(&tail[..n]);
+                            if host.cvar_bool(c"rtx_bot_walkdiag") {
+                                host.conprint(&cstring(&format!(
+                                    "rtx bot{client}: walkplan la={} lat={} lip={} leg={:?}\n",
+                                    plan.lookahead, plan.lateral, over_lip_now, cur_leg
+                                )));
+                            }
                             bot.walk = Some(state::WalkGuide {
                                 plan,
                                 since: now,
                                 legs,
                                 n: n as u8,
+                                over_lip: over_lip_now,
                             });
                         }
                         // Boxed: nothing tracks from here, so the brakes own until the back-off lapses.
-                        None => bot.walk_retry = now + WALK_RETRY,
+                        None => {
+                            if host.cvar_bool(c"rtx_bot_walkdiag") {
+                                host.conprint(&cstring(&format!(
+                                    "rtx bot{client}: walkplan BOXED lip={over_lip_now} leg={cur_leg:?}\n"
+                                )));
+                            }
+                            bot.walk_retry = now + WALK_RETRY;
+                        }
                     }
                 }
             }
