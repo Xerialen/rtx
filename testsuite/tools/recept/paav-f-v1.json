@@ -2,7 +2,7 @@
  "schema": "komponat/1",
  "id": "paav-f-v1",
  "map": "dm3",
- "status": "PAV-KANDIDAT",
+ "status": "DEPLOY-KANDIDAT",
  "status_skal": "På/av-prov av fables trediagnos: Ta bort direktlänkarna 1416↔1461 (10447 + 10779).",
  "base": {
   "cells": 5983,

@@ -2,7 +2,7 @@
  "schema": "komponat/1",
  "id": "paav-o-v1",
  "map": "dm3",
- "status": "PAV-KANDIDAT",
+ "status": "DEPLOY-KANDIDAT",
  "status_skal": "På/av-prov av opuss trediagnos: Klipp de tre hörngenande länkarna (10084 + 10447 + 10779).",
  "base": {
   "cells": 5983,

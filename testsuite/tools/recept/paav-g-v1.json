@@ -2,7 +2,7 @@
  "schema": "komponat/1",
  "id": "paav-g-v1",
  "map": "dm3",
- "status": "PAV-KANDIDAT",
+ "status": "DEPLOY-KANDIDAT",
  "status_skal": "På/av-prov av groks trediagnos: Stäng gånglänk 10447 (1416→1461).",
  "base": {
   "cells": 5983,
