@@ -1,0 +1,53 @@
+{
+ "schema": "komponat/1",
+ "id": "paav-o-v1",
+ "map": "dm3",
+ "status": "PAV-KANDIDAT",
+ "status_skal": "På/av-prov av opuss trediagnos: Klipp de tre hörngenande länkarna (10084 + 10447 + 10779).",
+ "base": {
+  "cells": 5983,
+  "links": 48216,
+  "rj_links": 0,
+  "graph_stamp": "11908727279900740725",
+  "graph_content_hash": "cd800200cad72431e0cbfe0a2fc947bd94309e334103d6cc0abd076155ecf051"
+ },
+ "ops": [
+  {
+   "op": "remove_links",
+   "name": "paav-o",
+   "kalla": "recept/paav-o-v1.json",
+   "evidence": "Genvägarna 10084 (1367→1461 jump), 10447 och 10779 (1416↔1461 walk) korsar hyllans inre hörn; tvinga trafiken via hörncellen 1459. Kontrollerat: ingen cell tappar nåbarhet.",
+   "links": [
+    {
+     "id": 10084,
+     "from": 1367,
+     "to": 1461,
+     "kind": "jump"
+    },
+    {
+     "id": 10447,
+     "from": 1416,
+     "to": 1461,
+     "kind": "walk"
+    },
+    {
+     "id": 10779,
+     "from": 1461,
+     "to": 1416,
+     "kind": "walk"
+    }
+   ],
+   "expect": {
+    "d_cells": 0,
+    "d_links": -3
+   }
+  }
+ ],
+ "harledd_slut": {
+  "cells": 5983,
+  "links": 48213,
+  "graph_stamp": "8774822664048001128",
+  "graph_content_hash": "247cba3837bc17703abc62d0bb65153cf73c62bde2981f418cc867ec6a5b90f2"
+ },
+ "harledd_slut_skal": "nivå-1 FNV + params-fri nivå-2 (graphstamp.py) efter remove_links — verifieras vid apply-dry-run."
+}
