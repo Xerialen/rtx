@@ -45,6 +45,7 @@ from d_failclosed import (
 )
 from d_kvitto import write_exclusive
 from fixa import run_fixa, stamp_from_reply
+from recept_lint_grind import kor_grind as kor_lintgrind
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = HERE / "recept" / "komponat-v296-ram.manifest.json"
@@ -509,8 +510,9 @@ def preflight(
     ctl_port: int | None,
     game_port: int | None,
     unit: str | None,
+    dumpregister: Path | None = None,
 ):
-    """SHA+recept+status+bind+portpar+binärfiler+lock+pin. Issues the mint seal."""
+    """SHA+recept+status+bind+portpar+binärfiler+lock+pin+enväg. Issues the mint seal."""
     manifest_path = Path(manifest_path)
     recept_path = Path(recept_path)
     man_sha = file_sha256(manifest_path)
@@ -555,13 +557,23 @@ def preflight(
     why = same_identity(live, pin)
     if why:
         raise FailClosed("crash-detector", f"pin=bas misslyckades: {why}")
+    # Envägsgrinden. Först HÄR är live bevisad lika med manifestets pin, så dumpen
+    # kan bindas till en identitet som är verifierad i stället för påstådd. Linten
+    # fanns redan och hittade F-fällan; den kördes av den som kom ihåg den, och ett
+    # verktyg som måste kommas ihåg är en vana, inte en kontroll.
+    lint_block = kor_lintgrind(rec, live, dumpregister=dumpregister)
     seal = _issue_preflight_seal_from_files(
         manifest_path=manifest_path,
         recept_path=recept_path,
         qwprogs_path=qwprogs_path,
         mvdsv_path=mvdsv_path,
     )
-    return man, rec, live, man_sha, rec_sha, lock_fields, qw_sha, mv_sha, unit_id, seal
+    # seal ligger SIST: `*_, seal = preflight(...)` är etablerad idiom hos
+    # anroparna, och ett nytt fält i slutet hade tyst gjort lint_block till seal.
+    return (
+        man, rec, live, man_sha, rec_sha, lock_fields,
+        qw_sha, mv_sha, unit_id, lint_block, seal,
+    )
 
 
 def _write_run(path: Path, doc: dict[str, Any]) -> None:
@@ -598,6 +610,7 @@ def run_deploy(
     unit: str | None = None,
     commit: str | None = None,
     outdir: Path | None = None,
+    dumpregister: Path | None = None,
 ) -> dict[str, Any]:
     manifest_path = Path(manifest_path or DEFAULT_MANIFEST)
     recept_path = Path(recept_path or DEFAULT_RECEPT)
@@ -625,6 +638,7 @@ def run_deploy(
     stamp_before: str | None = None
     stamp_after: str | None = None
     komponat_kvitto: dict[str, Any] | None = None
+    lint_block: dict[str, Any] | None = None
 
     def _run_doc(outcome: str) -> dict[str, Any]:
         steps = list((komponat_kvitto or {}).get("steps") or receipt_ops)
@@ -665,6 +679,9 @@ def run_deploy(
             "slut_observed": live,
             "slut_observed_sha256": ident_sha256(live) if live else None,
             "komponat": komponat_kvitto,
+            # Lintutfallet skrivs ALLTID, även PASS: ett tyst godkännande går inte
+            # att skilja från en grind som aldrig kördes.
+            "recept_lint": lint_block,
             "ops": steps,
             "undo_name": (komponat_kvitto or {}).get("undo_name"),
             "observed_final": observed,
@@ -679,7 +696,7 @@ def run_deploy(
     try:
         (
             man, recept, live, man_sha, rec_sha, lock_fields,
-            qw_sha, mv_sha, unit_id, seal,
+            qw_sha, mv_sha, unit_id, lint_block, seal,
         ) = preflight(
             manifest_path=manifest_path,
             recept_path=recept_path,
@@ -692,6 +709,7 @@ def run_deploy(
             ctl_port=ctl_port,
             game_port=game_port,
             unit=unit,
+            dumpregister=dumpregister,
         )
         lock_owner = lock_fields.get("owner") or ""
         pin = motor_ident(man["steg"][0].get("identitet") or man["steg"][0])

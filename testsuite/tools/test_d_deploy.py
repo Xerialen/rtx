@@ -23,6 +23,7 @@ sys.path.insert(0, str(HERE.parent))
 
 import test_lab_guard  # noqa: F401
 import d_failclosed as fc
+import d_deploy
 from ctl_fake import EngineSession, FakeCtlServer
 from runner.control import Control, ControlError
 from d_deploy import (
@@ -234,6 +235,43 @@ class DeployRunnerTests(unittest.TestCase):
         self.assertEqual(file_sha256(RECEPT_JSON), SEALED_RECEPT_SHA256)
         rec = json.loads(RECEPT_JSON.read_text(encoding="utf-8"))
         self.assertEqual(fc.op_payload_sha256(rec["ops"][0]), fc.SEALED_V296_PAYLOAD_SHA256)
+
+    # --- envägsgrinden i flödet ------------------------------------------
+    #
+    # Grinden är institutionaliseringens poäng: linten fanns och hittade F-fällan,
+    # men den kördes av den som kom ihåg den. Testerna nedan bevisar att den nu
+    # körs av flödet och att en vägran stoppar mutationen, inte bara rapporterar.
+
+    def test_lintutfallet_skrivs_i_kvittot_aven_vid_pass(self):
+        """Ett tyst godkännande går inte att skilja från en grind som aldrig kördes."""
+        doc = self._run()
+        lint = doc["recept_lint"]
+        self.assertEqual(lint["utfall"], "PASS")
+        self.assertEqual(lint["grind"], "recept-lint")
+        self.assertEqual(lint["envag"], [])
+        self.assertFalse(lint["envag_medveten"])
+        # Kvittot ska svara på VILKEN graf linten kördes mot.
+        self.assertEqual(lint["dump_identitet_harledd"]["graph_stamp"], "906595427771298736")
+        self.assertEqual(len(lint["dump_sha256"]), 64)
+        pa_disk = json.loads((self.td / "out" / "deploy-run.json").read_text(encoding="utf-8"))
+        self.assertEqual(pa_disk["recept_lint"]["utfall"], "PASS")
+
+    def test_envagsvagran_stoppar_fore_mutationen(self):
+        """Grinden ligger före apply: en vägran ska lämna grafen orörd."""
+        n0 = self.engine.n_apply
+
+        def vagra(rec, live, **kw):
+            raise fc.FailClosed("recept-lint", "receptet skapar envägsläge(n): 1367→1461")
+
+        with mock.patch.object(d_deploy, "kor_lintgrind", vagra):
+            with self.assertRaises(fc.FailClosed) as cm:
+                self._run()
+        self.assertEqual(cm.exception.gate, "recept-lint")
+        self.assertIn("1367", str(cm.exception))
+        self.assertEqual(self.engine.n_apply, n0, "inget fick appliceras")
+        kvitto = json.loads((self.td / "out" / "deploy-run.json").read_text(encoding="utf-8"))
+        self.assertEqual(kvitto["outcome"], "aborted")
+        self.assertIn("1367", kvitto["abort_reason"])
 
     def test_lyckad_kedja(self):
         doc = self._run()
@@ -513,7 +551,10 @@ class DeployRunnerTests(unittest.TestCase):
 
     def test_c2_extra_planlink_on_live_context_refused(self):
         rec = json.loads(RECEPT_JSON.read_text(encoding="utf-8"))
-        man, recept, live, man_sha, rec_sha, lock_fields, qw, mv, unit, seal = preflight(
+        (
+            man, recept, live, man_sha, rec_sha, lock_fields, qw, mv, unit,
+            lint, seal,
+        ) = preflight(
             manifest_path=MANIFEST,
             recept_path=RECEPT_JSON,
             ctl=self.ctl,
@@ -526,6 +567,7 @@ class DeployRunnerTests(unittest.TestCase):
             game_port=27592,
             unit="tbx-d1",
         )
+        self.assertEqual(lint["utfall"], "PASS")
         ctx = fc.mint_deploy_context(seal, bound_steps(recept))
         syn = _step_recipe(man, [live, live])
         n0 = self.engine.n_apply
