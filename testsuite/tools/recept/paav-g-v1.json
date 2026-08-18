@@ -13,18 +13,10 @@
  },
  "ops": [
   {
-   "op": "remove_links",
-   "name": "paav-g",
-   "kalla": "recept/paav-g-v1.json",
-   "evidence": "Gånglänk 10447 (1416→1461, T=1) leder ansatsen ut på läppcell 1461; boten överskjuter norrkanten och faller 280 u. Rör inte 10446 (1416→1459). Torrkör A*-kvitto före apply.",
-   "links": [
-    {
-     "id": 10447,
-     "from": 1416,
-     "to": 1461,
-     "kind": "walk"
-    }
-   ],
+   "op": "shelf_patch",
+   "name": "haz1462-k1",
+   "kalla": "recept/haz1462-k1.json",
+   "evidence": "Motorns förseglade tabellpost HAZ1462_K1 (nav_patch.rs): remove_links = exakt 10447 (1416→1461, walk); cells/drops/retype_links tomma. Samma op som rå remove_links 10447 — verifierad i motorkällan.",
    "expect": {
     "d_cells": 0,
     "d_links": -1
