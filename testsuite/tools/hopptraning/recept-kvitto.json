@@ -1,5 +1,5 @@
 {
- "recept": "ring2quad-stang-kedjade-v1",
+ "recept": "ring2quad-stang-karmsiktad-v2",
  "fore": {
   "recipe": "",
   "mode": "chain",
@@ -19,7 +19,7 @@
   "audit": "rtx: navpatch undo chain: empty (live graph is this session's base)\n"
  },
  "kvitto": {
-  "recept_id": "ring2quad-stang-kedjade-v1",
+  "recept_id": "ring2quad-stang-karmsiktad-v2",
   "outcome": "applied",
   "reason": null,
   "base": {
@@ -31,28 +31,28 @@
   },
   "observed_final": {
    "cells": 5981,
-   "links": 48215,
+   "links": 48216,
    "rj_links": 0,
-   "graph_stamp": "16919247716590945572",
-   "graph_content_hash": "ff732a9ac599a2cf1b6067423a7bf6859cff55068f6c5742ac02a5155b87eb72"
+   "graph_stamp": "10635032474697013483",
+   "graph_content_hash": "9a7de5080650c31fb5ac7de2da4cb9b84c0648c5d60cf13e54db6cfca2c84cc5"
   },
   "steps": [
    {
-    "name": "stang-kedjade-gapkorsningar",
+    "name": "stang-karmsiktad-nordkorsning",
     "outcome": "ok",
     "reason": null,
     "observed": {
      "cells": 5981,
-     "links": 48215,
+     "links": 48216,
      "rj_links": 0,
-     "graph_stamp": "16919247716590945572",
-     "graph_content_hash": "ff732a9ac599a2cf1b6067423a7bf6859cff55068f6c5742ac02a5155b87eb72"
+     "graph_stamp": "10635032474697013483",
+     "graph_content_hash": "9a7de5080650c31fb5ac7de2da4cb9b84c0648c5d60cf13e54db6cfca2c84cc5"
     },
     "link": null
    }
   ],
   "undo_name": "komponat",
-  "audit": "rtx: komponat ring2quad-stang-kedjade-v1: applied 1 op(s), 5981/48215 stamp=16919247716590945572\nrtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
+  "audit": "rtx: komponat ring2quad-stang-karmsiktad-v2: applied 1 op(s), 5981/48216 stamp=10635032474697013483\nrtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
  },
  "efter": {
   "recipe": "komponat",
@@ -61,12 +61,12 @@
   "reason": null,
   "map": "dm3",
   "cells": 5981,
-  "links": 48215,
+  "links": 48216,
   "rj_links": 0,
-  "stamp": "16919247716590945572",
-  "content_hash": "ff732a9ac599a2cf1b6067423a7bf6859cff55068f6c5742ac02a5155b87eb72",
+  "stamp": "10635032474697013483",
+  "content_hash": "9a7de5080650c31fb5ac7de2da4cb9b84c0648c5d60cf13e54db6cfca2c84cc5",
   "stamp_before": null,
-  "stamp_after": "16919247716590945572",
+  "stamp_after": "10635032474697013483",
   "astar_before": null,
   "astar_after": null,
   "astar_next_best": null,
@@ -74,9 +74,9 @@
  },
  "harledd_slut": {
   "cells": 5981,
-  "links": 48215,
+  "links": 48216,
   "rj_links": 0,
-  "graph_stamp": "16919247716590945572",
-  "graph_content_hash": "ff732a9ac599a2cf1b6067423a7bf6859cff55068f6c5742ac02a5155b87eb72"
+  "graph_stamp": "10635032474697013483",
+  "graph_content_hash": "9a7de5080650c31fb5ac7de2da4cb9b84c0648c5d60cf13e54db6cfca2c84cc5"
  }
 }

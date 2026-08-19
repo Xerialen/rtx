@@ -12,7 +12,10 @@ from pathlib import Path
 sys.path.insert(0, "/home/xerial/hopptraning")
 import hoppa
 
-REC = json.loads(Path("/home/xerial/hopptraning/recept-ring2quad-stang-kedjade.json").read_text())
+REC_PATH = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
+    "/home/xerial/hopptraning/recept-ring2quad-stang-kedjade.json")
+REC = json.loads(REC_PATH.read_text())
+print("recept   ", REC_PATH)
 TOK = open("/home/xerial/hopptraning/.rig-lock").read().strip().splitlines()[0]
 
 

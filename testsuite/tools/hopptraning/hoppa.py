@@ -66,8 +66,11 @@ HOPP = {
         "budget_s": 15.0,
     },
     "3": {
-        "namn": "ringspawnen till quad",
-        "starter": [("ringspawn", [224.0, -320.0, 75.0])],
+        "namn": "ringspawnen (Ring of Shadows) till quad",
+        # Agarens ord: ringspawnen = RING-ITEMETS plats, inte teleportavslappet.
+        # dm3.bsp entitetslump: item_artifact_invisibility origin "240 -32 56".
+        # Narmaste stabara cell [224,-32,56]; samma lump ger quaditemet [952,296,56].
+        "starter": [("ringitemet", [240.0, -32.0, 56.0])],
         "mal": [946.0, 334.0, 56.0],
         "ankomst_r": 56.0,
         "ankomst_dz": 12.0,

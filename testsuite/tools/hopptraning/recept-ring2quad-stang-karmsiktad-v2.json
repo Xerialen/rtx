@@ -1,0 +1,40 @@
+{
+  "recept_id": "ring2quad-stang-karmsiktad-v2",
+  "map": "dm3",
+  "syfte": "Stang ENDAST den gapkorsning vars egen korda ar siktad in i karmen. Ockupationskartan (matt ur motorns egen fysik over 44 flygningar) ger den fria lanan vid x=496: norrsidan y 96..140, sodersidan y -240..-128. Rak korda for 34503 passerar y=142,4 - i karmen. 34501:s korda passerar y=-208 - mitt i den sodra lanan, och den lanken lamnas darfor KVAR. Varv 4 stangde bada; det var ett bredare snitt an bevisen bar, och det gav 2/10 mot baslinjens 4/10.",
+  "base": {
+    "cells": 5981,
+    "links": 48217,
+    "rj_links": 0,
+    "graph_stamp": "17645347086516095554",
+    "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "ops": [
+    {
+      "op": "remove_links",
+      "name": "stang-karmsiktad-nordkorsning",
+      "links": [
+        {
+          "id": 34503,
+          "from": 1712,
+          "to": 2083,
+          "kind": "speedjump",
+          "var": "[438,142,56] -> [712,144,56]",
+          "korda_vid_x496": 142.4,
+          "fri_lana": "96..140",
+          "sida": "nord"
+        }
+      ]
+    }
+  ],
+  "harledd_slut": {
+    "cells": 5981,
+    "links": 48216,
+    "rj_links": 0,
+    "graph_stamp": "10635032474697013483",
+    "graph_content_hash": "9a7de5080650c31fb5ac7de2da4cb9b84c0648c5d60cf13e54db6cfca2c84cc5"
+  },
+  "harledningsnot": "Slutlaget ar RAKNAT ur den kompletta dumpen med en egen inventeringsraknare skriven ur motorns canonical_inventory, aldrig avlast ur motorn. Raknaren ar positivt kontrollerad: den reproducerar baslagets nivå-2 4c099331... exakt. T-flaggan foljer motorns PINNADE semantik: remove_links_by_id rensar adjacensen och push_link:ar varje behallen lank tillbaka, sa alla kvarvarande lankar blir T=1. Det ar avsiktligt och fast i testet control::tests::komponat_remove_links_resurrects_pruned_links_like_the_recipes_do. Varianten dar de prunade bevaras ger i stallet nivå-2 ec83d4e1... och ar INTE den motorn kor.",
+  "bieffekt_deklarerad": "15 carve-rensade lankar blir traverserbara igen. 13 av dem ligger i sydostra hornet (x 1088-1568, y -928..-544) och ror inte ringen, gapet eller quad. 2 ligger pa teleportcellen [-536,-448,-16]: en gang ut (36313) och sjalva teleporten (36314) till [224,-320,60]. Ingen av de 15 ligger pa nagon rutt hopp 1 anvander. De tva teleportlankarna ror daremot hopp 2:s mal och hopp 3:s start - receptet ska darfor vara ANGRAT innan hopp 2 och 3 mats.",
+  "kriteriet": "Endast RAKA speedjump (gain 0) far domas pa sin korda - for en curl-lank ar flygbanan inte kordan, sa kriteriet ar inte tillampligt pa dem. Av de tva raka gapkorsningarna siktar 34503 i karmen och 34501 i lanan."
+}

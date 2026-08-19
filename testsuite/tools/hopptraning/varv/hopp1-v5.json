@@ -1,0 +1,63 @@
+{
+ "hopp": "1",
+ "namn": "ringkanten over gapet till quad",
+ "varv": "v5",
+ "anteckning": "ANDRING 4: recept ring2quad-stang-karmsiktad-v2 (endast 34503), graf 5981/48216 niv\u00e5-2 9a7de508",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48216,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 12.0
+ },
+ "starter": {
+  "syd": [
+   478.0,
+   -515.0,
+   56.0
+  ],
+  "nord": [
+   193.0,
+   -45.0,
+   56.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 0,
+ "klasser": {
+  "fall": 10
+ },
+ "per_start": {
+  "syd": {
+   "n": 5,
+   "lyckad": 0
+  },
+  "nord": {
+   "n": 5,
+   "lyckad": 0
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp1-v5.mvd",
+   "bytes": 157405,
+   "sha256": "b9637bd534fa6ef990be0774ed7f9770fcbc62ce7c8d224bc33bcd31722e4c28"
+  },
+  {
+   "fil": "hopp1-v5.txt",
+   "bytes": 217,
+   "sha256": "cfc69460446783c10a1f71c9501232693dd6c6b6df077f2cf4819e99733214f1"
+  }
+ ],
+ "tider_lyckade": []
+}

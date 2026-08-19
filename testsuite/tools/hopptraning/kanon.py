@@ -30,7 +30,7 @@ FACIT_NIVA2 = "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
 FACIT_STAMP = "17645347086516095554"
 
 # De tva korsningarna obduktionen pekar ut.
-BORT = [34501, 34503]
+BORT = [int(x) for x in sys.argv[2:]] or [34501, 34503]
 
 
 def fnv1a64(b: bytes) -> int:
