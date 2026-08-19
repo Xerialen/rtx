@@ -915,13 +915,44 @@ impl Client {
     fn seat_roster(&mut self, before: crate::mode::team::MatchPhase) {
         use crate::mode::team::MatchPhase;
         let phase = self.game.team_match.phase;
+        let seated_before = self.game.team_match.roster.len();
         if matches!(phase, MatchPhase::Warmup) {
-            self.warmup_members = crate::mode::players(&self.game)
-                .into_iter()
-                .map(|e| (self.game.netname_of(e), self.game.entities[e].mode_p.team))
-                .collect();
-        } else if self.game.team_match.roster.is_empty() && !self.warmup_members.is_empty() {
-            self.game.team_match.roster = self.warmup_members.clone();
+            // A new warmup is a new match, so the last one's names must not ride along.
+            //
+            // `before` is the phase as the game held it a moment ago, which the world
+            // rebuild resets to `Warmup` — deliberately not a phase history of our own.
+            // A separate history would see the real `Live -> Warmup` edge across the
+            // match-start reload and clear at exactly the wrong moment, throwing away
+            // the membership the reload was supposed to preserve.
+            if !matches!(before, MatchPhase::Warmup) {
+                self.warmup_members.clear();
+            }
+            // Union, never replace. A mirror still repopulating after the reload can
+            // then only fail to contribute; it cannot take anyone away. Replacing is
+            // what left one client holding four names and the other none, with four
+            // bots benched for a whole live match.
+            for e in crate::mode::players(&self.game) {
+                let name = self.game.netname_of(e);
+                if !self.warmup_members.iter().any(|(n, _)| *n == name) {
+                    let team = self.game.entities[e].mode_p.team;
+                    self.warmup_members.push((name, team));
+                }
+            }
+        } else {
+            // Complete, not seat once: a mirror that fills in late must never leave
+            // anyone benched for the rest of the match.
+            //
+            // Out of the membership, not out of the mirror — and that is the whole of
+            // the freeze. The membership stops growing when warmup ends, so whoever
+            // arrived after it is never in it and never gets added. Completing from the
+            // mirror would walk a late joiner straight on.
+            for (name, team) in self.warmup_members.clone() {
+                if !self.game.team_match.roster.iter().any(|(n, _)| *n == name) {
+                    self.game.team_match.roster.push((name, team));
+                }
+            }
+        }
+        if self.game.team_match.roster.len() != seated_before {
             self.debug_roster("seated");
         }
         if std::mem::discriminant(&before) != std::mem::discriminant(&phase) {
@@ -1172,6 +1203,123 @@ mod tests {
         seat_players(&mut client, 5);
         client.seat_roster(MatchPhase::Live);
         assert_eq!(client.game.team_match.roster.len(), 4, "the fifth is not seated");
+    }
+
+    /// A mirror that is still repopulating must not be able to shrink the membership.
+    ///
+    /// The case that cost a live arm: the membership was *replaced* every tick, so the
+    /// tick after the reload — entity array voided, names trickling back — overwrote
+    /// eight with four, and four bots stayed benched for the match.
+    #[test]
+    fn a_partial_mirror_cannot_shrink_the_membership() {
+        use crate::mode::team::MatchPhase;
+        let mut client = Client::new(config());
+        live_config(&mut client);
+        seat_players(&mut client, 8);
+        client.game.team_match.phase = MatchPhase::Warmup;
+        client.seat_roster(MatchPhase::Warmup);
+        assert_eq!(client.warmup_members.len(), 8);
+
+        for i in 0..client.game.entities.len() as u32 {
+            client.game.entities[crate::entity::EntId(i)] = crate::entity::Entity::default();
+        }
+        seat_players(&mut client, 4);
+        client.seat_roster(MatchPhase::Warmup);
+        assert_eq!(client.warmup_members.len(), 8, "a partial view may add, never remove");
+    }
+
+    /// And the roster is completed from it, so filling in late cannot bench anyone
+    /// permanently.
+    #[test]
+    fn the_roster_is_completed_after_a_late_repopulation() {
+        use crate::mode::team::MatchPhase;
+        let mut client = Client::new(config());
+        live_config(&mut client);
+        seat_players(&mut client, 8);
+        client.game.team_match.phase = MatchPhase::Warmup;
+        client.seat_roster(MatchPhase::Warmup);
+
+        for i in 0..client.game.entities.len() as u32 {
+            client.game.entities[crate::entity::EntId(i)] = crate::entity::Entity::default();
+        }
+        client.game.team_match.roster.clear();
+        client.game.team_match.phase = MatchPhase::Live;
+        client.seat_roster(MatchPhase::Warmup);
+        assert_eq!(client.game.team_match.roster.len(), 8);
+    }
+
+    /// The freeze still holds, and it is the membership that holds it — completing from
+    /// the mirror would admit someone who missed warmup entirely.
+    #[test]
+    fn completion_does_not_admit_someone_who_missed_warmup() {
+        use crate::mode::team::MatchPhase;
+        let mut client = Client::new(config());
+        live_config(&mut client);
+        seat_players(&mut client, 4);
+        client.game.team_match.phase = MatchPhase::Warmup;
+        client.seat_roster(MatchPhase::Warmup);
+        client.game.team_match.phase = MatchPhase::Live;
+        client.seat_roster(MatchPhase::Warmup);
+        assert_eq!(client.game.team_match.roster.len(), 4);
+
+        seat_players(&mut client, 8);
+        client.seat_roster(MatchPhase::Live);
+        assert_eq!(client.game.team_match.roster.len(), 4, "warmup is over; the four stand");
+    }
+
+    /// Completion has to keep up when the membership grows *after* a first seating —
+    /// which is exactly what a one-shot seed cannot do.
+    ///
+    /// The reload leaves the game state reading `Warmup` for a tick or two while the
+    /// mirror refills, so the union can still gain names after the roster has already
+    /// been seated once. A seed guarded on "roster is empty" would stop at the four it
+    /// managed first and leave the rest benched for the match.
+    #[test]
+    fn completion_keeps_up_when_the_membership_grows_after_a_seating() {
+        use crate::mode::team::MatchPhase;
+        let mut client = Client::new(config());
+        live_config(&mut client);
+        seat_players(&mut client, 4);
+        client.game.team_match.phase = MatchPhase::Warmup;
+        client.seat_roster(MatchPhase::Warmup);
+        client.game.team_match.phase = MatchPhase::Live;
+        client.seat_roster(MatchPhase::Warmup);
+        assert_eq!(client.game.team_match.roster.len(), 4);
+
+        // The reload's transient: the game state reads `Warmup` again (not a real new
+        // warmup, so nothing is cleared) and the rest of the mirror lands.
+        client.game.team_match.phase = MatchPhase::Warmup;
+        seat_players(&mut client, 8);
+        client.seat_roster(MatchPhase::Warmup);
+        assert_eq!(client.warmup_members.len(), 8);
+
+        client.game.team_match.phase = MatchPhase::Live;
+        client.seat_roster(MatchPhase::Warmup);
+        assert_eq!(client.game.team_match.roster.len(), 8, "completion, not one seating");
+    }
+
+    /// A new warmup is a new match, so the last one's names must not ride along.
+    #[test]
+    fn a_new_warmup_clears_the_previous_membership() {
+        use crate::mode::team::MatchPhase;
+        let mut client = Client::new(config());
+        live_config(&mut client);
+        seat_players(&mut client, 4);
+        client.game.team_match.phase = MatchPhase::Warmup;
+        client.seat_roster(MatchPhase::Warmup);
+        client.game.team_match.phase = MatchPhase::Live;
+        client.seat_roster(MatchPhase::Warmup);
+        assert_eq!(client.warmup_members.len(), 4);
+
+        for i in 0..client.game.entities.len() as u32 {
+            client.game.entities[crate::entity::EntId(i)] = crate::entity::Entity::default();
+        }
+        client.game.team_match.phase = MatchPhase::Warmup;
+        client.seat_roster(MatchPhase::Live);
+        assert!(
+            client.warmup_members.is_empty(),
+            "the previous match's names do not ride along"
+        );
     }
 
     #[test]
