@@ -36,7 +36,15 @@
    "still_s_per_bot": 0,
    "stall_firings": 3,
    "polls": 1,
-   "bots": 1
+   "bots": 1,
+   "quad_lay_n": 0,
+   "quad_lay_censored": 0,
+   "pent_lay_n": 0,
+   "pent_lay_censored": 0,
+   "items_poll_s": 0.1,
+   "watch_poll_s": 0.05,
+   "items_polls": 5990,
+   "items_poll_gap_max_s": 0.12
   },
   "cells": [
    {

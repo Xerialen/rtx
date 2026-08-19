@@ -63,6 +63,12 @@ def _int(value: Any, path: str, minimum: int = 0) -> int:
     return value
 
 
+def _num(value: Any, path: str, minimum: float = 0.0) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < minimum:
+        _fail(path, f"expected number >= {minimum}")
+    return value
+
+
 def _num_or_null(value: Any, path: str) -> None:
     if value is not None and (
         isinstance(value, bool) or not isinstance(value, (int, float))
@@ -677,6 +683,25 @@ def _t2(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
             "polls",
             "bots",
         },
+        # The equality gate's fields. Known to the schema and type-checked when
+        # present, so they can never be silently discarded — but optional, so
+        # that every T2 envelope recorded before the gate existed still
+        # validates. RUNBOOK §10 asks the whole corpus to pass this, and a
+        # schema change that retroactively invalidates history is a worse fault
+        # than the one it fixes. Presence is enforced where it actually
+        # matters: `powerup_watch.py` refuses to compare an envelope that does
+        # not declare `items_poll_s`, because a gate that cannot read its own
+        # resolution is guessing.
+        {
+            "quad_lay_n",
+            "quad_lay_censored",
+            "pent_lay_n",
+            "pent_lay_censored",
+            "items_poll_s",
+            "watch_poll_s",
+            "items_polls",
+            "items_poll_gap_max_s",
+        },
     )
     # A build with no stall instrumentation cannot report a stall count, and a
     # zero there would read as the best column on the page. Null is the only
@@ -718,6 +743,31 @@ def _t2(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
             )
     for field in ("quad_takes", "pent_takes", "polls"):
         _int(stats[field], f"{path}.stats.{field}")
+    for field in (
+        "quad_lay_n",
+        "quad_lay_censored",
+        "pent_lay_n",
+        "pent_lay_censored",
+        "items_polls",
+    ):
+        if field in stats:
+            _int(stats[field], f"{path}.stats.{field}")
+    for field in ("items_poll_s", "items_poll_gap_max_s"):
+        if field in stats:
+            _num(stats[field], f"{path}.stats.{field}")
+    # Null when T2 ran without the independent observer.
+    if "watch_poll_s" in stats:
+        _num_or_null(stats["watch_poll_s"], f"{path}.stats.watch_poll_s")
+    # A censored interval is still a take, so the parts must account for it
+    # exactly — checked only when the envelope carries both parts.
+    for name in ("quad", "pent"):
+        parts = (f"{name}_lay_n", f"{name}_lay_censored")
+        if all(field in stats for field in parts):
+            if stats[parts[0]] + stats[parts[1]] != stats[f"{name}_takes"]:
+                _fail(
+                    f"{path}.stats.{name}_takes",
+                    f"expected {name}_lay_n + {name}_lay_censored",
+                )
     if stats["stall_firings"] is not None:
         _int(stats["stall_firings"], f"{path}.stats.stall_firings")
     _int(stats["bots"], f"{path}.stats.bots", 1)
