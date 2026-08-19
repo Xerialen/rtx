@@ -28,7 +28,12 @@ LEVELS = ("t0", "t1", "t2", "t3", "t4")
 
 # Written into the evidence directory by the runner, but not evidence:
 # skipped without complaint rather than rejected as unknown.
-COMPANION_SCHEMAS = frozenset({"rtx-sweep/1"})
+CONTROL_SCHEMA = "rtx-testflow-control/1"
+RETRACTION_SCHEMA = "retraction/1"
+COMPANION_SCHEMAS = frozenset({"rtx-sweep/1", CONTROL_SCHEMA, RETRACTION_SCHEMA})
+#: Sidokontrollpost: en oberoende grind som dömer ETT kuvert utan att röra det.
+#: Kuvert redigeras aldrig; når en grind en annan slutsats än kuvertets egen
+#: självdeklaration är det sidoposten som bär den, med sitt underlag namngivet.
 LADDER_SKILLS = (10, 12, 14, 16, 18, 20)
 MISSING = "EJ KÖRD"
 
@@ -226,6 +231,12 @@ def default_level(level: str) -> dict[str, Any]:
         # What the build behind this column could not be asked about. Null is
         # the common case and means everything the tier needed was there.
         "capabilities": None,
+        # Satt av en sidokontrollpost nar en oberoende grind domt kuvertet.
+        # Null = ingen grind har sagt emot kuvertets egen sjalvdeklaration.
+        "gateNote": None,
+        "gateSource": None,
+        # Retraherade kuvert i samma grupp: visas som forsok, aldrig som valda.
+        "retractions": [],
     }
     if level == "t0":
         common.update(modules=[], qualityFloors=[], total={"tests": None, "passed": None})
@@ -640,6 +651,7 @@ def t2_level(
     snapshot_number: int,
     branch: str,
     build: str,
+    control: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     item = base_level("t2", envelope)
     if item["status"] != "complete":
@@ -673,11 +685,32 @@ def t2_level(
     }
     snap_id = f"{snapshot_id}:t2"
     firings = number(raw_stats.get("stall_firings"))
+    # En sidokontrollpost kan ha dömt kuvertet utan att röra det. Kuvertets egen
+    # `verdict: MEASURED` är en självdeklaration; föll en oberoende likhetsgrind
+    # är tiern ett FÖRSÖK, och sidan får inte kalla den mätt. Talen står kvar —
+    # det är slutsatsen om dem som ändras.
+    gate_failed = bool(control) and text(control.get("result"), "").upper() != "PASS"
+    gate_note = None
+    if gate_failed:
+        detail = control.get("mismatches")
+        detail = ", ".join(str(x) for x in detail) if isinstance(detail, list) else ""
+        gate_note = " · ".join(
+            part
+            for part in (
+                text(control.get("gate"), "oberoende grind") + " föll",
+                text(control.get("reason"), ""),
+                detail,
+            )
+            if part
+        )
+    base_key = "stall ej mätbar" if firings is None else f"{firings} stall"
     item.update(
-        verdict="MÄTT",
+        verdict="FÖRSÖK" if gate_failed else "MÄTT",
         # The one-line summary is the first thing read, so it must not turn an
         # absent measurement into a best-in-class zero.
-        key="stall ej mätbar" if firings is None else f"{firings} stall",
+        key=f"{base_key} · likhetsgrind föll" if gate_failed else base_key,
+        gateNote=gate_note,
+        gateSource=text(control.get("source"), "") or None if control else None,
         stats=stats,
         regimeNote=regime_note,
         comparisonKey=f"t2:{regime_note or 'full'}",
@@ -866,8 +899,53 @@ def t4_level(envelope: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def load_controls(evidence_dir: Path) -> dict[str, dict[str, Any]]:
+    """Sidokontrollposter, nycklade pa kuvertets filnamn.
+
+    En kontrollpost ar en oberoende grind som dott ETT kuvert. Den ligger bredvid
+    kuvertet i evidenskatalogen och heter `<kuvertstam>-control.json`.
+    """
+    controls: dict[str, dict[str, Any]] = {}
+    for path in sorted(evidence_dir.glob("*-control.json")):
+        try:
+            doc = load_json(path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            warn(f"{path}: kontrollpost avvisad: {exc}")
+            continue
+        if doc.get("schema") != CONTROL_SCHEMA:
+            warn(f"{path}: kontrollpost med okant schema {doc.get('schema')!r}")
+            continue
+        target = text(doc.get("envelope"), "")
+        if target:
+            controls[target] = doc
+    return controls
+
+
+def load_retractions(evidence_dir: Path) -> list[dict[str, Any]]:
+    """Retraktionsposter ur `retracted/`.
+
+    `discover()` laser bara evidence/*.json, sa ett retraherat kuvert forsvinner
+    annars spurlost fran sidan — och en retraktion som ingen ser ar ingen
+    retraktion. Posterna lases men blir ALDRIG valda kuvert.
+    """
+    out: list[dict[str, Any]] = []
+    for path in sorted((evidence_dir / "retracted").glob("*-retraction.json")):
+        try:
+            doc = load_json(path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            warn(f"{path}: retraktionspost avvisad: {exc}")
+            continue
+        if doc.get("schema") != RETRACTION_SCHEMA:
+            warn(f"{path}: retraktionspost med okant schema {doc.get('schema')!r}")
+            continue
+        out.append(doc)
+    return out
+
+
 def group_evidence(
     evidence: Iterable[LoadedEvidence],
+    controls: dict[str, dict[str, Any]] | None = None,
+    retractions: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
     grouped: dict[tuple[str, str], list[LoadedEvidence]] = {}
     for loaded in evidence:
@@ -927,14 +1005,31 @@ def group_evidence(
                     iso_sort_key(item.document.get("started_utc")),
                 )
             )
-            chosen = choices[-1].document
+            # Statusmedvetet val: senaste KOMPLETTA kuvert vinner. Ett senare
+            # misslyckat forsok far inte skugga ett tidigare komplett — det var
+            # precis vad som hande T4 i natten 18->19/8, dar forsok 2 (failed)
+            # slog forsok 1 (complete) bara for att det startade senare. Finns
+            # inget komplett faller valet tillbaka pa det senaste over huvud
+            # taget, sa en tier som bara har misslyckanden fortfarande visas som
+            # misslyckad i stallet for att forsvinna.
+            complete_choices = [
+                item
+                for item in choices
+                if text(item.document.get("status"), "").lower() == "complete"
+            ]
+            chosen = (complete_choices or choices)[-1].document
             if level == "t0":
                 levels[level] = t0_level(chosen)
             elif level == "t1":
                 levels[level] = t1_level(chosen)
             elif level == "t2":
                 levels[level], new_snapshots = t2_level(
-                    chosen, group_id, snapshot_number, branch, group_build
+                    chosen,
+                    group_id,
+                    snapshot_number,
+                    branch,
+                    group_build,
+                    (controls or {}).get(f"{chosen.get('run_id')}.json"),
                 )
                 snapshots.extend(new_snapshots)
                 snapshot_number += len(new_snapshots)
@@ -956,6 +1051,40 @@ def group_evidence(
             }
             for loaded in items
         ]
+        # Retraherade kuvert hor till gruppen aven om de inte langre ligger i
+        # discovery-vagen. De listas som forsok med status "retraherad" — aldrig
+        # som en nolla, aldrig som valt kuvert. En retraktion som ingen ser ar
+        # ingen retraktion.
+        # Ett run_id slutar pa byggets korta commit (t.ex. ...-b89bbd46), sa
+        # suffixet ar gruppnyckeln. Enkel regel, och den galler aven nar
+        # ersattaren saknas.
+        group_retractions = []
+        for record in retractions or []:
+            run_id = text(record.get("run_id"), "")
+            if not run_id or not run_id.endswith(f"-{group_build}"):
+                continue
+            tier = run_id.split("-", 1)[0].lower()
+            replacement = text(record.get("replacement_run_id"), "")
+            entry = {
+                "runId": run_id,
+                "tier": tier.upper(),
+                "utc": record.get("utc"),
+                "reason": text(record.get("reason"), ""),
+                "operator": record.get("operator"),
+                "replacementRunId": replacement or None,
+                "tierStatus": record.get("tier_status"),
+            }
+            group_retractions.append(entry)
+            attempts.append(
+                {
+                    "runId": run_id,
+                    "tier": tier.upper(),
+                    "status": "retraherad",
+                    "startedUtc": record.get("utc"),
+                }
+            )
+            if tier in levels:
+                levels[tier]["retractions"] = levels[tier].get("retractions", []) + [entry]
         runs.append(
             {
                 "id": group_id,
@@ -1016,7 +1145,9 @@ def render_dashboard(
     assets_dir: Path = HERE / "assets" / "maps",
 ) -> tuple[list[dict[str, Any]], list[str]]:
     evidence, warnings = discover(evidence_dir)
-    runs, snapshots, primary_map = group_evidence(evidence)
+    controls = load_controls(evidence_dir)
+    retractions = load_retractions(evidence_dir)
+    runs, snapshots, primary_map = group_evidence(evidence, controls, retractions)
     if not runs:
         raise RuntimeError(f"no supported rtx-testflow/1 evidence in {evidence_dir}")
     graph, entities, linkgeo = load_map_assets(primary_map, assets_dir)

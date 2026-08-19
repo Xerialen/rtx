@@ -547,6 +547,7 @@ const TERM_TITLES = {
   "ABORTED": "körningen avbröts; eventuell delpayload används inte",
   "OFULLSTÄNDIG": "envelopen saknar komplett användbar payload",
   "MÄTT": "mätnivå utan trösklar — inget verdikt",
+  "FÖRSÖK": "kuvertet finns och är komplett, men en oberoende grind föll — tiern räknas inte som mätt",
   "EJ KÖRD": "ingen data för denna nivå"
 };
 
@@ -608,7 +609,7 @@ function evidenceLink(evidence, label) {
 function verdictClass(verdict) {
   return ["PASS", "PIPELINE-OK", "COMPLETE"].includes(verdict) ? "pass" :
     ["FAIL", "FAILED", "ABORTED"].includes(verdict) ? "fail" :
-    verdict === "MÄTT" ? "partial" : "not-run";
+    ["MÄTT", "FÖRSÖK"].includes(verdict) ? "partial" : "not-run";
 }
 
 function verdictChip(verdict) {
@@ -1051,7 +1052,25 @@ function renderT2() {
       esc(focus.capabilities.unavailable.join(", ")) + " · " +
       esc(focus.capabilities.note) + "</div>"
     : "";
-  const body = demoCallout + gap +
+  // En oberoende grind som fallit ar det viktigaste pa panelen: den avgor om
+  // talen nedanfor far kallas en matning. Darfor forst, inte i en fotnot.
+  const gate = focus.gateNote
+    ? '<div class="callout"><strong>Likhetsgrind föll:</strong> ' + esc(focus.gateNote) +
+      (focus.gateSource ? ' <span class="muted mono">(' + esc(focus.gateSource) + ")</span>" : "") +
+      " · talen nedan står, men tiern räknas som <b>försök</b>, inte som mätt.</div>"
+    : "";
+  const retr = (focus.retractions || []).length
+    ? focus.retractions.map(r =>
+        '<div class="callout"><strong>Retraherat kuvert:</strong> <span class="mono">' +
+        esc(r.runId) + "</span> · " + esc(r.utc || "") + " · " + esc(r.operator || "") +
+        (r.replacementRunId
+          ? ' · ersatt av <span class="mono">' + esc(r.replacementRunId) + "</span>"
+          : "") +
+        (r.tierStatus ? " · " + esc(r.tierStatus) : "") +
+        '<br><span class="muted">' + esc(String(r.reason || "").slice(0, 400)) + "</span></div>"
+      ).join("")
+    : "";
+  const body = gate + retr + demoCallout + gap +
     '<div class="callout"><strong>Regim:</strong> ' + esc(focus.regimeNote || "full") +
     " · " + (compare ? "Fokusvärdet står först och jämförbar referens inom parentes." :
       "Ingen jämförelse görs mot smoke/full eller en icke-komplett run.") +

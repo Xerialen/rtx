@@ -44,9 +44,11 @@ def main(index_path: str) -> None:
     runs = json.loads(re.search(r"const RUNS = (\[.*?\]);\n", text, re.S).group(1))
 
     envelopes = {}
+    paths: dict[str, Path] = {}
     for line in Path(index_path).read_text().splitlines():
         tier, rel = line.split()
-        envelopes[tier] = json.loads((BASE / rel).read_text())
+        paths[tier] = BASE / rel
+        envelopes[tier] = json.loads(paths[tier].read_text())
 
     # The dashboard level whose runId matches each envelope, wherever the
     # builder grouped it.
@@ -108,13 +110,35 @@ def main(index_path: str) -> None:
                 "polls", "bots",
             ):
                 check(f"t2.{key}", level["stats"][key], payload["stats"][key])
-            # The page renders verdicts in Swedish; the translation is the
-            # only transform accepted, and only this exact pair.
-            check(
-                "t2.verdict",
-                "MEASURED" if level["verdict"] == "MÄTT" else level["verdict"],
-                payload["verdict"],
+            # En sidokontrollpost kan ha domt kuvertet utan att rora det. Da ar
+            # sidans avvikande verdikt DET RATTA, och verifieraren maste lasa
+            # samma evidens som byggaren — annars flaggar den varje gang en
+            # oberoende grind sagt emot en sjalvdeklaration, vilket ar precis
+            # nar sidan har mest ratt.
+            envelope_path = paths[tier]
+            control_path = envelope_path.with_name(
+                envelope_path.name.replace(".json", "-control.json")
             )
+            override = None
+            if control_path.is_file():
+                control = json.loads(control_path.read_text(encoding="utf-8"))
+                if str(control.get("result", "")).upper() != "PASS":
+                    override = str(control.get("verdict_override") or "FORSOK")
+            if override is not None:
+                check(
+                    "t2.verdict(kontrollpost)",
+                    "FORSOK" if level["verdict"] == "FÖRSÖK" else level["verdict"],
+                    override,
+                )
+                check("t2.gateNote finns", bool(level.get("gateNote")), True)
+            else:
+                # The page renders verdicts in Swedish; the translation is the
+                # only transform accepted, and only this exact pair.
+                check(
+                    "t2.verdict",
+                    "MEASURED" if level["verdict"] == "MÄTT" else level["verdict"],
+                    payload["verdict"],
+                )
             check("t2.sources", level["metricSources"], payload.get("sources", {}))
             for html_key, env_key in (("cells", "cells"), ("rjLinks", "rj_links")):
                 check(f"t2.nav.{env_key}", level["nav"][html_key], envelope["nav"][env_key])
