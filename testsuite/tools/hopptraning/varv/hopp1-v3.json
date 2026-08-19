@@ -1,0 +1,69 @@
+{
+ "hopp": "1",
+ "namn": "ringkanten over gapet till quad",
+ "varv": "v3",
+ "anteckning": "ANDRING 2: rtx_sj_chain_extra=2.0 (lankkostnad pa kedjade speedjump), binar cf393113",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48217,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 12.0
+ },
+ "starter": {
+  "syd": [
+   478.0,
+   -515.0,
+   56.0
+  ],
+  "nord": [
+   193.0,
+   -45.0,
+   56.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 4,
+ "klasser": {
+  "fall": 6,
+  "lyckad": 4
+ },
+ "per_start": {
+  "syd": {
+   "n": 5,
+   "lyckad": 2
+  },
+  "nord": {
+   "n": 5,
+   "lyckad": 2
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp1-v3.mvd",
+   "bytes": 204733,
+   "sha256": "bb138e5bd4d5b0154fb5961d02b3873fa3af681ee78509fa576e04ba4f3e5b13"
+  },
+  {
+   "fil": "hopp1-v3.txt",
+   "bytes": 217,
+   "sha256": "4cbc6b692b24727d2b50848802246eed492e4c70181de121f73782d5c504644f"
+  }
+ ],
+ "tider_lyckade": [
+  3.25,
+  3.25,
+  8.85,
+  9.05
+ ]
+}

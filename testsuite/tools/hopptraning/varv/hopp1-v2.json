@@ -1,0 +1,63 @@
+{
+ "hopp": "1",
+ "namn": "ringkanten over gapet till quad",
+ "varv": "v2",
+ "anteckning": "ANDRING 1: planterad sydkorsning link 48217, avfart [412,-202], mal cell 2026",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48218,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 12.0
+ },
+ "starter": {
+  "syd": [
+   478.0,
+   -515.0,
+   56.0
+  ],
+  "nord": [
+   193.0,
+   -45.0,
+   56.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 0,
+ "klasser": {
+  "fall": 10
+ },
+ "per_start": {
+  "syd": {
+   "n": 5,
+   "lyckad": 0
+  },
+  "nord": {
+   "n": 5,
+   "lyckad": 0
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp1-v2.mvd",
+   "bytes": 162239,
+   "sha256": "d4650c469951b754381cfe6584950b44f18a1c00749c86d9e6201743f6adaf1c"
+  },
+  {
+   "fil": "hopp1-v2.txt",
+   "bytes": 217,
+   "sha256": "7b61a1bc93a7eb19c3e8d7f0baf046d3523a2eb62319c9c972d1bbef635719c7"
+  }
+ ],
+ "tider_lyckade": []
+}

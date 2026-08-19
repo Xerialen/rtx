@@ -415,6 +415,16 @@ pub struct LinkCosts<'a> {
     /// Nonzero ⇒ add `hash(seed ^ link) → [0, JITTER_FRAC]·link.cost` per link, so bots with distinct
     /// seeds pick different near-equal corridors. Zero ⇒ no jitter (deterministic; tests, non-bots).
     pub jitter_seed: u32,
+    /// Nonzero ⇒ charge every **chained** speed jump this many extra seconds. A chained jump has no
+    /// runway of its own — its `from` cell *is* the ledge — so its arc leaves from wherever the bot
+    /// happens to cross the cell, with no surveyed run-up behind it. Measured on dm3's ring→quad
+    /// crossing: every fall in the training series came off a chained gap link whose arc was ~9 u too
+    /// low at the ring's east opening and stopped dead against it, while every crossing that landed
+    /// used a rollout-certified curl with a surveyed takeoff. `0` (the default) leaves chained jumps
+    /// at their solved cost — today's behaviour, bit for bit. Set it to make the planner buy the
+    /// certified crossing when one exists. Far below [`CLOSED_GATE_PENALTY`], so it diverts a route
+    /// and never forces one through a shut door.
+    pub chain_extra: f32,
     /// Nonzero ⇒ charge every [`LinkKind::RocketJump`] link this many extra seconds — the per-bot
     /// capability gate. A bot currently unable to rocket-jump sets it to [`RJ_UNFIT_PENALTY`] so it
     /// plans around them; `0` (the default) leaves rocket jumps at their solved cost. One of the two
@@ -1294,6 +1304,12 @@ impl NavGraph {
         }
         if costs.rocket_jump_extra > 0.0 && link.kind == LinkKind::RocketJump {
             extra += costs.rocket_jump_extra;
+        }
+        if costs.chain_extra > 0.0
+            && link.kind == LinkKind::SpeedJump
+            && self.speed_jump_of_link(li).is_some_and(|t| t.chained)
+        {
+            extra += costs.chain_extra;
         }
         extra += self.water_extra.get(li as usize).copied().unwrap_or(0.0);
         // Health is only convertible to seconds against a particular bot's health, so an unpriced

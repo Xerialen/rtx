@@ -15,6 +15,7 @@ Riggen: fasttrack-server (spel 27530, kontroll 27980). Ingen annan rigg rors.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import socket
@@ -197,6 +198,40 @@ def hamta_rutt(lab, bot):
         return {"fel": str(exc)}
 
 
+AUDIT_FALT = ("t", "origin", "vel", "speed", "peak", "bhop", "hops", "leg", "runup", "wp", "lip",
+              "cell", "target", "route_goal", "route_len", "route_pos", "band", "frozen",
+              "air", "posture", "gate", "goal_cell", "commit")
+
+
+def audit_nu(lab, bot):
+    """Serverklockan just nu, last ur flygregistratorn (ingen egen klocka)."""
+    try:
+        fr = lab.request({"Audit": {"bot": bot, "lines": 1}}, timeout=5.0).get("frames") or []
+        return fr[-1]["t"] if fr else None
+    except Exception:
+        return None
+
+
+def audit_slice(lab, bot, t_fran):
+    """Hela forsokets flygregistrator: motorns EGNA celler, aldrig xyz->cell."""
+    try:
+        fr = lab.request({"Audit": {"bot": bot, "lines": 2000}}, timeout=20.0).get("frames") or []
+    except Exception:
+        return []
+    if t_fran is not None:
+        fr = [f for f in fr if f.get("t", 0.0) >= t_fran]
+    ut = []
+    for f in fr:
+        r = {k: f.get(k) for k in AUDIT_FALT}
+        r["origin"] = [round(v, 2) for v in (f.get("origin") or [])]
+        r["vel"] = [round(v, 1) for v in (f.get("vel") or [])]
+        for k in ("speed", "peak", "runup", "wp", "lip", "air"):
+            if isinstance(r.get(k), float):
+                r[k] = round(r[k], 2)
+        ut.append(r)
+    return ut
+
+
 def forsok(lab, bot, start, mal, cfg, i, namn):
     lab.events = []
     ensure_ready(lab, bot)
@@ -204,6 +239,9 @@ def forsok(lab, bot, start, mal, cfg, i, namn):
         return {"i": i, "start_namn": namn, "start": start, "klass": "start_blockerad", "tape": []}
     lab.request({"Teleport": {"bot": bot, "pos": list(start), "vel": [0.0, 0.0, 0.0]}})
     lab.request({"Goto": {"bot": bot, "pos": list(mal)}})
+    # Fonstret till flygregistratorn oppnas EFTER teleporten, annars slapar
+    # foregaende forsoks slut med in i bandet.
+    t_audit0 = audit_nu(lab, bot)
     rutt0 = hamta_rutt(lab, bot)
 
     tape = []
@@ -211,10 +249,14 @@ def forsok(lab, bot, start, mal, cfg, i, namn):
     klass = None
     sista = None
     nasta = t0
+    fall_vid = None
+    tid_klass = None
     while True:
         nu = time.monotonic() - t0
         if nu >= cfg["budget_s"]:
-            klass = "timeout"
+            if klass is None:
+                klass = "timeout"
+                tid_klass = nu
             break
         b = bot_row(lab, bot)
         if b is None:
@@ -226,15 +268,20 @@ def forsok(lab, bot, start, mal, cfg, i, namn):
                      bool(b.get("on_ground")), round(float(b.get("speed") or 0.0), 1),
                      b.get("rj_phase"), b.get("bhop"), (b.get("route") or {}).get("pos"),
                      b.get("order"), round(float(b.get("health") or 0.0), 0)])
-        if not b.get("alive"):
-            klass = "fall"          # dodsfall i denna geometri = nedslag i grytan
-            break
-        if o[2] < cfg["fall_z"]:
+        if klass is None and (not b.get("alive") or o[2] < cfg["fall_z"]):
+            # Fallet ar avgjort har. Bandet rullar vidare till nedslaget sa att
+            # obduktionen kan binda handelsen till LANDNINGEN (aldrig till
+            # luft-triggerticken) — klassningen ar redan satt och andras inte.
             klass = "fall"
+            tid_klass = nu
+            fall_vid = nu
+        if klass == "fall" and (nu - fall_vid > 2.5 or (b.get("on_ground") and nu - fall_vid > 0.3)):
             break
-        if (b.get("on_ground") and nu > 0.4
-                and hdist(o, mal) <= cfg["ankomst_r"] and abs(o[2] - mal[2]) <= cfg["ankomst_dz"]):
+        if klass is None and (b.get("on_ground") and nu > 0.4
+                              and hdist(o, mal) <= cfg["ankomst_r"]
+                              and abs(o[2] - mal[2]) <= cfg["ankomst_dz"]):
             klass = "lyckad"
+            tid_klass = nu
             break
         nasta += 1.0 / TAPE_HZ
         sov = nasta - time.monotonic()
@@ -243,7 +290,8 @@ def forsok(lab, bot, start, mal, cfg, i, namn):
         else:
             nasta = time.monotonic()
 
-    tid = round(time.monotonic() - t0, 2)
+    tid = round(tid_klass if tid_klass is not None else (time.monotonic() - t0), 2)
+    audit = audit_slice(lab, bot, t_audit0)
     stalls = [e["BotStall"] for e in lab.events
               if isinstance(e, dict) and "BotStall" in e and e["BotStall"].get("bot") == bot]
     goto_stall = [e["GotoStall"] for e in lab.events
@@ -270,7 +318,9 @@ def forsok(lab, bot, start, mal, cfg, i, namn):
         "stall_handelser": [{k: s.get(k) for k in ("t", "reason", "cell", "goal_cell", "link", "kind", "speed")}
                             for s in stalls],
         "goto_stall": [{k: s.get(k) for k in ("reason", "cell", "link")} for s in goto_stall],
+        "n_audit": len(audit),
         "tape": tape,
+        "audit": audit,
     }
     try:
         lab.request({"Stop": {"bot": bot}})
@@ -288,6 +338,9 @@ def main():
     ap.add_argument("--bot", type=int, default=BOT)
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--anteckning", default="")
+    ap.add_argument("--mvd", action="store_true", default=True)
+    ap.add_argument("--ingen-mvd", dest="mvd", action="store_false")
+    ap.add_argument("--demodir", default="/home/xerial/.local/share/qw-fasttrack/runtime/qw/demos")
     a = ap.parse_args()
 
     cfg = HOPP[a.hopp]
@@ -299,6 +352,11 @@ def main():
     utd = Path(a.ut) / f"hopp{a.hopp}" / a.varv
     utd.mkdir(parents=True, exist_ok=True)
 
+    mvd_namn = f"hopp{a.hopp}-{a.varv}"
+    if a.mvd:
+        lab.request({"RunCmd": {"raw": f"record {mvd_namn}"}})
+        time.sleep(0.5)
+
     rader = []
     starter = cfg["starter"]
     for i in range(a.n):
@@ -308,6 +366,20 @@ def main():
         print(f"{i+1:2d}/{a.n} {namn:9s} {rad['klass']:15s} "
               f"tid={rad.get('tid_s')} min_z={rad.get('min_z')} slut={rad.get('slut_pos')} "
               f"stall={sorted({s.get('reason') for s in rad.get('stall_handelser', [])})}", flush=True)
+
+    mvd_info = None
+    if a.mvd:
+        time.sleep(0.5)
+        lab.request({"RunCmd": {"raw": "stop"}})
+        time.sleep(1.0)
+        mvd_info = []
+        for suff in (".mvd", ".txt"):
+            src = Path(a.demodir) / (mvd_namn + suff)
+            if src.exists():
+                dst = utd / src.name
+                dst.write_bytes(src.read_bytes())
+                mvd_info.append({"fil": dst.name, "bytes": dst.stat().st_size,
+                                 "sha256": hashlib.sha256(dst.read_bytes()).hexdigest()})
 
     lyckade = sum(1 for r in rader if r["klass"] == "lyckad")
     klasser = {}
@@ -331,6 +403,7 @@ def main():
         "lyckade": lyckade,
         "klasser": klasser,
         "per_start": per_start,
+        "mvd": mvd_info,
         "tider_lyckade": sorted(r["tid_s"] for r in rader if r["klass"] == "lyckad"),
     }
     (utd / "forsok.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rader))

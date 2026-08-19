@@ -300,6 +300,9 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         //    fires, so the bot runs to the lip at speed instead of hopping slow the instant the leg
         //    turns current — "more speed". Held at most ~1s so a cornered bot never deadlocks.
         // All default to today's behavior.
+        // Extra seconds charged to every *chained* speed jump when routing (a jump whose `from`
+        // cell is the ledge itself, so it has no surveyed run-up of its own). 0 = today's behavior.
+        ("rtx_sj_chain_extra", Float(0.0)),
         ("rtx_jump_curl_hold", Float(0.0)),
         ("rtx_jump_curl_gain", Float(0.0)),
         // Minimum run-up speed toward the waypoint (fraction of sv_maxspeed) before a plain jump leg

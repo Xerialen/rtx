@@ -1,0 +1,52 @@
+{
+ "hopp": "1",
+ "namn": "ringkanten over gapet till quad",
+ "varv": "probe60",
+ "anteckning": "DIAGNOSSOND: chain_extra=60, ej ett domt varv",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48217,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 12.0
+ },
+ "starter": {
+  "syd": [
+   478.0,
+   -515.0,
+   56.0
+  ],
+  "nord": [
+   193.0,
+   -45.0,
+   56.0
+  ]
+ },
+ "n": 4,
+ "lyckade": 0,
+ "klasser": {
+  "fall": 4
+ },
+ "per_start": {
+  "syd": {
+   "n": 2,
+   "lyckad": 0
+  },
+  "nord": {
+   "n": 2,
+   "lyckad": 0
+  }
+ },
+ "mvd": null,
+ "tider_lyckade": []
+}
