@@ -325,6 +325,17 @@ pub struct Client {
     world_map: (String, i32),
     /// When the seats last reported in — see [`HEARTBEAT_INTERVAL`].
     heartbeat_at: Instant,
+    /// Who was in the game during warmup, as `(name, team)` — the client's stand-in for the
+    /// locked roster `mode::team::benched` asks about.
+    ///
+    /// It lives here, outside `GameState`, for one reason: a match start reloads the map, and the
+    /// reload voids every entity ([`Self::rebuild_world_if_map_changed`]) and resets
+    /// `team_match` to its default — empty roster. A picture taken at the phase edge would
+    /// therefore be taken in the one tick where there is nothing to see, and every bot would stay
+    /// benched for the whole match. Captured continuously while warmup lasts, applied frozen once
+    /// it ends. The server keeps the same information across the same reload for the same reason
+    /// (`rtx_match_resume`).
+    warmup_members: Vec<(String, u8)>,
 }
 
 impl Client {
@@ -375,6 +386,7 @@ impl Client {
             last_tick: Instant::now(),
             world_map: (String::new(), 0),
             heartbeat_at: Instant::now(),
+            warmup_members: Vec::new(),
         }
     }
 
@@ -870,6 +882,7 @@ impl Client {
         // that matters client-side is `match_weapons_hot`.
         use crate::mode::team::MatchPhase;
         let now = self.game.time();
+        let before = self.game.team_match.phase;
         self.game.team_match.phase = match phase {
             modes::Phase::Warmup => MatchPhase::Warmup,
             // The `until` only has to be in the future — nothing client-side counts it down, it just
@@ -877,6 +890,73 @@ impl Client {
             modes::Phase::Countdown => MatchPhase::Countdown { until: now + 1.0 },
             modes::Phase::Live => MatchPhase::Live,
         };
+        self.seat_roster(before);
+    }
+
+    /// Give `mode::team::benched` a roster to look in, so client bots are not all benched the
+    /// moment a match goes live.
+    ///
+    /// The roster is only ever written by the match lifecycle (`mode::team`), which runs on the
+    /// server; the client never runs it, and the roster is not on the wire. Left alone, every
+    /// client bot fails `benched`'s third condition for the whole match and strolls the stands.
+    ///
+    /// Captured continuously, applied frozen. While warmup lasts, the membership is whoever is in
+    /// the game — a picture that keeps up with joiners and leavers. Once it ends, the first tick
+    /// that finds an empty roster seats that picture and stops updating it, so a late joiner is
+    /// not in it and stays benched, exactly as the server intends. The condition is a *state*
+    /// ("not warmup, roster empty"), not an edge: there is no single tick to hit, and a reload
+    /// that clears the roster is simply reseated on the next one.
+    ///
+    /// What this cannot reproduce is `pick_roster`'s seating — `teams × size`, humans before bots.
+    /// `bot.is_bot` is set only for our own bots (`mirror::embody`) and a stranger's client type
+    /// is not on the wire, so the client cannot tell a human from someone else's bot. With more
+    /// players in warmup than the format seats, a bot the server benched as overflow would fight
+    /// here. Booked as a known residual; it cannot arise at exactly `teams × size` players.
+    fn seat_roster(&mut self, before: crate::mode::team::MatchPhase) {
+        use crate::mode::team::MatchPhase;
+        let phase = self.game.team_match.phase;
+        if matches!(phase, MatchPhase::Warmup) {
+            self.warmup_members = crate::mode::players(&self.game)
+                .into_iter()
+                .map(|e| (self.game.netname_of(e), self.game.entities[e].mode_p.team))
+                .collect();
+        } else if self.game.team_match.roster.is_empty() && !self.warmup_members.is_empty() {
+            self.game.team_match.roster = self.warmup_members.clone();
+            self.debug_roster("seated");
+        }
+        if std::mem::discriminant(&before) != std::mem::discriminant(&phase) {
+            self.debug_roster("phase");
+        }
+    }
+
+    /// The one line that makes a failed live arm diagnosable.
+    ///
+    /// Without it, "the fix did not take" and "benching was not the only gate" produce the same
+    /// picture — no enemies, everyone holding — and the two send an investigation in opposite
+    /// directions. With the seated count next to the expected one they come apart, and a
+    /// half-populated mirror stops looking like a new layer.
+    fn debug_roster(&self, why: &str) {
+        use crate::mode::team::MatchPhase;
+        if !self.game.host().cvar_bool(c"rtx_bot_debug") {
+            return;
+        }
+        let cfg = self.game.team_match.config;
+        let names: Vec<&str> = self.game.team_match.roster.iter().map(|(n, _)| n.as_str()).collect();
+        // The phase is named here rather than derived: `MatchPhase` lives in `mode::team`,
+        // which is byte-identical between this tree and the parity reference, and deriving
+        // `Debug` there would break that identity for a debug line.
+        let phase = match self.game.team_match.phase {
+            MatchPhase::Warmup => "warmup",
+            MatchPhase::Countdown { .. } => "countdown",
+            MatchPhase::Live => "live",
+            MatchPhase::Ended { .. } => "ended",
+        };
+        eprintln!(
+            "rtx: roster {why}: phase={phase} seated={} expected={} names={:?}",
+            names.len(),
+            cfg.teams * cfg.size,
+            names,
+        );
     }
 
     /// Which slots are our own bots', and where each of them is looking from.
@@ -1016,6 +1096,84 @@ mod tests {
     /// A small test for a large claim. Everything downstream — the mirror, the brain, the tick loop
     /// — assumes the game runs unmodified against a non-server host; if that were false, it would be
     /// false here first.
+    /// Put `n` mirrored players in the shadow world, as `write_userinfo` would.
+    fn seat_players(client: &mut Client, n: u32) {
+        client.game.host().cvar_set(c"maxclients", c"8");
+        for i in 1..=n {
+            let e = crate::entity::EntId(i);
+            client.game.entities[e].in_use = true;
+            client.game.entities[e].classname = Some("player".into());
+            client.game.entities[e].netname = Some(format!("bot{i}").into());
+            client.game.entities[e].mode_p.team = if i <= n / 2 { 1 } else { 2 };
+        }
+    }
+
+    fn live_config(client: &mut Client) {
+        client.game.team_match.config = crate::mode::team::MatchConfig { teams: 2, size: 2 };
+    }
+
+    /// Warmup membership is what the roster is seeded from — and it is only *captured* there,
+    /// never applied, so nothing is benched while the warmup is still running.
+    #[test]
+    fn warmup_membership_is_captured_but_not_applied() {
+        use crate::mode::team::MatchPhase;
+        let mut client = Client::new(config());
+        live_config(&mut client);
+        seat_players(&mut client, 4);
+        client.game.team_match.phase = MatchPhase::Warmup;
+        client.seat_roster(MatchPhase::Warmup);
+        assert_eq!(client.warmup_members.len(), 4);
+        assert!(
+            client.game.team_match.roster.is_empty(),
+            "nothing is locked during warmup"
+        );
+    }
+
+    /// The regression test for the whole fix: the roster is seated from the *preserved* membership,
+    /// not from the mirror as it stands at the transition.
+    ///
+    /// The match start reloads the map, and the reload voids every entity before the phase is fed
+    /// in. A picture taken at that moment is empty, and an empty roster benches every client bot
+    /// for the whole match — silently, because the symptom is identical to the fix not working.
+    /// So the mirror is deliberately wiped here before the phase moves.
+    #[test]
+    fn the_roster_survives_a_mirror_that_was_voided_by_the_reload() {
+        use crate::mode::team::MatchPhase;
+        let mut client = Client::new(config());
+        live_config(&mut client);
+        seat_players(&mut client, 4);
+        client.game.team_match.phase = MatchPhase::Warmup;
+        client.seat_roster(MatchPhase::Warmup);
+
+        // What `rebuild_world_if_map_changed` does on a match start.
+        for i in 0..client.game.entities.len() as u32 {
+            client.game.entities[crate::entity::EntId(i)] = crate::entity::Entity::default();
+        }
+        client.game.team_match.roster.clear();
+
+        client.game.team_match.phase = MatchPhase::Live;
+        client.seat_roster(MatchPhase::Warmup);
+        assert_eq!(client.game.team_match.roster.len(), 4, "seated from what warmup saw");
+    }
+
+    /// Whoever arrives after the roster is seated stays off it — the picture is applied frozen, so
+    /// a late joiner is benched exactly as the server intends.
+    #[test]
+    fn a_late_joiner_does_not_get_onto_a_seated_roster() {
+        use crate::mode::team::MatchPhase;
+        let mut client = Client::new(config());
+        live_config(&mut client);
+        seat_players(&mut client, 4);
+        client.game.team_match.phase = MatchPhase::Warmup;
+        client.seat_roster(MatchPhase::Warmup);
+        client.game.team_match.phase = MatchPhase::Live;
+        client.seat_roster(MatchPhase::Warmup);
+
+        seat_players(&mut client, 5);
+        client.seat_roster(MatchPhase::Live);
+        assert_eq!(client.game.team_match.roster.len(), 4, "the fifth is not seated");
+    }
+
     #[test]
     fn builds_a_game_with_no_engine_behind_it() {
         let mut client = Client::new(config());
