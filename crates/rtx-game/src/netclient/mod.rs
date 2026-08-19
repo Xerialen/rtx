@@ -874,7 +874,14 @@ impl Client {
     /// countdown. Cheap and per-tick: `match_phase` is a serverinfo lookup, and only a change to
     /// `team_match.phase` matters downstream.
     fn feed_phase(&mut self) {
-        let Some(phase) = self.lead().map(|b| modes::match_phase(b.session.serverinfo())) else {
+        let Some((phase, phase_known)) = self.lead().map(|b| {
+            let info = b.session.serverinfo();
+            // Whether the phase means anything, read at the same place the phase is.
+            // `match_phase` answers `Live` when `status` is absent, so an unknown phase
+            // and a running match are the same value — and a rule that froze on the
+            // first `Live` would fire at t=0, before any serverinfo, with nobody seen.
+            (modes::match_phase(info), info.get("status").is_some())
+        }) else {
             return;
         };
         // Map onto the lifecycle's own phase. The client never *runs* the lifecycle (no
@@ -890,7 +897,7 @@ impl Client {
             modes::Phase::Countdown => MatchPhase::Countdown { until: now + 1.0 },
             modes::Phase::Live => MatchPhase::Live,
         };
-        self.seat_roster(before);
+        self.seat_roster(before, phase_known);
     }
 
     /// Give `mode::team::benched` a roster to look in, so client bots are not all benched the
@@ -912,11 +919,17 @@ impl Client {
     /// is not on the wire, so the client cannot tell a human from someone else's bot. With more
     /// players in warmup than the format seats, a bot the server benched as overflow would fight
     /// here. Booked as a known residual; it cannot arise at exactly `teams × size` players.
-    fn seat_roster(&mut self, before: crate::mode::team::MatchPhase) {
+    fn seat_roster(&mut self, before: crate::mode::team::MatchPhase, phase_known: bool) {
         use crate::mode::team::MatchPhase;
         let phase = self.game.team_match.phase;
         let seated_before = self.game.team_match.roster.len();
-        if matches!(phase, MatchPhase::Warmup) {
+        // The window is open until the match is *actually* live. Warmup is far too
+        // early to close it: measured, one client left warmup 0.37 s in with only its
+        // own four mirrored, and the other never saw warmup at all — while the
+        // opponents' userinfo landed seconds later, during the countdown. Closing on
+        // warmup's end is what benched half the squad for two whole live arms.
+        let collecting = !phase_known || !matches!(phase, MatchPhase::Live);
+        if collecting {
             // A new warmup is a new match, so the last one's names must not ride along.
             //
             // `before` is the phase as the game held it a moment ago, which the world
@@ -924,7 +937,7 @@ impl Client {
             // A separate history would see the real `Live -> Warmup` edge across the
             // match-start reload and clear at exactly the wrong moment, throwing away
             // the membership the reload was supposed to preserve.
-            if !matches!(before, MatchPhase::Warmup) {
+            if matches!(phase, MatchPhase::Warmup) && !matches!(before, MatchPhase::Warmup) {
                 self.warmup_members.clear();
             }
             // Union, never replace. A mirror still repopulating after the reload can
@@ -938,9 +951,15 @@ impl Client {
                     self.warmup_members.push((name, team));
                 }
             }
-        } else {
+        }
+        if !matches!(phase, MatchPhase::Warmup) {
             // Complete, not seat once: a mirror that fills in late must never leave
             // anyone benched for the rest of the match.
+            //
+            // Independent of the collection window above, and deliberately so: during
+            // the countdown we are still collecting *and* `benched()` already applies,
+            // so a roster left unseated until `Live` would bench everyone through the
+            // countdown.
             //
             // Out of the membership, not out of the mirror — and that is the whole of
             // the freeze. The membership stops growing when warmup ends, so whoever
@@ -1152,7 +1171,7 @@ mod tests {
         live_config(&mut client);
         seat_players(&mut client, 4);
         client.game.team_match.phase = MatchPhase::Warmup;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         assert_eq!(client.warmup_members.len(), 4);
         assert!(
             client.game.team_match.roster.is_empty(),
@@ -1174,7 +1193,7 @@ mod tests {
         live_config(&mut client);
         seat_players(&mut client, 4);
         client.game.team_match.phase = MatchPhase::Warmup;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
 
         // What `rebuild_world_if_map_changed` does on a match start.
         for i in 0..client.game.entities.len() as u32 {
@@ -1183,7 +1202,7 @@ mod tests {
         client.game.team_match.roster.clear();
 
         client.game.team_match.phase = MatchPhase::Live;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         assert_eq!(client.game.team_match.roster.len(), 4, "seated from what warmup saw");
     }
 
@@ -1196,12 +1215,12 @@ mod tests {
         live_config(&mut client);
         seat_players(&mut client, 4);
         client.game.team_match.phase = MatchPhase::Warmup;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         client.game.team_match.phase = MatchPhase::Live;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
 
         seat_players(&mut client, 5);
-        client.seat_roster(MatchPhase::Live);
+        client.seat_roster(MatchPhase::Live, true);
         assert_eq!(client.game.team_match.roster.len(), 4, "the fifth is not seated");
     }
 
@@ -1217,14 +1236,14 @@ mod tests {
         live_config(&mut client);
         seat_players(&mut client, 8);
         client.game.team_match.phase = MatchPhase::Warmup;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         assert_eq!(client.warmup_members.len(), 8);
 
         for i in 0..client.game.entities.len() as u32 {
             client.game.entities[crate::entity::EntId(i)] = crate::entity::Entity::default();
         }
         seat_players(&mut client, 4);
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         assert_eq!(client.warmup_members.len(), 8, "a partial view may add, never remove");
     }
 
@@ -1237,14 +1256,14 @@ mod tests {
         live_config(&mut client);
         seat_players(&mut client, 8);
         client.game.team_match.phase = MatchPhase::Warmup;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
 
         for i in 0..client.game.entities.len() as u32 {
             client.game.entities[crate::entity::EntId(i)] = crate::entity::Entity::default();
         }
         client.game.team_match.roster.clear();
         client.game.team_match.phase = MatchPhase::Live;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         assert_eq!(client.game.team_match.roster.len(), 8);
     }
 
@@ -1257,13 +1276,13 @@ mod tests {
         live_config(&mut client);
         seat_players(&mut client, 4);
         client.game.team_match.phase = MatchPhase::Warmup;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         client.game.team_match.phase = MatchPhase::Live;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         assert_eq!(client.game.team_match.roster.len(), 4);
 
         seat_players(&mut client, 8);
-        client.seat_roster(MatchPhase::Live);
+        client.seat_roster(MatchPhase::Live, true);
         assert_eq!(client.game.team_match.roster.len(), 4, "warmup is over; the four stand");
     }
 
@@ -1281,20 +1300,20 @@ mod tests {
         live_config(&mut client);
         seat_players(&mut client, 4);
         client.game.team_match.phase = MatchPhase::Warmup;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         client.game.team_match.phase = MatchPhase::Live;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         assert_eq!(client.game.team_match.roster.len(), 4);
 
         // The reload's transient: the game state reads `Warmup` again (not a real new
         // warmup, so nothing is cleared) and the rest of the mirror lands.
         client.game.team_match.phase = MatchPhase::Warmup;
         seat_players(&mut client, 8);
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         assert_eq!(client.warmup_members.len(), 8);
 
         client.game.team_match.phase = MatchPhase::Live;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         assert_eq!(client.game.team_match.roster.len(), 8, "completion, not one seating");
     }
 
@@ -1306,20 +1325,89 @@ mod tests {
         live_config(&mut client);
         seat_players(&mut client, 4);
         client.game.team_match.phase = MatchPhase::Warmup;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         client.game.team_match.phase = MatchPhase::Live;
-        client.seat_roster(MatchPhase::Warmup);
+        client.seat_roster(MatchPhase::Warmup, true);
         assert_eq!(client.warmup_members.len(), 4);
 
         for i in 0..client.game.entities.len() as u32 {
             client.game.entities[crate::entity::EntId(i)] = crate::entity::Entity::default();
         }
         client.game.team_match.phase = MatchPhase::Warmup;
-        client.seat_roster(MatchPhase::Live);
+        client.seat_roster(MatchPhase::Live, true);
         assert!(
             client.warmup_members.is_empty(),
             "the previous match's names do not ride along"
         );
+    }
+
+    /// Before any serverinfo, `match_phase` answers `Live` because `status` is absent -
+    /// and freezing there would freeze on an empty world. So the window stays open, and
+    /// the membership keeps growing, for as long as the phase is unknown.
+    #[test]
+    fn an_unknown_phase_never_freezes_the_window() {
+        use crate::mode::team::MatchPhase;
+        let mut client = Client::new(config());
+        live_config(&mut client);
+        seat_players(&mut client, 4);
+        client.game.team_match.phase = MatchPhase::Live;
+        client.seat_roster(MatchPhase::Live, false);
+        assert_eq!(client.warmup_members.len(), 4, "unknown phase: still collecting");
+
+        seat_players(&mut client, 8);
+        client.seat_roster(MatchPhase::Live, false);
+        assert_eq!(client.warmup_members.len(), 8, "and it keeps growing while unknown");
+    }
+
+    /// The case the second live arm actually failed on: a client that never sees a
+    /// warmup at all. Measured - one of the two read `countdown` 0.06 s in and never a
+    /// `warmup` state, so a window gated on warmup never opened and its four bots sat
+    /// out the match.
+    #[test]
+    fn a_client_that_never_sees_warmup_still_collects() {
+        use crate::mode::team::MatchPhase;
+        let mut client = Client::new(config());
+        live_config(&mut client);
+        client.game.team_match.phase = MatchPhase::Countdown { until: 1.0 };
+        seat_players(&mut client, 8);
+        client.seat_roster(MatchPhase::Countdown { until: 1.0 }, true);
+        assert_eq!(client.warmup_members.len(), 8, "countdown collects too");
+        assert_eq!(client.game.team_match.roster.len(), 8, "and is seated");
+    }
+
+    /// Opponents arriving during the countdown are still participants: the mirror fills
+    /// over seconds, and warmup had ended within a fraction of one.
+    #[test]
+    fn opponents_arriving_in_countdown_are_collected() {
+        use crate::mode::team::MatchPhase;
+        let mut client = Client::new(config());
+        live_config(&mut client);
+        seat_players(&mut client, 4);
+        client.game.team_match.phase = MatchPhase::Warmup;
+        client.seat_roster(MatchPhase::Warmup, true);
+        assert_eq!(client.warmup_members.len(), 4);
+
+        client.game.team_match.phase = MatchPhase::Countdown { until: 1.0 };
+        seat_players(&mut client, 8);
+        client.seat_roster(MatchPhase::Warmup, true);
+        assert_eq!(client.warmup_members.len(), 8, "the window is still open");
+    }
+
+    /// And it does close - on a `Live` the server actually declared.
+    #[test]
+    fn a_known_live_phase_closes_the_window() {
+        use crate::mode::team::MatchPhase;
+        let mut client = Client::new(config());
+        live_config(&mut client);
+        seat_players(&mut client, 4);
+        client.game.team_match.phase = MatchPhase::Warmup;
+        client.seat_roster(MatchPhase::Warmup, true);
+        client.game.team_match.phase = MatchPhase::Live;
+        client.seat_roster(MatchPhase::Warmup, true);
+
+        seat_players(&mut client, 8);
+        client.seat_roster(MatchPhase::Live, true);
+        assert_eq!(client.warmup_members.len(), 4, "frozen on a declared Live");
     }
 
     #[test]
