@@ -10,6 +10,14 @@ Zones are deliberately out of scope: the map view draws them from snapshot
 files, not from the embedded JSON, so the page carries no zone numbers to
 compare. Everything the page states as a number is covered.
 
+The index names the runner's LAST attempt per tier, which is not always the
+envelope the page selected: when that attempt failed, the builder shows an
+earlier complete envelope from the same group. That is not a mismatch to crash
+on. The failed run is then proven to be listed as an attempt with its own
+status, and the envelope the page DID select is checked field by field against
+its own file. Both facts get proven, and no index file is ever rewritten to make
+the check pass.
+
 Run: python3 dashboard/verify_against_evidence.py <index-file>
 where index-file lines are "t0 evidence/t0-....json" for one chain.
 """
@@ -52,15 +60,78 @@ def main(index_path: str) -> None:
 
     # The dashboard level whose runId matches each envelope, wherever the
     # builder grouped it.
-    def level_for(tier: str, run_id: str) -> dict:
+    def level_for(tier: str, run_id: str) -> dict | None:
         for group in runs:
             level = (group.get("levels") or {}).get(tier)
             if level and level.get("runId") == run_id:
                 return level
-        raise AssertionError(f"{tier}: {run_id} not on the dashboard")
+        return None
 
+    def attempt_for(run_id: str) -> dict | None:
+        """The run as the page lists it among a group's attempts."""
+        for group in runs:
+            for attempt in group.get("attempts") or []:
+                if attempt.get("runId") == run_id:
+                    return attempt
+        return None
+
+    def displayed_level(tier: str) -> dict | None:
+        for group in runs:
+            level = (group.get("levels") or {}).get(tier)
+            if level and level.get("runId"):
+                return level
+        return None
+
+    # (tier, envelope, level) to check field by field. Normally one per index
+    # line. When the index names a run the page did not select, the pair is
+    # rebuilt so that BOTH facts get proven — see below.
+    work: list[tuple[str, dict, dict]] = []
     for tier, envelope in sorted(envelopes.items()):
         level = level_for(tier, envelope["run_id"])
+        if level is not None:
+            work.append((tier, envelope, level))
+            continue
+        # The index names the runner's LAST attempt per tier. When that attempt
+        # failed, the builder deliberately shows an earlier complete envelope
+        # from the same group instead — status-aware selection. The contract
+        # says failed and aborted runs are checked as state and error and are
+        # never interpreted as measurements, so a failed run that is absent as a
+        # LEVEL is correct. Two things must still hold, and skipping either
+        # would turn a passing run into a thinner one:
+        #   1. the page did not drop the failed run silently — it appears as an
+        #      attempt, carrying its own status;
+        #   2. whatever the page DID select for that tier is itself checked
+        #      field by field against its own envelope on disk.
+        if envelope["status"] == "complete":
+            failures.append(
+                f"{tier}.runId: complete envelope {envelope['run_id']} "
+                "is not shown on the dashboard"
+            )
+            continue
+        attempt = attempt_for(envelope["run_id"])
+        if attempt is None:
+            failures.append(
+                f"{tier}.attempt: {envelope['run_id']} is neither a level nor a "
+                "listed attempt — the page lost the run"
+            )
+            continue
+        check(f"{tier}.attempt.status", attempt.get("status"), envelope["status"])
+        shown = displayed_level(tier)
+        if shown is None:
+            print(
+                f"not: {tier} {envelope['run_id']} ({envelope['status']}) visas som "
+                "försök; ingen nivå vald för tiern"
+            )
+            continue
+        shown_path = BASE / "evidence" / f"{shown['runId']}.json"
+        print(
+            f"not: {tier} {envelope['run_id']} ({envelope['status']}) visas som "
+            f"försök — statusmedvetet kuvertval; vald nivå {shown['runId']} "
+            "kontrolleras i stället"
+        )
+        work.append((tier, json.loads(shown_path.read_text()), shown))
+
+    for tier, envelope, level in work:
         check(f"{tier}.status", level.get("status"), envelope["status"])
         if envelope["status"] != "complete":
             check(f"{tier}.error", level.get("error"), envelope.get("error"))
