@@ -75,8 +75,18 @@ def main(index_path: str) -> None:
                     return attempt
         return None
 
-    def displayed_level(tier: str) -> dict | None:
+    def displayed_level(tier: str, run_id: str) -> dict | None:
+        """The level shown for `tier` in the group `run_id` belongs to.
+
+        Scoped to that group on purpose. Taking the first group with a level
+        would compare the index against whatever run happens to be newest —
+        which is how this check quietly started verifying a different night's
+        envelope once a second run landed.
+        """
         for group in runs:
+            attempts = group.get("attempts") or []
+            if not any(a.get("runId") == run_id for a in attempts):
+                continue
             level = (group.get("levels") or {}).get(tier)
             if level and level.get("runId"):
                 return level
@@ -116,7 +126,7 @@ def main(index_path: str) -> None:
             )
             continue
         check(f"{tier}.attempt.status", attempt.get("status"), envelope["status"])
-        shown = displayed_level(tier)
+        shown = displayed_level(tier, envelope["run_id"])
         if shown is None:
             print(
                 f"not: {tier} {envelope['run_id']} ({envelope['status']}) visas som "
@@ -221,11 +231,17 @@ def main(index_path: str) -> None:
             # The panel's score comes from the scoreboard oracle's team totals;
             # winner+diff above are the claim the verdict rests on, and the
             # internal consistency is its own check.
+            #
+            # Signed, not absolute. `diff` carries the sign: it is negative when
+            # the reference side wins, and `abs()` threw that away — so the check
+            # could never hold on a reference win, and, worse, it would have
+            # passed a panel that had the sign backwards. Every T3 before 19/8
+            # was a branch win, so the case was never exercised until one came in.
             score = level.get("score") or {}
             if score:
                 check(
                     "t3.score-consistency",
-                    abs(score.get("branch", 0) - score.get("main", 0)),
+                    score.get("branch", 0) - score.get("main", 0),
                     payload["result"]["diff"],
                 )
         elif tier == "t4":
