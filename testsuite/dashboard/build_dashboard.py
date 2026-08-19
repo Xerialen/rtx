@@ -235,6 +235,10 @@ def default_level(level: str) -> dict[str, Any]:
         # Null = ingen grind har sagt emot kuvertets egen sjalvdeklaration.
         "gateNote": None,
         "gateSource": None,
+        # Rubrik over noten. En kontrollpost behover inte vara en fallen grind:
+        # den kan ocksa ratta ETIKETTEN pa tal som star kvar. Null = sidans
+        # gamla formulering ("Likhetsgrind foll"), sa T2:s post ser ut som forr.
+        "gateLabel": None,
         # Retraherade kuvert i samma grupp: visas som forsok, aldrig som valda.
         "retractions": [],
     }
@@ -921,6 +925,39 @@ def load_controls(evidence_dir: Path) -> dict[str, dict[str, Any]]:
     return controls
 
 
+def apply_control(item: dict[str, Any], control: dict[str, Any] | None) -> dict[str, Any]:
+    """Lagg en sidokontrollpost pa en tier som inte sjalv hanterar en.
+
+    En kontrollpost gor en av tva saker, och skillnaden ar inte kosmetisk:
+
+    * **faller en grind** — kuvertets sjalvdeklarerade verdict haller inte, och
+      tiern ar ett forsok (T2:s likhetsgrind, som t2_level hanterar sjalv);
+    * **rattar en etikett** — talen ar riktigt matta, men de betyder inte det
+      sidan pastar att de betyder. Da star verdict kvar och bara texten andras.
+
+    Kuvertet rors aldrig i nagotdera fallet. Fyra falt kan sattas, alla
+    frivilliga: ``label`` (rubrik), ``reason`` (noten), ``key_override``
+    (enradaren, det forsta nagon laser) och ``verdict_override``.
+    """
+    if not control:
+        return item
+    note = " · ".join(
+        part
+        for part in (text(control.get("gate"), ""), text(control.get("reason"), ""))
+        if part
+    )
+    item["gateNote"] = note or None
+    item["gateLabel"] = text(control.get("label"), "") or None
+    item["gateSource"] = text(control.get("source"), "") or None
+    override = text(control.get("verdict_override"), "")
+    if override:
+        item["verdict"] = override
+    key_override = text(control.get("key_override"), "")
+    if key_override:
+        item["key"] = key_override
+    return item
+
+
 def load_retractions(evidence_dir: Path) -> list[dict[str, Any]]:
     """Retraktionsposter ur `retracted/`.
 
@@ -1018,10 +1055,11 @@ def group_evidence(
                 if text(item.document.get("status"), "").lower() == "complete"
             ]
             chosen = (complete_choices or choices)[-1].document
+            control = (controls or {}).get(f"{chosen.get('run_id')}.json")
             if level == "t0":
-                levels[level] = t0_level(chosen)
+                levels[level] = apply_control(t0_level(chosen), control)
             elif level == "t1":
-                levels[level] = t1_level(chosen)
+                levels[level] = apply_control(t1_level(chosen), control)
             elif level == "t2":
                 levels[level], new_snapshots = t2_level(
                     chosen,
@@ -1029,7 +1067,7 @@ def group_evidence(
                     snapshot_number,
                     branch,
                     group_build,
-                    (controls or {}).get(f"{chosen.get('run_id')}.json"),
+                    control,
                 )
                 snapshots.extend(new_snapshots)
                 snapshot_number += len(new_snapshots)
@@ -1037,10 +1075,11 @@ def group_evidence(
                 levels[level], new_snapshots = t3_level(
                     chosen, group_id, snapshot_number, branch, group_build
                 )
+                apply_control(levels[level], control)
                 snapshots.extend(new_snapshots)
                 snapshot_number += len(new_snapshots)
             elif level == "t4":
-                levels[level] = t4_level(chosen)
+                levels[level] = apply_control(t4_level(chosen), control)
 
         attempts = [
             {

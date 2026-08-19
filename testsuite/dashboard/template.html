@@ -1055,7 +1055,7 @@ function renderT2() {
   // En oberoende grind som fallit ar det viktigaste pa panelen: den avgor om
   // talen nedanfor far kallas en matning. Darfor forst, inte i en fotnot.
   const gate = focus.gateNote
-    ? '<div class="callout"><strong>Likhetsgrind föll:</strong> ' + esc(focus.gateNote) +
+    ? '<div class="callout"><strong>' + esc(focus.gateLabel || "Likhetsgrind föll") + ':</strong> ' + esc(focus.gateNote) +
       (focus.gateSource ? ' <span class="muted mono">(' + esc(focus.gateSource) + ")</span>" : "") +
       " · talen nedan står, men tiern räknas som <b>försök</b>, inte som mätt.</div>"
     : "";
