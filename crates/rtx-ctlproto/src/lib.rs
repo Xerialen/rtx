@@ -787,6 +787,15 @@ pub struct CellResp {
     pub ledge: bool,
     pub out: Vec<CellLinkOut>,
     pub incoming: Vec<CellLinkIn>,
+    /// Links leaving this cell that the carve severed: in the array, out of the adjacency, and
+    /// untraversable.
+    ///
+    /// Without this a dump has to choose between two wrong answers: walk the adjacency and silently
+    /// omit them, or walk the array and silently present them as walkable. The first is what produced
+    /// the 48208-vs-48193 gap in the dm3 dump. Reported separately so an inventory can be complete
+    /// *and* honest about what is actually traversable.
+    #[serde(default)]
+    pub out_pruned: Vec<CellLinkOut>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

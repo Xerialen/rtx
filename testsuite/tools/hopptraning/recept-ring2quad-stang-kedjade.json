@@ -1,0 +1,33 @@
+{
+  "recept_id": "ring2quad-stang-kedjade-v1",
+  "map": "dm3",
+  "syfte": "Stang de tva kedjade, curl-losa gapkorsningarna som obduktionen pekar ut. Deras avfart ar sjalva ringkanten, sa banan ar ~9 u for lag vid ringens ostra oppning och stoppas dod mot troskeln. Varje korsning som landar - och agarens bada egna demon - lamnar marken minst 64 u fore oppningen och passerar den pa z >= 90.",
+  "base": {
+    "cells": 5981,
+    "links": 48217,
+    "rj_links": 0,
+    "graph_stamp": "17645347086516095554",
+    "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "ops": [
+    {
+      "op": "remove_links",
+      "name": "stang-kedjade-gapkorsningar",
+      "links": [
+        { "id": 34501, "from": 1701, "to": 2072, "kind": "speedjump",
+          "var": "[436,-208,56] -> [716,-208,56]", "sida": "syd" },
+        { "id": 34503, "from": 1712, "to": 2083, "kind": "speedjump",
+          "var": "[438,142,56] -> [712,144,56]", "sida": "nord" }
+      ]
+    }
+  ],
+  "harledd_slut": {
+    "cells": 5981,
+    "links": 48215,
+    "rj_links": 0,
+    "graph_stamp": "16919247716590945572",
+    "graph_content_hash": "ff732a9ac599a2cf1b6067423a7bf6859cff55068f6c5742ac02a5155b87eb72"
+  },
+  "harledningsnot": "Slutlaget ar RAKNAT ur den kompletta dumpen med en egen inventeringsraknare skriven ur motorns canonical_inventory, aldrig avlast ur motorn. Raknaren ar positivt kontrollerad: den reproducerar baslagets nivå-2 4c099331... exakt. T-flaggan foljer motorns PINNADE semantik: remove_links_by_id rensar adjacensen och push_link:ar varje behallen lank tillbaka, sa alla kvarvarande lankar blir T=1. Det ar avsiktligt och fast i testet control::tests::komponat_remove_links_resurrects_pruned_links_like_the_recipes_do. Varianten dar de prunade bevaras ger i stallet nivå-2 b440dfe4... och ar INTE den motorn kor.",
+  "bieffekt_deklarerad": "15 carve-rensade lankar blir traverserbara igen. 13 av dem ligger i sydostra hornet (x 1088-1568, y -928..-544) och ror inte ringen, gapet eller quad. 2 ligger pa teleportcellen [-536,-448,-16]: en gang ut (36313) och sjalva teleporten (36314) till [224,-320,60]. Ingen av de 15 ligger pa nagon rutt hopp 1 anvander. De tva teleportlankarna ror daremot hopp 2:s mal och hopp 3:s start - receptet ska darfor vara ANGRAT innan hopp 2 och 3 mats."
+}

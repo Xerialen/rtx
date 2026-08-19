@@ -1,0 +1,67 @@
+{
+ "hopp": "1",
+ "namn": "ringkanten over gapet till quad",
+ "varv": "v4",
+ "anteckning": "ANDRING 3: recept ring2quad-stang-kedjade-v1, graf 5981/48215 niv\u00e5-2 ff732a9a, chain_extra=0",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48215,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 12.0
+ },
+ "starter": {
+  "syd": [
+   478.0,
+   -515.0,
+   56.0
+  ],
+  "nord": [
+   193.0,
+   -45.0,
+   56.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 2,
+ "klasser": {
+  "fall": 8,
+  "lyckad": 2
+ },
+ "per_start": {
+  "syd": {
+   "n": 5,
+   "lyckad": 0
+  },
+  "nord": {
+   "n": 5,
+   "lyckad": 2
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp1-v4.mvd",
+   "bytes": 140956,
+   "sha256": "82441b662d951b92ef773259e7b4c005058b3fd8ccaff0938e9bd5c2bdeebc35"
+  },
+  {
+   "fil": "hopp1-v4.txt",
+   "bytes": 217,
+   "sha256": "ddf6010fb8382ef25e09a2b65c638996b5c91de569b3bb11b74d23761e0f01a5"
+  }
+ ],
+ "tider_lyckade": [
+  3.25,
+  3.25
+ ]
+}

@@ -579,6 +579,20 @@ impl NavGraph {
         self.under_plat.get(cell as usize).copied().flatten().map(usize::from)
     }
 
+    /// The links leaving `cell` that are present in the array but absent from the adjacency — the
+    /// ones a carve pass severed on purpose (ids and side tables must stand still, so the link stays).
+    /// The planner cannot take them; an inventory that omits them is incomplete, and one that lists
+    /// them as `out` is wrong. Reported separately so a dump can be both.
+    pub fn pruned_out_links(&self, cell: CellId) -> Vec<u32> {
+        let live = &self.adjacency[cell as usize];
+        self.links
+            .iter()
+            .enumerate()
+            .filter(|(li, l)| l.from == cell && !live.contains(&(*li as u32)))
+            .map(|(li, _)| li as u32)
+            .collect()
+    }
+
     /// Counts per link kind, for the load-time debug line.
     pub fn summary(&self) -> LinkCounts {
         let mut c = LinkCounts::default();

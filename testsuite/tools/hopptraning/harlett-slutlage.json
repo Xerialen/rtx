@@ -1,0 +1,40 @@
+{
+ "bas": {
+  "cells": 5981,
+  "links": 48217,
+  "rj_links": 0,
+  "graph_stamp": "17645347086516095554",
+  "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+ },
+ "borttagna": [
+  {
+   "id": 34501,
+   "from": 1701,
+   "to": 2072,
+   "kind": "speedjump",
+   "T": 1
+  },
+  {
+   "id": 34503,
+   "from": 1712,
+   "to": 2083,
+   "kind": "speedjump",
+   "T": 1
+  }
+ ],
+ "A_prunade_bevaras": {
+  "cells": 5981,
+  "links": 48215,
+  "rj_links": 0,
+  "graph_stamp": "16919247716590945572",
+  "graph_content_hash": "b440dfe43f1c4297c7400def8d922cd37d66a21014013ed14d183a6062fd0b05"
+ },
+ "B_motorns_vag_prunade_ateruppstar": {
+  "cells": 5981,
+  "links": 48215,
+  "rj_links": 0,
+  "graph_stamp": "16919247716590945572",
+  "graph_content_hash": "ff732a9ac599a2cf1b6067423a7bf6859cff55068f6c5742ac02a5155b87eb72",
+  "ateruppstandna": 15
+ }
+}

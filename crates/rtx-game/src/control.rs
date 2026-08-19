@@ -1931,6 +1931,23 @@ fn describe_cell(g: &NavGraph, cell: u32) -> proto::CellResp {
             });
         }
     }
+    // The links leaving this cell that the carve severed: present in the array, absent from the
+    // adjacency, and untraversable. Same shape as `out` so a consumer can merge the two into a
+    // complete inventory and keep the distinction.
+    let out_pruned = g
+        .pruned_out_links(cell)
+        .into_iter()
+        .map(|li| proto::CellLinkOut {
+            link: li,
+            kind: kind_name(g.link_kind(li)).to_string(),
+            to_cell: g.link_target(li),
+            to: a3(g.cell_origin(g.link_target(li))),
+            cost: g.link_cost(li),
+            tgt_hazard: format!("{:?}", g.cell_hazard(g.link_target(li))),
+            hazard_hp: g.link_hazard_hp(li),
+            water_extra: g.link_water_extra(li),
+        })
+        .collect();
     proto::CellResp {
         cell,
         origin: a3(g.cell_origin(cell)),
@@ -1938,6 +1955,7 @@ fn describe_cell(g: &NavGraph, cell: u32) -> proto::CellResp {
         ledge: g.is_ledge(cell),
         out,
         incoming,
+        out_pruned,
     }
 }
 
