@@ -1,0 +1,74 @@
+{
+ "hopp": "1f",
+ "namn": "ring2quad, tre etablerade vinklar (F-serien)",
+ "varv": "vF4e",
+ "anteckning": "REPETITION pa vF4-grafen, ingen andring",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48211,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 12.0
+ },
+ "starter": {
+  "syd": [
+   478.0,
+   -515.0,
+   56.0
+  ],
+  "nord": [
+   193.0,
+   -45.0,
+   56.0
+  ],
+  "ringitemet": [
+   240.0,
+   -32.0,
+   56.0
+  ]
+ },
+ "n": 12,
+ "lyckade": 11,
+ "klasser": {
+  "lyckad": 11,
+  "fall": 1
+ },
+ "per_start": {
+  "syd": {
+   "n": 4,
+   "lyckad": 3
+  },
+  "nord": {
+   "n": 4,
+   "lyckad": 4
+  },
+  "ringitemet": {
+   "n": 4,
+   "lyckad": 4
+  }
+ },
+ "mvd": [],
+ "tider_lyckade": [
+  3.1,
+  3.15,
+  3.15,
+  3.2,
+  3.25,
+  3.25,
+  3.4,
+  3.4,
+  4.6,
+  4.7,
+  5.25
+ ]
+}
