@@ -69,6 +69,15 @@ HOPP = {
         "fall_z": 48.0,
         "budget_s": 12.0,
     },
+    "4": {
+        "namn": "TILLBAKAHOPPET: quad over klyftan till ringen",
+        "starter": [("quad", [946.0, 334.0, 56.0])],
+        "mal": [438.0, 142.0, 56.0],
+        "ankomst_r": 56.0,
+        "ankomst_dz": 12.0,
+        "fall_z": 48.0,
+        "budget_s": 12.0,
+    },
     "2": {
         "namn": "RA-spawnen ut genom teleporten",
         "starter": [("rarox", [-632.0, -680.0, -16.0])],

@@ -1,0 +1,67 @@
+{
+ "hopp": "4",
+ "namn": "TILLBAKAHOPPET: quad over klyftan till ringen",
+ "varv": "tb1",
+ "anteckning": "BASELINE tillbakahopp, vF5-grafen, INGA grafandringar, EN bot",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48211,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   438.0,
+   142.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 12.0
+ },
+ "starter": {
+  "quad": [
+   946.0,
+   334.0,
+   56.0
+  ]
+ },
+ "n": 12,
+ "lyckade": 12,
+ "klasser": {
+  "lyckad": 12
+ },
+ "per_start": {
+  "quad": {
+   "n": 12,
+   "lyckad": 12
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp4-tb1.mvd",
+   "bytes": 43188,
+   "sha256": "03699019873e5a89e3ae44977b6ca3d355eb17fbf5bb822a11cafaae8853b706"
+  },
+  {
+   "fil": "hopp4-tb1.txt",
+   "bytes": 125,
+   "sha256": "c7be6549e85f849751472f1db158e86ae87353cd53ff9ad9febd27ed240f3891"
+  }
+ ],
+ "tider_lyckade": [
+  1.65,
+  1.65,
+  1.7,
+  1.7,
+  1.7,
+  1.7,
+  1.7,
+  1.7,
+  1.7,
+  1.7,
+  1.7,
+  1.7
+ ]
+}
