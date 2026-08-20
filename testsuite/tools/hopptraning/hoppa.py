@@ -291,6 +291,16 @@ def audit_slice(lab, bot, t_fran):
     return ut
 
 
+
+def parkera(lab, bot, pos):
+    """Stall boten pa `pos` och HALL den dar. Aldrig fritt strov nar riggen visas."""
+    try:
+        lab.request({"Teleport": {"bot": bot, "pos": [float(v) for v in pos], "vel": [0.0, 0.0, 0.0]}})
+        lab.request({"Hold": {"bot": bot}})
+    except Exception:
+        pass
+
+
 def forsok(lab, bot, start, mal, cfg, i, namn):
     lab.events = []
     ensure_ready(lab, bot)
@@ -333,10 +343,7 @@ def forsok(lab, bot, start, mal, cfg, i, namn):
             klass = "fall"
             tid_klass = nu
             fall_vid = nu
-            try:
-                lab.request({"Stop": {"bot": bot}})
-            except Exception:
-                pass
+            parkera(lab, bot, start)   # FAIL direkt: tillbaka till startpunkten pa stallet
             break
         if klass is None and (b.get("on_ground") and nu > 0.4
                               and hdist(o, mal) <= cfg["ankomst_r"]
@@ -391,10 +398,7 @@ def forsok(lab, bot, start, mal, cfg, i, namn):
         "tape": tape,
         "audit": audit,
     }
-    try:
-        lab.request({"Stop": {"bot": bot}})
-    except Exception:
-        pass
+    parkera(lab, bot, start)       # mellan forsok: stillastaende, aldrig fritt strov
     return rad
 
 
@@ -478,10 +482,8 @@ def main():
     (utd / "forsok.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rader))
     (utd / "sammanfattning.json").write_text(json.dumps(sammanfattning, indent=1) + "\n")
     print("SUMMA:", json.dumps(sammanfattning, ensure_ascii=False), flush=True)
-    try:
-        lab.request({"Stop": {"bot": a.bot}})
-    except Exception:
-        pass
+    parkera(lab, a.bot, cfg["starter"][0][1])   # varvet slut: boten star kvar pa startpunkten
+    print("boten parkerad pa %s" % (cfg["starter"][0][1],))
     lab.close()
 
 
