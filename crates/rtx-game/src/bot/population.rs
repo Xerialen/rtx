@@ -10,6 +10,51 @@ use super::state::BotState;
 use crate::entity::EntId;
 use crate::game::GameState;
 
+/// The slot facts the presence rule is allowed to see.
+///
+/// `alive` is carried on purpose. The rule must *not* read it — but a rule that
+/// silently never sees a fact cannot be shown to ignore it, and ignoring this one
+/// is the whole point (see [`name_is_present`] and the `T5` test). Carrying it
+/// makes the independence provable by mutation.
+pub(super) struct SlotFacts {
+    pub is_bot: bool,
+    pub in_use: bool,
+    pub is_player: bool,
+    pub alive: bool,
+}
+
+/// Whether a rostered name is **already present on a slot**, for the post-reload
+/// recreation scan below.
+///
+/// A live bot carries its own name, as before. What is new: a **present non-bot
+/// player** carries it too. Without that, a rostered network client's name is
+/// permanently "missing" — `active` was built from bots only — and the scan
+/// recreates it as a bot every frame for the rest of the match.
+///
+/// **Presence, not life.** `alive` is taken and deliberately discarded. A rostered
+/// player who is dead between respawns is still on the slot; freeing the name
+/// while they wait would clone them on *every death*, all match long. Gating this
+/// on liveness is the cheap wrong implementation, and `T5` exists to make it fall.
+pub(super) fn name_is_present(f: &SlotFacts) -> bool {
+    let _ = f.alive; // never a criterion — only evidence that it is ignored
+    f.is_bot || (f.in_use && f.is_player)
+}
+
+/// The first rostered name that is **not** already present, with its index.
+///
+/// Scans the whole roster: a present name is **skipped**, never a stopping point.
+/// That matters because `pick_roster` seats `!is_bot` before `is_bot`, so on a
+/// mixed roster the skipped entries always come *first* — a scan that stopped at
+/// the first skip would find nothing to recreate and be exactly as broken as the
+/// defect it replaces.
+pub(super) fn first_missing<'a>(bot_roster: &'a [String], active: &[String]) -> Option<(i32, &'a str)> {
+    bot_roster
+        .iter()
+        .enumerate()
+        .find(|(_, name)| !active.contains(name))
+        .map(|(index, name)| (index as i32, name.as_str()))
+}
+
 /// Reconcile the live bot count to `rtx_bot_count`, one add/remove per call (called each normal
 /// server frame). No-ops until a navmesh exists for the map, so bots never spawn blind.
 pub fn manage_population(game: &mut GameState) {
@@ -43,16 +88,19 @@ pub fn manage_population(game: &mut GameState) {
     if game.team_match.config.teams >= 2 && game.team_match.config.size >= 1 && !in_warmup {
         let active: Vec<String> = (1..=maxclients as u32)
             .map(EntId)
-            .filter(|&e| game.entities[e].bot.is_bot)
+            .filter(|&e| {
+                let ent = &game.entities[e];
+                name_is_present(&SlotFacts {
+                    is_bot: ent.bot.is_bot,
+                    in_use: ent.in_use,
+                    is_player: ent.is_player(),
+                    alive: ent.is_alive(),
+                })
+            })
             .map(|e| game.netname_of(e))
             .collect();
-        let missing = game
-            .team_match
-            .bot_roster
-            .iter()
-            .enumerate()
-            .find(|(_, name)| !active.contains(name))
-            .map(|(index, name)| (index as i32, name.clone()));
+        let missing =
+            first_missing(&game.team_match.bot_roster, &active).map(|(index, name)| (index, name.to_string()));
         if let Some((index, name)) = missing {
             game.ensure_navmesh();
             if game.nav.is_loaded() {
