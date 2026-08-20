@@ -1,0 +1,56 @@
+{
+ "hopp": "2",
+ "namn": "RA-spawnen ut genom teleporten",
+ "varv": "h2-vF5",
+ "anteckning": "OMVERIFIERING hopp 2 pa vF5-grafen, en bot, inga andringar",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48211,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   224.0,
+   -320.0,
+   75.0
+  ],
+  "ankomst_r": 64.0,
+  "ankomst_dz": 40.0,
+  "fall_z": -260.0,
+  "budget_s": 15.0
+ },
+ "starter": {
+  "rarox": [
+   -632.0,
+   -680.0,
+   -16.0
+  ]
+ },
+ "n": 12,
+ "lyckade": 12,
+ "klasser": {
+  "lyckad": 12
+ },
+ "per_start": {
+  "rarox": {
+   "n": 12,
+   "lyckad": 12
+  }
+ },
+ "mvd": [],
+ "tider_lyckade": [
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0
+ ]
+}

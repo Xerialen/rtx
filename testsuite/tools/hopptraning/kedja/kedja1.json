@@ -1,0 +1,543 @@
+{
+ "tag": "kedja1",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48211,
+  "rj_links": 0
+ },
+ "n": 12,
+ "hela": 12,
+ "ben_ok": {
+  "1-over": {
+   "ok": 12,
+   "n": 12
+  },
+  "2-teleport": {
+   "ok": 12,
+   "n": 12
+  },
+  "3-ringitem": {
+   "ok": 12,
+   "n": 12
+  }
+ },
+ "rader": [
+  {
+   "i": 1,
+   "vinkel": "syd",
+   "hela_kedjan": true,
+   "ben": [
+    {
+     "ben": "1-over",
+     "vinkel": "syd",
+     "klass": "lyckad",
+     "tid_s": 4.8,
+     "min_z": 56.0,
+     "slut": [
+      927.3,
+      319.5,
+      56.0
+     ]
+    },
+    {
+     "ben": "2-teleport",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 1.0,
+     "min_z": -16.0,
+     "slut": [
+      224.0,
+      -320.0,
+      60.0
+     ]
+    },
+    {
+     "ben": "3-ringitem",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 3.1,
+     "min_z": 56.0,
+     "slut": [
+      931.3,
+      323.5,
+      56.0
+     ]
+    }
+   ]
+  },
+  {
+   "i": 2,
+   "vinkel": "nord",
+   "hela_kedjan": true,
+   "ben": [
+    {
+     "ben": "1-over",
+     "vinkel": "nord",
+     "klass": "lyckad",
+     "tid_s": 3.5,
+     "min_z": 56.0,
+     "slut": [
+      933.2,
+      321.7,
+      56.0
+     ]
+    },
+    {
+     "ben": "2-teleport",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 1.0,
+     "min_z": -16.0,
+     "slut": [
+      226.5,
+      -317.5,
+      60.0
+     ]
+    },
+    {
+     "ben": "3-ringitem",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 3.15,
+     "min_z": 56.0,
+     "slut": [
+      927.8,
+      319.3,
+      56.0
+     ]
+    }
+   ]
+  },
+  {
+   "i": 3,
+   "vinkel": "ringitemet",
+   "hela_kedjan": true,
+   "ben": [
+    {
+     "ben": "1-over",
+     "vinkel": "ringitemet",
+     "klass": "lyckad",
+     "tid_s": 3.1,
+     "min_z": 56.0,
+     "slut": [
+      927.7,
+      319.1,
+      56.0
+     ]
+    },
+    {
+     "ben": "2-teleport",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 1.0,
+     "min_z": -16.0,
+     "slut": [
+      224.0,
+      -320.0,
+      60.0
+     ]
+    },
+    {
+     "ben": "3-ringitem",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 3.15,
+     "min_z": 56.0,
+     "slut": [
+      927.8,
+      319.3,
+      56.0
+     ]
+    }
+   ]
+  },
+  {
+   "i": 4,
+   "vinkel": "syd",
+   "hela_kedjan": true,
+   "ben": [
+    {
+     "ben": "1-over",
+     "vinkel": "syd",
+     "klass": "lyckad",
+     "tid_s": 4.75,
+     "min_z": 56.0,
+     "slut": [
+      930.3,
+      322.0,
+      56.0
+     ]
+    },
+    {
+     "ben": "2-teleport",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 1.0,
+     "min_z": -16.0,
+     "slut": [
+      224.0,
+      -320.0,
+      60.0
+     ]
+    },
+    {
+     "ben": "3-ringitem",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 3.15,
+     "min_z": 56.0,
+     "slut": [
+      927.8,
+      319.2,
+      56.0
+     ]
+    }
+   ]
+  },
+  {
+   "i": 5,
+   "vinkel": "nord",
+   "hela_kedjan": true,
+   "ben": [
+    {
+     "ben": "1-over",
+     "vinkel": "nord",
+     "klass": "lyckad",
+     "tid_s": 3.45,
+     "min_z": 56.0,
+     "slut": [
+      928.8,
+      319.7,
+      56.0
+     ]
+    },
+    {
+     "ben": "2-teleport",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 1.0,
+     "min_z": -16.0,
+     "slut": [
+      226.5,
+      -317.5,
+      60.0
+     ]
+    },
+    {
+     "ben": "3-ringitem",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 3.15,
+     "min_z": 56.0,
+     "slut": [
+      927.8,
+      319.2,
+      56.0
+     ]
+    }
+   ]
+  },
+  {
+   "i": 6,
+   "vinkel": "ringitemet",
+   "hela_kedjan": true,
+   "ben": [
+    {
+     "ben": "1-over",
+     "vinkel": "ringitemet",
+     "klass": "lyckad",
+     "tid_s": 3.1,
+     "min_z": 56.0,
+     "slut": [
+      931.3,
+      323.4,
+      56.0
+     ]
+    },
+    {
+     "ben": "2-teleport",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 1.0,
+     "min_z": -16.0,
+     "slut": [
+      226.5,
+      -317.5,
+      60.0
+     ]
+    },
+    {
+     "ben": "3-ringitem",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 3.1,
+     "min_z": 56.0,
+     "slut": [
+      931.3,
+      323.4,
+      56.0
+     ]
+    }
+   ]
+  },
+  {
+   "i": 7,
+   "vinkel": "syd",
+   "hela_kedjan": true,
+   "ben": [
+    {
+     "ben": "1-over",
+     "vinkel": "syd",
+     "klass": "lyckad",
+     "tid_s": 4.7,
+     "min_z": 56.0,
+     "slut": [
+      931.6,
+      323.8,
+      56.0
+     ]
+    },
+    {
+     "ben": "2-teleport",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 1.0,
+     "min_z": -16.0,
+     "slut": [
+      224.0,
+      -320.0,
+      60.0
+     ]
+    },
+    {
+     "ben": "3-ringitem",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 3.1,
+     "min_z": 56.0,
+     "slut": [
+      931.3,
+      323.4,
+      56.0
+     ]
+    }
+   ]
+  },
+  {
+   "i": 8,
+   "vinkel": "nord",
+   "hela_kedjan": true,
+   "ben": [
+    {
+     "ben": "1-over",
+     "vinkel": "nord",
+     "klass": "lyckad",
+     "tid_s": 3.45,
+     "min_z": 56.0,
+     "slut": [
+      929.1,
+      318.7,
+      56.0
+     ]
+    },
+    {
+     "ben": "2-teleport",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 1.0,
+     "min_z": -16.0,
+     "slut": [
+      226.5,
+      -317.5,
+      60.0
+     ]
+    },
+    {
+     "ben": "3-ringitem",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 3.15,
+     "min_z": 56.0,
+     "slut": [
+      927.8,
+      319.2,
+      56.0
+     ]
+    }
+   ]
+  },
+  {
+   "i": 9,
+   "vinkel": "ringitemet",
+   "hela_kedjan": true,
+   "ben": [
+    {
+     "ben": "1-over",
+     "vinkel": "ringitemet",
+     "klass": "lyckad",
+     "tid_s": 3.15,
+     "min_z": 56.0,
+     "slut": [
+      927.8,
+      319.1,
+      56.0
+     ]
+    },
+    {
+     "ben": "2-teleport",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 1.0,
+     "min_z": -16.0,
+     "slut": [
+      224.0,
+      -320.0,
+      60.0
+     ]
+    },
+    {
+     "ben": "3-ringitem",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 3.1,
+     "min_z": 56.0,
+     "slut": [
+      931.4,
+      323.5,
+      56.0
+     ]
+    }
+   ]
+  },
+  {
+   "i": 10,
+   "vinkel": "syd",
+   "hela_kedjan": true,
+   "ben": [
+    {
+     "ben": "1-over",
+     "vinkel": "syd",
+     "klass": "lyckad",
+     "tid_s": 4.8,
+     "min_z": 56.0,
+     "slut": [
+      929.9,
+      321.0,
+      56.0
+     ]
+    },
+    {
+     "ben": "2-teleport",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 1.0,
+     "min_z": -16.0,
+     "slut": [
+      224.0,
+      -320.0,
+      60.0
+     ]
+    },
+    {
+     "ben": "3-ringitem",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 3.15,
+     "min_z": 56.0,
+     "slut": [
+      927.9,
+      319.2,
+      56.0
+     ]
+    }
+   ]
+  },
+  {
+   "i": 11,
+   "vinkel": "nord",
+   "hela_kedjan": true,
+   "ben": [
+    {
+     "ben": "1-over",
+     "vinkel": "nord",
+     "klass": "lyckad",
+     "tid_s": 3.5,
+     "min_z": 56.0,
+     "slut": [
+      934.3,
+      322.8,
+      56.0
+     ]
+    },
+    {
+     "ben": "2-teleport",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 1.0,
+     "min_z": -16.0,
+     "slut": [
+      224.0,
+      -320.0,
+      60.0
+     ]
+    },
+    {
+     "ben": "3-ringitem",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 3.15,
+     "min_z": 56.0,
+     "slut": [
+      927.8,
+      319.3,
+      56.0
+     ]
+    }
+   ]
+  },
+  {
+   "i": 12,
+   "vinkel": "ringitemet",
+   "hela_kedjan": true,
+   "ben": [
+    {
+     "ben": "1-over",
+     "vinkel": "ringitemet",
+     "klass": "lyckad",
+     "tid_s": 3.1,
+     "min_z": 56.0,
+     "slut": [
+      931.3,
+      323.4,
+      56.0
+     ]
+    },
+    {
+     "ben": "2-teleport",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 1.0,
+     "min_z": -16.0,
+     "slut": [
+      224.0,
+      -320.0,
+      60.0
+     ]
+    },
+    {
+     "ben": "3-ringitem",
+     "vinkel": null,
+     "klass": "lyckad",
+     "tid_s": 3.1,
+     "min_z": 56.0,
+     "slut": [
+      927.8,
+      319.2,
+      56.0
+     ]
+    }
+   ]
+  }
+ ]
+}
