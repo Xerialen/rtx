@@ -1,0 +1,169 @@
+{
+ "tag": "bas2",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48217,
+  "rj_links": 0
+ },
+ "natta": 0,
+ "n": 4,
+ "fall": 0,
+ "tider": {
+  "sng-spawn": {
+   "n_lyckade": 0,
+   "median_s": null,
+   "min_s": null,
+   "max_s": null
+  },
+  "liftspawn": {
+   "n_lyckade": 0,
+   "median_s": null,
+   "min_s": null,
+   "max_s": null
+  }
+ },
+ "rader": [
+  {
+   "ben": "sng-spawn",
+   "i": 1,
+   "klass": "timeout",
+   "tid_s": 60.0,
+   "slut_pos": [
+    -535.6,
+    777.5,
+    -16.0
+   ],
+   "fall": [],
+   "n_ben_i_rutt": 30,
+   "icke_walk": [
+    [
+     483,
+     "step"
+    ],
+    [
+     490,
+     "step"
+    ],
+    [
+     500,
+     "step"
+    ],
+    [
+     510,
+     "step"
+    ],
+    [
+     520,
+     "step"
+    ],
+    [
+     528,
+     "step"
+    ],
+    [
+     273,
+     "step"
+    ],
+    [
+     279,
+     "step"
+    ]
+   ]
+  },
+  {
+   "ben": "sng-spawn",
+   "i": 2,
+   "klass": "timeout",
+   "tid_s": 60.0,
+   "slut_pos": [
+    -535.3,
+    779.2,
+    -16.0
+   ],
+   "fall": [],
+   "n_ben_i_rutt": 30,
+   "icke_walk": [
+    [
+     483,
+     "step"
+    ],
+    [
+     490,
+     "step"
+    ],
+    [
+     500,
+     "step"
+    ],
+    [
+     510,
+     "step"
+    ],
+    [
+     520,
+     "step"
+    ],
+    [
+     528,
+     "step"
+    ],
+    [
+     273,
+     "step"
+    ],
+    [
+     279,
+     "step"
+    ]
+   ]
+  },
+  {
+   "ben": "liftspawn",
+   "i": 1,
+   "klass": "timeout",
+   "tid_s": 90.0,
+   "slut_pos": [
+    -842.4,
+    141.8,
+    -16.0
+   ],
+   "fall": [],
+   "n_ben_i_rutt": 13,
+   "icke_walk": [
+    [
+     13416,
+     "drop"
+    ],
+    [
+     35418,
+     "speedjump"
+    ]
+   ]
+  },
+  {
+   "ben": "liftspawn",
+   "i": 2,
+   "klass": "timeout",
+   "tid_s": 90.0,
+   "slut_pos": [
+    -843.7,
+    145.6,
+    -16.0
+   ],
+   "fall": [],
+   "n_ben_i_rutt": 13,
+   "icke_walk": [
+    [
+     13416,
+     "drop"
+    ],
+    [
+     35418,
+     "speedjump"
+    ]
+   ]
+  }
+ ],
+ "dom": "OKALIBRERAD"
+}
