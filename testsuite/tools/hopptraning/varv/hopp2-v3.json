@@ -1,0 +1,65 @@
+{
+ "hopp": "2",
+ "namn": "RA-spawnen ut genom teleporten",
+ "varv": "v3",
+ "anteckning": "BEKRAFTELSEVARV under RA-vaktregim: recept ring2quad-oppna-teleporten-v1, RA-VAKT GRON 12/14 1 fall pa baslinjens plats; graf 5981/48216 niv\u00e5-2 9367336d",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48216,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   224.0,
+   -320.0,
+   75.0
+  ],
+  "ankomst_r": 64.0,
+  "ankomst_dz": 40.0,
+  "fall_z": -260.0,
+  "budget_s": 15.0
+ },
+ "starter": {
+  "rarox": [
+   -632.0,
+   -680.0,
+   -16.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 10,
+ "klasser": {
+  "lyckad": 10
+ },
+ "per_start": {
+  "rarox": {
+   "n": 10,
+   "lyckad": 10
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp2-v3.mvd",
+   "bytes": 54025,
+   "sha256": "ebd793cc26f7f42290c2e5421323eeed44f9e0fd619c253e863c4c669c5050a0"
+  },
+  {
+   "fil": "hopp2-v3.txt",
+   "bytes": 217,
+   "sha256": "e766d61fcd154a414c64ca337f468cedb1f2661f9bb73013e4af664580b4317d"
+  }
+ ],
+ "tider_lyckade": [
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0
+ ]
+}
