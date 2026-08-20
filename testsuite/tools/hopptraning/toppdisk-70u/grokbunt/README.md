@@ -116,40 +116,80 @@ Planen i `Goto`-läget, identisk alla tre gångerna:
 - **Inte "planeras och avbryts vid läppen"** — steget avbryts inte, det påbörjas
   aldrig, för planen är redan tom när boten står där.
 
-Det som återstår är **var boten hamnar när klättringen tar slut**. Motorns eget
-`Cell` på de uppmätta stoppositionerna svarar cell 1216/1218 — men med
-**dz = 22–43 u över cellens golv**:
+Spärren i fyndets §5 är alltså hävd åt två håll. **Ingen patch går att formulera
+på det här underlaget.**
 
-| stopposition | cell | cellens origin | dz |
+### 5.1 RÄTTELSE — höjdslutsatsen är indragen
+
+Denna buntens första utgåva bar en tabell med "dz = 22–43 u över cellens golv"
+och slutsatsen att felet låg i **klättringens sista landning**. Grok räknade om
+mot rundata och fällde den. **Omräkningen är riktig och slutsatsen är
+indragen.** Vad som faktiskt står i data:
+
+**Stoppositionerna i `rutt1216.json` — samtliga åtta:**
+
+| nr | slut | cell | dz mot cellgolvet (z=328) |
 |---|---|---|---|
-| [149 · −700 · 328] | 1216 | [160 · −704 · 328] | 0 |
-| [153 · −700 · 350] | 1216 | ” | **22** |
-| [152 · −699 · 356] | 1216 | ” | **28** |
-| [155 · −703 · 357] | 1216 | ” | **29** |
-| [157 · −691 · 371] | 1218 | [160 · −684 · 328] | **43** |
-| [160 · −704 · 330] *(isoleringens startpunkt)* | 1216 | ” | 2 |
+| 1 | [149 · −700 · 328] | 1216 | **0** |
+| 2 | [153 · −701 · 328] | 1216 | **0** |
+| 3 | [157 · −691 · 328] | 1218 | **0** |
+| 4 | [153 · −700 · 328] | 1216 | **0** |
+| 5 | [153 · −700 · 328] | 1216 | **0** |
+| 6 | [153 · −700 · 328] | 1216 | **0** |
+| 7 | [152 · −701 · 328] | 1216 | **0** |
+| 8 | [152 · −699 · 356] | 1216 | 28 |
 
-Boten står inte *på* hyllan utan på något ovanför den. Från golvet (dz ≈ 2) går
-den in direkt. K2:s P4 siktar på `[144,6 · −720,0 · 331,4]`; de uppmätta stoppen
-ligger 20–40 u högre.
+**Sju av åtta står på golvet.** Inte 22–43 u över det.
 
-**Slutsatsen är alltså att spärren i fyndets §5 är hävd åt två håll — men att
-ingen patch går att formulera på det här underlaget ensamt.**
+**Två av den gamla tabellens sex rader fanns i `rutt1216.json`; fyra gjorde
+det inte.** De togs från *andra* körningars stoppositioner (n20-armarna i
+hoppträningsloggens §32–§33) och redovisades under fel rubrik — i något fall
+dessutom oexakt avskrivna. Det var mitt fel: jag valde en handplockad lista
+punkter att fråga `Cell` om, och presenterade svaret som om det beskrev
+`rutt1216.json`. Cellidentiteterna i de svaren var riktiga; **kopplingen till
+den här mätningen var det inte.**
+
+**Slutsatsen motbevisas dessutom av §4.** Isoleringen startade inte på
+`dz ≈ 2` som README påstod. Botens faktiska position vid första avläsningen var
+**z = 352, 354 respektive 356** — mitt i det höjdband som slutsatsen utpekade
+som problemet — och därifrån gick den in i disken på 0,61 s, alla tre gångerna:
+
+```
+t=0,04  [160 · −704 · 352]  cell 1216
+t=0,33  [168 · −704 · 371]  cell 1216
+t=0,61  [176 · −704 · 335]  cell 1267   <- inne i disken
+```
+
+Höjden är alltså inte hindret. Ingenting i bunten pekar längre på
+klättringens landning.
+
+### 5.2 Vad som står kvar
+
+Att planen **är tom** när boten står på västkanten står oemotsagt — det är mätt i
+alla åtta försöken. Frågan är **varför**, och den är obesvarad.
+
+Tidsfönstret är känt: `8993` syns i planen vid **t ≈ 4,9 s**, och vid
+**t ≈ 6,6–6,9 s** står boten stilla på 1216 med tom plan. Vad som händer i de
+dryga två sekunderna däremellan är nästa mätning.
 
 ---
 
 ## 6. Vad jag INTE har fastställt
 
-**Varför den levande planen töms** medan `Cell` ändå svarar 1216. Två kandidater,
-**båda oprövade**:
-
-1. Botens egen `nearest()` är Z-medveten och kan svara annat än `Cell` gör för
-   samma punkt — då står boten enligt sig själv ingenstans.
-2. Något annat i styrningen nollställer planen.
-
-Det kräver en egen mätning. Jag har inte gissat mellan dem.
+**Varför den levande planen töms** mellan t ≈ 4,9 s och t ≈ 6,6 s. Öppet.
+Kandidaterna jag hade skrivit upp här bygger båda på höjdhypotesen och är
+**avförda** med den (§5.1). Jag sätter ingen ny hypotes utan mätning.
 
 **Övriga förbehåll som ska följa med siffrorna:**
+
+- **K2-kvittot i bunten är ofullständigt.** `~/recept-kvitto.json` skrivs om per
+  anrop, så `data/k2-recept-kvitto.json` bär bara sista steget (+1, V296,
+  48211 → 48212). Hela femstegsplanteringen ligger i
+  `data/k2-fem-steg-kvitto.json` (från arm 3, samma celler). Grok har rätt att
+  "+5" inte gick att rekonstruera ur den fil som låg med.
+- **Binärhashen är ett provenienspåstående**, inte omhashat i bunten — servern
+  var släckt när bunten packades. Dumpen bär däremot sin egen `provenance`-rad
+  med `live :27970` och status 5977/48207.
 
 - `data/kanten.json` är ett **kasserat** mellanprov. Dess egen domrad säger
   "(b) INGEN RUTT FRÅN 1216" — den domen är **fel** och motsägs av dess egna
