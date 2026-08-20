@@ -1,0 +1,82 @@
+[
+ {
+  "i": 1,
+  "cell": 1216,
+  "pos_fore": [
+   153,
+   -701,
+   348
+  ],
+  "order_fore": "hold",
+  "posture_fore": "Hold",
+  "plan_fore": "TOM",
+  "order_efter": "hold",
+  "plan_efter": "TOM",
+  "pos_2s_senare": [
+   232,
+   -703,
+   370
+  ],
+  "cell_2s_senare": 1319
+ },
+ {
+  "i": 2,
+  "cell": 1216,
+  "pos_fore": [
+   153,
+   -700,
+   350
+  ],
+  "order_fore": "hold",
+  "posture_fore": "Hold",
+  "plan_fore": "TOM",
+  "order_efter": "hold",
+  "plan_efter": "TOM",
+  "pos_2s_senare": [
+   237,
+   -704,
+   372
+  ],
+  "cell_2s_senare": 1319
+ },
+ {
+  "i": 3,
+  "cell": 1216,
+  "pos_fore": [
+   152,
+   -701,
+   338
+  ],
+  "order_fore": "hold",
+  "posture_fore": "Hold",
+  "plan_fore": "TOM",
+  "order_efter": "hold",
+  "plan_efter": "TOM",
+  "pos_2s_senare": [
+   235,
+   -703,
+   371
+  ],
+  "cell_2s_senare": 1319
+ },
+ {
+  "i": 4,
+  "cell": 1216,
+  "pos_fore": [
+   155,
+   -703,
+   357
+  ],
+  "order_fore": "hold",
+  "posture_fore": "Hold",
+  "plan_fore": "TOM",
+  "order_efter": "hold",
+  "plan_efter": "TOM",
+  "pos_2s_senare": [
+   233,
+   -704,
+   372
+  ],
+  "cell_2s_senare": 1319
+ }
+]

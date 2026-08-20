@@ -1,0 +1,14 @@
+{
+ "recept": "/home/xerial/lab/vast_296_planted.json",
+ "port": 27970,
+ "fore": 48211,
+ "efter": 48212,
+ "steg": [
+  {
+   "namn": "V296 vasthyllan",
+   "link": 48211,
+   "from_cell": 1167,
+   "to_cell": 1191
+  }
+ ]
+}
