@@ -1,0 +1,27 @@
+{
+ "V296 vasthyllan": {
+  "from": [
+   107.0,
+   -582.0,
+   296.0
+  ],
+  "takeoff": [
+   92.0,
+   -588.0,
+   296.0
+  ],
+  "tgt": [
+   138.1,
+   -701.0,
+   328.0
+  ],
+  "v_req": 320.0,
+  "gain": 5.5,
+  "carried": true,
+  "cert": "6/6 i riktig A*-rutt (in_vast, 0 fall, median 9.35, b\u00e4sta 8.84)",
+  "link_vid_cert": 48131,
+  "cells": "1167->1191",
+  "kostnad": 0.567,
+  "anm": "flyer-cert op\u00e5litlig (teleport-entry utanf\u00f6r sj-bandet) \u2014 cert g\u00f6rs i RUTT"
+ }
+}
