@@ -1,0 +1,54 @@
+{
+ "hopp": "2",
+ "namn": "RA-spawnen ut genom teleporten",
+ "varv": "v1",
+ "anteckning": "baslinje hopp 2 med ankomstpredikat ur flygregistratorn",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48217,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   224.0,
+   -320.0,
+   75.0
+  ],
+  "ankomst_r": 64.0,
+  "ankomst_dz": 40.0,
+  "fall_z": -260.0,
+  "budget_s": 15.0
+ },
+ "starter": {
+  "rarox": [
+   -632.0,
+   -680.0,
+   -16.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 0,
+ "klasser": {
+  "timeout": 10
+ },
+ "per_start": {
+  "rarox": {
+   "n": 10,
+   "lyckad": 0
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp2-v1.mvd",
+   "bytes": 524255,
+   "sha256": "a2ed56457235763d582582bc31341fd946aae774f21d9474a07face282275df2"
+  },
+  {
+   "fil": "hopp2-v1.txt",
+   "bytes": 217,
+   "sha256": "52a98513ea059328a3d2482c48969fc9b052bf272aebf0d221d23bdcff2934b7"
+  }
+ ],
+ "tider_lyckade": []
+}

@@ -1,0 +1,65 @@
+{
+ "hopp": "2",
+ "namn": "RA-spawnen ut genom teleporten",
+ "varv": "v2",
+ "anteckning": "ANDRING 5: recept ring2quad-oppna-teleporten-v1, teleportkanten traverserbar, graf 5981/48216 niv\u00e5-2 9367336d",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48216,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   224.0,
+   -320.0,
+   75.0
+  ],
+  "ankomst_r": 64.0,
+  "ankomst_dz": 40.0,
+  "fall_z": -260.0,
+  "budget_s": 15.0
+ },
+ "starter": {
+  "rarox": [
+   -632.0,
+   -680.0,
+   -16.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 10,
+ "klasser": {
+  "lyckad": 10
+ },
+ "per_start": {
+  "rarox": {
+   "n": 10,
+   "lyckad": 10
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp2-v2.mvd",
+   "bytes": 59694,
+   "sha256": "29976a61b1b39b74ed15f0816d2daae151ff36abd9b57880f57e30666cfecaae"
+  },
+  {
+   "fil": "hopp2-v2.txt",
+   "bytes": 217,
+   "sha256": "f4d1aed3394e044c43942d8b3aaa4c40fb2a7ce8bcc4af5b429a465538a1834d"
+  }
+ ],
+ "tider_lyckade": [
+  0.8,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0
+ ]
+}

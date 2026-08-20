@@ -203,7 +203,41 @@ def hamta_rutt(lab, bot):
 
 AUDIT_FALT = ("t", "origin", "vel", "speed", "peak", "bhop", "hops", "leg", "runup", "wp", "lip",
               "cell", "target", "route_goal", "route_len", "route_pos", "band", "frozen",
-              "air", "posture", "gate", "goal_cell", "commit")
+              "air", "posture", "gate", "goal_cell", "commit", "flags")
+
+FL_ONGROUND = 512
+
+
+def pa_mark(f):
+    """Markkontakt i en registratorbild: FL_ONGROUND om flaggan finns, annars vz == 0."""
+    fl = f.get("flags")
+    if isinstance(fl, int):
+        return bool(fl & FL_ONGROUND)
+    v = f.get("vel") or [0.0, 0.0, 1.0]
+    return abs(v[2]) < 1e-6
+
+
+def bedom_ur_registrator(audit, mal, cfg):
+    """Facitets predikat, last pa motorns egna bilder i stallet for min avlasare.
+
+    Returnerar (klass, tid) dar klass ar "lyckad", "fall" eller None. Fallet doms
+    fore ankomsten: dyker banan under fall_z innan malet ar natt ar det ett fall.
+    """
+    if not audit:
+        return None, None
+    t0 = audit[0]["t"]
+    for f in audit:
+        o = f.get("origin") or []
+        if len(o) < 3:
+            continue
+        dt = f["t"] - t0
+        if o[2] < cfg["fall_z"]:
+            return "fall", round(dt, 2)
+        if (dt > 0.4 and pa_mark(f)
+                and hdist(o, mal) <= cfg["ankomst_r"]
+                and abs(o[2] - mal[2]) <= cfg["ankomst_dz"]):
+            return "lyckad", round(dt, 2)
+    return None, None
 
 
 def audit_nu(lab, bot):
@@ -295,6 +329,14 @@ def forsok(lab, bot, start, mal, cfg, i, namn):
 
     tid = round(tid_klass if tid_klass is not None else (time.monotonic() - t0), 2)
     audit = audit_slice(lab, bot, t_audit0)
+    # Facitet doms pa motorns bilder. Min 20 Hz-avlasare far bara avgora NAR
+    # forsoket slutar — den ar for grov for att avgora OM malet natts.
+    reg_klass, reg_tid = bedom_ur_registrator(audit, mal, cfg)
+    if reg_klass is not None and klass != reg_klass:
+        klass, tid = reg_klass, reg_tid
+    elif reg_klass is None and klass == "lyckad":
+        # Avlasaren sag en ankomst registratorn inte bekraftar — registratorn galler.
+        klass = "fel_mal"
     stalls = [e["BotStall"] for e in lab.events
               if isinstance(e, dict) and "BotStall" in e and e["BotStall"].get("bot") == bot]
     goto_stall = [e["GotoStall"] for e in lab.events

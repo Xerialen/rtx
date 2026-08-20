@@ -1,0 +1,110 @@
+{
+ "fore": {
+  "recipe": "",
+  "mode": "chain",
+  "outcome": "empty",
+  "reason": null,
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48217,
+  "rj_links": 0,
+  "stamp": "17645347086516095554",
+  "content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5",
+  "stamp_before": null,
+  "stamp_after": "17645347086516095554",
+  "astar_before": null,
+  "astar_after": null,
+  "astar_next_best": null,
+  "audit": "rtx: navpatch undo chain: empty (live graph is this session's base)\n"
+ },
+ "kvitto": {
+  "recept_id": "hopp3-curl-med-hogre-vreq-v1",
+  "outcome": "applied",
+  "reason": null,
+  "base": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "observed_final": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "cc6a7fb09a3ce29edadbb7dd4ad8287eae8bc4501cdda58f6e800c7b4783fe05"
+  },
+  "steps": [
+   {
+    "name": "plantera-curl-korsning",
+    "outcome": "ok",
+    "reason": null,
+    "observed": {
+     "cells": 5981,
+     "links": 48218,
+     "rj_links": 0,
+     "graph_stamp": "12152413841921922713",
+     "graph_content_hash": "7d23f72c6f18d1b53ba4404a4c1818b84e4918c7431dbcb4e2870ba1a7e14b8a"
+    },
+    "link": 48217
+   },
+   {
+    "name": "stang-raka-korsningen",
+    "outcome": "ok",
+    "reason": null,
+    "observed": {
+     "cells": 5981,
+     "links": 48217,
+     "rj_links": 0,
+     "graph_stamp": "17645347086516095554",
+     "graph_content_hash": "cc6a7fb09a3ce29edadbb7dd4ad8287eae8bc4501cdda58f6e800c7b4783fe05"
+    },
+    "link": null
+   }
+  ],
+  "undo_name": "komponat",
+  "audit": "rtx: komponat hopp3-curl-med-hogre-vreq-v1: applied 2 op(s), 5981/48217 stamp=17645347086516095554\nrtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
+ },
+ "efter": {
+  "recipe": "komponat",
+  "mode": "chain",
+  "outcome": "chained",
+  "reason": null,
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48217,
+  "rj_links": 0,
+  "stamp": "17645347086516095554",
+  "content_hash": "cc6a7fb09a3ce29edadbb7dd4ad8287eae8bc4501cdda58f6e800c7b4783fe05",
+  "stamp_before": null,
+  "stamp_after": "17645347086516095554",
+  "astar_before": null,
+  "astar_after": null,
+  "astar_next_best": null,
+  "audit": "rtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
+ },
+ "harlett": {
+  "bas": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "efter_plantering": {
+   "cells": 5981,
+   "links": 48218,
+   "rj_links": 0,
+   "graph_stamp": "12152413841921922713",
+   "graph_content_hash": "7d23f72c6f18d1b53ba4404a4c1818b84e4918c7431dbcb4e2870ba1a7e14b8a"
+  },
+  "efter_stangning": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "cc6a7fb09a3ce29edadbb7dd4ad8287eae8bc4501cdda58f6e800c7b4783fe05"
+  }
+ }
+}

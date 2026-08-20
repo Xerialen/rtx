@@ -1,0 +1,40 @@
+{
+  "recept_id": "ring2quad-oppna-teleporten-v1",
+  "map": "dm3",
+  "syfte": "OPPNA TELEPORTKANTEN. Fyndet: dm3 har exakt en teleportlank (36314, teleportcellen 4633 -> ringens landningscell 1330) och den ar T=0. Teleportcellen har DARFOR noll traverserbara utgangar, och A* kan aldrig planera genom en teleport. Agarens hopp 2 gar ut genom teleporten, sa hoppet ar strukturellt omojligt for planeraren i dagslaget - matt i varv 1: 0/10, alla timeout, noll fall, boten vandrar i RA-rummet och tar till slut den langa vagen genom tunneln.",
+  "mekanism": "Receptets VERKAN ar inte borttagningen utan aterupplivningen. Motorns remove-semantik ar pinnad: remove_links_by_id rensar adjacensen och push_link:ar varje behallen lank tillbaka, sa alla kvarvarande lankar blir T=1 - fast i testet control::tests::komponat_remove_links_resurrects_pruned_links_like_the_recipes_do, bekraftad mot K2-ankaret och vid paav-g:s apply. Fordonet ar darfor vald med minsta mojliga egenverkan: 35949 ar SJALV redan prunad (T=0), sa att ta bort den andrar ingenting funktionellt. Effekten ar att de ovriga 14 prunade lankarna - daribland teleporten - blir traverserbara.",
+  "varfor_inte_motorfixen": "Rotorsaken ar en bugg i navmeshbygget: add_teleports behaller medvetet teleportlanken som trigger-cellens enda utgang, och prune_links_through_teleports som kor direkt efter kapar varje lank vars stracka korsar en teleportvolym utan att SLUTA i en - teleportlanken borjar i volymen och slutar utanfor, sa den kapas av just det pass som ar skrivet for att skydda den. Fixen ar tre rader och ligger stashad. Men den andrar basgrafens innehallshash, och da faller west-shelf-receptets inbyggda pin (58787ce0...) - riggen startade inte alls. Det ar en forseglad pin jag inte ager. Eskalerat.",
+  "base": {
+    "cells": 5981,
+    "links": 48217,
+    "rj_links": 0,
+    "graph_stamp": "17645347086516095554",
+    "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "ops": [
+    {
+      "op": "remove_links",
+      "name": "fordon-for-aterupplivningen",
+      "links": [
+        {
+          "id": 35949,
+          "from": 2848,
+          "to": 2861,
+          "kind": "speedjump",
+          "var": "[1152,-928,88] -> [1152,-544,-24]",
+          "T_fore": 0,
+          "not": "redan prunad; borttagningen har ingen egen funktionell verkan"
+        }
+      ]
+    }
+  ],
+  "harledd_slut": {
+    "cells": 5981,
+    "links": 48216,
+    "rj_links": 0,
+    "graph_stamp": "10635032474697013483",
+    "graph_content_hash": "9367336df09dbfc8c6bff8d222981fcbd50c819b3d0e53fa1e7a06941481d256"
+  },
+  "harledningsnot": "Slutlaget ar RAKNAT ur den kompletta dumpen med kanon.py, positivt kontrollerad mot baslagets nivå-2 4c099331... Aldrig avlast ur motorn.",
+  "bieffekt_deklarerad": "14 andra carve-rensade lankar blir ocksa traverserbara: 12 i sydostra hornet (x 1088-1568, y -928..-544, ror inte RA-rummet, ringen eller quad) och 36313, gangen ut ur teleportcellen. Den sista ar den enda med verkan pa hopp 2: planeraren kan da tro att den kan ga ut ur triggern vasterut, medan fysiken teleporterar boten i stallet. Det bokfors och matas - det ar inte en bieffekt som goms."
+}

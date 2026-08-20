@@ -1,0 +1,57 @@
+{
+ "hopp": "3",
+ "namn": "ringspawnen (Ring of Shadows) till quad",
+ "varv": "v2",
+ "anteckning": "ANDRING 6: curl-korsning v_req 440 gain 12 planterad, raka 34503 stangd; graf 5981/48217 niv\u00e5-2 cc6a7fb0",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48217,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 14.0
+ },
+ "starter": {
+  "ringitemet": [
+   240.0,
+   -32.0,
+   56.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 1,
+ "klasser": {
+  "fall": 9,
+  "lyckad": 1
+ },
+ "per_start": {
+  "ringitemet": {
+   "n": 10,
+   "lyckad": 1
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp3-v2.mvd",
+   "bytes": 160410,
+   "sha256": "a439d5193e082f06a4c8bd073659160ee6a1cc4f995fecbe44037d618e03d580"
+  },
+  {
+   "fil": "hopp3-v2.txt",
+   "bytes": 217,
+   "sha256": "4c16c3b062c3625c7343470748d4f8dc9a9b03470404e31fc2a940a3c96324a6"
+  }
+ ],
+ "tider_lyckade": [
+  3.15
+ ]
+}

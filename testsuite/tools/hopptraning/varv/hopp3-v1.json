@@ -1,0 +1,59 @@
+{
+ "hopp": "3",
+ "namn": "ringspawnen (Ring of Shadows) till quad",
+ "varv": "v1",
+ "anteckning": "baslinje hopp 3, start = Ring of Shadows [240,-32,56], basgraf 5981/48217",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48217,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 14.0
+ },
+ "starter": {
+  "ringitemet": [
+   240.0,
+   -32.0,
+   56.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 3,
+ "klasser": {
+  "fall": 7,
+  "lyckad": 3
+ },
+ "per_start": {
+  "ringitemet": {
+   "n": 10,
+   "lyckad": 3
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp3-v1.mvd",
+   "bytes": 155398,
+   "sha256": "3152ea549409ef179684439ebec99314d033b2fbf424e4a11d9521ec5cf89367"
+  },
+  {
+   "fil": "hopp3-v1.txt",
+   "bytes": 217,
+   "sha256": "94ebdd8030c8b0d4ccc4de509c60776999247a405198fd533891d20cc2b5c1d2"
+  }
+ ],
+ "tider_lyckade": [
+  4.7,
+  4.7,
+  6.9
+ ]
+}
