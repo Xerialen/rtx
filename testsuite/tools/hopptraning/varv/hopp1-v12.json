@@ -1,0 +1,67 @@
+{
+ "hopp": "1",
+ "namn": "ringkanten over gapet till quad",
+ "varv": "v12",
+ "anteckning": "ANDRING 13: vastinfarten till 1714 stangd (id 12255 walk 1666->1714); RA-VAKT GRON 12/14 1 fall (ny plats); graf 5981/48216 niv\u00e5-2 2a2d19e6; 10 forsok per start",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48216,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 12.0
+ },
+ "starter": {
+  "syd": [
+   478.0,
+   -515.0,
+   56.0
+  ],
+  "nord": [
+   193.0,
+   -45.0,
+   56.0
+  ]
+ },
+ "n": 20,
+ "lyckade": 2,
+ "klasser": {
+  "fall": 18,
+  "lyckad": 2
+ },
+ "per_start": {
+  "syd": {
+   "n": 10,
+   "lyckad": 0
+  },
+  "nord": {
+   "n": 10,
+   "lyckad": 2
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp1-v12.mvd",
+   "bytes": 424531,
+   "sha256": "1c2d000a93c1cce0c294ba5ca47711219f8241a32fadee84301fcff837deab21"
+  },
+  {
+   "fil": "hopp1-v12.txt",
+   "bytes": 217,
+   "sha256": "1b920be1f43e0dfc1c66fc4f08523410633d1f325ebc40e066f7d7b69fd17172"
+  }
+ ],
+ "tider_lyckade": [
+  3.4,
+  3.4
+ ]
+}
