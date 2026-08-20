@@ -42,10 +42,10 @@ pub use population::manage_population;
 pub(crate) use population::{drain_roster, RosterOp};
 // Reused by the netclient to name its own bodies the same way the roster names qwprogs bots; the
 // qwprogs build calls these through their defining module, so the re-export is netclient-only.
-#[cfg(test)]
-use population::bot_target;
 #[cfg(feature = "netclient")]
 pub(crate) use population::{bot_display_name, bot_name};
+#[cfg(test)]
+use population::{bot_target, first_missing, name_is_present, SlotFacts};
 
 use crate::bot::state::{
     AirCommit, BotState, CombatPosture, Commit, GoalCommit, GrenadePhase, HookPhase, RjPhase, Wander,
@@ -2735,6 +2735,129 @@ mod tests {
         assert!(
             xy_rose,
             "the XY-to-goal distance should rise somewhere on a helix (why arc-length wins)"
+        );
+    }
+
+    // --- P3: rosterhygien efter matchstartens kartomladdning (facit 5e8ab7b1 §2/§5) ---
+    //
+    // `on_worldspawn` sätter `bot_roster` till HELA rostern efter omladdningen, alltså
+    // även nätverksklienternas namn, och `manage_population` återskapar första posten
+    // som inte finns som levande bot. Ett klientnamn kunde aldrig matcha en botlista och
+    // var därför evigt "saknat" — mätt utfall tolv kloner `(1)main1` vid maxclients 16.
+    // T1–T5 binder regeln som stänger det. Varje test är mutationsprövat.
+
+    /// Bygg `active` — namnen som räknas som närvarande — ur en slotlista.
+    /// Speglar filtret i `manage_population`, med samma predikat.
+    fn active_names(slots: &[(&str, SlotFacts)]) -> Vec<String> {
+        slots
+            .iter()
+            .filter(|(_, f)| name_is_present(f))
+            .map(|(n, _)| (*n).to_string())
+            .collect()
+    }
+
+    fn bot() -> SlotFacts {
+        SlotFacts {
+            is_bot: true,
+            in_use: true,
+            is_player: true,
+            alive: true,
+        }
+    }
+    fn spelare(alive: bool) -> SlotFacts {
+        SlotFacts {
+            is_bot: false,
+            in_use: true,
+            is_player: true,
+            alive,
+        }
+    }
+    fn tom() -> SlotFacts {
+        SlotFacts {
+            is_bot: false,
+            in_use: false,
+            is_player: false,
+            alive: false,
+        }
+    }
+
+    /// Första rosterposten som inte är närvarande. Anropar den SKEPPADE
+    /// `first_missing` — testet får inte pröva en kopia av sökningen.
+    fn forsta_saknade(roster: &[&str], active: &[String]) -> Option<(usize, String)> {
+        let agd: Vec<String> = roster.iter().map(|n| (*n).to_string()).collect();
+        first_missing(&agd, active).map(|(i, n)| (i as usize, n.to_string()))
+    }
+
+    #[test]
+    fn t1_ett_spelarnamn_aterskapas_aldrig_som_bot() {
+        // Rostern bär en klient och en bot. Klienten sitter på sin slot, boten är borta
+        // efter omladdningen. Den som ska återskapas är boten — aldrig klienten.
+        let active = active_names(&[("main1", spelare(true)), ("Grunt", tom())]);
+        assert_eq!(
+            forsta_saknade(&["main1", "Grunt"], &active),
+            Some((1, "Grunt".to_string())),
+            "en närvarande klient får aldrig pekas ut som saknad bot"
+        );
+    }
+
+    #[test]
+    fn t2_en_verkligt_saknad_bot_aterskapas_fortfarande() {
+        // Fixen får inte stänga av återskapandet: ingen bär namnet, alltså saknas det.
+        let active = active_names(&[("main1", spelare(true))]);
+        assert_eq!(
+            forsta_saknade(&["Grunt"], &active),
+            Some((0, "Grunt".to_string())),
+            "ett namn ingen bär ska fortfarande återskapas"
+        );
+    }
+
+    #[test]
+    fn t3_botbar_roster_aterskapar_alla_i_tur_och_ordning() {
+        // M2:s mätta beteende: åtta serverside-bottar, noll klienter — alla kommer
+        // tillbaka, en per bildruta. Regression av det.
+        let roster = ["Grunt", "Ranger", "Visor", "Sarge"];
+        let mut slots: Vec<(&str, SlotFacts)> = Vec::new();
+        for vantad in roster {
+            let active = active_names(&slots);
+            assert_eq!(
+                forsta_saknade(&roster, &active).map(|(_, n)| n),
+                Some(vantad.to_string()),
+                "botbar roster ska återskapas i ordning"
+            );
+            slots.push((vantad, bot()));
+        }
+        let active = active_names(&slots);
+        assert_eq!(forsta_saknade(&roster, &active), None, "till slut saknas ingen");
+    }
+
+    #[test]
+    fn t4_overhoppet_stoppar_inte_genomsokningen() {
+        // `pick_roster` seatar `!is_bot` FÖRST, så överhoppen ligger alltid före
+        // botposterna. En regel som stannade vid första överhoppet vore lika trasig
+        // som defekten. Boten efter två klienter ska hittas.
+        let active = active_names(&[("main1", spelare(true)), ("main2", spelare(true)), ("Grunt", tom())]);
+        assert_eq!(
+            forsta_saknade(&["main1", "main2", "Grunt"], &active),
+            Some((2, "Grunt".to_string())),
+            "ett överhopp ska hoppas över, inte avbryta sökningen"
+        );
+    }
+
+    #[test]
+    fn t5_en_dod_men_narvarande_spelare_klonas_inte() {
+        // Den billiga felimplementationen grindar `active` på `is_alive()`. I en 4on4
+        // över tjugo minuter är någon död nästan alltid, och då frigörs namnet och
+        // klonas. Presence, not life: slotten är i bruk, alltså är namnet upptaget.
+        let dod = spelare(false);
+        assert!(
+            name_is_present(&dod),
+            "en död men närvarande spelare är fortfarande på sin slot"
+        );
+        let active = active_names(&[("main1", dod), ("Grunt", tom())]);
+        assert_eq!(
+            forsta_saknade(&["main1", "Grunt"], &active),
+            Some((1, "Grunt".to_string())),
+            "död klient får inte återskapas som bot"
         );
     }
 
