@@ -1,0 +1,69 @@
+{
+ "hopp": "1",
+ "namn": "ringkanten over gapet till quad",
+ "varv": "v10",
+ "anteckning": "ANDRING 11: 35592 stangd (matningen till daliga korridoren); RA-VAKT GRON 13/14 1 fall; graf 5981/48216 niv\u00e5-2 7dd88d95",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48216,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 12.0
+ },
+ "starter": {
+  "syd": [
+   478.0,
+   -515.0,
+   56.0
+  ],
+  "nord": [
+   193.0,
+   -45.0,
+   56.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 4,
+ "klasser": {
+  "fall": 6,
+  "lyckad": 4
+ },
+ "per_start": {
+  "syd": {
+   "n": 5,
+   "lyckad": 2
+  },
+  "nord": {
+   "n": 5,
+   "lyckad": 2
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp1-v10.mvd",
+   "bytes": 209585,
+   "sha256": "9d968c564507ee7401180ca5c43549c3c585ce3ea0e6826ebbcf790889c8d73e"
+  },
+  {
+   "fil": "hopp1-v10.txt",
+   "bytes": 217,
+   "sha256": "86eecd995b175542109733eedd3407a951b93ced5db2a32905814f06837ebbb5"
+  }
+ ],
+ "tider_lyckade": [
+  3.25,
+  3.7,
+  4.8,
+  11.05
+ ]
+}

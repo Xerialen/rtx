@@ -1,0 +1,14 @@
+{
+ "tag": "hopptr-v10",
+ "reached": 13,
+ "attempts": 14,
+ "falls": [
+  [
+   412,
+   -880,
+   184
+  ]
+ ],
+ "baslinje_fall": 1,
+ "dom": "GRON"
+}

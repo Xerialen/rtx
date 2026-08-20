@@ -1,0 +1,86 @@
+{
+ "kvitto": {
+  "recept_id": "hopp1-stang-bada-matningarna-v1",
+  "outcome": "applied",
+  "reason": null,
+  "base": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "observed_final": {
+   "cells": 5981,
+   "links": 48215,
+   "rj_links": 0,
+   "graph_stamp": "16919247716590945572",
+   "graph_content_hash": "23b8c66ec8d44c8dcb4fce8981b21af6386c4861860532c06e0caad47f8883f7"
+  },
+  "steps": [
+   {
+    "name": "stang-34503-och-35592",
+    "outcome": "ok",
+    "reason": null,
+    "observed": {
+     "cells": 5981,
+     "links": 48215,
+     "rj_links": 0,
+     "graph_stamp": "16919247716590945572",
+     "graph_content_hash": "23b8c66ec8d44c8dcb4fce8981b21af6386c4861860532c06e0caad47f8883f7"
+    },
+    "link": null
+   }
+  ],
+  "undo_name": "komponat",
+  "audit": "rtx: komponat hopp1-stang-bada-matningarna-v1: applied 1 op(s), 5981/48215 stamp=16919247716590945572\nrtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
+ },
+ "efter": {
+  "recipe": "komponat",
+  "mode": "chain",
+  "outcome": "chained",
+  "reason": null,
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48215,
+  "rj_links": 0,
+  "stamp": "16919247716590945572",
+  "content_hash": "23b8c66ec8d44c8dcb4fce8981b21af6386c4861860532c06e0caad47f8883f7",
+  "stamp_before": null,
+  "stamp_after": "16919247716590945572",
+  "astar_before": null,
+  "astar_after": null,
+  "astar_next_best": null,
+  "audit": "rtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
+ },
+ "harlett": {
+  "bas": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "steg1": {
+   "cells": 5981,
+   "links": 48215,
+   "rj_links": 0,
+   "graph_stamp": "16919247716590945572",
+   "graph_content_hash": "23b8c66ec8d44c8dcb4fce8981b21af6386c4861860532c06e0caad47f8883f7"
+  }
+ },
+ "ankare": [
+  {
+   "id": 34503,
+   "from": 1712,
+   "to": 2083,
+   "kind": "speedjump"
+  },
+  {
+   "id": 35592,
+   "from": 1691,
+   "to": 1617,
+   "kind": "speedjump"
+  }
+ ]
+}
