@@ -1,0 +1,233 @@
+{
+ "REFERENS-fork-main-cc5fa8e-default": [
+  {
+   "fil": "attempt_01.jsonl",
+   "slut": [
+    152,
+    -700,
+    361
+   ],
+   "d_slut": 98,
+   "max_z": 372,
+   "narmast": 98,
+   "n_uppe": 939,
+   "kanon": false,
+   "toppvid": true,
+   "klipp_s": 5.84
+  },
+  {
+   "fil": "attempt_02.jsonl",
+   "slut": [
+    153,
+    -702,
+    350
+   ],
+   "d_slut": 97,
+   "max_z": 372,
+   "narmast": 97,
+   "n_uppe": 558,
+   "kanon": false,
+   "toppvid": true,
+   "klipp_s": 13.57
+  },
+  {
+   "fil": "attempt_03.jsonl",
+   "slut": [
+    154,
+    -700,
+    369
+   ],
+   "d_slut": 96,
+   "max_z": 372,
+   "narmast": 96,
+   "n_uppe": 953,
+   "kanon": false,
+   "toppvid": true,
+   "klipp_s": 5.57
+  },
+  {
+   "fil": "attempt_04.jsonl",
+   "slut": [
+    268,
+    -817,
+    264
+   ],
+   "d_slut": 116,
+   "max_z": 308,
+   "narmast": null,
+   "n_uppe": 0,
+   "kanon": false,
+   "toppvid": false,
+   "klipp_s": null
+  },
+  {
+   "fil": "attempt_05.jsonl",
+   "slut": [
+    151,
+    -701,
+    372
+   ],
+   "d_slut": 99,
+   "max_z": 372,
+   "narmast": 99,
+   "n_uppe": 941,
+   "kanon": false,
+   "toppvid": true,
+   "klipp_s": 5.78
+  }
+ ],
+ "HOPPRIGG-vF5": [
+  {
+   "fil": "attempt_01.jsonl",
+   "slut": [
+    154,
+    -700,
+    367
+   ],
+   "d_slut": 96,
+   "max_z": 372,
+   "narmast": 96,
+   "n_uppe": 939,
+   "kanon": false,
+   "toppvid": true,
+   "klipp_s": 5.83
+  },
+  {
+   "fil": "attempt_02.jsonl",
+   "slut": [
+    277,
+    -814,
+    25
+   ],
+   "d_slut": 114,
+   "max_z": 283,
+   "narmast": null,
+   "n_uppe": 0,
+   "kanon": false,
+   "toppvid": false,
+   "klipp_s": null
+  },
+  {
+   "fil": "attempt_03.jsonl",
+   "slut": [
+    277,
+    -814,
+    27
+   ],
+   "d_slut": 114,
+   "max_z": 283,
+   "narmast": null,
+   "n_uppe": 0,
+   "kanon": false,
+   "toppvid": false,
+   "klipp_s": null
+  },
+  {
+   "fil": "attempt_04.jsonl",
+   "slut": [
+    276,
+    -814,
+    23
+   ],
+   "d_slut": 114,
+   "max_z": 283,
+   "narmast": null,
+   "n_uppe": 0,
+   "kanon": false,
+   "toppvid": false,
+   "klipp_s": null
+  },
+  {
+   "fil": "attempt_05.jsonl",
+   "slut": [
+    150,
+    -700,
+    350
+   ],
+   "d_slut": 100,
+   "max_z": 372,
+   "narmast": 100,
+   "n_uppe": 956,
+   "kanon": false,
+   "toppvid": true,
+   "klipp_s": 5.5
+  }
+ ],
+ "HOPPRIGG-basgraf-kontroll": [
+  {
+   "fil": "attempt_01.jsonl",
+   "slut": [
+    273,
+    -816,
+    264
+   ],
+   "d_slut": 115,
+   "max_z": 308,
+   "narmast": null,
+   "n_uppe": 0,
+   "kanon": false,
+   "toppvid": false,
+   "klipp_s": null
+  },
+  {
+   "fil": "attempt_02.jsonl",
+   "slut": [
+    273,
+    -816,
+    264
+   ],
+   "d_slut": 115,
+   "max_z": 308,
+   "narmast": null,
+   "n_uppe": 0,
+   "kanon": false,
+   "toppvid": false,
+   "klipp_s": null
+  },
+  {
+   "fil": "attempt_03.jsonl",
+   "slut": [
+    155,
+    -700,
+    371
+   ],
+   "d_slut": 95,
+   "max_z": 372,
+   "narmast": 95,
+   "n_uppe": 940,
+   "kanon": false,
+   "toppvid": true,
+   "klipp_s": 5.78
+  },
+  {
+   "fil": "attempt_04.jsonl",
+   "slut": [
+    273,
+    -816,
+    264
+   ],
+   "d_slut": 115,
+   "max_z": 308,
+   "narmast": null,
+   "n_uppe": 0,
+   "kanon": false,
+   "toppvid": false,
+   "klipp_s": null
+  },
+  {
+   "fil": "attempt_05.jsonl",
+   "slut": [
+    154,
+    -700,
+    365
+   ],
+   "d_slut": 96,
+   "max_z": 372,
+   "narmast": 96,
+   "n_uppe": 951,
+   "kanon": false,
+   "toppvid": true,
+   "klipp_s": 5.61
+  }
+ ]
+}
