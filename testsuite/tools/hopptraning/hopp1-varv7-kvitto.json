@@ -1,0 +1,103 @@
+{
+ "kvitto": {
+  "recept_id": "hopp1-agarlapp-botaxel-v2",
+  "outcome": "applied",
+  "reason": null,
+  "base": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "observed_final": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "6e06ce27b8e7c3c5c2e03565b56af78d7e565386d0311930e052ae3438a766d3"
+  },
+  "steps": [
+   {
+    "name": "plantera-agarlapp-pa-botaxel",
+    "outcome": "ok",
+    "reason": null,
+    "observed": {
+     "cells": 5981,
+     "links": 48218,
+     "rj_links": 0,
+     "graph_stamp": "12152413841921922713",
+     "graph_content_hash": "8e4cb2cc8a1fd275ecba429e0a8cd9e77748f684b7b119e128bfed9fed25e94f"
+    },
+    "link": 48217
+   },
+   {
+    "name": "stang-karmsiktad-raka",
+    "outcome": "ok",
+    "reason": null,
+    "observed": {
+     "cells": 5981,
+     "links": 48217,
+     "rj_links": 0,
+     "graph_stamp": "17645347086516095554",
+     "graph_content_hash": "6e06ce27b8e7c3c5c2e03565b56af78d7e565386d0311930e052ae3438a766d3"
+    },
+    "link": null
+   }
+  ],
+  "undo_name": "komponat",
+  "audit": "rtx: komponat hopp1-agarlapp-botaxel-v2: applied 2 op(s), 5981/48217 stamp=17645347086516095554\nrtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
+ },
+ "efter": {
+  "recipe": "komponat",
+  "mode": "chain",
+  "outcome": "chained",
+  "reason": null,
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48217,
+  "rj_links": 0,
+  "stamp": "17645347086516095554",
+  "content_hash": "6e06ce27b8e7c3c5c2e03565b56af78d7e565386d0311930e052ae3438a766d3",
+  "stamp_before": null,
+  "stamp_after": "17645347086516095554",
+  "astar_before": null,
+  "astar_after": null,
+  "astar_next_best": null,
+  "audit": "rtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
+ },
+ "harlett": {
+  "bas": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "steg1": {
+   "cells": 5981,
+   "links": 48218,
+   "rj_links": 0,
+   "graph_stamp": "12152413841921922713",
+   "graph_content_hash": "8e4cb2cc8a1fd275ecba429e0a8cd9e77748f684b7b119e128bfed9fed25e94f"
+  },
+  "steg2": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "6e06ce27b8e7c3c5c2e03565b56af78d7e565386d0311930e052ae3438a766d3"
+  }
+ },
+ "ankare": {
+  "lapp": [
+   422.6,
+   157.9,
+   56.0
+  ],
+  "fran_cell": 1613,
+  "axel_grad": 56.31,
+  "botens_infart_grad": "53..58",
+  "ansats_u": 98.4
+ }
+}

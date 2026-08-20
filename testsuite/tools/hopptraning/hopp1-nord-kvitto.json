@@ -1,0 +1,130 @@
+{
+ "fore": {
+  "recipe": "",
+  "mode": "chain",
+  "outcome": "empty",
+  "reason": null,
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48217,
+  "rj_links": 0,
+  "stamp": "17645347086516095554",
+  "content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5",
+  "stamp_before": null,
+  "stamp_after": "17645347086516095554",
+  "astar_before": null,
+  "astar_after": null,
+  "astar_next_best": null,
+  "audit": "rtx: navpatch undo chain: empty (live graph is this session's base)\n"
+ },
+ "kvitto": {
+  "recept_id": "hopp1-agarens-nordkorsning-v1",
+  "outcome": "applied",
+  "reason": null,
+  "base": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "observed_final": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "d906b97e77c3927600c9235cd6a58679ca09089053317c630fcec883f427fd42"
+  },
+  "steps": [
+   {
+    "name": "plantera-agarens-nordkorsning",
+    "outcome": "ok",
+    "reason": null,
+    "observed": {
+     "cells": 5981,
+     "links": 48218,
+     "rj_links": 0,
+     "graph_stamp": "12152413841921922713",
+     "graph_content_hash": "5e4acec5f9e33d30b0fb72654d707cc0669800ee1136102f0bae5d5d090219cc"
+    },
+    "link": 48217
+   },
+   {
+    "name": "stang-karmsiktad-raka",
+    "outcome": "ok",
+    "reason": null,
+    "observed": {
+     "cells": 5981,
+     "links": 48217,
+     "rj_links": 0,
+     "graph_stamp": "17645347086516095554",
+     "graph_content_hash": "d906b97e77c3927600c9235cd6a58679ca09089053317c630fcec883f427fd42"
+    },
+    "link": null
+   }
+  ],
+  "undo_name": "komponat",
+  "audit": "rtx: komponat hopp1-agarens-nordkorsning-v1: applied 2 op(s), 5981/48217 stamp=17645347086516095554\nrtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
+ },
+ "efter": {
+  "recipe": "komponat",
+  "mode": "chain",
+  "outcome": "chained",
+  "reason": null,
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48217,
+  "rj_links": 0,
+  "stamp": "17645347086516095554",
+  "content_hash": "d906b97e77c3927600c9235cd6a58679ca09089053317c630fcec883f427fd42",
+  "stamp_before": null,
+  "stamp_after": "17645347086516095554",
+  "astar_before": null,
+  "astar_after": null,
+  "astar_next_best": null,
+  "audit": "rtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
+ },
+ "harlett": {
+  "bas": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "efter_plantering": {
+   "cells": 5981,
+   "links": 48218,
+   "rj_links": 0,
+   "graph_stamp": "12152413841921922713",
+   "graph_content_hash": "5e4acec5f9e33d30b0fb72654d707cc0669800ee1136102f0bae5d5d090219cc"
+  },
+  "efter_stangning": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "d906b97e77c3927600c9235cd6a58679ca09089053317c630fcec883f427fd42"
+  }
+ },
+ "ankare_ur_agarens_demo": {
+  "demo": "hexagonvarvet",
+  "t_s": 8.09,
+  "avfart": [
+   422.6,
+   157.9,
+   56.0
+  ],
+  "fart": 435.2,
+  "kurs_grad": -34.05,
+  "passage_x496": {
+   "y": 117.1,
+   "z": 92.5
+  },
+  "landning": [
+   699.6,
+   153.4,
+   56.0
+  ]
+ }
+}

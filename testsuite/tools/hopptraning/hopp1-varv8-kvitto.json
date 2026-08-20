@@ -1,0 +1,73 @@
+{
+ "kvitto": {
+  "recept_id": "hopp1-billigaste-goda-korsningen-v1",
+  "outcome": "applied",
+  "reason": null,
+  "base": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "observed_final": {
+   "cells": 5981,
+   "links": 48218,
+   "rj_links": 0,
+   "graph_stamp": "12152413841921922713",
+   "graph_content_hash": "e19c46854ae93624c4cddc756fe4f2d2d3bb79d36737e8efee5e3485039ca6cd"
+  },
+  "steps": [
+   {
+    "name": "plantera-kopia-av-den-som-fungerar",
+    "outcome": "ok",
+    "reason": null,
+    "observed": {
+     "cells": 5981,
+     "links": 48218,
+     "rj_links": 0,
+     "graph_stamp": "12152413841921922713",
+     "graph_content_hash": "e19c46854ae93624c4cddc756fe4f2d2d3bb79d36737e8efee5e3485039ca6cd"
+    },
+    "link": 48217
+   }
+  ],
+  "undo_name": "komponat",
+  "audit": "rtx: komponat hopp1-billigaste-goda-korsningen-v1: applied 1 op(s), 5981/48218 stamp=12152413841921922713\nrtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
+ },
+ "efter": {
+  "recipe": "komponat",
+  "mode": "chain",
+  "outcome": "chained",
+  "reason": null,
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48218,
+  "rj_links": 0,
+  "stamp": "12152413841921922713",
+  "content_hash": "e19c46854ae93624c4cddc756fe4f2d2d3bb79d36737e8efee5e3485039ca6cd",
+  "stamp_before": null,
+  "stamp_after": "12152413841921922713",
+  "astar_before": null,
+  "astar_after": null,
+  "astar_next_best": null,
+  "audit": "rtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
+ },
+ "harlett": {
+  "bas": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "steg1": {
+   "cells": 5981,
+   "links": 48218,
+   "rj_links": 0,
+   "graph_stamp": "12152413841921922713",
+   "graph_content_hash": "e19c46854ae93624c4cddc756fe4f2d2d3bb79d36737e8efee5e3485039ca6cd"
+  }
+ },
+ "ny_lank": 48217
+}

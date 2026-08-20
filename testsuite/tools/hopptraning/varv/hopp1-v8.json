@@ -1,0 +1,68 @@
+{
+ "hopp": "1",
+ "namn": "ringkanten over gapet till quad",
+ "varv": "v8",
+ "anteckning": "ANDRING 9: trogen kopia av 35737 gjord billigast (from cell 1623 pa dess egen axel, kostnad 1.195 mot 1.581); ingen stangning; graf 5981/48218 niv\u00e5-2 e19c4685",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48218,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 12.0
+ },
+ "starter": {
+  "syd": [
+   478.0,
+   -515.0,
+   56.0
+  ],
+  "nord": [
+   193.0,
+   -45.0,
+   56.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 2,
+ "klasser": {
+  "fall": 7,
+  "lyckad": 2,
+  "timeout": 1
+ },
+ "per_start": {
+  "syd": {
+   "n": 5,
+   "lyckad": 0
+  },
+  "nord": {
+   "n": 5,
+   "lyckad": 2
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp1-v8.mvd",
+   "bytes": 234114,
+   "sha256": "4fd86c6acbdac1cca3e94ae4c83f35d131e3323539abd44fe863d07c564a5aef"
+  },
+  {
+   "fil": "hopp1-v8.txt",
+   "bytes": 217,
+   "sha256": "7902edd4c97ffc1581d9c38da01ceb2485bcdabf87bf94176c805d77cbdaa0e8"
+  }
+ ],
+ "tider_lyckade": [
+  3.25,
+  10.35
+ ]
+}

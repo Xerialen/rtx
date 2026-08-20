@@ -1,0 +1,68 @@
+{
+ "hopp": "1",
+ "namn": "ringkanten over gapet till quad",
+ "varv": "v6",
+ "anteckning": "ANDRING 7: agarens egna nordankare planterade (avfart [422.6,157.9] v_req 430 gain 12 -> cell 2085) + 34503 stangd; graf 5981/48217 niv\u00e5-2 d906b97e",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48217,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 12.0
+ },
+ "starter": {
+  "syd": [
+   478.0,
+   -515.0,
+   56.0
+  ],
+  "nord": [
+   193.0,
+   -45.0,
+   56.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 3,
+ "klasser": {
+  "fall": 7,
+  "lyckad": 3
+ },
+ "per_start": {
+  "syd": {
+   "n": 5,
+   "lyckad": 0
+  },
+  "nord": {
+   "n": 5,
+   "lyckad": 3
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp1-v6.mvd",
+   "bytes": 158076,
+   "sha256": "1eccb29cbe130e4bfc3c2062464a8fc8f2a80d45ecce2f051c6fbcb5b17fbf33"
+  },
+  {
+   "fil": "hopp1-v6.txt",
+   "bytes": 217,
+   "sha256": "9f21dac6368daf7e3265f4b9ff796eeab66eabe31a77e067d05c02a65fc3315d"
+  }
+ ],
+ "tider_lyckade": [
+  3.25,
+  3.4,
+  6.15
+ ]
+}
