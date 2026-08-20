@@ -1,0 +1,929 @@
+{
+ "ARM1-REFERENS-main-default": {
+  "rader": [
+   {
+    "fil": "attempt_01.jsonl",
+    "slut": [
+     154,
+     -701,
+     371
+    ],
+    "d_slut": 96,
+    "max_z": 372,
+    "narmast": 96,
+    "n_uppe": 952,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.61
+   },
+   {
+    "fil": "attempt_02.jsonl",
+    "slut": [
+     273,
+     -816,
+     -16
+    ],
+    "d_slut": 115,
+    "max_z": 281,
+    "narmast": null,
+    "n_uppe": 0,
+    "kanon": false,
+    "toppvid": false,
+    "klipp_s": null
+   },
+   {
+    "fil": "attempt_03.jsonl",
+    "slut": [
+     150,
+     -700,
+     365
+    ],
+    "d_slut": 100,
+    "max_z": 372,
+    "narmast": 100,
+    "n_uppe": 952,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.55
+   },
+   {
+    "fil": "attempt_04.jsonl",
+    "slut": [
+     272,
+     -816,
+     19
+    ],
+    "d_slut": 115,
+    "max_z": 283,
+    "narmast": null,
+    "n_uppe": 0,
+    "kanon": false,
+    "toppvid": false,
+    "klipp_s": null
+   },
+   {
+    "fil": "attempt_05.jsonl",
+    "slut": [
+     154,
+     -701,
+     369
+    ],
+    "d_slut": 96,
+    "max_z": 372,
+    "narmast": 96,
+    "n_uppe": 941,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.79
+   },
+   {
+    "fil": "attempt_06.jsonl",
+    "slut": [
+     151,
+     -701,
+     367
+    ],
+    "d_slut": 99,
+    "max_z": 372,
+    "narmast": 99,
+    "n_uppe": 939,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.83
+   },
+   {
+    "fil": "attempt_07.jsonl",
+    "slut": [
+     268,
+     -817,
+     264
+    ],
+    "d_slut": 116,
+    "max_z": 308,
+    "narmast": null,
+    "n_uppe": 0,
+    "kanon": false,
+    "toppvid": false,
+    "klipp_s": null
+   },
+   {
+    "fil": "attempt_08.jsonl",
+    "slut": [
+     153,
+     -702,
+     328
+    ],
+    "d_slut": 97,
+    "max_z": 372,
+    "narmast": 97,
+    "n_uppe": 965,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.37
+   },
+   {
+    "fil": "attempt_09.jsonl",
+    "slut": [
+     267,
+     -817,
+     264
+    ],
+    "d_slut": 116,
+    "max_z": 308,
+    "narmast": null,
+    "n_uppe": 0,
+    "kanon": false,
+    "toppvid": false,
+    "klipp_s": null
+   },
+   {
+    "fil": "attempt_10.jsonl",
+    "slut": [
+     277,
+     -814,
+     20
+    ],
+    "d_slut": 114,
+    "max_z": 283,
+    "narmast": null,
+    "n_uppe": 0,
+    "kanon": false,
+    "toppvid": false,
+    "klipp_s": null
+   },
+   {
+    "fil": "attempt_11.jsonl",
+    "slut": [
+     154,
+     -701,
+     371
+    ],
+    "d_slut": 96,
+    "max_z": 372,
+    "narmast": 96,
+    "n_uppe": 943,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.8
+   },
+   {
+    "fil": "attempt_12.jsonl",
+    "slut": [
+     154,
+     -700,
+     367
+    ],
+    "d_slut": 96,
+    "max_z": 372,
+    "narmast": 96,
+    "n_uppe": 953,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.57
+   },
+   {
+    "fil": "attempt_13.jsonl",
+    "slut": [
+     150,
+     -701,
+     368
+    ],
+    "d_slut": 100,
+    "max_z": 372,
+    "narmast": 100,
+    "n_uppe": 953,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.55
+   },
+   {
+    "fil": "attempt_14.jsonl",
+    "slut": [
+     155,
+     -703,
+     365
+    ],
+    "d_slut": 95,
+    "max_z": 372,
+    "narmast": 95,
+    "n_uppe": 957,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.56
+   },
+   {
+    "fil": "attempt_15.jsonl",
+    "slut": [
+     154,
+     -701,
+     358
+    ],
+    "d_slut": 96,
+    "max_z": 372,
+    "narmast": 96,
+    "n_uppe": 938,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.89
+   },
+   {
+    "fil": "attempt_16.jsonl",
+    "slut": [
+     154,
+     -700,
+     367
+    ],
+    "d_slut": 96,
+    "max_z": 372,
+    "narmast": 96,
+    "n_uppe": 954,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.57
+   },
+   {
+    "fil": "attempt_17.jsonl",
+    "slut": [
+     155,
+     -700,
+     372
+    ],
+    "d_slut": 95,
+    "max_z": 372,
+    "narmast": 95,
+    "n_uppe": 949,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.64
+   },
+   {
+    "fil": "attempt_18.jsonl",
+    "slut": [
+     154,
+     -700,
+     367
+    ],
+    "d_slut": 96,
+    "max_z": 372,
+    "narmast": 96,
+    "n_uppe": 954,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.56
+   },
+   {
+    "fil": "attempt_19.jsonl",
+    "slut": [
+     151,
+     -701,
+     369
+    ],
+    "d_slut": 99,
+    "max_z": 372,
+    "narmast": 99,
+    "n_uppe": 941,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.79
+   },
+   {
+    "fil": "attempt_20.jsonl",
+    "slut": [
+     151,
+     -699,
+     370
+    ],
+    "d_slut": 99,
+    "max_z": 372,
+    "narmast": 99,
+    "n_uppe": 951,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.6
+   }
+  ],
+  "kanon": 0,
+  "toppvid": 15,
+  "n": 20,
+  "aldrig_upp": 5,
+  "median_s": 5.6
+ },
+ "ARM2-HOPPRIGG-vF5": {
+  "rader": [
+   {
+    "fil": "attempt_01.jsonl",
+    "slut": [
+     163,
+     -686,
+     368
+    ],
+    "d_slut": 89,
+    "max_z": 372,
+    "narmast": 89,
+    "n_uppe": 950,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.72
+   },
+   {
+    "fil": "attempt_02.jsonl",
+    "slut": [
+     154,
+     -702,
+     365
+    ],
+    "d_slut": 96,
+    "max_z": 372,
+    "narmast": 96,
+    "n_uppe": 939,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.86
+   },
+   {
+    "fil": "attempt_03.jsonl",
+    "slut": [
+     156,
+     -700,
+     362
+    ],
+    "d_slut": 94,
+    "max_z": 372,
+    "narmast": 94,
+    "n_uppe": 951,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.55
+   },
+   {
+    "fil": "attempt_04.jsonl",
+    "slut": [
+     150,
+     -701,
+     363
+    ],
+    "d_slut": 100,
+    "max_z": 372,
+    "narmast": 100,
+    "n_uppe": 938,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.88
+   },
+   {
+    "fil": "attempt_05.jsonl",
+    "slut": [
+     151,
+     -700,
+     369
+    ],
+    "d_slut": 99,
+    "max_z": 372,
+    "narmast": 99,
+    "n_uppe": 950,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.62
+   },
+   {
+    "fil": "attempt_06.jsonl",
+    "slut": [
+     268,
+     -817,
+     264
+    ],
+    "d_slut": 116,
+    "max_z": 308,
+    "narmast": null,
+    "n_uppe": 0,
+    "kanon": false,
+    "toppvid": false,
+    "klipp_s": null
+   },
+   {
+    "fil": "attempt_07.jsonl",
+    "slut": [
+     157,
+     -693,
+     371
+    ],
+    "d_slut": 94,
+    "max_z": 372,
+    "narmast": 94,
+    "n_uppe": 959,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.59
+   },
+   {
+    "fil": "attempt_08.jsonl",
+    "slut": [
+     154,
+     -700,
+     367
+    ],
+    "d_slut": 96,
+    "max_z": 372,
+    "narmast": 96,
+    "n_uppe": 951,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.57
+   },
+   {
+    "fil": "attempt_09.jsonl",
+    "slut": [
+     150,
+     -700,
+     370
+    ],
+    "d_slut": 100,
+    "max_z": 372,
+    "narmast": 100,
+    "n_uppe": 952,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.63
+   },
+   {
+    "fil": "attempt_10.jsonl",
+    "slut": [
+     150,
+     -700,
+     369
+    ],
+    "d_slut": 100,
+    "max_z": 372,
+    "narmast": 100,
+    "n_uppe": 938,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.85
+   },
+   {
+    "fil": "attempt_11.jsonl",
+    "slut": [
+     153,
+     -702,
+     360
+    ],
+    "d_slut": 97,
+    "max_z": 372,
+    "narmast": 97,
+    "n_uppe": 935,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.92
+   },
+   {
+    "fil": "attempt_12.jsonl",
+    "slut": [
+     160,
+     -684,
+     368
+    ],
+    "d_slut": 92,
+    "max_z": 372,
+    "narmast": 92,
+    "n_uppe": 951,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.7
+   },
+   {
+    "fil": "attempt_13.jsonl",
+    "slut": [
+     149,
+     -701,
+     360
+    ],
+    "d_slut": 101,
+    "max_z": 372,
+    "narmast": 101,
+    "n_uppe": 955,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.53
+   },
+   {
+    "fil": "attempt_14.jsonl",
+    "slut": [
+     156,
+     -700,
+     361
+    ],
+    "d_slut": 94,
+    "max_z": 372,
+    "narmast": 94,
+    "n_uppe": 938,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.82
+   },
+   {
+    "fil": "attempt_15.jsonl",
+    "slut": [
+     157,
+     -700,
+     368
+    ],
+    "d_slut": 93,
+    "max_z": 372,
+    "narmast": 93,
+    "n_uppe": 938,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.84
+   },
+   {
+    "fil": "attempt_16.jsonl",
+    "slut": [
+     150,
+     -700,
+     365
+    ],
+    "d_slut": 100,
+    "max_z": 372,
+    "narmast": 100,
+    "n_uppe": 674,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 11.24
+   },
+   {
+    "fil": "attempt_17.jsonl",
+    "slut": [
+     152,
+     -700,
+     363
+    ],
+    "d_slut": 98,
+    "max_z": 372,
+    "narmast": 98,
+    "n_uppe": 954,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.52
+   },
+   {
+    "fil": "attempt_18.jsonl",
+    "slut": [
+     154,
+     -700,
+     363
+    ],
+    "d_slut": 96,
+    "max_z": 372,
+    "narmast": 96,
+    "n_uppe": 953,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.55
+   },
+   {
+    "fil": "attempt_19.jsonl",
+    "slut": [
+     151,
+     -700,
+     369
+    ],
+    "d_slut": 99,
+    "max_z": 372,
+    "narmast": 99,
+    "n_uppe": 942,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.8
+   },
+   {
+    "fil": "attempt_20.jsonl",
+    "slut": [
+     154,
+     -700,
+     367
+    ],
+    "d_slut": 96,
+    "max_z": 372,
+    "narmast": 96,
+    "n_uppe": 952,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.56
+   }
+  ],
+  "kanon": 0,
+  "toppvid": 19,
+  "n": 20,
+  "aldrig_upp": 1,
+  "median_s": 5.7
+ },
+ "ARM3-REFERENS-med-K2": {
+  "rader": [
+   {
+    "fil": "attempt_01.jsonl",
+    "slut": [
+     156,
+     -701,
+     328
+    ],
+    "d_slut": 94,
+    "max_z": 372,
+    "narmast": 94,
+    "n_uppe": 974,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.15
+   },
+   {
+    "fil": "attempt_02.jsonl",
+    "slut": [
+     165,
+     -679,
+     357
+    ],
+    "d_slut": 88,
+    "max_z": 372,
+    "narmast": 88,
+    "n_uppe": 968,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.3
+   },
+   {
+    "fil": "attempt_03.jsonl",
+    "slut": [
+     155,
+     -700,
+     335
+    ],
+    "d_slut": 95,
+    "max_z": 372,
+    "narmast": 95,
+    "n_uppe": 962,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.38
+   },
+   {
+    "fil": "attempt_04.jsonl",
+    "slut": [
+     151,
+     -702,
+     372
+    ],
+    "d_slut": 99,
+    "max_z": 372,
+    "narmast": 99,
+    "n_uppe": 747,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 9.73
+   },
+   {
+    "fil": "attempt_05.jsonl",
+    "slut": [
+     154,
+     -703,
+     328
+    ],
+    "d_slut": 96,
+    "max_z": 372,
+    "narmast": 96,
+    "n_uppe": 973,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.21
+   },
+   {
+    "fil": "attempt_06.jsonl",
+    "slut": [
+     151,
+     -701,
+     328
+    ],
+    "d_slut": 99,
+    "max_z": 372,
+    "narmast": 99,
+    "n_uppe": 965,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.34
+   },
+   {
+    "fil": "attempt_07.jsonl",
+    "slut": [
+     155,
+     -700,
+     371
+    ],
+    "d_slut": 95,
+    "max_z": 372,
+    "narmast": 95,
+    "n_uppe": 948,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.63
+   },
+   {
+    "fil": "attempt_08.jsonl",
+    "slut": [
+     154,
+     -705,
+     328
+    ],
+    "d_slut": 97,
+    "max_z": 372,
+    "narmast": 97,
+    "n_uppe": 971,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.26
+   },
+   {
+    "fil": "attempt_09.jsonl",
+    "slut": [
+     151,
+     -701,
+     372
+    ],
+    "d_slut": 99,
+    "max_z": 372,
+    "narmast": 99,
+    "n_uppe": 945,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.7
+   },
+   {
+    "fil": "attempt_10.jsonl",
+    "slut": [
+     155,
+     -700,
+     372
+    ],
+    "d_slut": 95,
+    "max_z": 372,
+    "narmast": 95,
+    "n_uppe": 948,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.66
+   },
+   {
+    "fil": "attempt_11.jsonl",
+    "slut": [
+     152,
+     -700,
+     328
+    ],
+    "d_slut": 98,
+    "max_z": 372,
+    "narmast": 98,
+    "n_uppe": 972,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.15
+   },
+   {
+    "fil": "attempt_12.jsonl",
+    "slut": [
+     166,
+     -681,
+     350
+    ],
+    "d_slut": 87,
+    "max_z": 372,
+    "narmast": 87,
+    "n_uppe": 969,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.31
+   },
+   {
+    "fil": "attempt_13.jsonl",
+    "slut": [
+     151,
+     -700,
+     328
+    ],
+    "d_slut": 99,
+    "max_z": 372,
+    "narmast": 99,
+    "n_uppe": 962,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.38
+   },
+   {
+    "fil": "attempt_14.jsonl",
+    "slut": [
+     151,
+     -703,
+     328
+    ],
+    "d_slut": 99,
+    "max_z": 372,
+    "narmast": 99,
+    "n_uppe": 977,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.11
+   },
+   {
+    "fil": "attempt_15.jsonl",
+    "slut": [
+     151,
+     -698,
+     350
+    ],
+    "d_slut": 99,
+    "max_z": 372,
+    "narmast": 99,
+    "n_uppe": 963,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.38
+   },
+   {
+    "fil": "attempt_16.jsonl",
+    "slut": [
+     166,
+     -680,
+     355
+    ],
+    "d_slut": 87,
+    "max_z": 372,
+    "narmast": 87,
+    "n_uppe": 969,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.3
+   },
+   {
+    "fil": "attempt_17.jsonl",
+    "slut": [
+     154,
+     -693,
+     371
+    ],
+    "d_slut": 97,
+    "max_z": 372,
+    "narmast": 97,
+    "n_uppe": 753,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 9.8
+   },
+   {
+    "fil": "attempt_18.jsonl",
+    "slut": [
+     151,
+     -700,
+     328
+    ],
+    "d_slut": 99,
+    "max_z": 372,
+    "narmast": 99,
+    "n_uppe": 963,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.39
+   },
+   {
+    "fil": "attempt_19.jsonl",
+    "slut": [
+     155,
+     -700,
+     371
+    ],
+    "d_slut": 95,
+    "max_z": 372,
+    "narmast": 95,
+    "n_uppe": 949,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.65
+   },
+   {
+    "fil": "attempt_20.jsonl",
+    "slut": [
+     151,
+     -700,
+     371
+    ],
+    "d_slut": 99,
+    "max_z": 372,
+    "narmast": 99,
+    "n_uppe": 948,
+    "kanon": false,
+    "toppvid": true,
+    "klipp_s": 5.65
+   }
+  ],
+  "kanon": 0,
+  "toppvid": 20,
+  "n": 20,
+  "aldrig_upp": 0,
+  "median_s": 5.38
+ }
+}

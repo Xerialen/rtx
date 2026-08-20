@@ -1,0 +1,21 @@
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.8, "n_rader": 1249, "fil": "attempt_01.jsonl", "nr": 1}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.6, "n_rader": 1250, "fil": "attempt_02.jsonl", "nr": 2}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.1, "max_steg_u": 19.6, "n_rader": 1248, "fil": "attempt_03.jsonl", "nr": 3}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.6, "n_rader": 1249, "fil": "attempt_04.jsonl", "nr": 4}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.6, "n_rader": 1249, "fil": "attempt_05.jsonl", "nr": 5}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.5, "n_rader": 1251, "fil": "attempt_06.jsonl", "nr": 6}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.1, "n_rader": 1250, "fil": "attempt_07.jsonl", "nr": 7}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.8, "n_rader": 1249, "fil": "attempt_08.jsonl", "nr": 8}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.9, "n_rader": 1251, "fil": "attempt_09.jsonl", "nr": 9}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.6, "n_rader": 1249, "fil": "attempt_10.jsonl", "nr": 10}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.5, "n_rader": 1249, "fil": "attempt_11.jsonl", "nr": 11}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.5, "n_rader": 1250, "fil": "attempt_12.jsonl", "nr": 12}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.8, "n_rader": 1250, "fil": "attempt_13.jsonl", "nr": 13}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.8, "n_rader": 1250, "fil": "attempt_14.jsonl", "nr": 14}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.1, "max_steg_u": 19.8, "n_rader": 1248, "fil": "attempt_15.jsonl", "nr": 15}
+{"utfall": "timeout", "klipp_s": null, "falls": 1, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.9, "n_rader": 1250, "fil": "attempt_16.jsonl", "nr": 16}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.8, "n_rader": 1250, "fil": "attempt_17.jsonl", "nr": 17}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.8, "n_rader": 1251, "fil": "attempt_18.jsonl", "nr": 18}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.6, "n_rader": 1251, "fil": "attempt_19.jsonl", "nr": 19}
+{"utfall": "timeout", "klipp_s": null, "falls": 0, "tic_drift_pct": 0.0, "poll_hz": 49.2, "max_steg_u": 19.8, "n_rader": 1250, "fil": "attempt_20.jsonl", "nr": 20}
+== in_ring: 0/20 ok, median None, bästa None, fall 1

@@ -96,9 +96,17 @@ def obducera(katalog, etikett):
                  r["klipp_s"] if r["klipp_s"] is not None else "-"))
     k = sum(r["kanon"] for r in rader)
     t = sum(r["toppvid"] for r in rader)
-    print("  kanonens 70u-disk: %d/%d      topp-vid 130u: %d/%d" % (k, len(rader), t, len(rader)))
+    aldrig_upp = sum(1 for r in rader if r["n_uppe"] == 0)
+    tider = sorted(r["klipp_s"] for r in rader if r["klipp_s"] is not None)
+    med = None
+    if tider:
+        m = len(tider) // 2
+        med = tider[m] if len(tider) % 2 else round((tider[m - 1] + tider[m]) / 2, 2)
+    print("  kanonens 70u-disk: %d/%d   topp-vid 130u: %d/%d   aldrig uppe: %d   "
+          "mediantid (topp-vid): %s" % (k, len(rader), t, len(rader), aldrig_upp, med))
     print()
-    return rader
+    return {"rader": rader, "kanon": k, "toppvid": t, "n": len(rader),
+            "aldrig_upp": aldrig_upp, "median_s": med}
 
 
 if __name__ == "__main__":

@@ -1,0 +1,37 @@
+{
+ "port": 27970,
+ "fore": 48207,
+ "efter": 48212,
+ "steg": [
+  {
+   "namn": "P1 z=60",
+   "link": 48207,
+   "from_cell": 1456,
+   "to_cell": 1590
+  },
+  {
+   "namn": "P2 z=155",
+   "link": 48208,
+   "from_cell": 1275,
+   "to_cell": 1090
+  },
+  {
+   "namn": "P3 z=267",
+   "link": 48209,
+   "from_cell": 1312,
+   "to_cell": 1429
+  },
+  {
+   "namn": "P4 z=331",
+   "link": 48210,
+   "from_cell": 1139,
+   "to_cell": 1214
+  },
+  {
+   "namn": "V296 vasthyllan",
+   "link": 48211,
+   "from_cell": 1167,
+   "to_cell": 1191
+  }
+ ]
+}
