@@ -1,0 +1,14 @@
+{
+ "tag": "vF1",
+ "reached": 13,
+ "attempts": 14,
+ "falls": [
+  [
+   409,
+   -880,
+   189
+  ]
+ ],
+ "baslinje_fall": 1,
+ "dom": "GRON"
+}

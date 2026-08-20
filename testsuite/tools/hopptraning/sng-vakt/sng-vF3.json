@@ -1,0 +1,173 @@
+{
+ "tag": "vF3",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48211,
+  "rj_links": 0
+ },
+ "natta": 4,
+ "n": 4,
+ "fall": 0,
+ "tider": {
+  "sng-spawn": {
+   "n_lyckade": 2,
+   "median_s": 36.8,
+   "min_s": 22.55,
+   "max_s": 36.8
+  },
+  "liftspawn": {
+   "n_lyckade": 2,
+   "median_s": 17.72,
+   "min_s": 17.54,
+   "max_s": 17.72
+  }
+ },
+ "rader": [
+  {
+   "ben": "sng-spawn",
+   "i": 1,
+   "klass": "lyckad",
+   "tid_s": 36.8,
+   "slut_pos": [
+    -794.4,
+    106.0,
+    184.0
+   ],
+   "fall": [],
+   "n_ben_i_rutt": 30,
+   "icke_walk": [
+    [
+     483,
+     "step"
+    ],
+    [
+     490,
+     "step"
+    ],
+    [
+     500,
+     "step"
+    ],
+    [
+     510,
+     "step"
+    ],
+    [
+     520,
+     "step"
+    ],
+    [
+     528,
+     "step"
+    ],
+    [
+     273,
+     "step"
+    ],
+    [
+     279,
+     "step"
+    ]
+   ],
+   "omutfardat": 2
+  },
+  {
+   "ben": "sng-spawn",
+   "i": 2,
+   "klass": "lyckad",
+   "tid_s": 22.55,
+   "slut_pos": [
+    -787.4,
+    104.6,
+    184.0
+   ],
+   "fall": [],
+   "n_ben_i_rutt": 30,
+   "icke_walk": [
+    [
+     483,
+     "step"
+    ],
+    [
+     490,
+     "step"
+    ],
+    [
+     500,
+     "step"
+    ],
+    [
+     510,
+     "step"
+    ],
+    [
+     520,
+     "step"
+    ],
+    [
+     528,
+     "step"
+    ],
+    [
+     273,
+     "step"
+    ],
+    [
+     279,
+     "step"
+    ]
+   ],
+   "omutfardat": 2
+  },
+  {
+   "ben": "liftspawn",
+   "i": 1,
+   "klass": "lyckad",
+   "tid_s": 17.54,
+   "slut_pos": [
+    -799.2,
+    100.4,
+    184.0
+   ],
+   "fall": [],
+   "n_ben_i_rutt": 13,
+   "icke_walk": [
+    [
+     13416,
+     "drop"
+    ],
+    [
+     35416,
+     "speedjump"
+    ]
+   ],
+   "omutfardat": 1
+  },
+  {
+   "ben": "liftspawn",
+   "i": 2,
+   "klass": "lyckad",
+   "tid_s": 17.72,
+   "slut_pos": [
+    -790.6,
+    110.4,
+    184.0
+   ],
+   "fall": [],
+   "n_ben_i_rutt": 13,
+   "icke_walk": [
+    [
+     13416,
+     "drop"
+    ],
+    [
+     35416,
+     "speedjump"
+    ]
+   ],
+   "omutfardat": 1
+  }
+ ],
+ "dom": "GRON"
+}

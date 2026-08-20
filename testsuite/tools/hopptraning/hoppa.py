@@ -56,6 +56,19 @@ HOPP = {
         "fall_z": 48.0,
         "budget_s": 12.0,
     },
+    "1f": {
+        "namn": "ring2quad, tre etablerade vinklar (F-serien)",
+        "starter": [
+            ("syd", [478.0, -515.0, 56.0]),        # ring2quad2
+            ("nord", [193.0, -45.0, 56.0]),        # ring2quad3
+            ("ringitemet", [240.0, -32.0, 56.0]),  # Ring of Shadows
+        ],
+        "mal": [946.0, 334.0, 56.0],
+        "ankomst_r": 56.0,
+        "ankomst_dz": 12.0,
+        "fall_z": 48.0,
+        "budget_s": 12.0,
+    },
     "2": {
         "namn": "RA-spawnen ut genom teleporten",
         "starter": [("rarox", [-632.0, -680.0, -16.0])],
@@ -306,13 +319,15 @@ def forsok(lab, bot, start, mal, cfg, i, namn):
                      b.get("rj_phase"), b.get("bhop"), (b.get("route") or {}).get("pos"),
                      b.get("order"), round(float(b.get("health") or 0.0), 0)])
         if klass is None and (not b.get("alive") or o[2] < cfg["fall_z"]):
-            # Fallet ar avgjort har. Bandet rullar vidare till nedslaget sa att
-            # obduktionen kan binda handelsen till LANDNINGEN (aldrig till
-            # luft-triggerticken) — klassningen ar redan satt och andras inte.
+            # AGARREGEL: ramlar boten ner ar forsoket FAIL DIREKT. Bryt pa stallet,
+            # resetta, nytt forsok. Ingen aterklattring, ingen vantan pa timeout.
             klass = "fall"
             tid_klass = nu
             fall_vid = nu
-        if klass == "fall" and (nu - fall_vid > 2.5 or (b.get("on_ground") and nu - fall_vid > 0.3)):
+            try:
+                lab.request({"Stop": {"bot": bot}})
+            except Exception:
+                pass
             break
         if klass is None and (b.get("on_ground") and nu > 0.4
                               and hdist(o, mal) <= cfg["ankomst_r"]

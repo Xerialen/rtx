@@ -1,0 +1,68 @@
+{
+ "hopp": "1f",
+ "namn": "ring2quad, tre etablerade vinklar (F-serien)",
+ "varv": "vF1",
+ "anteckning": "F1: 34501+34503 borta, 35738 kvar, 35592 orord; tre vinklar",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48215,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 12.0
+ },
+ "starter": {
+  "syd": [
+   478.0,
+   -515.0,
+   56.0
+  ],
+  "nord": [
+   193.0,
+   -45.0,
+   56.0
+  ],
+  "ringitemet": [
+   240.0,
+   -32.0,
+   56.0
+  ]
+ },
+ "n": 12,
+ "lyckade": 5,
+ "klasser": {
+  "fall": 7,
+  "lyckad": 5
+ },
+ "per_start": {
+  "syd": {
+   "n": 4,
+   "lyckad": 0
+  },
+  "nord": {
+   "n": 4,
+   "lyckad": 2
+  },
+  "ringitemet": {
+   "n": 4,
+   "lyckad": 3
+  }
+ },
+ "mvd": [],
+ "tider_lyckade": [
+  3.2,
+  3.2,
+  3.4,
+  3.4,
+  3.45
+ ]
+}
