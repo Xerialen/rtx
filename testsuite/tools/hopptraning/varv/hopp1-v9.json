@@ -1,0 +1,68 @@
+{
+ "hopp": "1",
+ "namn": "ringkanten over gapet till quad",
+ "varv": "v9",
+ "anteckning": "ANDRING 10: agarlapp + 24u shift, v_req 419.33 gain 6 (RA-precedens); RA-VAKT GRON 14/14 1 fall; graf 5981/48218 niv\u00e5-2 8e4cb2cc",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48218,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   946.0,
+   334.0,
+   56.0
+  ],
+  "ankomst_r": 56.0,
+  "ankomst_dz": 12.0,
+  "fall_z": 48.0,
+  "budget_s": 12.0
+ },
+ "starter": {
+  "syd": [
+   478.0,
+   -515.0,
+   56.0
+  ],
+  "nord": [
+   193.0,
+   -45.0,
+   56.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 2,
+ "klasser": {
+  "fall": 7,
+  "lyckad": 2,
+  "timeout": 1
+ },
+ "per_start": {
+  "syd": {
+   "n": 5,
+   "lyckad": 0
+  },
+  "nord": {
+   "n": 5,
+   "lyckad": 2
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp1-v9.mvd",
+   "bytes": 183425,
+   "sha256": "56e597cdc479c8b2b3ac423ff2b291d45d21ca18121ced6dc06470269010ce34"
+  },
+  {
+   "fil": "hopp1-v9.txt",
+   "bytes": 217,
+   "sha256": "2512f0fd418c177643702915c95c159a36964b1a21389e57c2c7ddd31ccb5b45"
+  }
+ ],
+ "tider_lyckade": [
+  3.25,
+  3.25
+ ]
+}

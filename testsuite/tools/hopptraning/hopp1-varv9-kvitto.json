@@ -1,0 +1,92 @@
+{
+ "kvitto": {
+  "recept_id": "hopp1-agarlapp-med-shift-v1",
+  "outcome": "applied",
+  "reason": null,
+  "base": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "observed_final": {
+   "cells": 5981,
+   "links": 48218,
+   "rj_links": 0,
+   "graph_stamp": "12152413841921922713",
+   "graph_content_hash": "8e4cb2cc8a1fd275ecba429e0a8cd9e77748f684b7b119e128bfed9fed25e94f"
+  },
+  "steps": [
+   {
+    "name": "plantera-agarlapp-plus-shift",
+    "outcome": "ok",
+    "reason": null,
+    "observed": {
+     "cells": 5981,
+     "links": 48218,
+     "rj_links": 0,
+     "graph_stamp": "12152413841921922713",
+     "graph_content_hash": "8e4cb2cc8a1fd275ecba429e0a8cd9e77748f684b7b119e128bfed9fed25e94f"
+    },
+    "link": 48217
+   }
+  ],
+  "undo_name": "komponat",
+  "audit": "rtx: komponat hopp1-agarlapp-med-shift-v1: applied 1 op(s), 5981/48218 stamp=12152413841921922713\nrtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
+ },
+ "efter": {
+  "recipe": "komponat",
+  "mode": "chain",
+  "outcome": "chained",
+  "reason": null,
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48218,
+  "rj_links": 0,
+  "stamp": "12152413841921922713",
+  "content_hash": "8e4cb2cc8a1fd275ecba429e0a8cd9e77748f684b7b119e128bfed9fed25e94f",
+  "stamp_before": null,
+  "stamp_after": "12152413841921922713",
+  "astar_before": null,
+  "astar_after": null,
+  "astar_next_best": null,
+  "audit": "rtx: navpatch undo chain: depth=1 [komponat], next undo=komponat\n"
+ },
+ "harlett": {
+  "bas": {
+   "cells": 5981,
+   "links": 48217,
+   "rj_links": 0,
+   "graph_stamp": "17645347086516095554",
+   "graph_content_hash": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5"
+  },
+  "steg1": {
+   "cells": 5981,
+   "links": 48218,
+   "rj_links": 0,
+   "graph_stamp": "12152413841921922713",
+   "graph_content_hash": "8e4cb2cc8a1fd275ecba429e0a8cd9e77748f684b7b119e128bfed9fed25e94f"
+  }
+ },
+ "ankare": {
+  "agarlapp": [
+   422.6,
+   157.9,
+   56.0
+  ],
+  "shift_u": 24.0,
+  "planterad_lapp": [
+   446.6,
+   158.2,
+   56.0
+  ],
+  "kontroll_35738_certifierad_avfart": [
+   446.18,
+   161.82,
+   56.0
+  ],
+  "v_req": 419.33,
+  "gain": 6.0
+ }
+}
