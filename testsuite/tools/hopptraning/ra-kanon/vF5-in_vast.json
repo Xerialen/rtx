@@ -1,0 +1,122 @@
+{
+ "fas": "in_vast",
+ "N_planerat": 5,
+ "n_attempt": 5,
+ "inkomplett": false,
+ "n_ok": 0,
+ "n_timeout": 0,
+ "n_kasserad": 5,
+ "n_ogiltig_tic": 0,
+ "falls_tot": 2,
+ "basta": null,
+ "median": null,
+ "iqr": [
+  null,
+  null
+ ],
+ "alla_ok": [],
+ "fall_def": "peak_drop_150",
+ "koordinater": {
+  "start": [
+   -593.0,
+   -677.0,
+   -16.0
+  ],
+  "mal": [
+   256.0,
+   -704.0,
+   328.0
+  ],
+  "cap": 25.0
+ },
+ "forsok": [
+  {
+   "utfall": "kasserad",
+   "klipp_s": null,
+   "falls": 2,
+   "tic_drift_pct": 0.0,
+   "poll_hz": 49.2,
+   "max_steg_u": 784.9,
+   "n_rader": 1249,
+   "fil": "attempt_01.jsonl",
+   "skal": "diskontinuitet 785u",
+   "nr": 1
+  },
+  {
+   "utfall": "kasserad",
+   "klipp_s": 8.2,
+   "falls": 0,
+   "tic_drift_pct": 0.01,
+   "poll_hz": 48.9,
+   "max_steg_u": 784.9,
+   "n_rader": 431,
+   "fil": "attempt_02.jsonl",
+   "skal": "diskontinuitet 785u",
+   "anomali_klipp": {
+    "in": {
+     "ring": [
+      6.05
+     ]
+    }
+   },
+   "nr": 2
+  },
+  {
+   "utfall": "kasserad",
+   "klipp_s": 7.88,
+   "falls": 0,
+   "tic_drift_pct": 0.0,
+   "poll_hz": 48.9,
+   "max_steg_u": 779.6,
+   "n_rader": 414,
+   "fil": "attempt_03.jsonl",
+   "skal": "diskontinuitet 780u",
+   "anomali_klipp": {
+    "in": {
+     "ring": [
+      5.72
+     ]
+    }
+   },
+   "nr": 3
+  },
+  {
+   "utfall": "kasserad",
+   "klipp_s": 8.1,
+   "falls": 0,
+   "tic_drift_pct": 0.0,
+   "poll_hz": 48.9,
+   "max_steg_u": 778.1,
+   "n_rader": 426,
+   "fil": "attempt_04.jsonl",
+   "skal": "diskontinuitet 778u",
+   "anomali_klipp": {
+    "in": {
+     "ring": [
+      6.01
+     ]
+    }
+   },
+   "nr": 4
+  },
+  {
+   "utfall": "kasserad",
+   "klipp_s": 8.2,
+   "falls": 0,
+   "tic_drift_pct": 0.0,
+   "poll_hz": 48.9,
+   "max_steg_u": 779.6,
+   "n_rader": 430,
+   "fil": "attempt_05.jsonl",
+   "skal": "diskontinuitet 780u",
+   "anomali_klipp": {
+    "in": {
+     "ring": [
+      6.05
+     ]
+    }
+   },
+   "nr": 5
+  }
+ ]
+}

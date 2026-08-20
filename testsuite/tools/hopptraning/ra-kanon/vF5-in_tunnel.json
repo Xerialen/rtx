@@ -1,0 +1,95 @@
+{
+ "fas": "in_tunnel",
+ "N_planerat": 5,
+ "n_attempt": 5,
+ "inkomplett": false,
+ "n_ok": 5,
+ "n_timeout": 0,
+ "n_kasserad": 0,
+ "n_ogiltig_tic": 0,
+ "falls_tot": 1,
+ "basta": 8.7,
+ "median": 10.39,
+ "iqr": [
+  9.78,
+  12.27
+ ],
+ "alla_ok": [
+  8.7,
+  9.78,
+  10.39,
+  12.27,
+  18.54
+ ],
+ "fall_def": "peak_drop_150",
+ "koordinater": {
+  "start": [
+   -120.0,
+   -424.0,
+   -96.0
+  ],
+  "mal": [
+   256.0,
+   -704.0,
+   328.0
+  ],
+  "cap": 25.0
+ },
+ "forsok": [
+  {
+   "utfall": "ok",
+   "klipp_s": 10.39,
+   "falls": 0,
+   "tic_drift_pct": 0.0,
+   "poll_hz": 48.9,
+   "max_steg_u": 19.9,
+   "n_rader": 587,
+   "fil": "attempt_01.jsonl",
+   "nr": 1
+  },
+  {
+   "utfall": "ok",
+   "klipp_s": 18.54,
+   "falls": 1,
+   "tic_drift_pct": 0.0,
+   "poll_hz": 49.0,
+   "max_steg_u": 19.7,
+   "n_rader": 988,
+   "fil": "attempt_02.jsonl",
+   "nr": 2
+  },
+  {
+   "utfall": "ok",
+   "klipp_s": 8.7,
+   "falls": 0,
+   "tic_drift_pct": 0.0,
+   "poll_hz": 48.9,
+   "max_steg_u": 19.9,
+   "n_rader": 504,
+   "fil": "attempt_03.jsonl",
+   "nr": 3
+  },
+  {
+   "utfall": "ok",
+   "klipp_s": 9.78,
+   "falls": 0,
+   "tic_drift_pct": 0.01,
+   "poll_hz": 48.9,
+   "max_steg_u": 19.9,
+   "n_rader": 557,
+   "fil": "attempt_04.jsonl",
+   "nr": 4
+  },
+  {
+   "utfall": "ok",
+   "klipp_s": 12.27,
+   "falls": 0,
+   "tic_drift_pct": 0.01,
+   "poll_hz": 49.1,
+   "max_steg_u": 19.9,
+   "n_rader": 681,
+   "fil": "attempt_05.jsonl",
+   "nr": 5
+  }
+ ]
+}
