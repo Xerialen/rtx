@@ -175,9 +175,10 @@ def main():
         print("  DOM       : OKALIBRERAD — baslinje saknas, vakten rapporterar men domer inte")
         kod = 0
     else:
-        gron = alla_fall <= BASLINJE["fall"] and natta >= BASLINJE["natta_min"]
+        krav = -(-int(BASLINJE["natta_frac"] * len(rader)) // 1)
+        gron = alla_fall <= BASLINJE["fall"] and natta >= krav
         ut["dom"] = "GRON" if gron else "ROD"
-        print("  baslinje  : fall <= %d, natta >= %d" % (BASLINJE["fall"], BASLINJE["natta_min"]))
+        print("  baslinje  : fall <= %d, natta >= %d av %d" % (BASLINJE["fall"], krav, len(rader)))
         print("  DOM       : %s" % ut["dom"])
         kod = 0 if gron else 1
     (UT / ("sng-%s.json" % tag)).write_text(json.dumps(ut, indent=1))

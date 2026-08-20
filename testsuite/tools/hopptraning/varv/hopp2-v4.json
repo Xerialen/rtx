@@ -1,0 +1,65 @@
+{
+ "hopp": "2",
+ "namn": "RA-spawnen ut genom teleporten",
+ "varv": "v4",
+ "anteckning": "OMKORNING med full trebotsvakt: RA-vakt + SNG-vakt gron\u0430 fore domen; recept ring2quad-oppna-teleporten-v1",
+ "graf": {
+  "map": "dm3",
+  "cells": 5981,
+  "links": 48216,
+  "rj_links": 0
+ },
+ "facit": {
+  "mal": [
+   224.0,
+   -320.0,
+   75.0
+  ],
+  "ankomst_r": 64.0,
+  "ankomst_dz": 40.0,
+  "fall_z": -260.0,
+  "budget_s": 15.0
+ },
+ "starter": {
+  "rarox": [
+   -632.0,
+   -680.0,
+   -16.0
+  ]
+ },
+ "n": 10,
+ "lyckade": 10,
+ "klasser": {
+  "lyckad": 10
+ },
+ "per_start": {
+  "rarox": {
+   "n": 10,
+   "lyckad": 10
+  }
+ },
+ "mvd": [
+  {
+   "fil": "hopp2-v4.mvd",
+   "bytes": 54091,
+   "sha256": "98144b13bab42e772e73ea488f87e4a887228acd77477a0b434b727b53fb8d7b"
+  },
+  {
+   "fil": "hopp2-v4.txt",
+   "bytes": 217,
+   "sha256": "84a323300005354197ea5c67544f12998f6a7d4564ea6790fb851f2b9dc3b75c"
+  }
+ ],
+ "tider_lyckade": [
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0
+ ]
+}

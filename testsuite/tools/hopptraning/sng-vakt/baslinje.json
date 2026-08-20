@@ -1,0 +1,17 @@
+{
+ "matningar": {
+  "bas3": {
+   "natta": 4,
+   "n": 4,
+   "fall": 0
+  },
+  "bas4": {
+   "natta": 3,
+   "n": 4,
+   "fall": 0
+  }
+ },
+ "fall": 0,
+ "natta_frac": 0.75,
+ "not": "fallraknaren stabil pa 0; malraknaren varierar 3-4 av 4. Kriteriet ar skrivet FORE forsta domda varvet."
+}
