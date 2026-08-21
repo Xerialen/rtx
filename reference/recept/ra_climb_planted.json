@@ -8,7 +8,7 @@
  "efter": {
   "celler": 5977,
   "lankar_live": 48211,
-  "anm": "niva2_sha256 ar AVSIKTLIGT utelamnat: slutlaget med recept PA ar omatt. Facit-receptautostart-v2 paragraf 8.1 -- motorn far bekrafta eller vagra, aldrig leverera forvantan -- sa ett efter-varde far inte skrivas in ur den korning det ska doma. Det mats i eget matled och forseglas som addendum fore forsta domande korning. Sa lange faltet saknas gor motorn ingen slutlagesjamforelse, och applicera_recept.py --verifiera-offline svarar att receptet inte anger nagon forvantad sluthash. lankar_live 48211 ar harlett (48207 + 4 planterade lankar i denna fil), inte matt."
+  "anm": "niva2_sha256 ar AVSIKTLIGT UTELAMNAT och far inte fyllas i har: denna fil ar nr 1 av 2 i manifestordningen, och slutlagesjamforelsen gors mot SISTA filens efter (design v2 paragraf 4.4). Ett efter-varde i en icke-sista fil avvisas hogljutt av bade recept.rs och applicera_recept.py --verifiera-offline; se K1/L9 i WORK_LOGS/facit-receptautostart-v2-addendum3.md. lankar_live 48211 ar harlett (48207 + 4 planterade lankar i denna fil), inte matt. Grafens niva-2 efter just denna fil ar 180315a3c3968d6d52fda7835ba0e8834be8bb16a8618ca511f0a6650f2ba4ca -- UPPLYSNING, inte en bunden konstant."
  },
  "P1 z=60": {
   "frm": [
@@ -28,6 +28,8 @@
   ],
   "v_req": 490.0,
   "gain": 6.0,
+  "fran_cell": 1456,
+  "mal_cell": 1590,
   "cert": "10/10"
  },
  "P2 z=155": {
@@ -48,6 +50,8 @@
   ],
   "v_req": 449.3,
   "gain": 12.0,
+  "fran_cell": 1275,
+  "mal_cell": 1090,
   "cert": "10/10"
  },
  "P3 z=267": {
@@ -68,6 +72,8 @@
   ],
   "v_req": 464.0,
   "gain": 8.0,
+  "fran_cell": 1312,
+  "mal_cell": 1429,
   "cert": "10/10"
  },
  "P4 z=331": {
@@ -88,6 +94,8 @@
   ],
   "v_req": 380.0,
   "gain": 5.5,
+  "fran_cell": 1139,
+  "mal_cell": 1214,
   "cert": "10/10"
  }
 }

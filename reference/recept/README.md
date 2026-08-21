@@ -16,8 +16,12 @@ Därav husregeln längst ned: **recept ska deklareras i evidensbundlar.**
 | `ra_climb_planted.json` | K2, del 1 — RA-rummets uppväg, fyra plana hopp P1–P4 |
 | `vast_296_planted.json` | K2, del 2 — västhyllans V296-länk |
 | `vf5_ring2quad.json` | vF5 — ringkanten över gapet till quad (F-serien) |
+| `manifest.json` | vilka recept motorn kör per karta, **och i vilken ordning** |
 | `applicera_recept.py` | appliceraren; kan också verifiera ett recept utan rigg |
 | `kanon.py` | oberoende räknare för grafidentitet (nivå 1 + nivå 2) |
+| `negprov_offline.py` | mutationsbatteri för offlineverifieringens nio grindar |
+| `trunkeringsprov.py` | känslighetsprov för cellresolveringen mot dumpens heltal |
+| `additivprov.py` | additivregeln: ny fil minus de tillagda fälten = den certade filen |
 
 De två `*_planted.json` är **planteringskörningarnas egna sparade facit** — de
 skrevs av `plant_ra_climb.py` respektive västplanteringen när stegen certades.
@@ -124,12 +128,37 @@ en rigg vars bas inte matchar `bas.niva2_sha256`.**
 
 ---
 
+## `manifest.json` — vilka recept som körs, och i vilken ordning
+
+```json
+{ "schema": "rtx-recept-manifest/1",
+  "kartor": { "dm3": [ {"fil": "ra_climb_planted.json", "ordning": 1},
+                       {"fil": "vast_296_planted.json", "ordning": 2} ] } }
+```
+
+Motorns receptautostart läser **manifestet**, inte katalogen. Skälet är att
+ordningen är betydelsebärande i allmänhet: `PlanLink` resolverar `from`/`tgt`
+genom `nearest()`, så ett recept som körs efter ett annat *kan* resolvera
+annorlunda. Katalogordning är filsystemets godtycke; manifestet är ett beslut.
+En kvarglömd fil i katalogen blir därmed en **no-op**, inte en tyst grafändring.
+
+`vf5_ring2quad.json` står **medvetet utanför** manifestet: det är ett stegrecept
+med `RemoveLinks` (etapp 2), motorns `recept.rs` vägrar `op != PlanLink`, och
+dess bas är en annan grafidentitet (5981 / 48217).
+
+*(För just K2:s två filer ändrar ordningen ingenting i utfallet — inga celler
+tillkommer, så alla fem `nearest()`-svar är desamma oavsett ordning. Ordningen
+står ändå som ett beslut, eftersom nästa recept kan vara ett som planterar celler.)*
+
+---
+
 ## Så appliceras de
 
 ```sh
-# 1. Verifiera receptet utan att röra någon rigg (gör alltid detta först)
-python3 applicera_recept.py vf5_ring2quad.json \
-        --verifiera-offline dm3-full-graph.json
+# 1. Verifiera receptkedjan utan att röra någon rigg (gör alltid detta först).
+#    Flera filer = EN kedja, i manifestordning.
+python3 applicera_recept.py ra_climb_planted.json vast_296_planted.json \
+        --verifiera-offline dm3-base-full-graph.json
 
 # 2. Se vad som skulle skickas
 python3 applicera_recept.py ra_climb_planted.json --torrkor
@@ -143,22 +172,55 @@ Appliceraren räknar själv efter: länktalet **måste** ändras med exakt det a
 stegen förutsäger, annars avbryter den med `STOPP`. Ett kvitto skrivs till
 `~/recept-kvitto.json` med länk-ID och celler per steg.
 
-`--verifiera-offline` spelar upp receptet mot en grafdump och räknar fram
-resulterande nivå-2 med `kanon.py`. Stämmer den med `efter.niva2_sha256` är
-filen intakt och beskriver den graf den påstår sig beskriva.
+`--verifiera-offline` spelar upp kedjan mot en grafdump och räknar fram
+resulterande nivå-2 med `kanon.py`. Stämmer den med **sista** filens
+`efter.niva2_sha256` är filerna intakta och beskriver den graf de påstår sig
+beskriva.
 
-### Att grinden faktiskt kan fälla
+### Fyra grindar, och varför de ser ut som de gör
 
-Verifieringen är negativkontrollerad 2026-08-20, inte bara sedd grön:
+*(Stramade 2026-08-21 efter QA-domen — `WORK_LOGS/qa-dom-receptautostart-design.md`,
+avgjorda i `WORK_LOGS/facit-receptautostart-v2-addendum3.md`.)*
+
+1. **`bas` och `efter` kräver full 64-teckens hex och exakt likhet.** Grinden var
+   en prefixgrind, och åtta hextecken räckte för att passera den. En förkortad
+   konstant är nu ogiltig indata, inte "nästan rätt".
+2. **Cellparen prövas geometriskt.** Bär ett planteringssteg `fran_cell`/`mal_cell`
+   resolveras cellerna *ändå* ur dumpen med en port av `NavGraph::nearest`, och
+   de två måste stämma. Det gör de fem certade cellparen maskinellt prövbara
+   utan rigg.
+3. **Rutnätssvaret dubbelkollas mot en rak genomsökning** av alla celler. Skiljer
+   de sig är det `STOPP` — dumpens koordinater är heltalstrunkerade, och den
+   frågan ska synas, inte gissas. (`trunkeringsprov.py` räknar marginalerna.)
+4. **`efter` binds bara på sista filen i kedjan.** Deklarerar en icke-sista fil
+   ett `efter` avvisas kedjan högljutt; tidigare ignorerades det tyst.
+
+**Följd att känna till:** `vf5_ring2quad.json` bär ännu en 8-teckens
+`efter.niva2_sha256` (`d155c22e`) och avvisas därför nu av grind 1 med
+`STOPP: ogiltig efter-konstant`. Det receptet är etapp 2 och byggs inte nu; dess
+fulla värde ska härledas ur en vF5-basdump när etappen tas upp.
+
+### Att grinderna faktiskt kan fälla
+
+`negprov_offline.py` kör hela batteriet och skriver ut vad varje mutation gav.
+Utfall 2026-08-21, **9 av 9**:
 
 | prov | utfall |
 |---|---|
-| oförändrat vF5-recept mot riggens basdump | `MATCHAR` (`d155c22e…`), exit 0 |
-| ett länk-ID ändrat 35592 → 35593 | `MATCHAR INTE`, exit 3 |
-| avfartens målcell ändrad 2083 → 2072 | `MATCHAR INTE`, exit 3 |
-| receptets `bas.niva2_sha256` förvanskad | `STOPP: dumpens bas matchar inte`, exit 2 |
+| oförändrad kedja | `MATCHAR`, exit 0 |
+| `fran_cell` 1456 → 1457 | `STOPP: … geometrin resolverar 1456`, exit 2 |
+| `bas` trunkerad till 8 hextecken | `STOPP: ogiltig bas-konstant`, exit 2 |
+| `bas` full längd men fel | `STOPP: dumpens bas matchar inte`, exit 2 |
+| `efter` trunkerad till 8 hextecken | `STOPP: ogiltig efter-konstant`, exit 2 |
+| `efter` full längd men fel | `MATCHAR INTE`, exit 3 |
+| `efter` i icke-sista filen | `STOPP: … inte sista receptet`, exit 2 |
+| en länk i dumpen ändrad | `STOPP: dumpens bas matchar inte`, exit 2 |
+| plantering flyttad till annan målcell | `MATCHAR INTE`, exit 3 |
 
-Appliceringsvägen är körd mot referensservern samma dag och gav samma fem
+Det äldre batteriet 2026-08-20 mot vF5-receptet (länk-ID 35592 → 35593 och
+målcell 2083 → 2072, båda `MATCHAR INTE`, exit 3) står kvar som historik.
+
+Appliceringsvägen är körd mot referensservern 2026-08-20 och gav samma fem
 länkar och samma celler som arm 3:s ursprungliga plantering.
 
 ### Återställning

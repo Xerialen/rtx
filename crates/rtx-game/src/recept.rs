@@ -21,6 +21,16 @@
 //!
 //! Modulen är avsiktligt fri från motorberoenden: filläsning och plantering
 //! kommer in som slutningar. Därför kan hela beslutstabellen provas utan server.
+//!
+//! ## Två stramningar efter QA-domen 2026-08-21
+//!
+//! * **K2 — grafkonstanterna binds på full längd.** `bas`/`efter` matchades på
+//!   prefix, och QA visade att åtta hextecken räckte för att passera facit §7
+//!   test 4. Nu krävs 64 hextecken och exakt likhet; en förkortad konstant
+//!   avvisas som ogiltig indata i stället för att nästan stämma.
+//! * **K1 — slutlägesjämförelsens tysta hälft.** Jämförelsen görs alltjämt mot
+//!   **sista** filens `efter` (design v2 §4.4), men en icke-sista fil som
+//!   deklarerar ett `efter` avvisas nu högljutt i stället för att ignoreras.
 
 use rtx_nav::navmesh::NavGraph;
 
@@ -312,7 +322,15 @@ where
     // graf, och då är stegens ändpunkter inte längre samma punkter.
     for (fil, r) in filer.iter().zip(&recept) {
         if let Some(vantad) = &r.bas {
-            if !bas_hash.starts_with(vantad.trim_end_matches('…')) {
+            if !ar_full_hex64(vantad) {
+                return Utfall::hoppat_over(
+                    karta,
+                    filer.clone(),
+                    format!("ogiltig bas-konstant i {fil}: {vantad} — kräver full 64-teckens hex"),
+                    bas_hash,
+                );
+            }
+            if !vantad.eq_ignore_ascii_case(&bas_hash) {
                 return Utfall::hoppat_over(
                     karta,
                     filer.clone(),
@@ -324,6 +342,31 @@ where
                 );
             }
         }
+    }
+
+    // K1/L9 (QA-domen 2026-08-21). Slutlägesjämförelsen görs mot **sista**
+    // filens `efter` — design v2 §4.4, ordagrant: *"jämför resultatet mot
+    // `efter.niva2_sha256` efter sista"*. Det är också den enda läsning där
+    // `efter` betyder det den heter: den graf kartan slutar i. **Beslutet står
+    // därmed fast, men dess tysta hälft stängs:** en icke-sista fil som
+    // deklarerar ett `efter` bad om en jämförelse motorn inte gjorde och inte
+    // sade något om. En sådan receptkedja är felkonfigurerad indata och
+    // hanteras som all annan felkonfigurerad indata i §4:s tabell — rå karta
+    // och en högljudd rad, aldrig ett tyst bortfall.
+    if let Some(i) = recept
+        .iter()
+        .take(recept.len().saturating_sub(1))
+        .position(|r| r.efter.is_some())
+    {
+        return Utfall::hoppat_over(
+            karta,
+            filer.clone(),
+            format!(
+                "{} är inte sista receptet men deklarerar efter — bara slutläget kan bindas",
+                filer[i]
+            ),
+            bas_hash,
+        );
     }
 
     // Klontransaktionen.
@@ -344,7 +387,15 @@ where
     }
     let slut_hash = klon.innehallshash();
     if let Some(vantad) = recept.last().and_then(|r| r.efter.as_ref()) {
-        if !slut_hash.starts_with(vantad.trim_end_matches('…')) {
+        if !ar_full_hex64(vantad) {
+            return Utfall::hoppat_over(
+                karta,
+                filer.clone(),
+                format!("ogiltig efter-konstant: {vantad} — kräver full 64-teckens hex"),
+                bas_hash,
+            );
+        }
+        if !vantad.eq_ignore_ascii_case(&slut_hash) {
             return Utfall::hoppat_over(
                 karta,
                 filer.clone(),
@@ -367,6 +418,18 @@ where
         slut_hash,
         lankar,
     }
+}
+
+/// Är `v` en full grafkonstant — 64 hextecken, ingenting annat?
+///
+/// **K2 (QA-domen 2026-08-21).** Grinden var en prefixgrind
+/// (`bas_hash.starts_with(vantad.trim_end_matches('…'))`), och QA visade att
+/// **åtta hextecken räckte** för att passera facit §7 test 4. Full längd binds
+/// nu i koden i stället för i papperet: en förkortad konstant är inte "nästan
+/// rätt", den är ogiltig indata. Att avvisa den högljutt är samma fail-open
+/// som resten av §4 — rå karta och en rad, aldrig ett tyst godkännande.
+fn ar_full_hex64(v: &str) -> bool {
+    v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn sokvag(kalla: &Kalla, fil: &str) -> String {
@@ -525,6 +588,19 @@ mod tests {
         move |n: &str| m.get(n).cloned()
     }
 
+    /// Ett steg med samma kropp som fixturrecepten nedan, så att facit och
+    /// receptfil planterar exakt samma sak.
+    fn steg(namn: &str) -> Steg {
+        Steg {
+            namn: namn.to_string(),
+            from: [0.0; 3],
+            takeoff: [0.0; 3],
+            tgt: [0.0; 3],
+            v_req: 400.0,
+            gain: 6.0,
+        }
+    }
+
     fn plantera_ok(g: &mut FakeGraf, s: &Steg) -> Result<u32, String> {
         g.lankar.push(s.namn.clone());
         Ok((g.lankar.len() - 1) as u32)
@@ -586,17 +662,173 @@ mod tests {
     }
 
     /// Facit §7 test 5: stegen lyckas men slutläget matchar inte ⇒ allt tillbaka.
+    ///
+    /// Konstanten är **full längd** och fel — annars provas K2:s längdgren i
+    /// stället för den återrullning testet är skrivet för.
     #[test]
     fn fel_slutlage_rullar_tillbaka_allt() {
         let mut g = tom();
         let fore = g.clone();
-        let recept = "{\"efter\":{\"niva2_sha256\":\"deadbeef\"},\"P1\":{\"frm\":[0,0,0],\"takeoff\":[1,0,0],\"tgt\":[2,0,0],\"v_req\":400.0,\"gain\":6.0}}";
+        let recept = format!(
+            "{{\"efter\":{{\"niva2_sha256\":\"{}\"}},\"P1\":{{\"frm\":[0,0,0],\"takeoff\":[1,0,0],\"tgt\":[2,0,0],\"v_req\":400.0,\"gain\":6.0}}}}",
+            "d".repeat(64)
+        );
         let las = las_fran(&[
             ("manifest.json", manifest_med(&["a.json"])),
-            ("a.json", recept.as_bytes().to_vec()),
+            ("a.json", recept.into_bytes()),
         ]);
         let u = applicera("dm3", &Kalla::Absolut("/r".into()), las, &mut g, plantera_ok);
         assert_eq!(u.utfall, UTFALL_HOPPAT_OVER);
+        assert!(u.skal.as_ref().unwrap().contains("fel slutläge"), "{:?}", u.skal);
+        assert_eq!(g, fore, "originalet ska vara orört");
+    }
+
+    /// **K2, bas-grenen.** QA visade 2026-08-21 att grinden var en prefixgrind
+    /// och att **åtta hextecken räckte** för att passera facit §7 test 4. De
+    /// åtta tecknen är här grafens EGNA första åtta — den enda förkortning som
+    /// någonsin passerade — och de ska nu fällas på längd, inte på innehåll.
+    #[test]
+    fn bas_grinden_kraver_full_langd() {
+        let mut g = tom();
+        let bas = g.innehallshash();
+        assert_eq!(bas.len(), 64, "attrappen ska efterlikna en riktig sha256");
+        for forkortad in [&bas[..8], &bas[..63], ""] {
+            let recept = format!(
+                "{{\"bas\":{{\"niva2_sha256\":\"{forkortad}\"}},\"P1\":{{\"frm\":[0,0,0],\"takeoff\":[1,0,0],\"tgt\":[2,0,0],\"v_req\":400.0,\"gain\":6.0}}}}"
+            );
+            let las = las_fran(&[
+                ("manifest.json", manifest_med(&["a.json"])),
+                ("a.json", recept.into_bytes()),
+            ]);
+            let u = applicera("dm3", &Kalla::Absolut("/r".into()), las, &mut g, plantera_ok);
+            assert_eq!(
+                u.utfall, UTFALL_HOPPAT_OVER,
+                "förkortad bas {forkortad:?} måste fällas"
+            );
+            assert!(
+                u.skal.as_ref().unwrap().contains("ogiltig bas-konstant"),
+                "{:?}",
+                u.skal
+            );
+            assert!(g.lankar.is_empty(), "grafen ska vara orörd");
+        }
+        // Positiv motpol: full längd och rätt värde passerar, annars provar
+        // testet bara att allt fälls.
+        let recept = format!(
+            "{{\"bas\":{{\"niva2_sha256\":\"{bas}\"}},\"P1\":{{\"frm\":[0,0,0],\"takeoff\":[1,0,0],\"tgt\":[2,0,0],\"v_req\":400.0,\"gain\":6.0}}}}"
+        );
+        let las = las_fran(&[
+            ("manifest.json", manifest_med(&["a.json"])),
+            ("a.json", recept.into_bytes()),
+        ]);
+        let u = applicera("dm3", &Kalla::Absolut("/r".into()), las, &mut g, plantera_ok);
+        assert_eq!(u.utfall, UTFALL_APPLICERAT, "{:?}", u.skal);
+    }
+
+    /// **K2, efter-grenen.** Samma grind på slutläget: en förkortning av det
+    /// RÄTTA slutvärdet ska fällas, och stora bokstäver i det fullängdiga ska
+    /// inte göra det.
+    #[test]
+    fn efter_grinden_kraver_full_langd() {
+        let mut g = tom();
+        let fore = g.clone();
+        let mut facit = tom();
+        plantera_ok(&mut facit, &steg("P1")).unwrap();
+        let slut = facit.innehallshash();
+
+        let kor = |g: &mut FakeGraf, varde: &str| {
+            let recept = format!(
+                "{{\"efter\":{{\"niva2_sha256\":\"{varde}\"}},\"P1\":{{\"frm\":[0,0,0],\"takeoff\":[1,0,0],\"tgt\":[2,0,0],\"v_req\":400.0,\"gain\":6.0}}}}"
+            );
+            let las = las_fran(&[
+                ("manifest.json", manifest_med(&["a.json"])),
+                ("a.json", recept.into_bytes()),
+            ]);
+            applicera("dm3", &Kalla::Absolut("/r".into()), las, g, plantera_ok)
+        };
+
+        let u = kor(&mut g, &slut[..8]);
+        assert_eq!(u.utfall, UTFALL_HOPPAT_OVER, "8 hextecken får inte räcka");
+        assert!(
+            u.skal.as_ref().unwrap().contains("ogiltig efter-konstant"),
+            "{:?}",
+            u.skal
+        );
+        assert_eq!(g, fore, "originalet ska vara orört");
+
+        let u = kor(&mut g, &slut.to_uppercase());
+        assert_eq!(u.utfall, UTFALL_APPLICERAT, "{:?}", u.skal);
+    }
+
+    /// **K1/L9.** Slutlägesjämförelsen görs mot sista filens `efter` (design v2
+    /// §4.4). En icke-sista fil som deklarerar ett `efter` bad om en jämförelse
+    /// som aldrig gjordes — den tystnaden är stängd.
+    #[test]
+    fn efter_i_icke_sista_filen_avvisas() {
+        let mut g = tom();
+        let fore = g.clone();
+        let a = format!(
+            "{{\"efter\":{{\"niva2_sha256\":\"{}\"}},\"P1\":{{\"frm\":[0,0,0],\"takeoff\":[1,0,0],\"tgt\":[2,0,0],\"v_req\":400.0,\"gain\":6.0}}}}",
+            "a".repeat(64)
+        );
+        let b = "{\"P2\":{\"frm\":[0,0,0],\"takeoff\":[1,0,0],\"tgt\":[2,0,0],\"v_req\":400.0,\"gain\":6.0}}";
+        let las = las_fran(&[
+            ("manifest.json", manifest_med(&["a.json", "b.json"])),
+            ("a.json", a.into_bytes()),
+            ("b.json", b.as_bytes().to_vec()),
+        ]);
+        let u = applicera("dm3", &Kalla::Absolut("/r".into()), las, &mut g, plantera_ok);
+        assert_eq!(u.utfall, UTFALL_HOPPAT_OVER);
+        let skal = u.skal.as_ref().unwrap();
+        assert!(skal.contains("a.json"), "{skal}");
+        assert!(skal.contains("inte sista receptet"), "{skal}");
+        assert_eq!(g, fore, "inget steg får ha körts");
+    }
+
+    /// Motpolen till provet ovan: samma två filer, `efter` på den SISTA. Två
+    /// led, och det andra är det som gör provet till en grind:
+    ///
+    /// 1. rätt slutläge ⇒ kedjan går igenom,
+    /// 2. **mellanläget** (grafen efter bara fil 1) som `efter` ⇒ HOPPAS ÖVER.
+    ///
+    /// Led 2 är det som binder `recept.last()`: en implementation som prövade
+    /// FÖRSTA filens `efter` skulle inte hitta något att pröva alls och släppa
+    /// igenom mellanläget.
+    #[test]
+    fn efter_i_sista_filen_provas_over_hela_kedjan() {
+        let mut facit = tom();
+        plantera_ok(&mut facit, &steg("P1")).unwrap();
+        let mellan = facit.innehallshash();
+        plantera_ok(&mut facit, &steg("P2")).unwrap();
+        let slut = facit.innehallshash();
+        assert_ne!(mellan, slut, "fixturen måste skilja mellanläge från slutläge");
+
+        let bygg = |efter: &str| {
+            let a = "{\"P1\":{\"frm\":[0,0,0],\"takeoff\":[1,0,0],\"tgt\":[2,0,0],\"v_req\":400.0,\"gain\":6.0}}";
+            let b = format!(
+                "{{\"efter\":{{\"niva2_sha256\":\"{efter}\"}},\"P2\":{{\"frm\":[0,0,0],\"takeoff\":[1,0,0],\"tgt\":[2,0,0],\"v_req\":400.0,\"gain\":6.0}}}}"
+            );
+            las_fran(&[
+                ("manifest.json", manifest_med(&["a.json", "b.json"])),
+                ("a.json", a.as_bytes().to_vec()),
+                ("b.json", b.into_bytes()),
+            ])
+        };
+
+        let mut g = tom();
+        let u = applicera("dm3", &Kalla::Absolut("/r".into()), bygg(&slut), &mut g, plantera_ok);
+        assert_eq!(u.utfall, UTFALL_APPLICERAT, "{:?}", u.skal);
+        assert_eq!(u.lankar, 2);
+        assert_eq!(u.slut_hash, slut, "sista filens efter är hela kedjans slutläge");
+
+        let mut g = tom();
+        let fore = g.clone();
+        let u = applicera("dm3", &Kalla::Absolut("/r".into()), bygg(&mellan), &mut g, plantera_ok);
+        assert_eq!(
+            u.utfall, UTFALL_HOPPAT_OVER,
+            "mellanläget får inte godtas som slutläge: {:?}",
+            u.skal
+        );
         assert!(u.skal.as_ref().unwrap().contains("fel slutläge"), "{:?}", u.skal);
         assert_eq!(g, fore, "originalet ska vara orört");
     }
