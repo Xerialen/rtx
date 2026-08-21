@@ -16,8 +16,12 @@ Därav husregeln längst ned: **recept ska deklareras i evidensbundlar.**
 | `ra_climb_planted.json` | K2, del 1 — RA-rummets uppväg, fyra plana hopp P1–P4 |
 | `vast_296_planted.json` | K2, del 2 — västhyllans V296-länk |
 | `vf5_ring2quad.json` | vF5 — ringkanten över gapet till quad (F-serien) |
+| `vf5_ring2quad_forkmain.json` | samma vF5-ingrepp, omhärlett mot **fork mains** grafidentitet |
 | `applicera_recept.py` | appliceraren; kan också verifiera ett recept utan rigg |
 | `kanon.py` | oberoende räknare för grafidentitet (nivå 1 + nivå 2) |
+| `omharled_forkmain.py` | flyttar ett stegrecept mellan två grafidentiteter, geometriskt |
+| `forkbas_kalla.py` | belägget för vilken graf fork-basdumpen beskriver |
+| `kvitto_forkbasbindningen.sh` | portningskvittot + dess negativkontroller |
 
 De två `*_planted.json` är **planteringskörningarnas egna sparade facit** — de
 skrevs av `plant_ra_climb.py` respektive västplanteringen när stegen certades.
@@ -121,6 +125,98 @@ Basen är den graf som **lokal main `4f0b910`** bygger för dm3 — inte den som
 `cc5fa8e` bygger (5977 / 48207). Länk-ID kompakteras när länkar tas bort, och
 en annan motorversion bygger en annan graf. **Applicera aldrig ett stegrecept på
 en rigg vars bas inte matchar `bas.niva2_sha256`.**
+
+---
+
+## vF5 omhärlett till fork main = `vf5_ring2quad_forkmain.json`
+
+`vf5_ring2quad.json` kan inte appliceras på ett rent bygge ur fork main: dess
+bas är en annan graf. Den här filen är **samma ingrepp** — samma plantering,
+samma sju borttagningar — omräknat mot fork mains grafidentitet, så
+ring2quad-kedjan kan sluttestas där.
+
+### Vilken generation som omhärleddes
+
+**vF5 med 12 u läppinning, avfart [454,7 · 153,3]** — den generation som gav två
+rena 12/12-varv i följd (vF5b, vF5c) och helkedjan 12/12. Avfartskoordinaten är
+identitetsbäraren: nivå-2 kan **inte** skilja vF3, vF4 och vF5 åt (alla tre ger
+`d155c22e…`, se arbetsloggens §25.4 — avfartspunkten bor i sidotabellen och
+hashas inte). vF4:s läpp låg på [450,4 · 157,6] och vF3 hade ingen planterad
+tvilling alls.
+
+### Hur den räknades om
+
+Id:n kopieras aldrig rakt av — ankaret är geometrin (`fran_pos`/`mal_pos` per
+borttagning, världskoordinater per plantering). `omharled_forkmain.py` gör två
+led: först en positiv kontroll att varje id i källreceptet pekar på exakt den
+länk receptet påstår i källgrafen, sedan uppslag på samma
+(fran_pos, mal_pos, kind) i målgrafen med krav på **exakt en** träff.
+
+**Mätt utfall:** fork-basens celler 0–5976 och länkar 0–48206 är identiska med
+vF5-basens prefix — samma koordinater, samma `from/to/kind/T`, samma `cell_ids`
+och `link_ids`. vF5-basen är fork-basen plus fyra celler (5977–5980, kring
+[−9xx · −48 · 88]) och tio länkar (id 48207–48216) **påklistrade sist**.
+Omhärledningen blir därför identitetsavbildningen på alla sju länk-id och båda
+cellnumren. Det som skiljer är grafidentiteten, inte bindningarna — och just
+därför måste hasharna bytas: ett recept som deklarerar fel bas blir aldrig
+applicerat.
+
+```
+bas   5977 celler / 48207 länkar   nivå-2  58787ce0d27ddd49…   PRELIMINÄR
+efter 5977 celler / 48201 länkar   nivå-2  dcb487f79abdd415…   PRELIMINÄR
+```
+
+### Varför båda värdena är märkta PRELIMINÄRA
+
+De är framräknade **offline** ur en grafdump, inte lästa ur en levande rigg på
+fork main. Fork mains kontrollkanal saknar `out_pruned` och kan bara leverera
+adjacensen (48192 av 48207 länkar), så nivå-2 går inte att mäta där förrän
+`graph_content_hash` är portad. Facit `facit-receptautostart-v2` §8.3 kräver att
+basvärdet **mäts på riggen och förseglas som addendum före första dömande
+körning** — den här filen får inte användas för att fylla i det värdet i
+efterhand. Den är kandidaten som mätningen ska bekräfta eller fälla.
+
+### Källan till fork-basens graf
+
+| | |
+|---|---|
+| komplett dump | `lanister:~/lab/toolbox/dm3-base-full-graph.json`, sha256 `a04c7ada…ef6a` |
+| tagen på | toolbox/b-planner-telemetry, `nav_patch` **av**, ctl :27995 — **inte** fork main |
+| motpart | `lanister:~/hopptraning/graf/mainref-live-graph.json`, sha256 `2ae8ccfd…9836`, ctl :27970 på `rtx-mainref` @ `cc5fa8e` |
+
+Att den kompletta dumpen ändå beskriver fork mains dm3-default är **mätt, inte
+antaget**: `forkbas_kalla.py` visar att cellerna och `cell_ids` är identiska, och
+att dumpens 48192 T=1-länkar är exakt fork mains länkar i samma ordning med
+samma `link_ids`. Det fork main inte kan leverera — de 15 prunade länkarna,
+inklusive teleportlänken `36314` (4633 → 1330) — är precis det den kompletta
+dumpen bidrar med.
+
+### Portningskvittot: **fork-basbindningen**
+
+Kvittot är inte "antal gröna". Det är en namngiven kontroll av *en* sak: att det
+omhärledda receptet binder mot fork-basens nivå-2 och mot ingen annan graf.
+
+```sh
+bash kvitto_forkbasbindningen.sh          # K1 + N1–N6
+```
+
+| prov | utfall |
+|---|---|
+| **K1** omhärlett recept mot fork-basen | `bas: matchar` → härleder `dcb487f7…`, **MATCHAR**, exit 0 |
+| N1 omhärlett recept mot vF5-basen | `STOPP: dumpens bas matchar inte`, exit 2 |
+| N2 originalreceptet mot fork-basen | `STOPP: dumpens bas matchar inte`, exit 2 |
+| N3 ett länk-id ändrat 35592 → 35593 | `MATCHAR INTE`, exit 3 |
+| N4 avfartens målcell ändrad 2083 → 2072 | `MATCHAR INTE`, exit 3 |
+| N5 basens nivå-2 förvanskad | `STOPP`, exit 2 |
+| N6 efter-hashen satt till lokala mains `d155c22e` | `MATCHAR INTE`, exit 3 |
+
+N1 och N2 är korsprovet som ger kvittot tänder: de två recepten är **inte**
+utbytbara, och vart och ett vägras av den andras graf.
+
+### Vad som INTE är omhärlett
+
+Utfallssiffrorna. 35/36, 12/12 och helkedjan är mätta på vF5-basen med lokal
+mains binär. De får inte citeras som fork mains utfall — den mätningen återstår.
 
 ---
 

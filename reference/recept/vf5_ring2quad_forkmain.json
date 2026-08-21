@@ -1,0 +1,80 @@
+{
+ "recept": "vF5 ring2quad (omharledd mot fork main)",
+ "karta": "dm3",
+ "syfte": "Oppnar ringkanten -> quad over gapet fran tre vinklar, och som sidoeffekt dm3:s enda teleportlank. Samma ingrepp som vf5_ring2quad.json, men bundet till fork mains grafidentitet.",
+ "harleder_ur": {
+  "recept": "reference/recept/vf5_ring2quad.json",
+  "commit": "4db5b1987ccaefb7aedf1e1ab59a9b7615a89421",
+  "generation": "vF5 (lappinning 12 u, avfart [454.7 . 153.3]) — den generation som gav tva rena 12/12-varv i foljd (vF5b, vF5c) och helkedjan 12/12; se WORK_LOGS/2026-08-19-hopptraning-ring2quad.md §26.2-§26.3 och §29.3",
+  "metod": "Ankaret ar GEOMETRIN, inte id:na: varje borttagning matchades pa (fran_pos, mal_pos, kind) och varje planteringskoordinat pa cellkoordinat. Id:na nedan ar fork-basens egna, inte kopierade.",
+  "matt_utfall": "Fork-basens celler 0..5976 och lankar 0..48206 ar BIT-IDENTISKA med vF5-basens prefix — samma koordinater, samma from/to/kind/T, samma cell_ids och link_ids. vF5-basen ar fork-basen plus 4 celler (5977-5980, kring [-9xx . -48 . 88]) och 10 lankar (id 48207-48216) paklistrade sist. Omharledningen blir darfor identitetsavbildningen pa alla sju lank-id och bada cellnumren; det som skiljer ar grafidentiteten (niva-2), inte bindningarna."
+ },
+ "kallor": {
+  "fork_bas": {
+   "fil": "lanister:~/lab/toolbox/dm3-base-full-graph.json",
+   "sha256": "a04c7ada6a3445a53b0357e86d120d0d909d61908b7f5664eec8a2c0d6cbef6a",
+   "provenance": "live control channel :27995 — dm3, 5977 celler / 48207 lankar, komplett dump (out + out_pruned), T=adjacensmedlemskap",
+   "anm": "Dumpen togs pa toolbox/b-planner-telemetry med nav_patch AV, inte pa fork main. Att den anda beskriver fork mains dm3-default ar MATT, inte antaget: dess 48192 T=1-lankar ar exakt lika — samma ordning, samma link_ids — som fork mains egen levande dump (~/hopptraning/graf/mainref-live-graph.json, sha256 2ae8ccfd80fac43431f6afab9ced43b21ccd9d957e0ce9dd0f825fd3669a9836, ctl :27970 pa rtx-mainref @ cc5fa8e), och cellerna + cell_ids ar identiska. Fork mains kontrollkanal saknar out_pruned, sa den kan inte sjalv leverera de 15 prunade lankarna; toolbox-dumpen bidrar med dem."
+  },
+  "vf5_bas": {
+   "fil": "lanister:~/hopptraning/graf/dm3-rigg-full-graph.json",
+   "sha256": "edc0717e84a214f81feabb5ab119bad63869a0ed0c21312e9e2bbb4834fe2393",
+   "provenance": "live control channel :27980 — dm3, 5981 celler / 48217 lankar, komplett dump; grafen lokal main 4f0b910 bygger"
+  }
+ },
+ "bas": {
+  "celler": 5977,
+  "lankar_inkl_prunade": 48207,
+  "niva1_stamp": "906595427771298736",
+  "niva2_sha256": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+  "status": "PRELIMINAR",
+  "anm": "Rakhat fram offline av reference/recept/kanon.py ur fork_bas-dumpen ovan, och lika med dumpens eget graph_content_hash-falt. Vardet ar PRELIMINART tills det ar matt pa den levande riggen ur motorns egen lankarray (S2) — se facit-receptautostart-v2 §8.3, som kraver att det forseglas som addendum FORE forsta domande korning. Applicera aldrig detta stegrecept pa en rigg vars bas inte matchar."
+ },
+ "efter": {
+  "celler": 5977,
+  "lankar_live": 48201,
+  "niva2_sha256": "dcb487f79abdd4157eda0637d617ea8ddd17764e56ad68e3f49e53e5f21dd87a",
+  "status": "PRELIMINAR",
+  "anm": "Harledd offline: 48207 + 1 planterad - 7 borttagna = 48201, alla kvarvarande T=1 (remove_links_by_id ateruppliver de prunade). Preliminar av samma skal som basen."
+ },
+ "steg": [
+  {
+   "op": "PlanLink",
+   "namn": "lappinnad sydavfart",
+   "from": [288.0, 320.0, 56.0],
+   "takeoff": [454.7, 153.3, 56.0],
+   "tgt": [712.0, 144.0, 56.0],
+   "v_req": 419.33,
+   "gain": 6.0,
+   "fran_cell": 1450,
+   "mal_cell": 2083,
+   "vardcell_avfart": 1714,
+   "motiv": "Motorn utloser sprangat nar avstandet till avfartslinjen langs ansatsaxeln understiger LIP_REACH = 28 u. Sydmissarna lag pa 27,1 och 27,65 — knappt innanfor, sa de lyfte for tidigt. Avfartslinjen ar flyttad 12 u framat langs samma axel (-45 grader) sa missarnas punkt hamnar utanfor troskeln medan traffens punkt fortfarande ligger innanfor. Punkten ligger inne i cell 1714:s fotavtryck — fast mark. Ovriga parametrar identiska med originalet 35738.",
+   "omharledning": "from [288 . 320 . 56] -> cell 1450 och tgt [712 . 144 . 56] -> cell 2083 i BADA graferna. Avfarten [454.7 . 153.3 . 56] ligger 11,62 u fran cell 1714 [446 . 161 . 56] i bada graferna — samma vardcell, samma fotavtryck. Inget cellnummer andrades."
+  },
+  {
+   "op": "RemoveLinks",
+   "namn": "gropdykarna, de oflygbara korsningarna och originalavfarten",
+   "lankar": [
+    {"id": 34501, "vf5_id": 34501, "kind": "speedjump", "from": 1701, "to": 2072, "fran_pos": [436, -208, 56], "mal_pos": [716, -208, 56], "motiv": "oflygbar korsning"},
+    {"id": 34503, "vf5_id": 34503, "kind": "speedjump", "from": 1712, "to": 2083, "fran_pos": [438, 142, 56], "mal_pos": [712, 144, 56], "motiv": "oflygbar korsning"},
+    {"id": 35683, "vf5_id": 35683, "kind": "speedjump", "from": 1691, "to": 1925, "fran_pos": [448, -384, 56], "mal_pos": [608, -160, -194], "motiv": "gropdykare: landar pa z = -194"},
+    {"id": 35761, "vf5_id": 35761, "kind": "speedjump", "from": 1233, "to": 2177, "fran_pos": [160, -160, 56], "mal_pos": [768, -96, -200], "motiv": "gropdykare: landar pa z = -200"},
+    {"id": 35762, "vf5_id": 35762, "kind": "speedjump", "from": 1246, "to": 2177, "fran_pos": [160, 64, 56], "mal_pos": [768, -96, -200], "motiv": "gropdykare: landar pa z = -200"},
+    {"id": 35592, "vf5_id": 35592, "kind": "speedjump", "from": 1691, "to": 1617, "fran_pos": [448, -384, 56], "mal_pos": [382, 129, 56], "motiv": "drar rutten in i den daliga korridoren"},
+    {"id": 35738, "vf5_id": 35738, "kind": "speedjump", "from": 1450, "to": 2083, "fran_pos": [288, 320, 56], "mal_pos": [712, 144, 56], "motiv": "originalavfarten — tas bort sa planeraren inte har bade den och den lappinnade tvillingen"}
+   ],
+   "omharledning": "Varje lank aterfanns i fork-basen pa exakt en (fran_cell, mal_cell, kind)-trippel, och fork-basens id sammanfaller med vF5-basens for alla sju. Ingen tvetydig traff, inga saknade.",
+   "sidoeffekt": "Motorns remove_links_by_id nollar adjacensen och push_link:ar varje behallen lank, sa ALLA prunade lankar aterupplivas — inklusive dm3:s enda teleportlank (fork-basen: id 36314, cell 4633 -> 1330, T=0). Det ar den semantik som testet control::tests::komponat_remove_links_resurrects_pruned_links_like_the_recipes_do pinnar, och det ar avsiktligt utnyttjat har: utan det kan A* aldrig planera genom en teleportor."
+  }
+ ],
+ "certifierat_av": {
+  "anm": "SIFFRORNA NEDAN AR MATTA PA vF5-BASEN (lokal main 4f0b910, 5981/48217), inte pa fork main. De far inte citeras som fork mains utfall — den matningen ar S2:s.",
+  "hopp_1_over_gapet": "35 av 36 forsok over tre vinklar (syd, nord, ringitemet), varav tva rena 12/12-varv i foljd",
+  "hopp_2_ut_genom_teleporten": "12/12",
+  "hopp_3_ringitemet_till_quad": "12/12",
+  "tillbakahoppet_quad_till_ring": "12/12 utan ingrepp",
+  "helkedjan": "12/12 hela kedjor, 7,2-8,9 s per kedja",
+  "RA_regression": "RA-drillarna mot kanonen 91a6e34, se WORK_LOGS/2026-08-19-hopptraning-ring2quad.md §30-§31"
+ }
+}
