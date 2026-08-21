@@ -115,6 +115,9 @@ pub struct GameState {
     ext_fields: ext_field::ExtFields,
     /// Auto-generated navmesh for the current map (bot navigation). Rebuilt each map load.
     pub(crate) nav: navmesh::NavState,
+    /// Vad receptautostarten gjorde vid senaste kartladdningen (facit §13). Bor har
+    /// och inte i `NavState`, eftersom addendum 1 binder att inget annat i rtx-nav rors.
+    pub(crate) recept: Option<crate::recept::Utfall>,
     /// The map's KTX race routes (from `race/routes/*.route` and/or embedded
     /// `race_route_*` entities), loaded at the end of `load_entities`. See [`crate::race`].
     pub(crate) race: race::RaceState,
@@ -241,6 +244,7 @@ impl GameState {
             rng: 0x2545_f491, // nonzero default; reseeded in GAME_INIT
             ext_fields: ext_field::ExtFields::default(),
             nav: navmesh::NavState::default(),
+            recept: None,
             race: race::RaceState::default(),
             opponents: bot::model::OpponentModel::default(),
             client_lead: 0.0,

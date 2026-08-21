@@ -266,6 +266,31 @@ pub struct StatusResp {
     /// that wants the human reads this one. Empty on a server nobody has joined.
     #[serde(default)]
     pub players: Vec<PlayerStatus>,
+    /// Grafens niva-2 (`graph_content_hash`), tom strang nar ingen graf ar byggd.
+    ///
+    /// Star har **oberoende av receptutfallet** och aven nar `rtx_recept_dir` ar tom,
+    /// sa att facitets §8.2-kontroll kan lasa defaultgrafens identitet ur en levande
+    /// rigg utan att aktivera nagot recept.
+    #[serde(default)]
+    pub graph_content_hash: String,
+    /// Vilket recept som applicerades vid kartladdningen — riggdata som annars ar
+    /// osynlig i binarens sha256. `None` innan navmeshen ar byggd.
+    #[serde(default)]
+    pub recept: Option<ReceptInfo>,
+}
+
+/// Receptdeklarationen (facit-receptautostart-v2 §13): obligatorisk i evidensbundlar.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReceptInfo {
+    pub karta: String,
+    /// I tillampad ordning.
+    pub filer: Vec<String>,
+    /// `"applicerat"` | `"hoppat_over"` | `"inget"`.
+    pub utfall: String,
+    pub skal: Option<String>,
+    pub bas_hash: String,
+    pub slut_hash: String,
+    pub lankar: u32,
 }
 
 /// One connected human client, as much of it as a movement lab needs to attribute a position

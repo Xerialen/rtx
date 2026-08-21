@@ -1,4 +1,16 @@
 {
+ "bas": {
+  "celler": 5977,
+  "lankar_inkl_prunade": 48207,
+  "niva2_sha256": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+  "anm": "Maltradets defaultgraf for dm3, matt ur levande rigg 2026-08-21 17:04Z (10/10 identiska lasningar, recept AV) pa gren receptautostart e6b25b71fc154602c50277ffc721e2d7208d696a med qwprogs.so sha256 785ad6b3dacbfe57e8236aa5ee282b97bab2232f6fb44c82e8b66108af72be89. Forseglad i WORK_LOGS/facit-receptautostart-v2-addendum2.md sha256 003bebdb51aecc01fa3929edc649058c49f66db950f3e8394e881e9a0887c240, under moderfacit 964e80e7757739b10fe4d02b57146e32b46cbb49460ca19e344f56c38b56d7bd. En annan binar bygger en annan graf: da galler ett nytt addendum, aldrig en rattad konstant."
+ },
+ "efter": {
+  "celler": 5977,
+  "lankar_live": 48211,
+  "niva2_sha256": "180315a3c3968d6d52fda7835ba0e8834be8bb16a8618ca511f0a6650f2ba4ca",
+  "anm": "niva2_sha256 ar HARLETT OFFLINE ur den kompletta fork-basdumpen (dm3-base-full-graph.json, 5977 celler / 48207 lankar, niva-2 58787ce0...) genom att lagga till denna fils FYRA certade cellpar ur facit-receptautostart-v2 paragraf 7 test 9 som (fran_cell, mal_cell, kind=speedjump, T=1) och rakna om niva 2 med kanon.py. Vardet ar mellanlaget efter fil 1 av 2 i manifestordningen och provas av motorn efter just denna fils steg (K1/L9, filvis provning -- se WORK_LOGS/facit-receptautostart-v2-addendum3.md). Omraknbart med: python3 applicera_recept.py ra_climb_planted.json --verifiera-offline <dump>. Harlett och forseglat FORE den korning det ska doma, enligt paragraf 8.1. lankar_live 48211 ar harlett (48207 + 4 planterade lankar i denna fil), inte matt."
+ },
  "P1 z=60": {
   "frm": [
    319.4734191894531,
@@ -17,6 +29,8 @@
   ],
   "v_req": 490.0,
   "gain": 6.0,
+  "fran_cell": 1456,
+  "mal_cell": 1590,
   "cert": "10/10"
  },
  "P2 z=155": {
@@ -37,6 +51,8 @@
   ],
   "v_req": 449.3,
   "gain": 12.0,
+  "fran_cell": 1275,
+  "mal_cell": 1090,
   "cert": "10/10"
  },
  "P3 z=267": {
@@ -57,6 +73,8 @@
   ],
   "v_req": 464.0,
   "gain": 8.0,
+  "fran_cell": 1312,
+  "mal_cell": 1429,
   "cert": "10/10"
  },
  "P4 z=331": {
@@ -77,6 +95,8 @@
   ],
   "v_req": 380.0,
   "gain": 5.5,
+  "fran_cell": 1139,
+  "mal_cell": 1214,
   "cert": "10/10"
  }
 }

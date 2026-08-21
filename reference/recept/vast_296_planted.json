@@ -1,4 +1,16 @@
 {
+ "bas": {
+  "celler": 5977,
+  "lankar_inkl_prunade": 48207,
+  "niva2_sha256": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+  "anm": "Maltradets defaultgraf for dm3, matt ur levande rigg 2026-08-21 17:04Z (10/10 identiska lasningar, recept AV) pa gren receptautostart e6b25b71fc154602c50277ffc721e2d7208d696a med qwprogs.so sha256 785ad6b3dacbfe57e8236aa5ee282b97bab2232f6fb44c82e8b66108af72be89. Forseglad i WORK_LOGS/facit-receptautostart-v2-addendum2.md sha256 003bebdb51aecc01fa3929edc649058c49f66db950f3e8394e881e9a0887c240, under moderfacit 964e80e7757739b10fe4d02b57146e32b46cbb49460ca19e344f56c38b56d7bd. En annan binar bygger en annan graf: da galler ett nytt addendum, aldrig en rattad konstant."
+ },
+ "efter": {
+  "celler": 5977,
+  "lankar_live": 48212,
+  "niva2_sha256": "feeea6b41284a1cddf3907f2d9e1ff668b48da524b865530df81925b997dbaa9",
+  "anm": "niva2_sha256 ar HARLETT OFFLINE ur den kompletta fork-basdumpen (dm3-base-full-graph.json, 5977 celler / 48207 lankar, niva-2 58787ce0...) genom att lagga till de fem certade cellparen ur facit-receptautostart-v2 paragraf 7 test 9 som (fran_cell, mal_cell, kind=speedjump, T=1) och rakna om niva 2 med kanon.py. Omraknbar med: python3 applicera_recept.py ra_climb_planted.json vast_296_planted.json --verifiera-offline <dump>. Vardet ar darmed harlett och forseglat FORE den korning det ska doma, enligt paragraf 8.1 -- motorn far bekrafta eller vagra, aldrig leverera forvantan. Riggens korstartslasning ska bekrafta det; skiljer den sig ar korningen ogiltig och ett nytt addendum galler, aldrig en rattad konstant. Harledningen ar forseglad i WORK_LOGS/facit-receptautostart-v2-addendum3.md. lankar_live 48212 ar harlett (48207 + 4 fran ra_climb_planted.json + 1 i denna fil, manifestordning 1 -> 2)."
+ },
  "V296 vasthyllan": {
   "from": [
    107.0,
@@ -17,6 +29,8 @@
   ],
   "v_req": 320.0,
   "gain": 5.5,
+  "fran_cell": 1167,
+  "mal_cell": 1191,
   "carried": true,
   "cert": "6/6 i riktig A*-rutt (in_vast, 0 fall, median 9.35, b\u00e4sta 8.84)",
   "link_vid_cert": 48131,

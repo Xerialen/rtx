@@ -35,6 +35,7 @@ mod doors;
 mod entity;
 mod ext_field;
 mod game;
+mod graph_ident;
 mod game_command;
 mod grapple;
 mod host;
@@ -50,6 +51,7 @@ mod obituary;
 /// channel's map listing, and by the `netclient` feature's filesystem.
 pub(crate) mod pak;
 mod plats;
+mod recept;
 mod player;
 mod pmove_sim;
 mod race;

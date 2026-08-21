@@ -229,6 +229,11 @@ pub struct Link {
 
 /// The built navigation graph: cells, directed links, per-cell adjacency (indices into
 /// `links`), and an XY spatial index for `nearest`/neighbor queries.
+///
+/// `Clone` exists for transactional post-build mutation: mutate a clone, publish it only if every
+/// step validated — a failed step then leaves the original graph untouched, derived tables included.
+/// The graph is a few MB of `Vec`s; cloning it once at map load is noise next to the build itself.
+#[derive(Clone)]
 pub struct NavGraph {
     pub cells: Vec<Cell>,
     pub links: Vec<Link>,
@@ -535,8 +540,11 @@ impl NavGraph {
     /// optional column empty (so it reads as dry, unhazardous and gate-free) and stock bhop physics.
     /// Exists so that adding a column doesn't mean editing eight field-by-field literals — the friction
     /// that kept the hazard pricing out of the tests' sight while it silently did nothing in play.
-    #[cfg(test)]
-    pub(super) fn test_graph(cells: Vec<Cell>, links: Vec<Link>) -> NavGraph {
+    ///
+    /// **Fixturväg för prov, inte en produktionskonstruktor.** Öppnad bakom `fixture`
+    /// (av som default) enligt facit-receptautostart-v2 addendum 1.
+    #[cfg(any(test, feature = "fixture"))]
+    pub fn test_graph(cells: Vec<Cell>, links: Vec<Link>) -> NavGraph {
         let mut adjacency = vec![Vec::new(); cells.len()];
         for (i, l) in links.iter().enumerate() {
             adjacency[l.from as usize].push(i as u32);

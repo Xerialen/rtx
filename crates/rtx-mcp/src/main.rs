@@ -1912,6 +1912,8 @@ mod tests {
             oracle: proto::OracleInfo::default(),
             bots: vec![],
             players: vec![],
+            graph_content_hash: String::new(),
+            recept: None,
         };
         resp.match_.phase = "live".into();
         resp.match_.roster = vec![
