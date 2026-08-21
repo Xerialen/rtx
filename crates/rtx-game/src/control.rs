@@ -1605,7 +1605,12 @@ fn goto_crossed_finish(traj: &[(f32, Vec3, Vec3, u8)], origin: Vec3, target: Vec
     if past.dot(along) < 0.0 {
         return false;
     }
-    (past - along * past.dot(along)).length() <= GOTO_FINISH_CORRIDOR
+    let past_along = past.dot(along);
+    // The corridor shrinks the further past the finish plane the bot is: a genuine line
+    // crossing is detected within a frame or two of the plane (past_along small), while a
+    // point goal approached obliquely can sit 100u+ past the plane and 90u to the side —
+    // that is a miss, not an arrival (measured: dm3 RA, Hold 142u from target, 2026-08-10).
+    (past - along * past_along).length() <= (GOTO_FINISH_CORRIDOR - past_along).max(0.0)
 }
 
 /// Stop a completed puppet goto without letting its route or bhop state leak into the Hold order.
@@ -1813,6 +1818,60 @@ mod tests {
         assert!(goto_crossed_finish(&traj, Vec3::new(280.0, 3008.0, 48.0), target));
         assert!(!goto_crossed_finish(&traj, Vec3::new(330.0, 3008.0, 48.0), target));
         assert!(!goto_crossed_finish(&traj, Vec3::new(224.0, 2970.0, 48.0), target));
+    }
+
+    /// The five cases of facit-mallinjefix-v1 §8, one test each.
+    ///
+    /// The A-arm's own test above returns the same verdict under both the flat and the
+    /// shrinking rule, so it stays green even if `- past_along` is struck out. These are
+    /// the cases that actually bind the term. One test per case on purpose: a failing
+    /// assert ends its function, so a shared body would let an early case hide the rest
+    /// under mutation.
+    ///
+    /// Geometry: `along = (0,1)`, so `origin = target + (lateral, past_along)`. Written in
+    /// analysis as `lateral <= (96 - k*past_along).max(0)`; `k` is a tool for choosing the
+    /// cases and appears nowhere in the code (facit §7).
+    fn crossed(lateral: f32, past_along: f32) -> bool {
+        let traj = vec![(0.0f32, Vec3::new(224.0, 1440.0, 24.0), Vec3::ZERO, 0u8)];
+        let target = Vec3::new(224.0, 2992.0, 24.0);
+        let origin = Vec3::new(target.x + lateral, target.y + past_along, 48.0);
+        goto_crossed_finish(&traj, origin, target)
+    }
+
+    /// c1, discriminator: the measured death point. The flat 96 rule accepted this by 1.7u
+    /// and parked the bot 101u from its target. Excludes `k = 0` — the term being struck.
+    #[test]
+    fn c1_obliquely_approached_point_is_a_miss_not_an_arrival() {
+        assert!(!crossed(94.3, 45.8));
+    }
+
+    /// c2, discriminator: excludes a shrink steeper than the plane distance (`k <= 1.2`).
+    /// At `k = 2` the bound would be 36 < 60 and this case would fail.
+    #[test]
+    fn c2_shrink_does_not_outrun_the_distance_past_the_plane() {
+        assert!(crossed(60.0, 30.0));
+    }
+
+    /// c3: a genuine line crossing — the case the corridor exists for (the 100m dash
+    /// crosses its finish plane a frame or two past it, weaving off the centreline).
+    #[test]
+    fn c3_genuine_line_crossing_still_counts() {
+        assert!(crossed(56.0, 16.0));
+    }
+
+    /// c4, regression guard rather than discriminator: at `past_along = 0` the term drops
+    /// out and the case is accepted for every `k >= 0`, `k = 0` included. It guards that
+    /// the shrink does not eat the near field; it pins nothing.
+    #[test]
+    fn c4_near_field_on_the_plane_is_untouched() {
+        assert!(crossed(20.0, 0.0));
+    }
+
+    /// c5: short of the plane, so the early return decides first. That is the property
+    /// that keeps a re-issued goto from ever manufacturing an arrival.
+    #[test]
+    fn c5_short_of_the_plane_returns_early() {
+        assert!(!crossed(0.0, -22.0));
     }
 
     #[test]
