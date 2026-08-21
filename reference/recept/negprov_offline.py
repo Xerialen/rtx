@@ -41,7 +41,17 @@ def mut_efter_fel(d, _):
 
 
 def mut_efter_i_forsta(d, _):
+    """Ge FORSTA filen kedjans SLUTHASH som efter.
+
+    Under den gamla recept.last()-semantiken hade detta passerat obemarkt:
+    forsta filens efter lastes aldrig. Filvis provning bryter i stallet mitt i
+    kedjan, fore fil 2.
+    """
     d[RA]["efter"]["niva2_sha256"] = d[V296]["efter"]["niva2_sha256"]
+
+
+def mut_efter_bort_ur_sista(d, _):
+    d[V296]["efter"].pop("niva2_sha256")
 
 
 def mut_dump(_, g):
@@ -67,7 +77,8 @@ PROV = [
     ("bas full langd men fel", mut_bas_fel, 2, "dumpens bas matchar inte"),
     ("efter trunkerad till 8 hextecken", mut_efter_kort, 2, "ogiltig efter-konstant"),
     ("efter full langd men fel", mut_efter_fel, 3, "MATCHAR INTE"),
-    ("efter i icke-sista filen", mut_efter_i_forsta, 2, "inte sista receptet"),
+    ("sluthashen lagd i FORSTA filen", mut_efter_i_forsta, 3, "MATCHAR INTE"),
+    ("efter borttaget ur sista filen", mut_efter_bort_ur_sista, 1, "SLUTLAGE"),
     # En andrad lank i dumpen andrar BASEN, sa bas-grinden fyrar fore
     # slutlagesjamforelsen. Det ar ratt ordning: fel graf ska stoppas fore
     # forsta steget (facit paragraf 7 test 4), inte efter sista.

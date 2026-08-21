@@ -19,7 +19,7 @@ Därav husregeln längst ned: **recept ska deklareras i evidensbundlar.**
 | `manifest.json` | vilka recept motorn kör per karta, **och i vilken ordning** |
 | `applicera_recept.py` | appliceraren; kan också verifiera ett recept utan rigg |
 | `kanon.py` | oberoende räknare för grafidentitet (nivå 1 + nivå 2) |
-| `negprov_offline.py` | mutationsbatteri för offlineverifieringens nio grindar |
+| `negprov_offline.py` | mutationsbatteri för offlineverifieringens grindar |
 | `trunkeringsprov.py` | känslighetsprov för cellresolveringen mot dumpens heltal |
 | `additivprov.py` | additivregeln: ny fil minus de tillagda fälten = den certade filen |
 
@@ -172,10 +172,13 @@ Appliceraren räknar själv efter: länktalet **måste** ändras med exakt det a
 stegen förutsäger, annars avbryter den med `STOPP`. Ett kvitto skrivs till
 `~/recept-kvitto.json` med länk-ID och celler per steg.
 
-`--verifiera-offline` spelar upp kedjan mot en grafdump och räknar fram
-resulterande nivå-2 med `kanon.py`. Stämmer den med **sista** filens
-`efter.niva2_sha256` är filerna intakta och beskriver den graf de påstår sig
-beskriva.
+`--verifiera-offline` spelar upp kedjan mot en grafdump och räknar fram nivå-2
+med `kanon.py` efter **varje** fil. Stämmer varje fils `efter.niva2_sha256` är
+filerna intakta och beskriver de grafer de påstår sig beskriva.
+
+`vast_296_planted.json`s `efter` är kedjans slutläge (48 212 länkar) och nås
+bara i manifestordning — filen ensam mot basdumpen ger 48 208 och `MATCHAR
+INTE`, vilket är rätt: den är inte skriven för att köras ensam.
 
 ### Fyra grindar, och varför de ser ut som de gör
 
@@ -192,8 +195,11 @@ avgjorda i `WORK_LOGS/facit-receptautostart-v2-addendum3.md`.)*
 3. **Rutnätssvaret dubbelkollas mot en rak genomsökning** av alla celler. Skiljer
    de sig är det `STOPP` — dumpens koordinater är heltalstrunkerade, och den
    frågan ska synas, inte gissas. (`trunkeringsprov.py` räknar marginalerna.)
-4. **`efter` binds bara på sista filen i kedjan.** Deklarerar en icke-sista fil
-   ett `efter` avvisas kedjan högljutt; tidigare ignorerades det tyst.
+4. **Varje fils `efter` prövas efter just den filens steg.** Motorn läste förut
+   bara `recept.last()`, så en kedja där bara den första filen bar `efter`
+   jämförde ingenting alls. Sista filens `efter` är därmed hela kedjans
+   slutläge — design v2 §4.4 som specialfall — och facit §2 punkt 3, `bas`
+   **och** `efter` i **båda** receptfilerna, går att uppfylla.
 
 **Följd att känna till:** `vf5_ring2quad.json` bär ännu en 8-teckens
 `efter.niva2_sha256` (`d155c22e`) och avvisas därför nu av grind 1 med
@@ -203,7 +209,7 @@ fulla värde ska härledas ur en vF5-basdump när etappen tas upp.
 ### Att grinderna faktiskt kan fälla
 
 `negprov_offline.py` kör hela batteriet och skriver ut vad varje mutation gav.
-Utfall 2026-08-21, **9 av 9**:
+Utfall 2026-08-21, **10 av 10**:
 
 | prov | utfall |
 |---|---|
@@ -213,7 +219,8 @@ Utfall 2026-08-21, **9 av 9**:
 | `bas` full längd men fel | `STOPP: dumpens bas matchar inte`, exit 2 |
 | `efter` trunkerad till 8 hextecken | `STOPP: ogiltig efter-konstant`, exit 2 |
 | `efter` full längd men fel | `MATCHAR INTE`, exit 3 |
-| `efter` i icke-sista filen | `STOPP: … inte sista receptet`, exit 2 |
+| kedjans sluthash lagd i FÖRSTA filen | `MATCHAR INTE`, exit 3 (bryter mellan filerna) |
+| `efter` borttaget ur sista filen | `VARNING: … SLUTLÄGE … oprövat`, exit 1 |
 | en länk i dumpen ändrad | `STOPP: dumpens bas matchar inte`, exit 2 |
 | plantering flyttad till annan målcell | `MATCHAR INTE`, exit 3 |
 

@@ -28,9 +28,11 @@
 //!   prefix, och QA visade att åtta hextecken räckte för att passera facit §7
 //!   test 4. Nu krävs 64 hextecken och exakt likhet; en förkortad konstant
 //!   avvisas som ogiltig indata i stället för att nästan stämma.
-//! * **K1 — slutlägesjämförelsens tysta hälft.** Jämförelsen görs alltjämt mot
-//!   **sista** filens `efter` (design v2 §4.4), men en icke-sista fil som
-//!   deklarerar ett `efter` avvisas nu högljutt i stället för att ignoreras.
+//! * **K1 — slutlägesjämförelsen görs per fil.** `recept.last()` läste bara
+//!   sista filens `efter`, så en kedja utan `efter` i sista filen jämförde
+//!   ingenting alls. Nu prövas **varje** fils `efter` efter just den filens
+//!   steg; sista filens `efter` är därmed hela kedjans slutläge, vilket är
+//!   design v2 §4.4:s krav som specialfall.
 
 use rtx_nav::navmesh::NavGraph;
 
@@ -344,35 +346,11 @@ where
         }
     }
 
-    // K1/L9 (QA-domen 2026-08-21). Slutlägesjämförelsen görs mot **sista**
-    // filens `efter` — design v2 §4.4, ordagrant: *"jämför resultatet mot
-    // `efter.niva2_sha256` efter sista"*. Det är också den enda läsning där
-    // `efter` betyder det den heter: den graf kartan slutar i. **Beslutet står
-    // därmed fast, men dess tysta hälft stängs:** en icke-sista fil som
-    // deklarerar ett `efter` bad om en jämförelse motorn inte gjorde och inte
-    // sade något om. En sådan receptkedja är felkonfigurerad indata och
-    // hanteras som all annan felkonfigurerad indata i §4:s tabell — rå karta
-    // och en högljudd rad, aldrig ett tyst bortfall.
-    if let Some(i) = recept
-        .iter()
-        .take(recept.len().saturating_sub(1))
-        .position(|r| r.efter.is_some())
-    {
-        return Utfall::hoppat_over(
-            karta,
-            filer.clone(),
-            format!(
-                "{} är inte sista receptet men deklarerar efter — bara slutläget kan bindas",
-                filer[i]
-            ),
-            bas_hash,
-        );
-    }
-
     // Klontransaktionen.
     let mut klon = graph.kopia();
     let mut lankar = 0u32;
-    for (fil, r) in filer.iter().zip(&recept) {
+    let mut slut_hash = String::new();
+    for (i, (fil, r)) in filer.iter().zip(&recept).enumerate() {
         for steg in &r.steg {
             if let Err(e) = plantera(&mut klon, steg) {
                 return Utfall::hoppat_over(
@@ -384,27 +362,45 @@ where
             }
             lankar += 1;
         }
-    }
-    let slut_hash = klon.innehallshash();
-    if let Some(vantad) = recept.last().and_then(|r| r.efter.as_ref()) {
-        if !ar_full_hex64(vantad) {
-            return Utfall::hoppat_over(
-                karta,
-                filer.clone(),
-                format!("ogiltig efter-konstant: {vantad} — kräver full 64-teckens hex"),
-                bas_hash,
-            );
-        }
-        if !vantad.eq_ignore_ascii_case(&slut_hash) {
-            return Utfall::hoppat_over(
-                karta,
-                filer.clone(),
-                format!(
-                    "fel slutläge: graf {}, receptet väntar {vantad}",
-                    kort(&slut_hash)
-                ),
-                bas_hash,
-            );
+        // K1/L9 (QA-domen 2026-08-21). **Varje fils `efter` prövas efter just
+        // den filens steg.** `recept.last()` var den bokstavliga läsningen av
+        // design v2 §4.4 (*"jämför resultatet mot `efter.niva2_sha256` efter
+        // sista"*), men den kan inte förenas med facit §2 punkt 3, som kräver
+        // `bas` **och** `efter` i **båda** receptfilerna: under `last()` vore
+        // den första filens `efter` en dekoration motorn aldrig läste. Den
+        // filvisa läsningen uppfyller båda — sista filens `efter` **är** hela
+        // kedjans slutläge, så §4.4 står som specialfall — och den stänger
+        // QA:s K1: en kedja där bara den första filen bär `efter` får inte
+        // längre passera oprövad.
+        let ar_sista = i + 1 == filer.len();
+        if r.efter.is_some() || ar_sista {
+            let h = klon.innehallshash();
+            if let Some(vantad) = &r.efter {
+                if !ar_full_hex64(vantad) {
+                    return Utfall::hoppat_over(
+                        karta,
+                        filer.clone(),
+                        format!(
+                            "ogiltig efter-konstant i {fil}: {vantad} — kräver full 64-teckens hex"
+                        ),
+                        bas_hash,
+                    );
+                }
+                if !vantad.eq_ignore_ascii_case(&h) {
+                    return Utfall::hoppat_over(
+                        karta,
+                        filer.clone(),
+                        format!(
+                            "fel slutläge efter {fil}: graf {}, filen väntar {vantad}",
+                            kort(&h)
+                        ),
+                        bas_hash,
+                    );
+                }
+            }
+            if ar_sista {
+                slut_hash = h;
+            }
         }
     }
 
@@ -760,29 +756,62 @@ mod tests {
         assert_eq!(u.utfall, UTFALL_APPLICERAT, "{:?}", u.skal);
     }
 
-    /// **K1/L9.** Slutlägesjämförelsen görs mot sista filens `efter` (design v2
-    /// §4.4). En icke-sista fil som deklarerar ett `efter` bad om en jämförelse
-    /// som aldrig gjordes — den tystnaden är stängd.
+    /// **K1/L9.** Varje fils `efter` prövas efter just den filens steg.
+    ///
+    /// Provet har tre led, och det är det tredje som binder semantiken:
+    /// 1. rätt mellanläge i fil 1 ⇒ kedjan går igenom,
+    /// 2. **fel** mellanläge i fil 1 ⇒ HOPPAS ÖVER,
+    /// 3. och då har fil 2:s steg **aldrig körts** — grinden fyrar mellan
+    ///    filerna, inte efter hela kedjan. En implementation som bara läste
+    ///    sista filens `efter` skulle släppa igenom led 2.
     #[test]
-    fn efter_i_icke_sista_filen_avvisas() {
+    fn efter_provas_per_fil_i_kedjan() {
+        let mut facit = tom();
+        plantera_ok(&mut facit, &steg("P1")).unwrap();
+        let mellan = facit.innehallshash();
+        plantera_ok(&mut facit, &steg("P2")).unwrap();
+        let slut = facit.innehallshash();
+
+        let bygg = |efter_a: &str| {
+            let a = format!(
+                "{{\"efter\":{{\"niva2_sha256\":\"{efter_a}\"}},\"P1\":{{\"frm\":[0,0,0],\"takeoff\":[1,0,0],\"tgt\":[2,0,0],\"v_req\":400.0,\"gain\":6.0}}}}"
+            );
+            let b = "{\"P2\":{\"frm\":[0,0,0],\"takeoff\":[1,0,0],\"tgt\":[2,0,0],\"v_req\":400.0,\"gain\":6.0}}";
+            las_fran(&[
+                ("manifest.json", manifest_med(&["a.json", "b.json"])),
+                ("a.json", a.into_bytes()),
+                ("b.json", b.as_bytes().to_vec()),
+            ])
+        };
+
+        let mut g = tom();
+        let u = applicera("dm3", &Kalla::Absolut("/r".into()), bygg(&mellan), &mut g, plantera_ok);
+        assert_eq!(u.utfall, UTFALL_APPLICERAT, "{:?}", u.skal);
+        assert_eq!(u.slut_hash, slut);
+
+        // Fel mellanläge: kedjan ska brytas efter fil 1, och P2 aldrig planteras.
         let mut g = tom();
         let fore = g.clone();
-        let a = format!(
-            "{{\"efter\":{{\"niva2_sha256\":\"{}\"}},\"P1\":{{\"frm\":[0,0,0],\"takeoff\":[1,0,0],\"tgt\":[2,0,0],\"v_req\":400.0,\"gain\":6.0}}}}",
-            "a".repeat(64)
+        let sedda = std::cell::RefCell::new(Vec::new());
+        let u = applicera(
+            "dm3",
+            &Kalla::Absolut("/r".into()),
+            bygg(&slut),
+            &mut g,
+            |g: &mut FakeGraf, s: &Steg| {
+                sedda.borrow_mut().push(s.namn.clone());
+                plantera_ok(g, s)
+            },
         );
-        let b = "{\"P2\":{\"frm\":[0,0,0],\"takeoff\":[1,0,0],\"tgt\":[2,0,0],\"v_req\":400.0,\"gain\":6.0}}";
-        let las = las_fran(&[
-            ("manifest.json", manifest_med(&["a.json", "b.json"])),
-            ("a.json", a.into_bytes()),
-            ("b.json", b.as_bytes().to_vec()),
-        ]);
-        let u = applicera("dm3", &Kalla::Absolut("/r".into()), las, &mut g, plantera_ok);
-        assert_eq!(u.utfall, UTFALL_HOPPAT_OVER);
+        assert_eq!(u.utfall, UTFALL_HOPPAT_OVER, "{:?}", u.skal);
         let skal = u.skal.as_ref().unwrap();
-        assert!(skal.contains("a.json"), "{skal}");
-        assert!(skal.contains("inte sista receptet"), "{skal}");
-        assert_eq!(g, fore, "inget steg får ha körts");
+        assert!(skal.contains("fel slutläge efter a.json"), "{skal}");
+        assert_eq!(
+            *sedda.borrow(),
+            vec!["P1".to_string()],
+            "fil 2 får inte ha körts när fil 1:s efter föll"
+        );
+        assert_eq!(g, fore, "originalet ska vara orört");
     }
 
     /// Motpolen till provet ovan: samma två filer, `efter` på den SISTA. Två

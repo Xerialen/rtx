@@ -8,7 +8,8 @@
  "efter": {
   "celler": 5977,
   "lankar_live": 48211,
-  "anm": "niva2_sha256 ar AVSIKTLIGT UTELAMNAT och far inte fyllas i har: denna fil ar nr 1 av 2 i manifestordningen, och slutlagesjamforelsen gors mot SISTA filens efter (design v2 paragraf 4.4). Ett efter-varde i en icke-sista fil avvisas hogljutt av bade recept.rs och applicera_recept.py --verifiera-offline; se K1/L9 i WORK_LOGS/facit-receptautostart-v2-addendum3.md. lankar_live 48211 ar harlett (48207 + 4 planterade lankar i denna fil), inte matt. Grafens niva-2 efter just denna fil ar 180315a3c3968d6d52fda7835ba0e8834be8bb16a8618ca511f0a6650f2ba4ca -- UPPLYSNING, inte en bunden konstant."
+  "niva2_sha256": "180315a3c3968d6d52fda7835ba0e8834be8bb16a8618ca511f0a6650f2ba4ca",
+  "anm": "niva2_sha256 ar HARLETT OFFLINE ur den kompletta fork-basdumpen (dm3-base-full-graph.json, 5977 celler / 48207 lankar, niva-2 58787ce0...) genom att lagga till denna fils FYRA certade cellpar ur facit-receptautostart-v2 paragraf 7 test 9 som (fran_cell, mal_cell, kind=speedjump, T=1) och rakna om niva 2 med kanon.py. Vardet ar mellanlaget efter fil 1 av 2 i manifestordningen och provas av motorn efter just denna fils steg (K1/L9, filvis provning -- se WORK_LOGS/facit-receptautostart-v2-addendum3.md). Omraknbart med: python3 applicera_recept.py ra_climb_planted.json --verifiera-offline <dump>. Harlett och forseglat FORE den korning det ska doma, enligt paragraf 8.1. lankar_live 48211 ar harlett (48207 + 4 planterade lankar i denna fil), inte matt."
  },
  "P1 z=60": {
   "frm": [

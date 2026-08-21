@@ -54,10 +54,12 @@ K2 — bas-/efter-grinden var en PREFIXgrind (`startswith`), sa atta hextecken
 K1/L9 — offlinevagen speglar nu motorns kedja. Flera receptfiler pa
   kommandoraden i --verifiera-offline utgor EN kedja i manifestordning: varje
   fils `bas` provas mot dumpens ursprungliga hash (precis som `recept.rs` gor
-  fore forsta steget), stegen laggs pa kumulativt, och `efter` provas efter
-  SISTA filen (design v2 §4.4). En icke-sista fil som deklarerar
-  `efter.niva2_sha256` ar en receptkonfiguration motorn inte kan uppfylla och
-  avvisas hogljutt i stallet for att tigas ihjal.
+  fore forsta steget), stegen laggs pa kumulativt, och VARJE fils `efter` provas
+  efter just den filens steg. `recept.last()` var den bokstavliga lasningen av
+  design v2 paragraf 4.4, men den kan inte forenas med facit paragraf 2 punkt 3
+  som kraver bas OCH efter i BADA receptfilerna: under last() vore forsta filens
+  efter en dekoration motorn aldrig laste. Filvis provning uppfyller bada --
+  sista filens efter ar hela kedjans slutlage.
 """
 import argparse
 import json
@@ -274,20 +276,13 @@ def verifiera_offline(receptfiler, dumpfil):
             return 2
         print("bas    : %s matchar receptets bas" % fil)
 
-    # K1/L9: bara sista filens `efter` kan vara slutlaget. En icke-sista fil som
-    # deklarerar ett ska inte tigas ihjal — motorn kan inte uppfylla det.
-    for fil, d, _ in lasta[:-1]:
-        if (d.get("efter") or {}).get("niva2_sha256") is not None:
-            print("STOPP: %s ar inte sista receptet i kedjan men deklarerar "
-                  "efter.niva2_sha256 — bara slutlaget kan bindas (design v2 §4.4)" % fil)
-            return 2
-
     # Receptet spelas upp i ordning. Plantering laggs till som T=1; borttagning
     # filtreras bort. Motorns aterupplivning av prunade lankar modelleras genom
     # att ALLA behallna lankar far T=1 efter ett RemoveLinks-steg — det ar den
     # pinnade semantiken, inte en gissning.
     aktuella = list(rader)
     kvar_lids = list(lids)
+    provade = []
     for fil, d, steg in lasta:
         print("== %s ==" % fil)
         for s in steg:
@@ -319,22 +314,39 @@ def verifiera_offline(receptfiler, dumpfil):
             else:
                 print("STOPP: okand op %r" % s["op"])
                 return 2
-        print("  delsumma: %d lankar / niva2 %s" % (len(aktuella), kanon.niva2(celler, aktuella)))
+        # K1/L9: VARJE fils `efter` provas efter just den filens steg, precis
+        # som motorn gor. Sista filens `efter` ar darmed hela kedjans slutlage
+        # (design v2 paragraf 4.4 som specialfall), och facit paragraf 2 punkt 3
+        # -- bas OCH efter i BADA receptfilerna -- gar att uppfylla.
+        h = kanon.niva2(celler, aktuella)
+        print("  delsumma: %d lankar / niva2 %s" % (len(aktuella), h))
+        vantad = (d.get("efter") or {}).get("niva2_sha256")
+        if vantad is None:
+            print("  efter  : %s anger ingen forvantad hash — inget att jamfora mot" % fil)
+            provade.append(False)
+            continue
+        fel = granska_konstant(vantad, "efter", fil)
+        if fel:
+            print(fel)
+            return 2
+        if not hash_lika(vantad, h):
+            print("  efter  : %s vantar %s -> MATCHAR INTE" % (fil, vantad))
+            return 3
+        print("  efter  : %s -> MATCHAR" % vantad)
+        provade.append(True)
 
     slut = kanon.niva2(celler, aktuella)
-    sista = lasta[-1]
-    vantad = (sista[1].get("efter") or {}).get("niva2_sha256")
     print("harlett: %d lankar / niva2 %s" % (len(aktuella), slut))
-    if not vantad:
-        print("receptet anger ingen forvantad sluthash — inget att jamfora mot")
+    if not any(provade):
+        print("ingen receptfil anger nagon forvantad sluthash — inget att jamfora mot")
         return 1
-    fel = granska_konstant(vantad, "efter", sista[0])
-    if fel:
-        print(fel)
-        return 2
-    ok = hash_lika(vantad, slut)
-    print("forvantat: %s  -> %s" % (vantad, "MATCHAR" if ok else "MATCHAR INTE"))
-    return 0 if ok else 3
+    if not provade[-1]:
+        print("VARNING: sista filen %s anger ingen efter-hash, sa kedjans SLUTLAGE "
+              "ar oprovat aven om tidigare filer stammer" % lasta[-1][0])
+        return 1
+    print("alla %d receptfiler med efter-hash matchar; kedjans slutlage ar provat"
+          % sum(provade))
+    return 0
 
 
 # ---------------------------------------------------------------- rigg
