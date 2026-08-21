@@ -53,6 +53,14 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         ("rtx_doublejump", Bool(false)),
         // Bots bunnyhop (air-strafe to build speed) on open stretches; on by default.
         ("rtx_bot_bhop", Bool(true)),
+        // Receptautostarten (facit-receptautostart-v2 §3.4-3.5). Tom sokvag = funktionen
+        // ar HELT AV; ett rent bygge utan cvar beter sig exakt som forut. Sokvagen ar
+        // absolut (inleds med "/") eller gamedir-relativ — aldrig arbetskatalogsrelativ.
+        ("rtx_recept_dir", Str("")),
+        // Ar den satt avbryts kartladdningen i stallet for att kora ra karta nar receptet
+        // inte kunde appliceras. INTE default: en rigg som dor producerar ingen matning
+        // alls, vilket ar samma trasiga byte som west-shelf-incidenten betalade.
+        ("rtx_recept_krav", Bool(false)),
         // Generate curl jumps (run-up down a corridor, air-turn onto an offset platform), certified by
         // a pmove rollout in the navmesh build. A sub-toggle of bhop (`rtx_bot_bhop 0` disables it too).
         ("rtx_bot_curljump", Bool(true)),

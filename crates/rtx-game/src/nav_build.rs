@@ -219,6 +219,71 @@ impl GameState {
         self.host.dprint(c"rtx: navmesh: building in background...\n");
     }
 
+
+    /// Kör receptautostarten på den nybyggda grafen (facit-receptautostart-v2 §2–§5).
+    ///
+    /// Läsvägen följer sökvägsregeln: en absolut sökväg läses ur filsystemet, en
+    /// gamedir-relativ genom motorns egen `read_file`, som söker gamedir och därefter
+    /// basspelet. Arbetskatalogen används aldrig — en sökväg som fungerar på riggen och
+    /// tiger någon annanstans är samma klass av fel som regeln finns för att stoppa.
+    ///
+    /// Returnerar `None` bara när cvaren är tom **och** ingen deklaration behövs; i alla
+    /// andra lägen ett utfall som konsolraden och `Status` bär vidare.
+    fn applicera_recept(&mut self, graph: &mut navmesh::NavGraph) -> Option<crate::recept::Utfall> {
+        let mut buf = [0u8; 512];
+        let dir = self.host.cvar_string(c"rtx_recept_dir", &mut buf).to_string();
+        let kalla = crate::recept::resolvera(&dir);
+        if matches!(kalla, crate::recept::Kalla::Av) {
+            return None;
+        }
+        let karta = self.level.mapname.clone();
+        let gravity = {
+            let g = self.host.cvar(c"sv_gravity");
+            if g > 0.0 {
+                g
+            } else {
+                800.0
+            }
+        };
+        let curl_default = {
+            let g = self.host.cvar(c"rtx_jump_curl_gain");
+            if g > 0.0 {
+                g
+            } else {
+                12.0
+            }
+        };
+
+        let las = |namn: &str| -> Option<Vec<u8>> {
+            match &kalla {
+                crate::recept::Kalla::Av => None,
+                crate::recept::Kalla::Absolut(rot) => std::fs::read(format!("{rot}/{namn}")).ok(),
+                crate::recept::Kalla::Gamedir(rot) => {
+                    let c = std::ffi::CString::new(format!("{rot}/{namn}")).ok()?;
+                    self.host.read_file(&c)
+                }
+            }
+        };
+        let plantera = |g: &mut navmesh::NavGraph, s: &crate::recept::Steg| -> Result<u32, String> {
+            let gain = if s.gain > 0.0 { s.gain } else { curl_default };
+            crate::control::plant_speed_jump_link(
+                g,
+                glam::Vec3::from(s.from),
+                glam::Vec3::from(s.takeoff),
+                glam::Vec3::from(s.tgt),
+                s.v_req,
+                gain,
+                gravity,
+            )
+            .map(|p| p.link)
+        };
+
+        let utfall = crate::recept::applicera(&karta, &kalla, las, graph, plantera);
+        // `plant_speed_jump_link` bygger om de härledda tabellerna per plantering; det
+        // sista anropet gällde klonen som nu ÄR grafen, så inget ytterligare behövs.
+        Some(utfall)
+    }
+
     /// Poll the in-flight background build; when it delivers, compute item goals and swap the graph
     /// in. The worker now returns a fully-priced graph — liquid flags and LOD are baked on the worker
     /// (it holds the parsed BSP), so the swap frame does only goal collection + the summary log, no
@@ -227,7 +292,7 @@ impl GameState {
         let Some(rx) = self.nav.pending.as_ref() else {
             return;
         };
-        let graph = match rx.try_recv() {
+        let mut graph = match rx.try_recv() {
             Ok(graph) => graph,
             Err(std::sync::mpsc::TryRecvError::Empty) => return, // still building
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -236,6 +301,27 @@ impl GameState {
             }
         };
         self.nav.pending = None;
+        // Receptautostarten sitter HAR, fore `Arc::new` (facit §2): efter publiceringen
+        // felar plantering med "navmesh is shared with the team oracle", och summeringen
+        // nedan ska rakna pa den FARDIGA grafen.
+        let utfall = self.applicera_recept(&mut graph);
+        if let Some(u) = &utfall {
+            if u.ska_loggas() {
+                self.host.dprint(&cstring(&crate::recept::konsolrad(
+                    u,
+                    graph.cells.len() as u32,
+                    graph.links.len() as u32,
+                )));
+            }
+            // Kravlaget: hellre ingen navmesh an en tyst ra karta. Aven da ingen panik.
+            if crate::recept::ska_avbryta(u, self.rtx_cvar_bool("rtx_recept_krav")) {
+                self.host
+                    .dprint(c"rtx: recept: rtx_recept_krav ar satt — navmeshen publiceras inte\n");
+                self.recept = utfall;
+                return;
+            }
+        }
+        self.recept = utfall;
         let counts = graph.summary();
         let goals = self.collect_goals(&graph);
         let (lclusters, lportals, ledges, lreach) = graph.lod_stats();

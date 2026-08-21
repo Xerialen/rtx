@@ -916,6 +916,18 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
         oracle: oracle_info(game),
         bots,
         players,
+        graph_content_hash: crate::graph_ident::niva2_for_status(
+            game.nav.graph.as_deref(),
+        ),
+        recept: game.recept.as_ref().map(|u| proto::ReceptInfo {
+            karta: u.karta.clone(),
+            filer: u.filer.clone(),
+            utfall: u.utfall.clone(),
+            skal: u.skal.clone(),
+            bas_hash: u.bas_hash.clone(),
+            slut_hash: u.slut_hash.clone(),
+            lankar: u.lankar,
+        }),
     }
 }
 
@@ -1339,7 +1351,6 @@ fn plant_link_resp(
     v_req: f32,
     gain: Option<f32>,
 ) -> Result<proto::PlanLinkResp, String> {
-    use crate::navmesh::SpeedJumpTraversal;
     let gravity = {
         let g = game.host.cvar(c"sv_gravity");
         if g > 0.0 {
@@ -1348,8 +1359,60 @@ fn plant_link_resp(
             800.0
         }
     };
+    // En handplanterad lank ar en curl som default; runtime laser gainet for att valja
+    // `air_correct` framfor slalomen. Ett uttryckligt `gain` pa kommandot vinner (ett
+    // sidohoppssvep varierar det per plantering, vilket en serverbred cvar inte kan
+    // uttrycka); cvaren ar reservvardet. Losningen sker HAR, sa den delade karnan tar
+    // ett fardigt varde och behover varken kanna till cvarer eller GameState.
+    let curl_gain = gain.filter(|g| *g > 0.0).unwrap_or_else(|| {
+        let g = game.host.cvar(c"rtx_jump_curl_gain");
+        if g > 0.0 {
+            g
+        } else {
+            12.0
+        }
+    });
     let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
     let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+    let p = plant_speed_jump_link(g, from, takeoff, tgt, v_req, curl_gain, gravity)?;
+    Ok(proto::PlanLinkResp {
+        link: p.link,
+        from_cell: p.from_cell,
+        to_cell: p.to_cell,
+        from: a3(p.from),
+        tgt: a3(p.tgt),
+        takeoff: a3(takeoff),
+        v_req,
+        airtime: p.airtime,
+        cost: p.cost,
+    })
+}
+
+/// Vad en plantering blev.
+pub(crate) struct PlanteradLank {
+    pub link: u32,
+    pub from_cell: rtx_nav::navmesh::CellId,
+    pub to_cell: rtx_nav::navmesh::CellId,
+    pub from: Vec3,
+    pub tgt: Vec3,
+    pub airtime: f32,
+    pub cost: f32,
+}
+
+/// Plantera en speed-jump-lank i `g`. **En implementation, tva anropare**
+/// (facit-receptautostart-v2 §3 punkt 2): bade `Cmd::PlanLink` och receptautostarten
+/// gar hit, sa startvagen arver exakt den aritmetik som certade recepten — och varje
+/// befintligt `PlanLink`-test blir daarmed ett test av startvagen.
+pub(crate) fn plant_speed_jump_link(
+    g: &mut rtx_nav::navmesh::NavGraph,
+    from: Vec3,
+    takeoff: Vec3,
+    tgt: Vec3,
+    v_req: f32,
+    curl_gain: f32,
+    gravity: f32,
+) -> Result<PlanteradLank, String> {
+    use crate::navmesh::SpeedJumpTraversal;
     let from_cell = g.nearest(from).ok_or("no cell near from")?;
     let to_cell = g.nearest(tgt).ok_or("no cell near tgt")?;
     let dz = g.cell_origin(to_cell).z - takeoff.z;
@@ -1359,19 +1422,6 @@ fn plant_link_resp(
     let vz0 = rtx_nav::qphys::JUMP_VZ;
     let disc = (vz0 * vz0 - 2.0 * gravity * dz).max(0.0);
     let airtime = (vz0 + disc.sqrt()) / gravity;
-    // A hand-planted link is a curl by default (it's what we plant for the curl bring-up); the runtime
-    // reads this gain to pick `air_correct` over the slalom. A fast run-up overshoots a gentle curl, so
-    // the bring-up default is a firm gain that bleeds the excess onto the landing (see the harness gain
-    // sweep — ~12 lands the bravado LG dead-on). An explicit `gain` on the command wins (a side-jump
-    // sweep varies it per plant, and a server-wide cvar can't express that); the cvar is the fallback.
-    let curl_gain = gain.filter(|g| *g > 0.0).unwrap_or_else(|| {
-        let g = game.host.cvar(c"rtx_jump_curl_gain");
-        if g > 0.0 {
-            g
-        } else {
-            12.0
-        }
-    });
     // Curl-link cost the banded planner now trusts (see `banded_step`): the honest run-up travel +
     // flight + a JumpGap-grade commitment (a rollout-certified envelope carries less risk than the
     // +1.0 charged to a modeled speed jump). Run-up is the `from`→lip distance at the mean build speed.
@@ -1393,14 +1443,12 @@ fn plant_link_resp(
     // reachable on the pre-plant graph instead of pathing over it.
     g.rebuild_derived();
     let (fo, to) = (g.cell_origin(from_cell), g.cell_origin(to_cell));
-    Ok(proto::PlanLinkResp {
+    Ok(PlanteradLank {
         link: li,
         from_cell,
         to_cell,
-        from: a3(fo),
-        tgt: a3(to),
-        takeoff: a3(takeoff),
-        v_req,
+        from: fo,
+        tgt: to,
         airtime,
         cost,
     })

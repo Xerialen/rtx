@@ -100,6 +100,16 @@ pub fn graph_content_hash(graph: &NavGraph) -> String {
     format!("{:x}", h.finalize())
 }
 
+/// Grafens niva-2 som `Status` ska bara den, oberoende av receptutfallet.
+///
+/// Star for sig sa att kravet gar att prova: identiteten ska kunna lasas ur en
+/// levande rigg **aven nar `rtx_recept_dir` ar tom**, annars kan facitets
+/// §8.2-kontroll inte matas utan att forst aktivera ett recept. Tom strang nar
+/// ingen graf ar byggd — aldrig ett paihittat varde.
+pub fn niva2_for_status(graph: Option<&NavGraph>) -> String {
+    graph.map(graph_content_hash).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,6 +218,16 @@ mod tests {
         let prunade = g.links.len() - g.adjacency.iter().map(Vec::len).sum::<usize>();
         assert_eq!(prunade, 15, "fixturen ska bära 15 prunade länkar (T=0)");
         assert_eq!(graph_content_hash(&g), FIXTUR_NIVA2);
+    }
+
+    /// Kravet att `Status` barer niva-2 **oberoende av receptutfallet**: funktionen
+    /// tar bara grafen, sa den kan inte bero pa nagot recept. Utan graf: tom strang,
+    /// aldrig ett paihittat varde.
+    #[test]
+    fn niva2_for_status_beror_bara_pa_grafen() {
+        let g = vf5_bas();
+        assert_eq!(niva2_for_status(Some(&g)), FIXTUR_NIVA2);
+        assert_eq!(niva2_for_status(None), "");
     }
 
     /// nk1 (facit §10): störningen sitter i GRAFEN, inte i konstanten.

@@ -380,6 +380,16 @@ fn kort(h: &str) -> String {
     h.chars().take(8).collect::<String>() + "…"
 }
 
+/// Ska kartladdningen avbrytas i stallet for att kora ra karta?
+///
+/// Sant bara nar `rtx_recept_krav` ar satt OCH receptet faktiskt inte kunde
+/// appliceras. Ett utfall utan skal ar "av" eller "ingen post for kartan" — inget
+/// fel, och da avbryts ingenting oavsett kravflaggan. Aven i kravlaget: ingen panik,
+/// bara en navmeshfri karta och samma loggrad.
+pub fn ska_avbryta(u: &Utfall, krav: bool) -> bool {
+    krav && u.utfall != UTFALL_APPLICERAT && u.skal.is_some()
+}
+
 /// Konsolraden. En rad, samma form i alla utfall, och den ska räcka för att
 /// avgöra vad som kördes utan att någon loggar in på riggen (facit §4).
 pub fn konsolrad(u: &Utfall, celler: u32, lankar: u32) -> String {
@@ -658,6 +668,42 @@ mod tests {
         assert_eq!(u.utfall, UTFALL_HOPPAT_OVER, "fel graf måste fälla");
         assert!(u.skal.as_ref().unwrap().contains("fel bas"));
         annan.lankar.clear();
+    }
+
+    /// Facit §3.4: `rtx_recept_dir` ar tom och `rtx_recept_krav` av i tabellen —
+    /// ett rent bygge utan cvarer beter sig exakt som forut.
+    #[test]
+    fn cvarerna_ar_av_som_default() {
+        let mut sett = 0;
+        for (namn, seed) in crate::cvars::RTX_CVAR_DEFAULTS {
+            match (*namn, seed) {
+                ("rtx_recept_dir", crate::cvars::CvarSeed::Str(v)) => {
+                    assert_eq!(*v, "", "receptvagen far inte vara pa som default");
+                    sett += 1;
+                }
+                ("rtx_recept_krav", crate::cvars::CvarSeed::Bool(v)) => {
+                    assert!(!*v, "kravlaget far inte vara default");
+                    sett += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(sett, 2, "bada cvarerna ska sta i tabellen");
+    }
+
+    /// Kravgrinden: avbryt bara nar receptet faktiskt failade OCH kravet ar satt.
+    #[test]
+    fn kravgrinden_avbryter_bara_vid_verkligt_fel() {
+        let fel = Utfall::hoppat_over("dm3", vec![], "fel bas".into(), "x".into());
+        let av = Utfall::inget("dm3");
+        let ok = Utfall {
+            utfall: UTFALL_APPLICERAT.to_string(),
+            ..Default::default()
+        };
+        assert!(ska_avbryta(&fel, true), "fel + krav ska avbryta");
+        assert!(!ska_avbryta(&fel, false), "utan krav kors ra karta");
+        assert!(!ska_avbryta(&av, true), "av ar inget fel");
+        assert!(!ska_avbryta(&ok, true), "lyckat recept avbryter aldrig");
     }
 
     #[test]
