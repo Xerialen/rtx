@@ -116,6 +116,125 @@ mod tests {
         assert_ne!(a, graph_stamp("dm3", 5977, 48207, 1), "rj-antalet bidrar");
     }
 
+
+    // ---- facit §7 test 1: portningens trohet mot en NAMNGIVEN fixturgraf ----
+
+    /// vF5:s basgraf, 5981 celler / 48217 länkar, byggd av lokal main `4f0b910`.
+    /// Källa: `reference/recept/README.md`, "Grafidentitet — läs detta innan du
+    /// applicerar". **Portningsfixtur, inte målriggens graf** — målträdet bygger
+    /// 5977 / 48207 (facit §8.2).
+    const FIXTUR_NIVA2: &str =
+        "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5";
+
+    fn kind_ur_token(t: &str) -> LinkKind {
+        match t {
+            "walk" => LinkKind::Walk,
+            "step" => LinkKind::Step,
+            "drop" => LinkKind::Drop,
+            "jump" => LinkKind::JumpGap,
+            "doublejump" => LinkKind::DoubleJump,
+            "speedjump" => LinkKind::SpeedJump,
+            "plat" => LinkKind::Plat,
+            "teleport" => LinkKind::Teleport,
+            "hook" => LinkKind::Hook,
+            "rocketjump" => LinkKind::RocketJump,
+            "swim" => LinkKind::Swim,
+            annat => panic!("okänd länksort i fixturen: {annat}"),
+        }
+    }
+
+    /// Bygg fixturen ur `tests/fixturer/vf5-bas.tsv`.
+    ///
+    /// Filen ligger i **länkarnas arrayordning**, inte kanoniskt sorterad — annars
+    /// vore den själv den inventering testet ska räkna fram, och testet vore
+    /// cirkulärt.
+    ///
+    /// T=0-länkarna läggs till EFTER `test_graph`, direkt på det publika
+    /// `links`-fältet. De hamnar då utanför adjacensen och läses som prunade,
+    /// vilket är exakt vad fixturen kräver.
+    fn vf5_bas() -> rtx_nav::navmesh::NavGraph {
+        use rtx_nav::navmesh::{Cell, Link, NavGraph};
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixturer/vf5-bas.tsv"
+        ))
+        .expect("fixturfilen saknas");
+
+        let mut celler = Vec::new();
+        let mut i_adjacens = Vec::new();
+        let mut prunade = Vec::new();
+        for rad in text.lines() {
+            let f: Vec<&str> = rad.split('\t').collect();
+            match f[0] {
+                "C" => celler.push(Cell {
+                    origin: glam::Vec3::new(
+                        f[1].parse().unwrap(),
+                        f[2].parse().unwrap(),
+                        f[3].parse().unwrap(),
+                    ),
+                    gx: 0,
+                    gy: 0,
+                }),
+                "L" => {
+                    let l = Link {
+                        from: f[1].parse().unwrap(),
+                        to: f[2].parse().unwrap(),
+                        kind: kind_ur_token(f[3]),
+                        cost: 0.0,
+                    };
+                    if f[4] == "1" {
+                        i_adjacens.push(l);
+                    } else {
+                        prunade.push(l);
+                    }
+                }
+                annat => panic!("okänd rad i fixturen: {annat}"),
+            }
+        }
+        let mut g = NavGraph::test_graph(celler, i_adjacens);
+        for l in prunade {
+            g.links.push(l);
+        }
+        g
+    }
+
+    /// Facit §7 test 1. Faller den, faller allt: den är den enda kontroll som
+    /// binder den portade hashen mot förlagans egen utdata.
+    #[test]
+    fn portningen_ger_fixturens_niva2() {
+        let g = vf5_bas();
+        assert_eq!(g.cells.len(), 5981, "fixturens cellantal");
+        assert_eq!(g.links.len(), 48217, "fixturens länkantal inkl. prunade");
+        let prunade = g.links.len() - g.adjacency.iter().map(Vec::len).sum::<usize>();
+        assert_eq!(prunade, 15, "fixturen ska bära 15 prunade länkar (T=0)");
+        assert_eq!(graph_content_hash(&g), FIXTUR_NIVA2);
+    }
+
+    /// nk1 (facit §10): störningen sitter i GRAFEN, inte i konstanten.
+    ///
+    /// En portning som returnerar ett konstant värde skulle passera testet ovan
+    /// och falla korrekt i en ren konstantkontroll — båda gröna, funktionen
+    /// trasig. Ändras en länk måste hashen ändras.
+    #[test]
+    fn nk1_andrad_lank_andrar_hashen() {
+        let mut g = vf5_bas();
+        let fore = graph_content_hash(&g);
+        g.links[0].to += 1;
+        assert_ne!(graph_content_hash(&g), fore, "hashen följer inte innehållet");
+    }
+
+    /// nk1b: en prunad länk som befordras till adjacensen ändrar T-fältet och
+    /// därmed hashen. Utan den vore T-kolumnen oprövad.
+    #[test]
+    fn nk1b_prunad_lank_i_adjacensen_andrar_hashen() {
+        let mut g = vf5_bas();
+        let fore = graph_content_hash(&g);
+        let sist = (g.links.len() - 1) as u32;
+        let from = g.links[sist as usize].from as usize;
+        g.adjacency[from].push(sist);
+        assert_ne!(graph_content_hash(&g), fore, "T-fältet påverkar inte hashen");
+    }
+
     /// Tokenbordet är hashens alfabet: två sorter får aldrig dela token, annars
     /// blir två olika grafer identiska i nivå 2.
     #[test]
