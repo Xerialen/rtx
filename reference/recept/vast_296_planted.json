@@ -1,4 +1,15 @@
 {
+ "bas": {
+  "celler": 5977,
+  "lankar_inkl_prunade": 48207,
+  "niva2_sha256": "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9",
+  "anm": "Maltradets defaultgraf for dm3, matt ur levande rigg 2026-08-21 17:04Z (10/10 identiska lasningar, recept AV) pa gren receptautostart e6b25b71fc154602c50277ffc721e2d7208d696a med qwprogs.so sha256 785ad6b3dacbfe57e8236aa5ee282b97bab2232f6fb44c82e8b66108af72be89. Forseglad i WORK_LOGS/facit-receptautostart-v2-addendum2.md sha256 003bebdb51aecc01fa3929edc649058c49f66db950f3e8394e881e9a0887c240, under moderfacit 964e80e7757739b10fe4d02b57146e32b46cbb49460ca19e344f56c38b56d7bd. En annan binar bygger en annan graf: da galler ett nytt addendum, aldrig en rattad konstant."
+ },
+ "efter": {
+  "celler": 5977,
+  "lankar_live": 48212,
+  "anm": "niva2_sha256 ar AVSIKTLIGT utelamnat: slutlaget med recept PA ar omatt. Facit-receptautostart-v2 paragraf 8.1 -- motorn far bekrafta eller vagra, aldrig leverera forvantan -- sa ett efter-varde far inte skrivas in ur den korning det ska doma. Det mats i eget matled och forseglas som addendum fore forsta domande korning. Sa lange faltet saknas gor motorn ingen slutlagesjamforelse, och applicera_recept.py --verifiera-offline svarar att receptet inte anger nagon forvantad sluthash. lankar_live 48212 ar harlett (48207 + 4 fran ra_climb_planted.json + 1 i denna fil, manifestordning 1 -> 2), inte matt."
+ },
  "V296 vasthyllan": {
   "from": [
    107.0,
