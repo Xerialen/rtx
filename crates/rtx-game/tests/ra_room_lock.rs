@@ -13,16 +13,20 @@ fn read_src(rel: &str) -> String {
 #[test]
 fn seed_tokens_in_cvars_source() {
     let src = read_src("src/cvars.rs");
-    for (token, msg) in [
-        (
-            r#"("rtx_bot_edge_narrow", Bool(true))"#,
-            "RA_ROOM_LOCK: edge_narrow≠true",
-        ),
-        (r#"("rtx_bot_walkplan", Bool(true))"#, "RA_ROOM_LOCK: walkplan≠true"),
-        (r#"("rtx_bot_walkdiag", Bool(false))"#, "RA_ROOM_LOCK: walkdiag≠false"),
-        (r#"("rtx_bot_count", Float(0.0))"#, "RA_ROOM_LOCK: bot_count≠0"),
+    for (name, value, msg) in [
+        ("rtx_bot_edge_narrow", "Bool(true)", "RA_ROOM_LOCK: edge_narrow≠true"),
+        ("rtx_bot_walkplan", "Bool(true)", "RA_ROOM_LOCK: walkplan≠true"),
+        ("rtx_bot_walkdiag", "Bool(false)", "RA_ROOM_LOCK: walkdiag≠false"),
+        ("rtx_bot_count", "Float(0.0)", "RA_ROOM_LOCK: bot_count≠0"),
     ] {
-        assert!(src.contains(token), "{msg} (saknar token {token})");
+        let prefix = format!("(\"{name}\",");
+        let n = src.matches(prefix.as_str()).count();
+        assert_eq!(
+            n, 1,
+            "{msg} (exakt-en {prefix} räknare={n}, prepend/decoy)"
+        );
+        let token = format!("(\"{name}\", {value})");
+        assert!(src.contains(&token), "{msg} (saknar token {token})");
     }
 }
 
@@ -46,5 +50,9 @@ fn kontrakt_prefix_still_in_recept_source() {
     assert!(
         src.contains("RA_ROOM_LOCK: edge_narrow≠true"),
         "RA_ROOM_LOCK: edge_narrow≠true (prefix borta ur recept.rs)"
+    );
+    assert!(
+        src.contains("RA_ROOM_LOCK: rtx_recept_dir≠tom"),
+        "RA_ROOM_LOCK: rtx_recept_dir pin borta ur recept.rs"
     );
 }
