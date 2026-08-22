@@ -10,7 +10,7 @@ use crate::host::CvarValue;
 /// A default value for one rtx tunable — bundles the three [`CvarValue`] kinds so the whole tunable
 /// set can register from one table ([`RTX_CVAR_DEFAULTS`]). Its token is identical to calling
 /// `cvar_default` with the underlying `bool`/`f32`/`&str` directly.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CvarSeed {
     Bool(bool),
     Float(f32),
@@ -53,6 +53,14 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         ("rtx_doublejump", Bool(false)),
         // Bots bunnyhop (air-strafe to build speed) on open stretches; on by default.
         ("rtx_bot_bhop", Bool(true)),
+        // Receptautostarten (facit-receptautostart-v2 §3.4-3.5). Tom sokvag = funktionen
+        // ar HELT AV; ett rent bygge utan cvar beter sig exakt som forut. Sokvagen ar
+        // absolut (inleds med "/") eller gamedir-relativ — aldrig arbetskatalogsrelativ.
+        ("rtx_recept_dir", Str("")),
+        // Ar den satt avbryts kartladdningen i stallet for att kora ra karta nar receptet
+        // inte kunde appliceras. INTE default: en rigg som dor producerar ingen matning
+        // alls, vilket ar samma trasiga byte som west-shelf-incidenten betalade.
+        ("rtx_recept_krav", Bool(false)),
         // Generate curl jumps (run-up down a corridor, air-turn onto an offset platform), certified by
         // a pmove rollout in the navmesh build. A sub-toggle of bhop (`rtx_bot_bhop 0` disables it too).
         ("rtx_bot_curljump", Bool(true)),
@@ -104,6 +112,18 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // down — they become the fallback for "no trackable line exists" rather than the first
         // responder, which is what made a bot brake mid-stride on a stair diagonal. See `bot::walksim`.
         ("rtx_bot_walkplan", Bool(true)),
+        // F1: smalna gångcertifikatets tub där mitten hänger över djupt tomrum
+        // (`walksim::LATERAL_TOL_LIP`). På som förval (K1, ägarorder 22/8) — osatt
+        // frö läser true. `cvar_default` skriver bara osatta cvarer; en cfg som
+        // sätter 0 överlever. Avvikelse mot F1-portens «default av».
+        // RA-room lock — ring2quad får inte revert
+        ("rtx_bot_edge_narrow", Bool(true)),
+        // F2: låt gångcertifikatet lapsa när underlaget byter karaktär (punktgolv <->
+        // häng-off) i stället för bara på klockan. Av som förval.
+        ("rtx_bot_edge_recert", Bool(false)),
+        // Diagnos: skriv ut aktiv WalkPlan och vilken förare som äger ramen när något
+        // av det ändras. Stannar av (inte F1; conprint-spam, inte lastbärare).
+        ("rtx_bot_walkdiag", Bool(false)),
         // A bot's health weights how willing it is to shortcut through lava/slime: hurt bots detour,
         // healthy (or armored, or biosuited) ones clip the corner. `0` prices every bot as a bare
         // spawn — hazards still cost, but the same to everyone. See `bot::bot_hazard_strength`.
@@ -342,4 +362,51 @@ pub(crate) fn default_of(name: &str) -> Option<CvarSeed> {
         .iter()
         .find(|(n, _)| *n == name)
         .map(|&(_, seed)| seed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// K1: osatt frö läser F1 på. Tester som antar av sätter cvar explicit.
+    #[test]
+    fn edge_narrow_osatt_fro_laser_true() {
+        assert_eq!(
+            default_of("rtx_bot_edge_narrow"),
+            Some(CvarSeed::Bool(true)),
+            "osatt frö ska läsa rtx_bot_edge_narrow=true"
+        );
+    }
+
+    #[test]
+    fn walkplan_osatt_fro_laser_true() {
+        assert_eq!(
+            default_of("rtx_bot_walkplan"),
+            Some(CvarSeed::Bool(true)),
+            "osatt frö ska läsa rtx_bot_walkplan=true"
+        );
+    }
+
+    #[test]
+    fn walkdiag_stannar_false_som_default() {
+        assert_eq!(
+            default_of("rtx_bot_walkdiag"),
+            Some(CvarSeed::Bool(false)),
+            "walkdiag är diagnos, inte F1"
+        );
+    }
+
+    #[test]
+    fn edge_recert_stannar_false_som_default() {
+        assert_eq!(default_of("rtx_bot_edge_recert"), Some(CvarSeed::Bool(false)));
+    }
+
+    #[test]
+    fn bot_count_orord_noll() {
+        assert_eq!(
+            default_of("rtx_bot_count"),
+            Some(CvarSeed::Float(0.0)),
+            "rtx_bot_count stannar 0; en ent via cfg, inte frö"
+        );
+    }
 }

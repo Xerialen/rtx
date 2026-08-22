@@ -916,6 +916,18 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
         oracle: oracle_info(game),
         bots,
         players,
+        graph_content_hash: crate::graph_ident::niva2_for_status(
+            game.nav.graph.as_deref(),
+        ),
+        recept: game.recept.as_ref().map(|u| proto::ReceptInfo {
+            karta: u.karta.clone(),
+            filer: u.filer.clone(),
+            utfall: u.utfall.clone(),
+            skal: u.skal.clone(),
+            bas_hash: u.bas_hash.clone(),
+            slut_hash: u.slut_hash.clone(),
+            lankar: u.lankar,
+        }),
     }
 }
 
@@ -1339,7 +1351,6 @@ fn plant_link_resp(
     v_req: f32,
     gain: Option<f32>,
 ) -> Result<proto::PlanLinkResp, String> {
-    use crate::navmesh::SpeedJumpTraversal;
     let gravity = {
         let g = game.host.cvar(c"sv_gravity");
         if g > 0.0 {
@@ -1348,8 +1359,60 @@ fn plant_link_resp(
             800.0
         }
     };
+    // En handplanterad lank ar en curl som default; runtime laser gainet for att valja
+    // `air_correct` framfor slalomen. Ett uttryckligt `gain` pa kommandot vinner (ett
+    // sidohoppssvep varierar det per plantering, vilket en serverbred cvar inte kan
+    // uttrycka); cvaren ar reservvardet. Losningen sker HAR, sa den delade karnan tar
+    // ett fardigt varde och behover varken kanna till cvarer eller GameState.
+    let curl_gain = gain.filter(|g| *g > 0.0).unwrap_or_else(|| {
+        let g = game.host.cvar(c"rtx_jump_curl_gain");
+        if g > 0.0 {
+            g
+        } else {
+            12.0
+        }
+    });
     let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
     let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+    let p = plant_speed_jump_link(g, from, takeoff, tgt, v_req, curl_gain, gravity)?;
+    Ok(proto::PlanLinkResp {
+        link: p.link,
+        from_cell: p.from_cell,
+        to_cell: p.to_cell,
+        from: a3(p.from),
+        tgt: a3(p.tgt),
+        takeoff: a3(takeoff),
+        v_req,
+        airtime: p.airtime,
+        cost: p.cost,
+    })
+}
+
+/// Vad en plantering blev.
+pub(crate) struct PlanteradLank {
+    pub link: u32,
+    pub from_cell: rtx_nav::navmesh::CellId,
+    pub to_cell: rtx_nav::navmesh::CellId,
+    pub from: Vec3,
+    pub tgt: Vec3,
+    pub airtime: f32,
+    pub cost: f32,
+}
+
+/// Plantera en speed-jump-lank i `g`. **En implementation, tva anropare**
+/// (facit-receptautostart-v2 §3 punkt 2): bade `Cmd::PlanLink` och receptautostarten
+/// gar hit, sa startvagen arver exakt den aritmetik som certade recepten — och varje
+/// befintligt `PlanLink`-test blir daarmed ett test av startvagen.
+pub(crate) fn plant_speed_jump_link(
+    g: &mut rtx_nav::navmesh::NavGraph,
+    from: Vec3,
+    takeoff: Vec3,
+    tgt: Vec3,
+    v_req: f32,
+    curl_gain: f32,
+    gravity: f32,
+) -> Result<PlanteradLank, String> {
+    use crate::navmesh::SpeedJumpTraversal;
     let from_cell = g.nearest(from).ok_or("no cell near from")?;
     let to_cell = g.nearest(tgt).ok_or("no cell near tgt")?;
     let dz = g.cell_origin(to_cell).z - takeoff.z;
@@ -1359,19 +1422,6 @@ fn plant_link_resp(
     let vz0 = rtx_nav::qphys::JUMP_VZ;
     let disc = (vz0 * vz0 - 2.0 * gravity * dz).max(0.0);
     let airtime = (vz0 + disc.sqrt()) / gravity;
-    // A hand-planted link is a curl by default (it's what we plant for the curl bring-up); the runtime
-    // reads this gain to pick `air_correct` over the slalom. A fast run-up overshoots a gentle curl, so
-    // the bring-up default is a firm gain that bleeds the excess onto the landing (see the harness gain
-    // sweep — ~12 lands the bravado LG dead-on). An explicit `gain` on the command wins (a side-jump
-    // sweep varies it per plant, and a server-wide cvar can't express that); the cvar is the fallback.
-    let curl_gain = gain.filter(|g| *g > 0.0).unwrap_or_else(|| {
-        let g = game.host.cvar(c"rtx_jump_curl_gain");
-        if g > 0.0 {
-            g
-        } else {
-            12.0
-        }
-    });
     // Curl-link cost the banded planner now trusts (see `banded_step`): the honest run-up travel +
     // flight + a JumpGap-grade commitment (a rollout-certified envelope carries less risk than the
     // +1.0 charged to a modeled speed jump). Run-up is the `from`→lip distance at the mean build speed.
@@ -1393,14 +1443,12 @@ fn plant_link_resp(
     // reachable on the pre-plant graph instead of pathing over it.
     g.rebuild_derived();
     let (fo, to) = (g.cell_origin(from_cell), g.cell_origin(to_cell));
-    Ok(proto::PlanLinkResp {
+    Ok(PlanteradLank {
         link: li,
         from_cell,
         to_cell,
-        from: a3(fo),
-        tgt: a3(to),
-        takeoff: a3(takeoff),
-        v_req,
+        from: fo,
+        tgt: to,
         airtime,
         cost,
     })
@@ -1605,7 +1653,12 @@ fn goto_crossed_finish(traj: &[(f32, Vec3, Vec3, u8)], origin: Vec3, target: Vec
     if past.dot(along) < 0.0 {
         return false;
     }
-    (past - along * past.dot(along)).length() <= GOTO_FINISH_CORRIDOR
+    let past_along = past.dot(along);
+    // The corridor shrinks the further past the finish plane the bot is: a genuine line
+    // crossing is detected within a frame or two of the plane (past_along small), while a
+    // point goal approached obliquely can sit 100u+ past the plane and 90u to the side —
+    // that is a miss, not an arrival (measured: dm3 RA, Hold 142u from target, 2026-08-10).
+    (past - along * past_along).length() <= (GOTO_FINISH_CORRIDOR - past_along).max(0.0)
 }
 
 /// Stop a completed puppet goto without letting its route or bhop state leak into the Hold order.
@@ -1813,6 +1866,60 @@ mod tests {
         assert!(goto_crossed_finish(&traj, Vec3::new(280.0, 3008.0, 48.0), target));
         assert!(!goto_crossed_finish(&traj, Vec3::new(330.0, 3008.0, 48.0), target));
         assert!(!goto_crossed_finish(&traj, Vec3::new(224.0, 2970.0, 48.0), target));
+    }
+
+    /// The five cases of facit-mallinjefix-v1 §8, one test each.
+    ///
+    /// The A-arm's own test above returns the same verdict under both the flat and the
+    /// shrinking rule, so it stays green even if `- past_along` is struck out. These are
+    /// the cases that actually bind the term. One test per case on purpose: a failing
+    /// assert ends its function, so a shared body would let an early case hide the rest
+    /// under mutation.
+    ///
+    /// Geometry: `along = (0,1)`, so `origin = target + (lateral, past_along)`. Written in
+    /// analysis as `lateral <= (96 - k*past_along).max(0)`; `k` is a tool for choosing the
+    /// cases and appears nowhere in the code (facit §7).
+    fn crossed(lateral: f32, past_along: f32) -> bool {
+        let traj = vec![(0.0f32, Vec3::new(224.0, 1440.0, 24.0), Vec3::ZERO, 0u8)];
+        let target = Vec3::new(224.0, 2992.0, 24.0);
+        let origin = Vec3::new(target.x + lateral, target.y + past_along, 48.0);
+        goto_crossed_finish(&traj, origin, target)
+    }
+
+    /// c1, discriminator: the measured death point. The flat 96 rule accepted this by 1.7u
+    /// and parked the bot 101u from its target. Excludes `k = 0` — the term being struck.
+    #[test]
+    fn c1_obliquely_approached_point_is_a_miss_not_an_arrival() {
+        assert!(!crossed(94.3, 45.8));
+    }
+
+    /// c2, discriminator: excludes a shrink steeper than the plane distance (`k <= 1.2`).
+    /// At `k = 2` the bound would be 36 < 60 and this case would fail.
+    #[test]
+    fn c2_shrink_does_not_outrun_the_distance_past_the_plane() {
+        assert!(crossed(60.0, 30.0));
+    }
+
+    /// c3: a genuine line crossing — the case the corridor exists for (the 100m dash
+    /// crosses its finish plane a frame or two past it, weaving off the centreline).
+    #[test]
+    fn c3_genuine_line_crossing_still_counts() {
+        assert!(crossed(56.0, 16.0));
+    }
+
+    /// c4, regression guard rather than discriminator: at `past_along = 0` the term drops
+    /// out and the case is accepted for every `k >= 0`, `k = 0` included. It guards that
+    /// the shrink does not eat the near field; it pins nothing.
+    #[test]
+    fn c4_near_field_on_the_plane_is_untouched() {
+        assert!(crossed(20.0, 0.0));
+    }
+
+    /// c5: short of the plane, so the early return decides first. That is the property
+    /// that keeps a re-issued goto from ever manufacturing an arrival.
+    #[test]
+    fn c5_short_of_the_plane_returns_early() {
+        assert!(!crossed(0.0, -22.0));
     }
 
     #[test]

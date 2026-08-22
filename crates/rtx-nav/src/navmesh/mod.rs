@@ -229,6 +229,11 @@ pub struct Link {
 
 /// The built navigation graph: cells, directed links, per-cell adjacency (indices into
 /// `links`), and an XY spatial index for `nearest`/neighbor queries.
+///
+/// `Clone` exists for transactional post-build mutation: mutate a clone, publish it only if every
+/// step validated — a failed step then leaves the original graph untouched, derived tables included.
+/// The graph is a few MB of `Vec`s; cloning it once at map load is noise next to the build itself.
+#[derive(Clone)]
 pub struct NavGraph {
     pub cells: Vec<Cell>,
     pub links: Vec<Link>,
@@ -535,8 +540,11 @@ impl NavGraph {
     /// optional column empty (so it reads as dry, unhazardous and gate-free) and stock bhop physics.
     /// Exists so that adding a column doesn't mean editing eight field-by-field literals — the friction
     /// that kept the hazard pricing out of the tests' sight while it silently did nothing in play.
-    #[cfg(test)]
-    pub(super) fn test_graph(cells: Vec<Cell>, links: Vec<Link>) -> NavGraph {
+    ///
+    /// **Fixturväg för prov, inte en produktionskonstruktor.** Öppnad bakom `fixture`
+    /// (av som default) enligt facit-receptautostart-v2 addendum 1.
+    #[cfg(any(test, feature = "fixture"))]
+    pub fn test_graph(cells: Vec<Cell>, links: Vec<Link>) -> NavGraph {
         let mut adjacency = vec![Vec::new(); cells.len()];
         for (i, l) in links.iter().enumerate() {
             adjacency[l.from as usize].push(i as u32);
@@ -562,6 +570,19 @@ impl NavGraph {
             sj_k: bhop_k(10.0, MAX_SPEED),
             reach: None,
             lod: None,
+        }
+    }
+
+    /// Rebuild the XY spatial index from cell origins. [`test_graph`] leaves `grid`
+    /// empty so [`nearest`](Self::nearest) is blind; a fixture loaded from inventory
+    /// needs this before world-coordinate plants.
+    pub fn reindex_grid(&mut self) {
+        self.grid.clear();
+        for (id, c) in self.cells.iter_mut().enumerate() {
+            let (gx, gy) = (floor_grid(c.origin.x), floor_grid(c.origin.y));
+            c.gx = gx;
+            c.gy = gy;
+            self.grid.entry((gx, gy)).or_default().push(id as u32);
         }
     }
 
@@ -3924,7 +3945,11 @@ mod tests {
 
         // `chain_entry_exclusions` flags exactly that link at true standstill…
         let excluded: Vec<u32> = g.chain_entry_exclusions(0, 0.0).collect();
-        assert_eq!(excluded, vec![0], "the chained link should be flagged at true standstill");
+        assert_eq!(
+            excluded,
+            vec![0],
+            "the chained link should be flagged at true standstill"
+        );
 
         // …and surcharging it (same finite-penalty mechanism the stuck-link watchdog already uses)
         // diverts the identical standstill query onto the walk-around.
@@ -3933,7 +3958,9 @@ mod tests {
             penalties: &penalties,
             ..LinkCosts::default()
         };
-        let guarded = g.find_path_banded(0, 1, 0.0, &costs).expect("the walk-around still exists");
+        let guarded = g
+            .find_path_banded(0, 1, 0.0, &costs)
+            .expect("the walk-around still exists");
         assert_eq!(guarded.links, vec![1, 2], "the gate should divert onto the walk-around");
 
         // A bot already carrying (near) v_req toward the ledge is genuine pass-through traffic and
