@@ -10,7 +10,9 @@
 //!
 //! Fyra egenskaper är bindande och prövas var för sig i `tests`:
 //!
-//! * **Av som default.** Tom `rtx_recept_dir` ⇒ ingenting händer, tyst (facit §3.4).
+//! * **Tom dir är no-op som sökväg.** `rtx_recept_dir=""` ⇒ ingen katalogscan
+//!   (facit §3.4). På dm3 anropar navbygget samma `applicera` mot *inbäddade*
+//!   climb+väst-bytes (K2 bake, ägarorder 22/8) — inte en andra plantkärna.
 //! * **Sökvägen är absolut eller gamedir-relativ, aldrig arbetskatalogsrelativ**,
 //!   med tre lägen och inget tyst mellanläge (facit §3.5).
 //! * **Allt-eller-inget via klon**: stegen muterar en kopia som publiceras först
@@ -113,6 +115,9 @@ pub enum Kalla {
     /// och därefter basspelet. **Aldrig** relativt processens arbetskatalog —
     /// det är en sökväg som fungerar på riggen och tiger någon annanstans.
     Gamedir(String),
+    /// Compile-time inbäddade climb+väst-bytes. Ingen sökväg, ingen katalogscan,
+    /// aldrig vf5. Bara dm3-defaultgrafen när cvaren är tom.
+    Inbaddad,
 }
 
 /// Tolka cvarens värde. Rena strängoperationer, så regeln kan provas utan filsystem.
@@ -125,6 +130,37 @@ pub fn resolvera(dir: &str) -> Kalla {
         Kalla::Absolut(d.trim_end_matches('/').to_string())
     } else {
         Kalla::Gamedir(d.trim_end_matches('/').to_string())
+    }
+}
+
+/// Nivå-2 efter bakad K2 på dm3 (climb+väst, fem PlanLink). Identitet, inte 99 %.
+pub const K2_BAKE_NIVA2: &str = "feeea6b41284a1cddf3907f2d9e1ff668b48da524b865530df81925b997dbaa9";
+
+const INBADDAD_MANIFEST: &[u8] = include_bytes!("../../../reference/recept/manifest.json");
+const INBADDAD_CLIMB: &[u8] = include_bytes!("../../../reference/recept/ra_climb_planted.json");
+const INBADDAD_VAST: &[u8] = include_bytes!("../../../reference/recept/vast_296_planted.json");
+
+/// Filläsning mot de inbäddade climb+väst-bytena. Namngiven, inte katalogscan:
+/// vf5 och andra filer i `reference/recept/` returnerar `None`.
+pub fn las_inbaddad(namn: &str) -> Option<Vec<u8>> {
+    match namn {
+        "manifest.json" => Some(INBADDAD_MANIFEST.to_vec()),
+        "ra_climb_planted.json" => Some(INBADDAD_CLIMB.to_vec()),
+        "vast_296_planted.json" => Some(INBADDAD_VAST.to_vec()),
+        _ => None,
+    }
+}
+
+/// Vilken källa defaultgrafen ska läsa.
+///
+/// Tom dir är no-op som *sökväg* (facit §3.4). På dm3 byts den mot inbäddade
+/// climb+väst-bytes (K2 bake). Satt dir ⇒ befintlig autostart, ingen bake —
+/// annars dubbelplant.
+pub fn defaultgraf_kalla(dir: &str, karta: &str) -> Option<Kalla> {
+    match resolvera(dir) {
+        Kalla::Av if karta == "dm3" => Some(Kalla::Inbaddad),
+        Kalla::Av => None,
+        k => Some(k),
     }
 }
 
@@ -152,11 +188,7 @@ fn f3(v: &serde_json::Value) -> Option<[f32; 3]> {
     if a.len() != 3 {
         return None;
     }
-    Some([
-        a[0].as_f64()? as f32,
-        a[1].as_f64()? as f32,
-        a[2].as_f64()? as f32,
-    ])
+    Some([a[0].as_f64()? as f32, a[1].as_f64()? as f32, a[2].as_f64()? as f32])
 }
 
 /// Läs manifestet: karta → filer i tillämpad ordning.
@@ -167,8 +199,7 @@ fn f3(v: &serde_json::Value) -> Option<[f32; 3]> {
 /// godtycke; manifestet är ett beslut. En kvarglömd fil i katalogen blir en
 /// no-op i stället för en tyst grafändring.
 pub fn las_manifest(bytes: &[u8], karta: &str) -> Result<Vec<String>, String> {
-    let v: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|e| format!("manifest.json: {e}"))?;
+    let v: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| format!("manifest.json: {e}"))?;
     let kartor = v
         .get("kartor")
         .and_then(|k| k.as_object())
@@ -193,8 +224,7 @@ pub fn las_manifest(bytes: &[u8], karta: &str) -> Result<Vec<String>, String> {
 /// planteringstabellen (`namn -> {frm|from, takeoff, tgt, v_req, gain}`) och
 /// stegformen (`{bas, efter, steg:[…]}`).
 pub fn las_recept(bytes: &[u8], filnamn: &str) -> Result<Recept, String> {
-    let v: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|e| format!("{filnamn}: {e}"))?;
+    let v: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| format!("{filnamn}: {e}"))?;
     let obj = v
         .as_object()
         .ok_or_else(|| format!("{filnamn}: inte ett JSON-objekt"))?;
@@ -336,10 +366,7 @@ where
                 return Utfall::hoppat_over(
                     karta,
                     filer.clone(),
-                    format!(
-                        "fel bas: graf {}, {fil} väntar {vantad}",
-                        kort(&bas_hash)
-                    ),
+                    format!("fel bas: graf {}, {fil} väntar {vantad}", kort(&bas_hash)),
                     bas_hash,
                 );
             }
@@ -380,9 +407,7 @@ where
                     return Utfall::hoppat_over(
                         karta,
                         filer.clone(),
-                        format!(
-                            "ogiltig efter-konstant i {fil}: {vantad} — kräver full 64-teckens hex"
-                        ),
+                        format!("ogiltig efter-konstant i {fil}: {vantad} — kräver full 64-teckens hex"),
                         bas_hash,
                     );
                 }
@@ -390,10 +415,7 @@ where
                     return Utfall::hoppat_over(
                         karta,
                         filer.clone(),
-                        format!(
-                            "fel slutläge efter {fil}: graf {}, filen väntar {vantad}",
-                            kort(&h)
-                        ),
+                        format!("fel slutläge efter {fil}: graf {}, filen väntar {vantad}", kort(&h)),
                         bas_hash,
                     );
                 }
@@ -430,7 +452,7 @@ fn ar_full_hex64(v: &str) -> bool {
 
 fn sokvag(kalla: &Kalla, fil: &str) -> String {
     match kalla {
-        Kalla::Av => fil.to_string(),
+        Kalla::Av | Kalla::Inbaddad => fil.to_string(),
         Kalla::Absolut(r) | Kalla::Gamedir(r) => format!("{r}/{fil}"),
     }
 }
@@ -488,15 +510,9 @@ mod tests {
     fn sokvagsregeln_har_tre_lagen() {
         assert_eq!(resolvera(""), Kalla::Av);
         assert_eq!(resolvera("   "), Kalla::Av);
-        assert_eq!(
-            resolvera("/opt/recept"),
-            Kalla::Absolut("/opt/recept".into())
-        );
+        assert_eq!(resolvera("/opt/recept"), Kalla::Absolut("/opt/recept".into()));
         // Relativt tolkas som gamedir-relativt — ALDRIG som arbetskatalogsrelativt.
-        assert_eq!(
-            resolvera("reference/recept"),
-            Kalla::Gamedir("reference/recept".into())
-        );
+        assert_eq!(resolvera("reference/recept"), Kalla::Gamedir("reference/recept".into()));
         assert_eq!(resolvera("/opt/recept/"), Kalla::Absolut("/opt/recept".into()));
     }
 
@@ -547,7 +563,6 @@ mod tests {
         assert!(ok.ska_loggas());
     }
 
-
     /// Attrappgraf: hashen är en ren funktion av innehållet, precis som den
     /// riktiga. Räcker för att pröva beslutstabellen; hashfunktionen själv
     /// prövas i `graph_ident`.
@@ -577,10 +592,8 @@ mod tests {
     }
 
     fn las_fran(filer: &[(&'static str, Vec<u8>)]) -> impl Fn(&str) -> Option<Vec<u8>> {
-        let m: std::collections::HashMap<String, Vec<u8>> = filer
-            .iter()
-            .map(|(n, b)| (n.to_string(), b.clone()))
-            .collect();
+        let m: std::collections::HashMap<String, Vec<u8>> =
+            filer.iter().map(|(n, b)| (n.to_string(), b.clone())).collect();
         move |n: &str| m.get(n).cloned()
     }
 
@@ -697,10 +710,7 @@ mod tests {
                 ("a.json", recept.into_bytes()),
             ]);
             let u = applicera("dm3", &Kalla::Absolut("/r".into()), las, &mut g, plantera_ok);
-            assert_eq!(
-                u.utfall, UTFALL_HOPPAT_OVER,
-                "förkortad bas {forkortad:?} måste fällas"
-            );
+            assert_eq!(u.utfall, UTFALL_HOPPAT_OVER, "förkortad bas {forkortad:?} måste fällas");
             assert!(
                 u.skal.as_ref().unwrap().contains("ogiltig bas-konstant"),
                 "{:?}",
@@ -987,5 +997,146 @@ mod tests {
         let rad = konsolrad(&h, 5977, 48207);
         assert!(rad.contains("HOPPAS ÖVER (fel bas)"), "{rad}");
         assert!(rad.contains("kör rå karta"), "{rad}");
+    }
+
+    #[test]
+    fn defaultgraf_tom_dir_dm3_ar_inbaddad() {
+        assert_eq!(defaultgraf_kalla("", "dm3"), Some(Kalla::Inbaddad));
+        assert_eq!(defaultgraf_kalla("   ", "dm3"), Some(Kalla::Inbaddad));
+        assert_eq!(defaultgraf_kalla("", "dm6"), None);
+        assert_eq!(
+            defaultgraf_kalla("/s5/recept", "dm3"),
+            Some(Kalla::Absolut("/s5/recept".into())),
+            "satt dir: autostart, ingen bake"
+        );
+        assert_eq!(
+            defaultgraf_kalla("reference/recept", "dm3"),
+            Some(Kalla::Gamedir("reference/recept".into()))
+        );
+        assert_eq!(resolvera(""), Kalla::Av, "resolvera själv producerar inte Inbaddad");
+    }
+
+    #[test]
+    fn inbaddad_las_aldrig_vf5_eller_katalogscan() {
+        assert!(las_inbaddad("manifest.json").is_some());
+        assert!(las_inbaddad("ra_climb_planted.json").is_some());
+        assert!(las_inbaddad("vast_296_planted.json").is_some());
+        assert!(las_inbaddad("vf5_ring2quad.json").is_none(), "vf5 får inte inbakas");
+        assert!(las_inbaddad("vf5_ring2quad_forkmain.json").is_none());
+        assert!(las_inbaddad(".").is_none());
+        let filer = las_manifest(&las_inbaddad("manifest.json").unwrap(), "dm3").unwrap();
+        assert_eq!(
+            filer,
+            vec!["ra_climb_planted.json".to_string(), "vast_296_planted.json".to_string()]
+        );
+        assert!(!filer.iter().any(|f| f.contains("vf5")));
+        let vast = las_recept(&las_inbaddad("vast_296_planted.json").unwrap(), "vast_296_planted.json").unwrap();
+        assert_eq!(vast.efter.as_deref(), Some(K2_BAKE_NIVA2));
+        assert_eq!(vast.steg.len(), 1);
+        let climb = las_recept(&las_inbaddad("ra_climb_planted.json").unwrap(), "ra_climb_planted.json").unwrap();
+        assert_eq!(climb.steg.len(), 4);
+    }
+
+    fn kind_ur_token(t: &str) -> rtx_nav::navmesh::LinkKind {
+        use rtx_nav::navmesh::LinkKind;
+        match t {
+            "walk" => LinkKind::Walk,
+            "step" => LinkKind::Step,
+            "drop" => LinkKind::Drop,
+            "jump" => LinkKind::JumpGap,
+            "doublejump" => LinkKind::DoubleJump,
+            "speedjump" => LinkKind::SpeedJump,
+            "plat" => LinkKind::Plat,
+            "teleport" => LinkKind::Teleport,
+            "hook" => LinkKind::Hook,
+            "rocketjump" => LinkKind::RocketJump,
+            "swim" => LinkKind::Swim,
+            annat => panic!("okänd länksort i fixturen: {annat}"),
+        }
+    }
+
+    /// Målträdets dm3-defaultgraf, 5977/48207, nivå-2 `58787ce0…`.
+    fn dm3_fork_bas() -> rtx_nav::navmesh::NavGraph {
+        use rtx_nav::navmesh::{Cell, Link, NavGraph};
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixturer/dm3-fork-bas.tsv"))
+            .expect("dm3-fork-bas.tsv saknas");
+        let mut celler = Vec::new();
+        let mut i_adjacens = Vec::new();
+        let mut prunade = Vec::new();
+        for rad in text.lines() {
+            let f: Vec<&str> = rad.split('\t').collect();
+            match f[0] {
+                "C" => celler.push(Cell {
+                    origin: glam::Vec3::new(f[1].parse().unwrap(), f[2].parse().unwrap(), f[3].parse().unwrap()),
+                    gx: 0,
+                    gy: 0,
+                }),
+                "L" => {
+                    let l = Link {
+                        from: f[1].parse().unwrap(),
+                        to: f[2].parse().unwrap(),
+                        kind: kind_ur_token(f[3]),
+                        cost: 0.0,
+                    };
+                    if f[4] == "1" {
+                        i_adjacens.push(l);
+                    } else {
+                        prunade.push(l);
+                    }
+                }
+                annat => panic!("okänd rad i fixturen: {annat}"),
+            }
+        }
+        let mut g = NavGraph::test_graph(celler, i_adjacens);
+        for l in prunade {
+            g.links.push(l);
+        }
+        g.reindex_grid();
+        g
+    }
+
+    const BAS_NIVA2: &str = "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9";
+
+    #[test]
+    fn k2_bake_identitet_feeea6b4_och_mutation_andrar_hash() {
+        use crate::graph_ident::graph_content_hash;
+        let mut g = dm3_fork_bas();
+        assert_eq!(g.cells.len(), 5977, "fixturens cellantal");
+        assert_eq!(g.links.len(), 48207, "fixturens länkantal inkl. prunade");
+        assert_eq!(graph_content_hash(&g), BAS_NIVA2, "basgrafen ska vara 58787ce0");
+
+        let plantera = |g: &mut rtx_nav::navmesh::NavGraph, s: &Steg| {
+            crate::control::plant_speed_jump_link(
+                g,
+                glam::Vec3::from(s.from),
+                glam::Vec3::from(s.takeoff),
+                glam::Vec3::from(s.tgt),
+                s.v_req,
+                s.gain,
+                800.0,
+            )
+            .map(|p| p.link)
+        };
+        let u = applicera("dm3", &Kalla::Inbaddad, las_inbaddad, &mut g, plantera);
+        assert_eq!(
+            u.utfall, UTFALL_APPLICERAT,
+            "bake ska gå samma applicera-väg: {:?}",
+            u.skal
+        );
+        assert_eq!(u.lankar, 5);
+        assert_eq!(g.cells.len(), 5977);
+        assert_eq!(g.links.len(), 48212);
+        assert_eq!(
+            graph_content_hash(&g),
+            K2_BAKE_NIVA2,
+            "bakad graf är identitet feeea6b4, inte 99 %"
+        );
+        assert_eq!(u.slut_hash, K2_BAKE_NIVA2);
+
+        let fore = graph_content_hash(&g);
+        g.links.last_mut().expect("planterad länk").to += 1;
+        let efter = graph_content_hash(&g);
+        assert_ne!(efter, fore, "mutation av inbakad länk måste ändra hashen");
+        assert_ne!(efter, K2_BAKE_NIVA2, "muterad graf får inte längre vara feeea6b4");
     }
 }

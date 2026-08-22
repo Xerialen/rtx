@@ -10,7 +10,7 @@ use crate::host::CvarValue;
 /// A default value for one rtx tunable — bundles the three [`CvarValue`] kinds so the whole tunable
 /// set can register from one table ([`RTX_CVAR_DEFAULTS`]). Its token is identical to calling
 /// `cvar_default` with the underlying `bool`/`f32`/`&str` directly.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CvarSeed {
     Bool(bool),
     Float(f32),
@@ -113,14 +113,15 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // responder, which is what made a bot brake mid-stride on a stair diagonal. See `bot::walksim`.
         ("rtx_bot_walkplan", Bool(true)),
         // F1: smalna gångcertifikatets tub där mitten hänger över djupt tomrum
-        // (`walksim::LATERAL_TOL_LIP`). Av som förval — binären är oförändrad tills
-        // någon slår på den, och armarna skiljs åt av cvarer i stället för av byggen.
-        ("rtx_bot_edge_narrow", Bool(false)),
+        // (`walksim::LATERAL_TOL_LIP`). På som förval (K1, ägarorder 22/8) — osatt
+        // frö läser true. `cvar_default` skriver bara osatta cvarer; en cfg som
+        // sätter 0 överlever. Avvikelse mot F1-portens «default av».
+        ("rtx_bot_edge_narrow", Bool(true)),
         // F2: låt gångcertifikatet lapsa när underlaget byter karaktär (punktgolv <->
         // häng-off) i stället för bara på klockan. Av som förval.
         ("rtx_bot_edge_recert", Bool(false)),
         // Diagnos: skriv ut aktiv WalkPlan och vilken förare som äger ramen när något
-        // av det ändras. Av som förval; ingen kod i heta vägen när den är av.
+        // av det ändras. Stannar av (inte F1; conprint-spam, inte lastbärare).
         ("rtx_bot_walkdiag", Bool(false)),
         // A bot's health weights how willing it is to shortcut through lava/slime: hurt bots detour,
         // healthy (or armored, or biosuited) ones clip the corner. `0` prices every bot as a bare
@@ -360,4 +361,42 @@ pub(crate) fn default_of(name: &str) -> Option<CvarSeed> {
         .iter()
         .find(|(n, _)| *n == name)
         .map(|&(_, seed)| seed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// K1: osatt frö läser F1 på. Tester som antar av sätter cvar explicit.
+    #[test]
+    fn edge_narrow_osatt_fro_laser_true() {
+        assert_eq!(
+            default_of("rtx_bot_edge_narrow"),
+            Some(CvarSeed::Bool(true)),
+            "osatt frö ska läsa rtx_bot_edge_narrow=true"
+        );
+    }
+
+    #[test]
+    fn walkdiag_stannar_false_som_default() {
+        assert_eq!(
+            default_of("rtx_bot_walkdiag"),
+            Some(CvarSeed::Bool(false)),
+            "walkdiag är diagnos, inte F1"
+        );
+    }
+
+    #[test]
+    fn edge_recert_stannar_false_som_default() {
+        assert_eq!(default_of("rtx_bot_edge_recert"), Some(CvarSeed::Bool(false)));
+    }
+
+    #[test]
+    fn bot_count_orord_noll() {
+        assert_eq!(
+            default_of("rtx_bot_count"),
+            Some(CvarSeed::Float(0.0)),
+            "rtx_bot_count stannar 0; en ent via cfg, inte frö"
+        );
+    }
 }

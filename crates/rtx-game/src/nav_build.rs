@@ -219,7 +219,6 @@ impl GameState {
         self.host.dprint(c"rtx: navmesh: building in background...\n");
     }
 
-
     /// Kör receptautostarten på den nybyggda grafen (facit-receptautostart-v2 §2–§5).
     ///
     /// Läsvägen följer sökvägsregeln: en absolut sökväg läses ur filsystemet, en
@@ -227,16 +226,17 @@ impl GameState {
     /// basspelet. Arbetskatalogen används aldrig — en sökväg som fungerar på riggen och
     /// tiger någon annanstans är samma klass av fel som regeln finns för att stoppa.
     ///
-    /// Returnerar `None` bara när cvaren är tom **och** ingen deklaration behövs; i alla
-    /// andra lägen ett utfall som konsolraden och `Status` bär vidare.
+    /// Tom `rtx_recept_dir` är no-op som *sökväg*. På dm3 anropas samma `applicera`
+    /// mot inbäddade climb+väst-bytes (K2 bake) — inte katalogscan, inte vf5. Satt
+    /// dir ger bara autostart, ingen bake (ingen dubbelplant).
+    ///
+    /// Returnerar `None` när cvaren är tom **och** kartan inte är dm3; i alla andra
+    /// lägen ett utfall som konsolraden och `Status` bär vidare.
     fn applicera_recept(&mut self, graph: &mut navmesh::NavGraph) -> Option<crate::recept::Utfall> {
         let mut buf = [0u8; 512];
         let dir = self.host.cvar_string(c"rtx_recept_dir", &mut buf).to_string();
-        let kalla = crate::recept::resolvera(&dir);
-        if matches!(kalla, crate::recept::Kalla::Av) {
-            return None;
-        }
         let karta = self.level.mapname.clone();
+        let kalla = crate::recept::defaultgraf_kalla(&dir, &karta)?;
         let gravity = {
             let g = self.host.cvar(c"sv_gravity");
             if g > 0.0 {
@@ -257,6 +257,7 @@ impl GameState {
         let las = |namn: &str| -> Option<Vec<u8>> {
             match &kalla {
                 crate::recept::Kalla::Av => None,
+                crate::recept::Kalla::Inbaddad => crate::recept::las_inbaddad(namn),
                 crate::recept::Kalla::Absolut(rot) => std::fs::read(format!("{rot}/{namn}")).ok(),
                 crate::recept::Kalla::Gamedir(rot) => {
                     let c = std::ffi::CString::new(format!("{rot}/{namn}")).ok()?;

@@ -573,6 +573,19 @@ impl NavGraph {
         }
     }
 
+    /// Rebuild the XY spatial index from cell origins. [`test_graph`] leaves `grid`
+    /// empty so [`nearest`](Self::nearest) is blind; a fixture loaded from inventory
+    /// needs this before world-coordinate plants.
+    pub fn reindex_grid(&mut self) {
+        self.grid.clear();
+        for (id, c) in self.cells.iter_mut().enumerate() {
+            let (gx, gy) = (floor_grid(c.origin.x), floor_grid(c.origin.y));
+            c.gx = gx;
+            c.gy = gy;
+            self.grid.entry((gx, gy)).or_default().push(id as u32);
+        }
+    }
+
     /// Flag every cell beside a fatal drop (see [`ledge_beside`]) — a wall-hugging walkway over an open
     /// pit, a spiral staircase's inner edge. Pure geometry over the hull-1 point test, so it runs on the
     /// worker build; a lava/slime-flanked cell is left to the `hazard` flag instead. The runtime bhop
@@ -3932,7 +3945,11 @@ mod tests {
 
         // `chain_entry_exclusions` flags exactly that link at true standstill…
         let excluded: Vec<u32> = g.chain_entry_exclusions(0, 0.0).collect();
-        assert_eq!(excluded, vec![0], "the chained link should be flagged at true standstill");
+        assert_eq!(
+            excluded,
+            vec![0],
+            "the chained link should be flagged at true standstill"
+        );
 
         // …and surcharging it (same finite-penalty mechanism the stuck-link watchdog already uses)
         // diverts the identical standstill query onto the walk-around.
@@ -3941,7 +3958,9 @@ mod tests {
             penalties: &penalties,
             ..LinkCosts::default()
         };
-        let guarded = g.find_path_banded(0, 1, 0.0, &costs).expect("the walk-around still exists");
+        let guarded = g
+            .find_path_banded(0, 1, 0.0, &costs)
+            .expect("the walk-around still exists");
         assert_eq!(guarded.links, vec![1, 2], "the gate should divert onto the walk-around");
 
         // A bot already carrying (near) v_req toward the ledge is genuine pass-through traffic and
