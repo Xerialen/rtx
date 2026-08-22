@@ -116,6 +116,7 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // (`walksim::LATERAL_TOL_LIP`). På som förval (K1, ägarorder 22/8) — osatt
         // frö läser true. `cvar_default` skriver bara osatta cvarer; en cfg som
         // sätter 0 överlever. Avvikelse mot F1-portens «default av».
+        // RA-room lock — ring2quad får inte revert
         ("rtx_bot_edge_narrow", Bool(true)),
         // F2: låt gångcertifikatet lapsa när underlaget byter karaktär (punktgolv <->
         // häng-off) i stället för bara på klockan. Av som förval.
@@ -374,6 +375,15 @@ mod tests {
             default_of("rtx_bot_edge_narrow"),
             Some(CvarSeed::Bool(true)),
             "osatt frö ska läsa rtx_bot_edge_narrow=true"
+        );
+    }
+
+    #[test]
+    fn walkplan_osatt_fro_laser_true() {
+        assert_eq!(
+            default_of("rtx_bot_walkplan"),
+            Some(CvarSeed::Bool(true)),
+            "osatt frö ska läsa rtx_bot_walkplan=true"
         );
     }
 

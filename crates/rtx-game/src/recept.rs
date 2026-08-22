@@ -157,6 +157,7 @@ pub fn las_inbaddad(namn: &str) -> Option<Vec<u8>> {
 /// climb+väst-bytes (K2 bake). Satt dir ⇒ befintlig autostart, ingen bake —
 /// annars dubbelplant.
 pub fn defaultgraf_kalla(dir: &str, karta: &str) -> Option<Kalla> {
+    // RA-room lock — ring2quad får inte revert
     match resolvera(dir) {
         Kalla::Av if karta == "dm3" => Some(Kalla::Inbaddad),
         Kalla::Av => None,
@@ -1138,5 +1139,99 @@ mod tests {
         let efter = graph_content_hash(&g);
         assert_ne!(efter, fore, "mutation av inbakad länk måste ändra hashen");
         assert_ne!(efter, K2_BAKE_NIVA2, "muterad graf får inte längre vara feeea6b4");
+    }
+
+    /// RA-rummets strömbrytare. Prefix `RA_ROOM_LOCK` så en ring2quad-PR som
+    /// släcker F1-default, bake eller släpper in vf5 syns i `cargo test`.
+    mod ra_room_kontrakt {
+        use super::*;
+        use crate::cvars::{default_of, CvarSeed};
+        use crate::graph_ident::graph_content_hash;
+
+        #[test]
+        fn edge_narrow_true() {
+            assert_eq!(
+                default_of("rtx_bot_edge_narrow"),
+                Some(CvarSeed::Bool(true)),
+                "RA_ROOM_LOCK: edge_narrow≠true"
+            );
+        }
+
+        #[test]
+        fn walkplan_true() {
+            assert_eq!(
+                default_of("rtx_bot_walkplan"),
+                Some(CvarSeed::Bool(true)),
+                "RA_ROOM_LOCK: walkplan≠true"
+            );
+        }
+
+        #[test]
+        fn walkdiag_false() {
+            assert_eq!(
+                default_of("rtx_bot_walkdiag"),
+                Some(CvarSeed::Bool(false)),
+                "RA_ROOM_LOCK: walkdiag≠false"
+            );
+        }
+
+        #[test]
+        fn bot_count_noll() {
+            assert_eq!(
+                default_of("rtx_bot_count"),
+                Some(CvarSeed::Float(0.0)),
+                "RA_ROOM_LOCK: bot_count≠0"
+            );
+        }
+
+        #[test]
+        fn tom_dir_dm3_inbaddad() {
+            assert_eq!(
+                defaultgraf_kalla("", "dm3"),
+                Some(Kalla::Inbaddad),
+                "RA_ROOM_LOCK: tom dir+dm3 inte Inbaddad"
+            );
+            assert_eq!(
+                defaultgraf_kalla("   ", "dm3"),
+                Some(Kalla::Inbaddad),
+                "RA_ROOM_LOCK: tom dir+dm3 inte Inbaddad"
+            );
+        }
+
+        #[test]
+        fn vf5_inte_inbaddad() {
+            for namn in ["vf5_ring2quad.json", "vf5_ring2quad_forkmain.json", "vf5_anything.json"] {
+                assert!(
+                    las_inbaddad(namn).is_none(),
+                    "RA_ROOM_LOCK: vf5 läses inbäddat ({namn})"
+                );
+            }
+        }
+
+        #[test]
+        fn k2_bake_hash_feeea6b4() {
+            let mut g = dm3_fork_bas();
+            let plantera = |g: &mut rtx_nav::navmesh::NavGraph, s: &Steg| {
+                crate::control::plant_speed_jump_link(
+                    g,
+                    glam::Vec3::from(s.from),
+                    glam::Vec3::from(s.takeoff),
+                    glam::Vec3::from(s.tgt),
+                    s.v_req,
+                    s.gain,
+                    800.0,
+                )
+                .map(|p| p.link)
+            };
+            let u = applicera("dm3", &Kalla::Inbaddad, las_inbaddad, &mut g, plantera);
+            assert_eq!(
+                graph_content_hash(&g),
+                K2_BAKE_NIVA2,
+                "RA_ROOM_LOCK: K2-bake-hash ≠ feeea6b4…"
+            );
+            assert_eq!(u.slut_hash, K2_BAKE_NIVA2, "RA_ROOM_LOCK: K2-bake-hash ≠ feeea6b4…");
+            assert_eq!(g.cells.len(), 5977, "RA_ROOM_LOCK: K2-bake-hash ≠ feeea6b4… (celler)");
+            assert_eq!(g.links.len(), 48212, "RA_ROOM_LOCK: K2-bake-hash ≠ feeea6b4… (länkar)");
+        }
     }
 }
