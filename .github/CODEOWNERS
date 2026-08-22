@@ -1,0 +1,7 @@
+# RA-room lock — ring2quad får inte revert utan ägarögon
+/crates/rtx-game/src/cvars.rs                    @Xerialen
+/crates/rtx-game/src/recept.rs                   @Xerialen
+/crates/rtx-game/tests/ra_room_lock.rs           @Xerialen
+/reference/ra-room/DEFAULT-KONTRAKT.md           @Xerialen
+/.github/workflows/ra-room-lock.yml              @Xerialen
+/.github/CODEOWNERS                              @Xerialen
