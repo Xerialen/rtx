@@ -1187,6 +1187,11 @@ mod tests {
         #[test]
         fn tom_dir_dm3_inbaddad() {
             assert_eq!(
+                default_of("rtx_recept_dir"),
+                Some(CvarSeed::Str("")),
+                "RA_ROOM_LOCK: rtx_recept_dir≠tom"
+            );
+            assert_eq!(
                 defaultgraf_kalla("", "dm3"),
                 Some(Kalla::Inbaddad),
                 "RA_ROOM_LOCK: tom dir+dm3 inte Inbaddad"

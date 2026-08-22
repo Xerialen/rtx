@@ -1,0 +1,228 @@
+# Check-namnet `ra-room-lock` är kontraktet (jobs.<id>.name, inte filnamnet).
+# Förbjudet här: paths:, paths-ignore:, continue-on-error, if: som skippar
+# jobbet (GitHub skipped = pass på required checks).
+name: ra-room-lock
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ra-room-lock:
+    name: ra-room-lock
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: meta — RA_ROOM_LOCK-strängar i recept.rs
+        run: |
+          # Villkor M3: räkna bara kontraktet i recept.rs, inte lock-filens prosa.
+          n=$(grep -o 'RA_ROOM_LOCK' crates/rtx-game/src/recept.rs | wc -l)
+          n=${n// /}
+          echo "RA_ROOM_LOCK_HITS_RECEPT=$n"
+          test "$n" -ge 7
+
+      - name: meta — lock-testfil finns
+        run: test -f crates/rtx-game/tests/ra_room_lock.rs
+
+      - name: meta — F1/walkplan/walkdiag/bot_count-frön i källtext
+        run: |
+          f=crates/rtx-game/src/cvars.rs
+          # Exakt en seed-rad per namn. Prefix med kommatecken så
+          # default_of("NAMN") i samma fil inte räknas (skulle ge 2 idag).
+          # Värdet måste också stämma: dummy true→false är fortfarande rött.
+          check_one() {
+            local name="$1"
+            local value="$2"
+            local n
+            n=$(grep -F "(\"${name}\"," "$f" | wc -l)
+            n=${n// /}
+            echo "SEED_COUNT ${name}=${n} want=1 value=${value}"
+            test "$n" -eq 1
+            grep -F "(\"${name}\", ${value})" "$f"
+          }
+          check_one rtx_bot_edge_narrow 'Bool(true)'
+          check_one rtx_bot_walkplan 'Bool(true)'
+          check_one rtx_bot_walkdiag 'Bool(false)'
+          check_one rtx_bot_count 'Float(0.0)'
+
+      - name: meta — ingen tracked cfg slår av F1
+        run: |
+          if git grep -n -E 'rtx_bot_edge_narrow[[:space:]]+0' -- '*.cfg' '*.sh' ':!*.md' ; then
+            echo 'RA_ROOM_LOCK: tracked fil sätter edge_narrow 0'
+            exit 1
+          fi
+          exit 0
+
+      - name: lock tests (per-lås --exact)
+        run: |
+          set -o pipefail
+          fail_if_empty() {
+            local label="$1"
+            local log="$2"
+            local want="${3:-1}"
+            local n
+            local bad=0
+            n=$(sed -n 's/^running \([0-9][0-9]*\) tests\?$/\1/p' "$log" | tail -n 1)
+            echo "${label}: running=${n:-MISSING} want=${want}"
+            if ! test -n "$n" || ! test "$n" -eq "$want"; then
+              echo "${label}: fail-om-tomt (running != ${want})"
+              bad=1
+            fi
+            if grep -E 'test result:.*FAILED' "$log" >/dev/null; then
+              echo "${label}: test result FAILED"
+              bad=1
+            fi
+            return "$bad"
+          }
+          names='
+            recept::tests::ra_room_kontrakt::bot_count_noll
+            recept::tests::ra_room_kontrakt::edge_narrow_true
+            recept::tests::ra_room_kontrakt::tom_dir_dm3_inbaddad
+            recept::tests::ra_room_kontrakt::vf5_inte_inbaddad
+            recept::tests::ra_room_kontrakt::walkdiag_false
+            recept::tests::ra_room_kontrakt::walkplan_true
+            recept::tests::ra_room_kontrakt::k2_bake_hash_feeea6b4
+          '
+          for t in $names; do
+            log=$(mktemp)
+            set +e
+            cargo test -p rtx-game --locked --lib -- --exact --nocapture "$t" | tee "$log"
+            rc=$?
+            set -e
+            fail_if_empty "$t" "$log" 1
+            test "$rc" -eq 0
+          done
+
+      - name: lock 6 allowlist (inbaddad_las_aldrig_vf5_eller_katalogscan)
+        run: |
+          set -o pipefail
+          fail_if_empty() {
+            local label="$1"
+            local log="$2"
+            local want="${3:-1}"
+            local n
+            local bad=0
+            n=$(sed -n 's/^running \([0-9][0-9]*\) tests\?$/\1/p' "$log" | tail -n 1)
+            echo "${label}: running=${n:-MISSING} want=${want}"
+            if ! test -n "$n" || ! test "$n" -eq "$want"; then
+              echo "${label}: fail-om-tomt (running != ${want})"
+              bad=1
+            fi
+            if grep -E 'test result:.*FAILED' "$log" >/dev/null; then
+              echo "${label}: test result FAILED"
+              bad=1
+            fi
+            return "$bad"
+          }
+          t=recept::tests::inbaddad_las_aldrig_vf5_eller_katalogscan
+          log=$(mktemp)
+          set +e
+          cargo test -p rtx-game --locked --lib -- --exact --nocapture "$t" | tee "$log"
+          rc=$?
+          set -e
+          fail_if_empty "$t" "$log" 1
+          test "$rc" -eq 0
+
+      - name: seed pin
+        run: |
+          set -o pipefail
+          fail_if_empty() {
+            local label="$1"
+            local log="$2"
+            local want="${3:-1}"
+            local n
+            local bad=0
+            n=$(sed -n 's/^running \([0-9][0-9]*\) tests\?$/\1/p' "$log" | tail -n 1)
+            echo "${label}: running=${n:-MISSING} want=${want}"
+            if ! test -n "$n" || ! test "$n" -eq "$want"; then
+              echo "${label}: fail-om-tomt (running != ${want})"
+              bad=1
+            fi
+            if grep -E 'test result:.*FAILED' "$log" >/dev/null; then
+              echo "${label}: test result FAILED"
+              bad=1
+            fi
+            return "$bad"
+          }
+          log=$(mktemp)
+          set +e
+          cargo test -p rtx-game --locked --lib -- --exact --nocapture cvars::tests::edge_narrow_osatt_fro_laser_true | tee "$log"
+          rc=$?
+          set -e
+          fail_if_empty seed_pin "$log" 1
+          test "$rc" -eq 0
+
+      - name: integration lock-fil
+        run: |
+          set -o pipefail
+          fail_if_empty() {
+            local label="$1"
+            local log="$2"
+            local want="${3:-1}"
+            local n
+            local bad=0
+            n=$(sed -n 's/^running \([0-9][0-9]*\) tests\?$/\1/p' "$log" | tail -n 1)
+            echo "${label}: running=${n:-MISSING} want=${want}"
+            if ! test -n "$n" || ! test "$n" -eq "$want"; then
+              echo "${label}: fail-om-tomt (running != ${want})"
+              bad=1
+            fi
+            if grep -E 'test result:.*FAILED' "$log" >/dev/null; then
+              echo "${label}: test result FAILED"
+              bad=1
+            fi
+            return "$bad"
+          }
+          log=$(mktemp)
+          set +e
+          cargo test -p rtx-game --locked --test ra_room_lock -- --nocapture | tee "$log"
+          rc=$?
+          set -e
+          fail_if_empty ra_room_lock "$log" 3
+          test "$rc" -eq 0
+
+      - name: mallinje c1-c5 (lås 2, utan RA_ROOM_LOCK-prefix)
+        run: |
+          set -o pipefail
+          fail_if_empty() {
+            local label="$1"
+            local log="$2"
+            local want="${3:-1}"
+            local n
+            local bad=0
+            n=$(sed -n 's/^running \([0-9][0-9]*\) tests\?$/\1/p' "$log" | tail -n 1)
+            echo "${label}: running=${n:-MISSING} want=${want}"
+            if ! test -n "$n" || ! test "$n" -eq "$want"; then
+              echo "${label}: fail-om-tomt (running != ${want})"
+              bad=1
+            fi
+            if grep -E 'test result:.*FAILED' "$log" >/dev/null; then
+              echo "${label}: test result FAILED"
+              bad=1
+            fi
+            return "$bad"
+          }
+          names='
+            control::tests::c1_obliquely_approached_point_is_a_miss_not_an_arrival
+            control::tests::c2_shrink_does_not_outrun_the_distance_past_the_plane
+            control::tests::c3_genuine_line_crossing_still_counts
+            control::tests::c4_near_field_on_the_plane_is_untouched
+            control::tests::c5_short_of_the_plane_returns_early
+          '
+          for t in $names; do
+            log=$(mktemp)
+            set +e
+            cargo test -p rtx-game --locked --lib -- --exact --nocapture "$t" | tee "$log"
+            rc=$?
+            set -e
+            fail_if_empty "$t" "$log" 1
+            test "$rc" -eq 0
+          done
