@@ -21,9 +21,9 @@ Inte merge till main. `walkdiag` stannar false. `rtx_bot_count` stannar 0.
 | 7 | `walkdiag` | default **false** | `walkdiag_stannar_false_som_default` / `ra_room_kontrakt::walkdiag_false` |
 | 8 | `rtx_bot_count` | default **0** (ent via cfg) | `bot_count_orord_noll` / `ra_room_kontrakt::bot_count_noll` |
 
-Ring2quad-PR: får inte ändra rad 2–7 utan ny RA-omkörning. Får inte lägga
-vf5 i inbäddad las. Får inte slå av bake för tom dir på dm3.
+Ring2quad-PR: får inte ändra **rad 1–8** utan ny RA-omkörning. Får inte
+lägga vf5 i inbäddad las. Får inte slå av bake för tom dir på dm3.
 
 Startkontrakt (dokumenteras här, inte cvar-frö): dm3, ingen cfg som sätter
-`edge_narrow 0`, `rtx_recept_dir` tom eller bake, vänta navmesh, minst en
-bot via cfg.
+`edge_narrow 0`, `rtx_recept_dir` tom (inbäddad bake) eller explicit
+samma climb+väst, vänta navmesh, minst en bot via cfg.
