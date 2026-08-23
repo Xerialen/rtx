@@ -39,6 +39,7 @@
 use rtx_nav::navmesh::NavGraph;
 
 use crate::graph_ident::graph_content_hash;
+use rtx_ctlproto::RemoveLinkSpec;
 
 /// Det lilla grafkontrakt appliceringen behöver: identiteten och en kopia.
 ///
@@ -174,6 +175,8 @@ pub struct Steg {
     pub tgt: [f32; 3],
     pub v_req: f32,
     pub gain: f32,
+    /// `Some` = `RemoveLinks` (namngiven fil via `rtx_recept_dir`). `None` = PlanLink.
+    pub remove: Option<Vec<RemoveLinkSpec>>,
 }
 
 /// Ett inläst recept.
@@ -225,6 +228,12 @@ pub fn las_manifest(bytes: &[u8], karta: &str) -> Result<Vec<String>, String> {
 /// planteringstabellen (`namn -> {frm|from, takeoff, tgt, v_req, gain}`) och
 /// stegformen (`{bas, efter, steg:[…]}`).
 pub fn las_recept(bytes: &[u8], filnamn: &str) -> Result<Recept, String> {
+    las_recept_ex(bytes, filnamn, true)
+}
+
+/// `tillat_remove`: namngivna filer via `rtx_recept_dir` får `RemoveLinks`.
+/// Inbäddad källa (K2-bake) stannar PlanLink-only.
+pub fn las_recept_ex(bytes: &[u8], filnamn: &str, tillat_remove: bool) -> Result<Recept, String> {
     let v: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| format!("{filnamn}: {e}"))?;
     let obj = v
         .as_object()
@@ -246,10 +255,14 @@ pub fn las_recept(bytes: &[u8], filnamn: &str) -> Result<Recept, String> {
         for s in lista {
             let namn = s.get("namn").and_then(|n| n.as_str()).unwrap_or("steg");
             let op = s.get("op").and_then(|o| o.as_str()).unwrap_or("PlanLink");
-            if op != "PlanLink" {
-                return Err(format!("{filnamn}: op {op} stöds inte i etapp 1"));
+            match op {
+                "PlanLink" => steg.push(las_steg(namn, s, filnamn)?),
+                "RemoveLinks" if tillat_remove => steg.push(las_remove_steg(namn, s, filnamn)?),
+                "RemoveLinks" => {
+                    return Err(format!("{filnamn}: op RemoveLinks stöds inte på inbäddad källa"));
+                }
+                _ => return Err(format!("{filnamn}: op {op} stöds inte")),
             }
-            steg.push(las_steg(namn, s, filnamn)?);
         }
         return Ok(Recept { bas, efter, steg });
     }
@@ -295,6 +308,47 @@ fn las_steg(namn: &str, s: &serde_json::Value, filnamn: &str) -> Result<Steg, St
             .get("gain")
             .and_then(|v| v.as_f64())
             .ok_or_else(|| format!("{filnamn}: {namn} saknar \"gain\""))? as f32,
+        remove: None,
+    })
+}
+
+fn las_remove_steg(namn: &str, s: &serde_json::Value, filnamn: &str) -> Result<Steg, String> {
+    let lista = s
+        .get("lankar")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| format!("{filnamn}: {namn} saknar \"lankar\""))?;
+    if lista.is_empty() {
+        return Err(format!("{filnamn}: {namn} RemoveLinks utan länkar"));
+    }
+    let mut lankar = Vec::with_capacity(lista.len());
+    for (i, L) in lista.iter().enumerate() {
+        let id = L
+            .get("id")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| format!("{filnamn}: {namn} lankar[{i}] saknar id"))? as u32;
+        let from = L
+            .get("from")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| format!("{filnamn}: {namn} lankar[{i}] saknar from"))? as u32;
+        let to = L
+            .get("to")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| format!("{filnamn}: {namn} lankar[{i}] saknar to"))? as u32;
+        let kind = L
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("{filnamn}: {namn} lankar[{i}] saknar kind"))?
+            .to_string();
+        lankar.push(RemoveLinkSpec { id, from, to, kind });
+    }
+    Ok(Steg {
+        namn: namn.to_string(),
+        from: [0.0; 3],
+        takeoff: [0.0; 3],
+        tgt: [0.0; 3],
+        v_req: 0.0,
+        gain: 0.0,
+        remove: Some(lankar),
     })
 }
 
@@ -344,7 +398,8 @@ where
                 bas_hash,
             );
         };
-        match las_recept(&bytes, fil) {
+        let tillat_remove = !matches!(kalla, Kalla::Inbaddad);
+        match las_recept_ex(&bytes, fil, tillat_remove) {
             Ok(r) => recept.push(r),
             Err(e) => return Utfall::hoppat_over(karta, filer.clone(), e, bas_hash),
         }
@@ -608,6 +663,7 @@ mod tests {
             tgt: [0.0; 3],
             v_req: 400.0,
             gain: 6.0,
+            remove: None,
         }
     }
 
@@ -1139,6 +1195,129 @@ mod tests {
         let efter = graph_content_hash(&g);
         assert_ne!(efter, fore, "mutation av inbakad länk måste ändra hashen");
         assert_ne!(efter, K2_BAKE_NIVA2, "muterad graf får inte längre vara feeea6b4");
+    }
+
+    #[test]
+    fn las_recept_accepterar_removelinks_pa_namngiven_fil() {
+        let bytes = br#"{
+            "steg":[{"op":"RemoveLinks","namn":"grop","lankar":[
+                {"id":1,"from":10,"to":11,"kind":"walk"}
+            ]}]
+        }"#;
+        let r = las_recept(bytes, "n.json").unwrap();
+        assert_eq!(r.steg.len(), 1);
+        let s = &r.steg[0];
+        assert_eq!(s.namn, "grop");
+        let ls = s.remove.as_ref().expect("RemoveLinks");
+        assert_eq!(ls.len(), 1);
+        assert_eq!(ls[0].id, 1);
+        assert_eq!(ls[0].from, 10);
+        assert_eq!(ls[0].to, 11);
+        assert_eq!(ls[0].kind, "walk");
+    }
+
+    #[test]
+    fn las_recept_inbaddad_vagrar_removelinks() {
+        let bytes = br#"{
+            "steg":[{"op":"RemoveLinks","namn":"x","lankar":[
+                {"id":0,"from":0,"to":1,"kind":"walk"}
+            ]}]
+        }"#;
+        let e = las_recept_ex(bytes, "vf5.json", false).unwrap_err();
+        assert!(e.contains("inbäddad"), "{e}");
+    }
+
+    #[test]
+    fn las_recept_vagrar_tom_removelinks_och_okand_op() {
+        let tom = br#"{"steg":[{"op":"RemoveLinks","namn":"x","lankar":[]}]}"#;
+        let e = las_recept(tom, "n.json").unwrap_err();
+        assert!(e.contains("utan länkar"), "{e}");
+        let okand = br#"{"steg":[{"op":"ShelfPatch","namn":"x"}]}"#;
+        let e = las_recept(okand, "n.json").unwrap_err();
+        assert!(e.contains("stöds inte"), "{e}");
+    }
+
+    #[test]
+    fn namngiven_removelinks_applicerar_ratt_idn_failclosed_okanda() {
+        use rtx_nav::navmesh::{Link, LinkKind, NavGraph};
+        let bytes_ok = br#"{
+            "steg":[{"op":"RemoveLinks","namn":"x","lankar":[
+                {"id":0,"from":0,"to":1,"kind":"walk"}
+            ]}]
+        }"#;
+        let bytes_bad = br#"{
+            "steg":[{"op":"RemoveLinks","namn":"x","lankar":[
+                {"id":0,"from":9,"to":1,"kind":"walk"}
+            ]}]
+        }"#;
+        let manifest = manifest_med(&["n.json"]);
+        let plantera = |g: &mut NavGraph, s: &Steg| -> Result<u32, String> {
+            match &s.remove {
+                Some(ls) => crate::control::remove_links_anchored(g, ls),
+                None => Err("förväntade RemoveLinks".into()),
+            }
+        };
+        let mut g = NavGraph::from_topology(
+            &[glam::Vec3::ZERO, glam::Vec3::new(32.0, 0.0, 0.0)],
+            &[Link {
+                from: 0,
+                to: 1,
+                kind: LinkKind::Walk,
+                cost: 1.0,
+            }],
+        );
+        g.rebuild_derived();
+        let las = las_fran(&[("manifest.json", manifest.clone()), ("n.json", bytes_ok.to_vec())]);
+        let u = applicera("dm3", &Kalla::Absolut("/r".into()), las, &mut g, plantera);
+        assert_eq!(u.utfall, UTFALL_APPLICERAT, "{:?}", u.skal);
+        assert!(g.links.is_empty());
+
+        let mut g2 = NavGraph::from_topology(
+            &[glam::Vec3::ZERO, glam::Vec3::new(32.0, 0.0, 0.0)],
+            &[Link {
+                from: 0,
+                to: 1,
+                kind: LinkKind::Walk,
+                cost: 1.0,
+            }],
+        );
+        g2.rebuild_derived();
+        let fore = g2.links.len();
+        let las = las_fran(&[("manifest.json", manifest), ("n.json", bytes_bad.to_vec())]);
+        let u = applicera("dm3", &Kalla::Absolut("/r".into()), las, &mut g2, plantera);
+        assert_eq!(u.utfall, UTFALL_HOPPAT_OVER, "{:?}", u);
+        assert!(u.skal.as_deref().unwrap().contains("ankaret håller inte"));
+        assert_eq!(g2.links.len(), fore, "fail-closed: okänt ankare muterar inget");
+    }
+
+    #[test]
+    fn inbaddad_applicera_hoppar_over_removelinks() {
+        use rtx_nav::navmesh::{Link, LinkKind, NavGraph};
+        let bytes = br#"{
+            "steg":[{"op":"RemoveLinks","namn":"x","lankar":[
+                {"id":0,"from":0,"to":1,"kind":"walk"}
+            ]}]
+        }"#;
+        let manifest = br#"{"kartor":{"dm3":[{"fil":"x.json","ordning":1}]}}"#;
+        let las = las_fran(&[("manifest.json", manifest.to_vec()), ("x.json", bytes.to_vec())]);
+        let mut g = NavGraph::from_topology(
+            &[glam::Vec3::ZERO, glam::Vec3::new(32.0, 0.0, 0.0)],
+            &[Link {
+                from: 0,
+                to: 1,
+                kind: LinkKind::Walk,
+                cost: 1.0,
+            }],
+        );
+        let plantera = |_: &mut NavGraph, _: &Steg| -> Result<u32, String> { Ok(0) };
+        let u = applicera("dm3", &Kalla::Inbaddad, las, &mut g, plantera);
+        assert_eq!(u.utfall, UTFALL_HOPPAT_OVER, "{:?}", u);
+        assert!(
+            u.skal.as_deref().unwrap().contains("inbäddad"),
+            "{:?}",
+            u.skal
+        );
+        assert_eq!(g.links.len(), 1, "inbäddad RemoveLinks får inte mutera");
     }
 
     /// RA-rummets strömbrytare. Prefix `RA_ROOM_LOCK` så en ring2quad-PR som

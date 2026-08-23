@@ -61,6 +61,29 @@ pub fn kind_token(kind: LinkKind) -> &'static str {
     }
 }
 
+/// The inverse of [`kind_token`]. Lives next to it so the two cannot drift apart.
+///
+/// Unknown tokens are `None`, never a guess: a link kind that does not round-trip is a caller
+/// talking about a graph this engine does not have.
+pub fn kind_from_token(token: &str) -> Option<LinkKind> {
+    let k = match token {
+        "walk" => LinkKind::Walk,
+        "step" => LinkKind::Step,
+        "drop" => LinkKind::Drop,
+        "jump" => LinkKind::JumpGap,
+        "doublejump" => LinkKind::DoubleJump,
+        "speedjump" => LinkKind::SpeedJump,
+        "plat" => LinkKind::Plat,
+        "teleport" => LinkKind::Teleport,
+        "hook" => LinkKind::Hook,
+        "rocketjump" => LinkKind::RocketJump,
+        "swim" => LinkKind::Swim,
+        _ => return None,
+    };
+    debug_assert_eq!(kind_token(k), token);
+    Some(k)
+}
+
 /// Canonical inventory bytes (kontrakt §8.2, no per-kind params — matches the dm3 golden dump).
 fn canonical_inventory(graph: &NavGraph) -> String {
     let mut lines: Vec<String> = graph
@@ -275,7 +298,10 @@ mod tests {
         let mut sedda = std::collections::HashSet::new();
         for k in alla {
             assert!(sedda.insert(kind_token(k)), "dubblerad token: {}", kind_token(k));
+            assert_eq!(kind_from_token(kind_token(k)), Some(k), "roundtrip {}", kind_token(k));
         }
         assert_eq!(sedda.len(), alla.len());
+        assert_eq!(kind_from_token("krypa"), None);
+        assert_eq!(kind_from_token(""), None);
     }
 }

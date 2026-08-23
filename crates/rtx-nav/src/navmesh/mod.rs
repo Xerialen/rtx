@@ -503,6 +503,21 @@ fn ledge_beside(is_solid: &impl Fn(Vec3) -> bool, origin: Vec3) -> bool {
     })
 }
 
+/// Compact a `links`-parallel f32 column after some ids were dropped.
+/// Empty stays empty (`link_extra` treats a missing slot as 0).
+fn compact_per_link_f32(old: &[f32], old_to_new: &[Option<u32>]) -> Vec<f32> {
+    if old.is_empty() {
+        return Vec::new();
+    }
+    let mut new = Vec::with_capacity(old_to_new.iter().filter(|m| m.is_some()).count());
+    for (i, mapped) in old_to_new.iter().enumerate() {
+        if mapped.is_some() {
+            new.push(old.get(i).copied().unwrap_or(0.0));
+        }
+    }
+    new
+}
+
 impl NavGraph {
     /// Build the graph from a parsed BSP's player hull. Pure; safe to run at load time.
     pub fn build(bsp: &Bsp) -> NavGraph {
@@ -584,6 +599,119 @@ impl NavGraph {
             c.gy = gy;
             self.grid.entry((gx, gy)).or_default().push(id as u32);
         }
+    }
+
+    /// Topology-only graph: cells + links, spatial index filled so [`cell_within`](Self::cell_within)
+    /// works. Side tables stay empty (dry, ungated). Used by fixture tests — not a substitute for
+    /// [`build`](Self::build).
+    pub fn from_topology(origins: &[Vec3], links: &[Link]) -> NavGraph {
+        let mut graph = NavGraph {
+            adjacency: Vec::new(),
+            cells: Vec::new(),
+            links: Vec::new(),
+            water: Vec::new(),
+            breathable: Vec::new(),
+            water_extra: Vec::new(),
+            hazard: Vec::new(),
+            hazard_hp: Vec::new(),
+            under_plat: Vec::new(),
+            ledge: Vec::new(),
+            grid: HashMap::new(),
+            gates: SideTable::default(),
+            tele_volumes: Vec::new(),
+            hooks: SideTable::default(),
+            speed_jumps: SideTable::default(),
+            rocket_jumps: SideTable::default(),
+            plats: SideTable::default(),
+            sj_k: bhop_k(10.0, MAX_SPEED),
+            reach: None,
+            lod: None,
+        };
+        for &origin in origins {
+            graph.add_cell(origin);
+        }
+        for &link in links {
+            graph.push_link(link);
+        }
+        graph
+    }
+
+    /// Like [`from_topology`], but fills the `links`-parallel tax columns.
+    /// `from_topology` leaves them empty (`link_extra` then reads 0) — fixture
+    /// tests that must catch a remap bug have to go through here with
+    /// **non-zero** distinct values. Lengths must match `links`.
+    pub fn from_topology_priced(origins: &[Vec3], links: &[Link], hazard_hp: &[f32], water_extra: &[f32]) -> NavGraph {
+        assert_eq!(hazard_hp.len(), links.len(), "hazard_hp must be parallel to links");
+        assert_eq!(water_extra.len(), links.len(), "water_extra must be parallel to links");
+        let mut graph = Self::from_topology(origins, links);
+        graph.hazard_hp = hazard_hp.to_vec();
+        graph.water_extra = water_extra.to_vec();
+        graph
+    }
+
+    /// Append a free-standing cell and index it. Fixture counterpart of [`plant_cell`](Self::plant_cell).
+    pub fn insert_cell(&mut self, origin: Vec3) -> CellId {
+        self.add_cell(origin)
+    }
+
+    /// Append a directed link and tag it in the adjacency. Fixture-apply counterpart of
+    /// [`plant_drop`](Self::plant_drop).
+    pub fn insert_link(&mut self, link: Link) {
+        self.push_link(link);
+    }
+
+    /// Remove directed links by index. Unknown or duplicate ids fail closed and leave
+    /// the graph untouched. Adjacency and side-table tags are remapped so remaining
+    /// ids stay consistent (a hole is not left in `links`).
+    pub fn remove_links_by_id(&mut self, ids: &[u32]) -> Result<Vec<Link>, String> {
+        let n = self.links.len() as u32;
+        let mut seen = std::collections::BTreeSet::new();
+        for &id in ids {
+            if id >= n {
+                return Err(format!("unknown link id {id}"));
+            }
+            if !seen.insert(id) {
+                return Err(format!("duplicate link id {id}"));
+            }
+        }
+        let mut removed = Vec::with_capacity(seen.len());
+        let mut kept: Vec<Link> = Vec::with_capacity(self.links.len() - seen.len());
+        let mut old_to_new: Vec<Option<u32>> = vec![None; self.links.len()];
+        for (i, &link) in self.links.iter().enumerate() {
+            if seen.contains(&(i as u32)) {
+                removed.push(link);
+            } else {
+                old_to_new[i] = Some(kept.len() as u32);
+                kept.push(link);
+            }
+        }
+        self.links.clear();
+        for adj in &mut self.adjacency {
+            adj.clear();
+        }
+        for link in kept {
+            self.push_link(link);
+        }
+        // Per-link columns (not SideTable): compact in the same old→new order.
+        // Inventory of NavGraph index-parallel state:
+        //   links, adjacency          — rebuilt above
+        //   hazard_hp, water_extra    — these two Vecs
+        //   gates/hooks/speed_jumps/rocket_jumps/plats — SideTable, remapped below
+        //   water/breathable/hazard/under_plat/ledge   — per-cell, leave alone
+        //   tele_volumes, sj_k, reach, lod, grid       — not per-link
+        self.hazard_hp = compact_per_link_f32(&self.hazard_hp, &old_to_new);
+        self.water_extra = compact_per_link_f32(&self.water_extra, &old_to_new);
+        self.gates.remap_after_remove(&old_to_new);
+        self.hooks.remap_after_remove(&old_to_new);
+        self.speed_jumps.remap_after_remove(&old_to_new);
+        self.rocket_jumps.remap_after_remove(&old_to_new);
+        self.plats.remap_after_remove(&old_to_new);
+        Ok(removed)
+    }
+
+    /// Append a link that is *not* in the adjacency (pruned / T=0). Only for inventory-hash tests.
+    pub fn insert_pruned_link(&mut self, link: Link) {
+        self.links.push(link);
     }
 
     /// Flag every cell beside a fatal drop (see [`ledge_beside`]) — a wall-hugging walkway over an open
@@ -4658,5 +4786,127 @@ mod tests {
         };
         let hurt = g.coarse_costs(0, &hazcosts, false).cost_to(12);
         assert!(hurt > wet, "hazard pricing should add cost: hurt {hurt} !> wet {wet}");
+    }
+
+    fn walk(from: u32, to: u32, cost: f32) -> Link {
+        Link {
+            from,
+            to,
+            kind: LinkKind::Walk,
+            cost,
+        }
+    }
+
+    #[test]
+    fn from_topology_leaves_tax_columns_empty() {
+        let g = NavGraph::from_topology(&[Vec3::ZERO, Vec3::new(32.0, 0.0, 0.0)], &[walk(0, 1, 1.0)]);
+        assert!(g.hazard_hp.is_empty());
+        assert!(g.water_extra.is_empty());
+        assert_eq!(g.link_hazard_hp(0), 0.0);
+        assert_eq!(g.link_water_extra(0), 0.0);
+    }
+
+    #[test]
+    fn remove_links_remaps_hazard_hp_and_water_extra() {
+        let costs = LinkCosts {
+            hazard: Some(HazardPrice::new(100.0)),
+            ..LinkCosts::default()
+        };
+        let origins3 = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(32.0, 0.0, 0.0),
+            Vec3::new(64.0, 0.0, 0.0),
+        ];
+        let links3 = [walk(0, 1, 1.0), walk(1, 2, 1.0), walk(0, 2, 2.0)];
+        let mut g = NavGraph::from_topology_priced(&origins3, &links3, &[10.0, 20.0, 30.0], &[1.0, 2.0, 3.0]);
+        assert!(
+            g.hazard_hp.iter().all(|&x| x > 0.0) && g.water_extra.iter().all(|&x| x > 0.0),
+            "fixture must carry non-zero taxes"
+        );
+        let snap1 = g.clone();
+
+        g.remove_links_by_id(&[1]).expect("remove 1 id");
+        assert_eq!(g.links.len(), 2);
+        assert_eq!((g.links[0].from, g.links[0].to), (0, 1));
+        assert_eq!((g.links[1].from, g.links[1].to), (0, 2));
+        assert_eq!(g.hazard_hp, vec![10.0, 30.0]);
+        assert_eq!(g.water_extra, vec![1.0, 3.0]);
+        assert!((g.link_extra(0, &costs) - snap1.link_extra(0, &costs)).abs() < 1e-5);
+        assert!(
+            (g.link_extra(1, &costs) - snap1.link_extra(2, &costs)).abs() < 1e-5,
+            "after 1-id remove, new[1] must be old[2]'s tax, not old[1]'s"
+        );
+
+        g = snap1.clone();
+        assert_eq!(g.hazard_hp, vec![10.0, 20.0, 30.0]);
+        assert_eq!(g.water_extra, vec![1.0, 2.0, 3.0]);
+
+        let mut dry = snap1;
+        dry.hazard_hp.clear();
+        dry.water_extra.clear();
+        dry.remove_links_by_id(&[1]).expect("empty columns");
+        assert!(dry.hazard_hp.is_empty() && dry.water_extra.is_empty());
+    }
+
+    #[test]
+    fn remove_two_links_shift2_taxes_follow_kept_links() {
+        let costs = LinkCosts {
+            hazard: Some(HazardPrice::new(100.0)),
+            ..LinkCosts::default()
+        };
+        let origins = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(32.0, 0.0, 0.0),
+            Vec3::new(64.0, 0.0, 0.0),
+            Vec3::new(96.0, 0.0, 0.0),
+        ];
+        let links = [walk(0, 1, 1.0), walk(1, 2, 1.0), walk(2, 3, 1.0), walk(0, 3, 2.0)];
+        let mut g = NavGraph::from_topology_priced(&origins, &links, &[11.0, 22.0, 33.0, 44.0], &[1.0, 2.0, 3.0, 4.0]);
+        assert!(g.hazard_hp.iter().all(|&x| x > 0.0) && g.water_extra.iter().all(|&x| x > 0.0));
+        let snap = g.clone();
+
+        g.remove_links_by_id(&[0, 1]).expect("remove two ids");
+        assert_eq!(g.links.len(), 2);
+        assert_eq!((g.links[0].from, g.links[0].to), (2, 3));
+        assert_eq!((g.links[1].from, g.links[1].to), (0, 3));
+        assert_eq!(
+            g.hazard_hp,
+            vec![33.0, 44.0],
+            "shift-2 compact: new[0]=old[2], new[1]=old[3]"
+        );
+        assert_eq!(g.water_extra, vec![3.0, 4.0]);
+        assert!(
+            (g.link_extra(0, &costs) - snap.link_extra(2, &costs)).abs() < 1e-5,
+            "new[0] link_extra must be old[2]'s tax, not old[0]"
+        );
+        assert!(
+            (g.link_extra(1, &costs) - snap.link_extra(3, &costs)).abs() < 1e-5,
+            "new[1] link_extra must be old[3]'s tax, not old[1]"
+        );
+
+        g = snap;
+        assert_eq!(g.links.len(), 4);
+        assert_eq!(g.hazard_hp, vec![11.0, 22.0, 33.0, 44.0]);
+        assert_eq!(g.water_extra, vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(g.link_hazard_hp(0), 11.0);
+        assert_eq!(g.link_hazard_hp(3), 44.0);
+    }
+
+    #[test]
+    fn remove_links_unknown_or_duplicate_fails_closed() {
+        let mut g = NavGraph::from_topology(&[Vec3::ZERO, Vec3::new(32.0, 0.0, 0.0)], &[walk(0, 1, 1.0)]);
+        let fore = g.links.len();
+        let e = match g.remove_links_by_id(&[9]) {
+            Err(e) => e,
+            Ok(_) => panic!("unknown id should fail closed"),
+        };
+        assert!(e.contains("unknown link id"), "{e}");
+        assert_eq!(g.links.len(), fore);
+        let e = match g.remove_links_by_id(&[0, 0]) {
+            Err(e) => e,
+            Ok(_) => panic!("duplicate id should fail closed"),
+        };
+        assert!(e.contains("duplicate link id"), "{e}");
+        assert_eq!(g.links.len(), fore);
     }
 }
