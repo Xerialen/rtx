@@ -505,6 +505,9 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
         } => plant_link_resp(game, v3(from), v3(takeoff), v3(tgt), v_req, gain).map(Resp::PlanLink),
         Cmd::PlanCell { pos } => plant_cell_resp(game, v3(pos)).map(Resp::PlanCell),
         Cmd::PlanDrop { from, to } => plant_drop_resp(game, v3(from), v3(to)).map(Resp::PlanDrop),
+        Cmd::RemoveLinks { links, lock_token: _ } => {
+            remove_links_resp(game, links).map(Resp::RemoveLinks)
+        }
     };
     reply(game, conn, id, result);
 }
@@ -1454,6 +1457,126 @@ pub(crate) fn plant_speed_jump_link(
     })
 }
 
+fn remove_links_resp(
+    game: &mut GameState,
+    links: Vec<proto::RemoveLinkSpec>,
+) -> Result<proto::RemoveLinksResp, String> {
+    let graph = game.nav.graph.as_mut().ok_or("navmesh not ready")?;
+    let g = std::sync::Arc::get_mut(graph).ok_or("navmesh is shared with the team oracle")?;
+    let removed = remove_links_anchored(g, &links)?;
+    Ok(proto::RemoveLinksResp {
+        remaining: g.links.len() as u32,
+        removed,
+    })
+}
+
+/// Ta bort ankargrindade länkar. **En implementation, två anropare**:
+/// `Cmd::RemoveLinks` och receptautostarten. Speglar `plant_speed_jump_link`.
+pub(crate) fn remove_links_anchored(
+    g: &mut rtx_nav::navmesh::NavGraph,
+    specs: &[proto::RemoveLinkSpec],
+) -> Result<u32, String> {
+    if specs.is_empty() {
+        return Err("RemoveLinks utan länkar".into());
+    }
+    // Ankargrinden: id:t säger var vi ska titta, ankaret vad som MÅSTE stå där.
+    // Alla specar verifieras innan någon länk tas bort.
+    let mut ids = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let Some(want_kind) = crate::graph_ident::kind_from_token(&spec.kind) else {
+            return Err(format!("okänd länkart {:?} på id {}", spec.kind, spec.id));
+        };
+        match g.links.get(spec.id as usize) {
+            None => {
+                return Err(format!(
+                    "länk-id {} finns inte ({} länkar)",
+                    spec.id,
+                    g.links.len()
+                ));
+            }
+            Some(l) if l.from == spec.from && l.to == spec.to && l.kind == want_kind => {
+                ids.push(spec.id);
+            }
+            Some(l) => {
+                return Err(format!(
+                    "ankaret håller inte: id {} är {}->{} {}, receptet säger {}->{} {}",
+                    spec.id,
+                    l.from,
+                    l.to,
+                    crate::graph_ident::kind_token(l.kind),
+                    spec.from,
+                    spec.to,
+                    spec.kind
+                ));
+            }
+        }
+    }
+    if let Some(skal) = envag_nyfalla(g, &ids) {
+        return Err(skal);
+    }
+    g.remove_links_by_id(&ids)?;
+    g.rebuild_derived();
+    Ok(ids.len() as u32)
+}
+
+/// F-läxan: kvarvarande ingång P→C men gång/step-återväg inom 2 steg försvann.
+/// Speglar `recept_lint.lint` (DeepSeek V4).
+fn envag_nyfalla(g: &rtx_nav::navmesh::NavGraph, gone: &[u32]) -> Option<String> {
+    use rtx_nav::navmesh::LinkKind;
+    let gone: std::collections::BTreeSet<u32> = gone.iter().copied().collect();
+    let walk_step = |k: LinkKind| matches!(k, LinkKind::Walk | LinkKind::Step);
+    let t1 = |i: u32| {
+        !gone.contains(&i)
+            && g.adjacency
+                .get(g.links[i as usize].from as usize)
+                .is_some_and(|adj| adj.contains(&i))
+    };
+    let ws_adj = |skip: bool| -> std::collections::HashMap<u32, Vec<u32>> {
+        let mut adj: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+        for (i, l) in g.links.iter().enumerate() {
+            let id = i as u32;
+            if skip && gone.contains(&id) {
+                continue;
+            }
+            let in_adj = g
+                .adjacency
+                .get(l.from as usize)
+                .is_some_and(|a| a.contains(&id));
+            if !in_adj || !walk_step(l.kind) {
+                continue;
+            }
+            adj.entry(l.from).or_default().push(l.to);
+        }
+        adj
+    };
+    let reach2 = |adj: &std::collections::HashMap<u32, Vec<u32>>, src: u32| -> std::collections::HashSet<u32> {
+        let one = adj.get(&src).cloned().unwrap_or_default();
+        let mut two: std::collections::HashSet<u32> = one.iter().copied().collect();
+        for n in &one {
+            if let Some(nxt) = adj.get(n) {
+                two.extend(nxt.iter().copied());
+            }
+        }
+        two
+    };
+    let before = ws_adj(false);
+    let after = ws_adj(true);
+    for (i, l) in g.links.iter().enumerate() {
+        let id = i as u32;
+        if gone.contains(&id) || !t1(id) {
+            continue;
+        }
+        let (p, c) = (l.from, l.to);
+        if reach2(&before, c).contains(&p) && !reach2(&after, c).contains(&p) {
+            return Some(format!(
+                "kvarvarande ingång {p}→{c} ({} {id}) men gång/step-återväg inom 2 steg försvann",
+                crate::graph_ident::kind_token(l.kind)
+            ));
+        }
+    }
+    None
+}
+
 /// Probe the build-time curl certifier — see [`Cmd::Probe`].
 fn probe_resp(game: &GameState, takeoff: Vec3, tgt: Vec3, psi0: f32, runway: f32) -> Result<proto::ProbeResp, String> {
     let bsp = game.nav.bsp.as_ref().ok_or("no bsp")?;
@@ -1928,5 +2051,184 @@ mod tests {
         assert!(!valid_cvar_name("rtx; quit"));
         assert!(!valid_cvar_name(""));
         assert!(!valid_cvar_name("foo bar"));
+    }
+
+    fn rl_spec(id: u32, from: u32, to: u32, kind: &str) -> proto::RemoveLinkSpec {
+        proto::RemoveLinkSpec {
+            id,
+            from,
+            to,
+            kind: kind.into(),
+        }
+    }
+
+    fn rl_graph() -> rtx_nav::navmesh::NavGraph {
+        use rtx_nav::navmesh::{Link, LinkKind, NavGraph};
+        let mut g = NavGraph::from_topology(
+            &[
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(32.0, 0.0, 0.0),
+                Vec3::new(64.0, 0.0, 0.0),
+            ],
+            &[Link {
+                from: 0,
+                to: 1,
+                kind: LinkKind::Walk,
+                cost: 1.0,
+            }],
+        );
+        g.rebuild_derived();
+        g
+    }
+
+    #[test]
+    fn remove_links_takes_a_link_with_no_table_entry() {
+        use rtx_nav::navmesh::LinkKind;
+        let mut g = rl_graph();
+        let n = g.links.len() as u32;
+        let fore = g.links.len();
+        let n_bort = remove_links_anchored(&mut g, &[rl_spec(n - 1, 0, 1, "walk")]).expect("remove");
+        assert_eq!(n_bort, 1);
+        assert_eq!(g.links.len(), fore - 1);
+        assert!(!g.links.iter().any(|l| l.from == 0 && l.to == 1 && l.kind == LinkKind::Walk));
+    }
+
+    #[test]
+    fn remove_links_refuses_a_mismatched_anchor() {
+        let mut g = rl_graph();
+        let n = g.links.len() as u32 - 1;
+        let fore = g.clone();
+        for (from, to, kind, vad) in [
+            (9u32, 1u32, "walk", "fel from"),
+            (0, 9, "walk", "fel to"),
+            (0, 1, "drop", "fel art"),
+        ] {
+            let err = remove_links_anchored(&mut g, &[rl_spec(n, from, to, kind)]).unwrap_err();
+            assert!(err.contains("ankaret håller inte"), "{vad}: {err}");
+            assert_eq!(g.links.len(), fore.links.len(), "{vad}: en vägran muterar inget");
+        }
+    }
+
+    #[test]
+    fn remove_links_refuses_an_unknown_id_and_an_unknown_kind() {
+        let mut g = rl_graph();
+        let err = remove_links_anchored(&mut g, &[rl_spec(9999, 0, 1, "walk")]).unwrap_err();
+        assert!(err.contains("finns inte"), "{err}");
+        let err = remove_links_anchored(&mut g, &[rl_spec(0, 0, 1, "krypa")]).unwrap_err();
+        assert!(err.contains("okänd länkart"), "{err}");
+        assert_eq!(g.links.len(), rl_graph().links.len());
+    }
+
+    #[test]
+    fn remove_links_refuses_an_empty_list() {
+        let mut g = rl_graph();
+        let err = remove_links_anchored(&mut g, &[]).unwrap_err();
+        assert!(err.contains("utan länkar"), "{err}");
+    }
+
+    #[test]
+    fn remove_links_verifies_every_anchor_before_removing_any() {
+        use rtx_nav::navmesh::{Link, LinkKind};
+        let mut g = rl_graph();
+        g.insert_link(Link {
+            from: 1,
+            to: 2,
+            kind: LinkKind::Walk,
+            cost: 1.0,
+        });
+        g.rebuild_derived();
+        let (a, b) = (g.links.len() as u32 - 2, g.links.len() as u32 - 1);
+        let fore = g.links.len();
+        let err = remove_links_anchored(
+            &mut g,
+            &[rl_spec(a, 0, 1, "walk"), rl_spec(b, 1, 9, "walk")],
+        )
+        .unwrap_err();
+        assert!(err.contains("ankaret håller inte"), "{err}");
+        assert_eq!(g.links.len(), fore);
+        assert!(g.links.iter().any(|l| l.from == 0 && l.to == 1 && l.kind == LinkKind::Walk));
+    }
+
+    #[test]
+    fn remove_links_resurrects_pruned_links_like_the_recipes_do() {
+        use rtx_nav::navmesh::{Link, LinkKind, NavGraph};
+        let mut g = NavGraph::from_topology(
+            &[
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(32.0, 0.0, 0.0),
+                Vec3::new(64.0, 0.0, 0.0),
+            ],
+            &[Link {
+                from: 0,
+                to: 1,
+                kind: LinkKind::Walk,
+                cost: 1.0,
+            }],
+        );
+        g.insert_pruned_link(Link {
+            from: 1,
+            to: 2,
+            kind: LinkKind::Walk,
+            cost: 1.0,
+        });
+        g.rebuild_derived();
+        assert!(!g.reachable(1, 2), "den rensade länken är inte i adjacensen");
+        remove_links_anchored(&mut g, &[rl_spec(0, 0, 1, "walk")]).expect("remove");
+        assert!(
+            g.reachable(1, 2),
+            "den rensade länken ska vara tillbaka i adjacensen efter en remove"
+        );
+    }
+
+    #[test]
+    fn remove_links_is_deterministic() {
+        let a = {
+            let mut g = rl_graph();
+            remove_links_anchored(&mut g, &[rl_spec(0, 0, 1, "walk")]).unwrap();
+            g.links.len()
+        };
+        let b = {
+            let mut g = rl_graph();
+            remove_links_anchored(&mut g, &[rl_spec(0, 0, 1, "walk")]).unwrap();
+            g.links.len()
+        };
+        assert_eq!(a, b);
+        assert_eq!(a, 0);
+    }
+
+    /// F-fällan: 10779 bort, 10084 kvar → envägshopp 1367→1461 utan gångretur.
+    #[test]
+    fn remove_links_refuses_new_one_way_trap() {
+        use rtx_nav::navmesh::{Link, LinkKind, NavGraph};
+        // 0=1367, 1=1416, 2=1459, 3=1461. id 2 = 10779 (1461→1416 walk).
+        let mut g = NavGraph::from_topology(
+            &[
+                Vec3::new(256.0, -844.0, 264.0),
+                Vec3::new(288.0, -844.0, 264.0),
+                Vec3::new(323.0, -834.0, 264.0),
+                Vec3::new(328.0, -800.0, 264.0),
+            ],
+            &[
+                Link { from: 0, to: 3, kind: LinkKind::JumpGap, cost: 1.0 }, // 10084
+                Link { from: 1, to: 3, kind: LinkKind::Walk, cost: 1.0 },    // 10447
+                Link { from: 3, to: 1, kind: LinkKind::Walk, cost: 1.0 },    // 10779
+                Link { from: 1, to: 0, kind: LinkKind::Walk, cost: 1.0 },    // 10441
+                Link { from: 3, to: 2, kind: LinkKind::Walk, cost: 1.0 },
+                Link { from: 2, to: 3, kind: LinkKind::Walk, cost: 1.0 },
+                Link { from: 1, to: 2, kind: LinkKind::Walk, cost: 1.0 },
+                Link { from: 2, to: 1, kind: LinkKind::Walk, cost: 1.0 },
+            ],
+        );
+        g.rebuild_derived();
+        let fore = g.links.len();
+        let err = remove_links_anchored(&mut g, &[rl_spec(2, 3, 1, "walk")]).unwrap_err();
+        assert!(err.contains("gång/step-återväg"), "{err}");
+        assert_eq!(g.links.len(), fore, "fällan får inte mutera");
+        // O: båda bort — ingen kvarvarande enväg.
+        remove_links_anchored(
+            &mut g,
+            &[rl_spec(0, 0, 3, "jump"), rl_spec(2, 3, 1, "walk")],
+        )
+        .expect("O båda bort");
     }
 }

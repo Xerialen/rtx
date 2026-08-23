@@ -265,7 +265,14 @@ impl GameState {
                 }
             }
         };
+        let inbaddad = matches!(kalla, crate::recept::Kalla::Inbaddad);
         let plantera = |g: &mut navmesh::NavGraph, s: &crate::recept::Steg| -> Result<u32, String> {
+            if let Some(lankar) = &s.remove {
+                if inbaddad {
+                    return Err("RemoveLinks stöds inte på inbäddad källa".into());
+                }
+                return crate::control::remove_links_anchored(g, lankar);
+            }
             let gain = if s.gain > 0.0 { s.gain } else { curl_default };
             crate::control::plant_speed_jump_link(
                 g,
