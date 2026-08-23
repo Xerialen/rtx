@@ -2176,32 +2176,60 @@ mod tests {
         }
     }
 
-    /// The emission site itself, pinned as text.
+    /// The whole arrival path in `poll_goto`, pinned as text: the gate, the branch it computes,
+    /// and the fields it reports.
     ///
-    /// Everything above binds `arrival_branch` and the provenance types. None of it reaches the
-    /// line that actually wires them into the event, because `poll_goto` needs a live
-    /// `GameState`. Verified by mutation on 2026-08-23: replacing the measured `dz` with `dz:
-    /// 0.0` at the emission left all 410 tests green. So the emission is pinned the way
-    /// `ra_room_lock.rs` pins the mållinje names — as source text, in the one place a unit test
-    /// cannot otherwise stand.
+    /// Everything above binds `arrival_branch` and the provenance types as *functions*. None of
+    /// it reaches the lines that call them, because `poll_goto` needs a live `GameState`. So the
+    /// path is pinned the way `ra_room_lock.rs` pins the mållinje names — as source text, in the
+    /// one place a unit test cannot otherwise stand.
+    ///
+    /// The window deliberately opens at the **gate**, not at `Event::Arrived {`. Opening it at
+    /// the emission left the line that computes the branch outside the pin, and
+    /// `arrival_branch(dz)` — reading the wrong distance entirely — passed all 411 tests
+    /// (QA mutation Q1, 2026-08-23). Two earlier mutations found the same class of hole at the
+    /// emission itself (`dz: 0.0` passed all 410). A pin that stops short of the argument is a
+    /// pin that watches the wrong thing.
     #[test]
     fn the_arrived_emission_wires_the_measured_provenance() {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/control.rs");
         let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-        // The first `Event::Arrived {` in the file is the emission in `poll_goto`; the ones in
-        // this module come later.
-        let (_, after) = src
-            .split_once("Event::Arrived {")
-            .expect("the arrived emission is still in control.rs");
-        let end = after.find("},").expect("the emission block closes");
-        let fields: Vec<&str> = after[..end].lines().map(str::trim).collect();
-        for field in ["dist: dxy,", "dxy,", "dz,", "branch,"] {
+        // From the gate in `poll_goto` through the end of the event it emits. `split_once` takes
+        // the first occurrence, and `poll_goto` precedes both `arrival_branch` and this module.
+        let gate = "if (dxy <= GOTO_ARRIVE_XY || crossed_finish) && dz <= GOTO_ARRIVE_Z {";
+        let (_, body) = src.split_once(gate).expect("the arrival gate is still in control.rs");
+        let at = body
+            .find("Event::Arrived {")
+            .expect("the arrived emission still follows the gate");
+        let end = at + body[at..].find("},").expect("the emission block closes");
+        let lines: Vec<&str> = body[..end].lines().map(str::trim).collect();
+        for pinned in [
+            // The branch must be computed from the XY distance the gate itself tested.
+            "let branch = arrival_branch(dxy);",
+            // …and every measured field must reach the wire.
+            "dist: dxy,",
+            "dxy,",
+            "dz,",
+            "branch,",
+        ] {
             assert!(
-                fields.contains(&field),
-                "the arrived emission no longer carries `{field}` — an arrived row without its \
-                 measured dxy/dz/branch is not evidence of arrival (issue #2). Fields found: {fields:?}"
+                lines.contains(&pinned),
+                "the arrival path no longer contains `{pinned}` — an arrived row without its \
+                 measured dxy/dz/branch is not evidence of arrival (issue #2). Lines found: {lines:?}"
             );
         }
+    }
+
+    /// The taxonomy token's **spelling**, written out once.
+    ///
+    /// Every other test compares against `proto::MISSING_ARRIVAL_PROVENANCE`, so they all agree
+    /// with the constant whatever it says: changing its value left all 411 tests green (QA
+    /// mutation Q3, 2026-08-23). The string is the contract — an instrument downstream matches
+    /// on it, and a taxonomy reason that silently renames itself is a reason nothing can file
+    /// under. This is the one place the literal appears, so this is the one test that binds it.
+    #[test]
+    fn the_taxonomy_token_is_spelled_missing_arrival_provenance() {
+        assert_eq!(proto::MISSING_ARRIVAL_PROVENANCE, "missing_arrival_provenance");
     }
 
     #[test]
