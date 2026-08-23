@@ -51,6 +51,13 @@ MUTATIONER = [
     ("starta.py", 'if not (basedir / "id1").is_dir():', 'if False:', "test_neg_basedir_utan_id1"),
     ("starta.py", 'if not marker or not any(', 'if False and not any(', "test_lamnar_frammande_gamedir_ifred"),
     ("aterstall.py", 'bevis.append(_systemctl("reset-failed", bild["unit"], verkstall=verkstall))', 'pass', "test_aterstallningskedjan_gor_reset_failed"),
+    ("gamedir.py", 'logg.append(kopiera_qwprogs(kalla, mal, pin))', 'pass', "test_spelkoden_kopieras_in_och_granskas"),
+    ("gamedir.py", 'sha = sha256_av(dll)\n    if sha != vantad_sha:', 'sha = sha256_av(dll)\n    if False:', "test_neg_spelkod_med_fel_sha_vagras"),
+    ("gamedir.py", 'sha = sha256_av(kall_fil)\n    if sha != vantad_sha:', 'sha = sha256_av(kall_fil)\n    if False:', "test_neg_kallans_sha_stammer_inte_med_pinnen"),
+    ("gamedir.py", 'if not dll.is_file():', 'if False:', "test_neg_gamedir_utan_spelkod_vagras"),
+    ("gamedir.py", 'if not kall_fil.is_file():', 'if False:', "test_neg_pinnad_bygga_saknas_i_tradet"),
+    ("gamedir.py", 'if "/" in namn:', 'if False:', "test_neg_pinnen_far_inte_vara_en_sokvag"),
+    ("gamedir.py", 'if len(rader) != 1:', 'if False:', "test_neg_pinnen_har_tva_rader"),
 ]
 
 

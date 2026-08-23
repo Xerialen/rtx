@@ -15,10 +15,20 @@ måste stå där — annars gäller det bara fram till första matchslutet.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+#: Pinnfilen ligger bredvid koden och gäller alltid. Den är inte en
+#: bokföringsväg utan en del av riggen, så den har en härledd plats.
+PIN_STANDARD = Path(__file__).resolve().parent / "qwprogs.pin"
+
+#: Namnet mvdsv letar efter i gamediren. Hittar den ingen game-dll faller
+#: den tillbaka på qwprogs.qvm och dör med
+#: `PR1_LoadProgs: couldn't load progs.dat`.
+QWPROGS_NAMN = "qwprogs.so"
 
 #: Cvars som avgör om riggen mäter eller ljuger. Sätter reset-kedjan någon
 #: av dem måste vår sist körda fil sätta om den — annars är den bara satt
@@ -61,6 +71,49 @@ class Riggval:
 
     def mode(self) -> str:
         return "%don%d" % (self.seats_per_side, self.seats_per_side)
+
+
+def sha256_av(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as fh:
+        for bit in iter(lambda: fh.read(1 << 20), b""):
+            h.update(bit)
+    return h.hexdigest()
+
+
+def las_pin(pin: Path) -> tuple[str, str]:
+    """Läser pinnen: (filnamn, sha256). Fail-closed på allt annat.
+
+    Formatet är sha256sum:s — `<sha>  <namn>` — så pinnen går att pröva
+    direkt mot det delade trädet med `sha256sum -c`.
+    """
+    p = Path(pin)
+    if not p.is_file():
+        raise Riggfel("qwprogs-pinnen saknas: %s" % p)
+    rader = [
+        r.strip()
+        for r in p.read_text(encoding="utf-8").splitlines()
+        if r.strip() and not r.lstrip().startswith("#")
+    ]
+    if len(rader) != 1:
+        raise Riggfel(
+            "qwprogs-pinnen ska ha exakt en pinnrad, har %d: %s. En rigg med "
+            "två pinnar har ingen pinne." % (len(rader), p)
+        )
+    delar = rader[0].split()
+    if len(delar) != 2:
+        raise Riggfel("qwprogs-pinnen är inte på formen `<sha256>  <filnamn>`: %r" % rader[0])
+    sha, namn = delar[0].lower(), delar[1]
+    if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+        raise Riggfel("qwprogs-pinnens sha256 är inte 64 hextecken: %r" % sha)
+    if "/" in namn:
+        # Pinnen ar ett FILNAMN i det delade tradet, aldrig en sokvag att
+        # losa upp. En sokvag har hade flyttat kallan ur tradet.
+        raise Riggfel(
+            "qwprogs-pinnen ska namnge en fil i det delade trädet, inte en "
+            "sökväg: %r" % namn
+        )
+    return namn, sha
 
 
 def cvar_namn_i_rad(rad: str) -> str | None:
@@ -161,7 +214,39 @@ def skriv_default_cfg(val: Riggval) -> str:
     return "\n".join(rader) + "\n"
 
 
-def bygg(kalla: Path, mal: Path, val: Riggval, bots_kalla: Path | None) -> list[str]:
+def kopiera_qwprogs(kalla: Path, mal: Path, pin: Path) -> str:
+    """Kopierar den pinnade KTX-spelkoden in i den privata gamediren.
+
+    Utan game-dll faller mvdsv tillbaka på `qwprogs.qvm` och dör med
+    `PR1_LoadProgs: couldn't load progs.dat`. Gamediren är inte en gamedir
+    förrän spelkoden ligger i den.
+
+    Källan är `<delade trädet>/<pinnens filnamn>` — pinnen löses aldrig upp
+    som sökväg, och det delade trädets `qwprogs.so`-symlänk följs aldrig:
+    den kan peka om, och trädet bär 81 andra varianter.
+    """
+    namn, vantad_sha = las_pin(pin)
+    kall_fil = Path(kalla) / namn
+    if not kall_fil.is_file():
+        raise Riggfel(
+            "den pinnade KTX-spelkoden finns inte i det delade trädet: %s. "
+            "Pinnen är ett ägarbeslut — bygg inte riggen på något annat."
+            % kall_fil
+        )
+    sha = sha256_av(kall_fil)
+    if sha != vantad_sha:
+        raise Riggfel(
+            "pinnad KTX-spelkod har fel sha256: %s har %s, pinnen säger %s. "
+            "Riggen skulle ha mätt en annan spelkod än den bokförda."
+            % (kall_fil, sha, vantad_sha)
+        )
+    shutil.copy2(kall_fil, Path(mal) / QWPROGS_NAMN)
+    return "kopierade pinnad spelkod %s -> %s (sha %s…)" % (namn, QWPROGS_NAMN, sha[:12])
+
+
+def bygg(
+    kalla: Path, mal: Path, val: Riggval, bots_kalla: Path | None, pin: Path = PIN_STANDARD
+) -> list[str]:
     """Bygger den privata gamediren. Returnerar en logg över vad som gjordes."""
     logg: list[str] = []
 
@@ -187,6 +272,9 @@ def bygg(kalla: Path, mal: Path, val: Riggval, bots_kalla: Path | None) -> list[
     for cfg in sorted(kalla.glob("*.cfg")):
         shutil.copy2(cfg, mal / cfg.name)
     logg.append("kopierade %d root-.cfg" % len(list(kalla.glob("*.cfg"))))
+
+    # Spelkoden. Utan den kan mvdsv inte spawna en server.
+    logg.append(kopiera_qwprogs(kalla, mal, pin))
 
     # Inga masterservrar: en mätrigg annonserar sig inte publikt.
     server_cfg = mal / "server.cfg"
@@ -257,7 +345,7 @@ def bygg(kalla: Path, mal: Path, val: Riggval, bots_kalla: Path | None) -> list[
     return logg
 
 
-def granska(mal: Path, val: Riggval) -> list[str]:
+def granska(mal: Path, val: Riggval, pin: Path = PIN_STANDARD) -> list[str]:
     """Bevisar att den byggda gamediren håller. Kastar Riggfel annars."""
     mal = Path(mal).resolve()
     bevis: list[str] = []
@@ -345,6 +433,23 @@ def granska(mal: Path, val: Riggval) -> list[str]:
                 raise Riggfel("server.cfg annonserar mot masterservrar: %r" % s)
         bevis.append("inga masterservrar")
 
+    # 4b. Spelkoden ligger i gamediren och ÄR den pinnade. Fail-closed:
+    #     saknad fil eller fel sha stoppar före start, som övriga vakter.
+    _, vantad_sha = las_pin(pin)
+    dll = mal / QWPROGS_NAMN
+    if not dll.is_file():
+        raise Riggfel(
+            "gamediren saknar %s — mvdsv faller tillbaka på qwprogs.qvm och "
+            "dör med «PR1_LoadProgs: couldn't load progs.dat»" % QWPROGS_NAMN
+        )
+    sha = sha256_av(dll)
+    if sha != vantad_sha:
+        raise Riggfel(
+            "%s i gamediren har sha256 %s, pinnen säger %s — riggen skulle "
+            "mäta en annan spelkod än den bokförda" % (QWPROGS_NAMN, sha, vantad_sha)
+        )
+    bevis.append("pinnad spelkod på plats (sha %s…)" % sha[:12])
+
     # 5. Demokatalogen finns — poängoraklet läser den.
     if not (mal / val.demodir).is_dir():
         raise Riggfel("demokatalogen %s saknas — poängoraklet får inget att läsa" % val.demodir)
@@ -380,6 +485,11 @@ def main(argv: list[str] | None = None) -> int:
         help="fil med rcon-lösenordet. Aldrig på kommandoraden, aldrig i repot.",
     )
     ap.add_argument("--bots", help="KTX:s bots/-katalog (krävs för t4)")
+    ap.add_argument(
+        "--qwprogs-pin",
+        default=str(PIN_STANDARD),
+        help="pinnfil (sha256sum-format) för KTX-spelkoden; byte är ägarbeslut",
+    )
     ap.add_argument("--endast-granska", action="store_true")
     args = ap.parse_args(argv)
 
@@ -399,9 +509,15 @@ def main(argv: list[str] | None = None) -> int:
             rcon_password=losen,
         )
         if not args.endast_granska:
-            for rad in bygg(Path(args.kalla), Path(args.gamedir), val, Path(args.bots) if args.bots else None):
+            for rad in bygg(
+                Path(args.kalla),
+                Path(args.gamedir),
+                val,
+                Path(args.bots) if args.bots else None,
+                Path(args.qwprogs_pin),
+            ):
                 print("  %s" % rad)
-        for rad in granska(Path(args.gamedir), val):
+        for rad in granska(Path(args.gamedir), val, Path(args.qwprogs_pin)):
             print("  OK: %s" % rad)
     except Riggfel as exc:
         print("RIGG VÄGRAD: %s" % exc, file=sys.stderr)

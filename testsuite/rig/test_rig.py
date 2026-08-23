@@ -10,6 +10,7 @@ Ingen rigg, ingen server, ingen port reses.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import sys
@@ -171,10 +172,27 @@ def bygg_kallträd(rot: Path, *, ktx_cfg: str | None = None, setmaster: bool = T
         )
     )
     (kalla / "pwd.cfg").write_text('rcon_password "hemligt"\n')
+    skriv_pin(rot, kalla)
     return kalla
 
 
 VAL_T3 = dict(seats_per_side=4, timelimit_min=5, demodir="demos", rcon_password="x")
+
+#: Den pinnade spelkoden i testerna. Innehallet ar godtyckligt; det ar
+#: pinnens sha256 som ar kontraktet.
+PIN_NAMN = "qwprogs-kbot-9.9.9-prov.so"
+PIN_DATA = b"latsas-spelkod\n"
+PIN_SHA = hashlib.sha256(PIN_DATA).hexdigest()
+
+
+def skriv_pin(rot: Path, kalla: Path, *, sha: str | None = None, namn: str | None = None) -> Path:
+    """Lagger spelkoden i det delade tradet och skriver en pinne for den."""
+    (kalla / PIN_NAMN).write_bytes(PIN_DATA)
+    pin = rot / "qwprogs.pin"
+    pin.write_text(
+        "# provpinne\n%s  %s\n" % (sha or PIN_SHA, namn or PIN_NAMN), encoding="utf-8"
+    )
+    return pin
 
 
 class TestGamedir(unittest.TestCase):
@@ -183,8 +201,8 @@ class TestGamedir(unittest.TestCase):
             rot = Path(d)
             kalla = bygg_kallträd(rot)
             val = gamedir.Riggval(tier="t3", **VAL_T3)
-            gamedir.bygg(kalla, rot / "privat", val, None)
-            bevis = gamedir.granska(rot / "privat", val)
+            gamedir.bygg(kalla, rot / "privat", val, None, rot / "qwprogs.pin")
+            bevis = gamedir.granska(rot / "privat", val, rot / "qwprogs.pin")
             self.assertTrue(any("riggkritiska cvars satta" in b for b in bevis))
             self.assertIn("inga masterservrar", bevis)
 
@@ -193,12 +211,12 @@ class TestGamedir(unittest.TestCase):
             rot = Path(d)
             kalla = bygg_kallträd(rot)
             val = gamedir.Riggval(tier="t3", **VAL_T3)
-            gamedir.bygg(kalla, rot / "privat", val, None)
+            gamedir.bygg(kalla, rot / "privat", val, None, rot / "qwprogs.pin")
             cfg = rot / "privat" / "configs" / "usermodes" / "4on4" / "default.cfg"
             kvar = [r for r in cfg.read_text().splitlines() if "k_noframechecks" not in r]
             cfg.write_text("\n".join(kvar) + "\n")
             with self.assertRaises(gamedir.Riggfel) as cm:
-                gamedir.granska(rot / "privat", val)
+                gamedir.granska(rot / "privat", val, rot / "qwprogs.pin")
             self.assertIn("k_noframechecks", str(cm.exception))
 
     def test_neg_fel_varde_i_sist_korda_filen(self):
@@ -206,11 +224,11 @@ class TestGamedir(unittest.TestCase):
             rot = Path(d)
             kalla = bygg_kallträd(rot)
             val = gamedir.Riggval(tier="t3", **VAL_T3)
-            gamedir.bygg(kalla, rot / "privat", val, None)
+            gamedir.bygg(kalla, rot / "privat", val, None, rot / "qwprogs.pin")
             cfg = rot / "privat" / "configs" / "usermodes" / "4on4" / "default.cfg"
             cfg.write_text(cfg.read_text().replace("set k_count 45", "set k_count 10"))
             with self.assertRaises(gamedir.Riggfel) as cm:
-                gamedir.granska(rot / "privat", val)
+                gamedir.granska(rot / "privat", val, rot / "qwprogs.pin")
             self.assertIn("k_count", str(cm.exception))
 
     def test_neg_resetkedjan_kor_var_fil_sjalv(self):
@@ -221,11 +239,11 @@ class TestGamedir(unittest.TestCase):
             rot = Path(d)
             kalla = bygg_kallträd(rot)
             val = gamedir.Riggval(tier="t3", **VAL_T3)
-            gamedir.bygg(kalla, rot / "privat", val, None)
+            gamedir.bygg(kalla, rot / "privat", val, None, rot / "qwprogs.pin")
             s = rot / "privat" / "server.cfg"
             s.write_text(s.read_text() + "\nexec configs/usermodes/4on4/default.cfg\n")
             with self.assertRaises(gamedir.Riggfel) as cm:
-                gamedir.granska(rot / "privat", val)
+                gamedir.granska(rot / "privat", val, rot / "qwprogs.pin")
             self.assertIn("mode-ominitiering", str(cm.exception))
 
     def test_bygg_avvapnar_andra_lagen(self):
@@ -238,11 +256,11 @@ class TestGamedir(unittest.TestCase):
             farlig = kalla / "configs" / "usermodes" / "3on3" / "default.cfg"
             farlig.write_text("set k_pow 1\nset k_overtime 1\nset timelimit 20\n")
             val = gamedir.Riggval(tier="t3", **VAL_T3)
-            gamedir.bygg(kalla, rot / "privat", val, None)
+            gamedir.bygg(kalla, rot / "privat", val, None, rot / "qwprogs.pin")
             # Bygget far inte rora det delade tradet.
             self.assertIn("set k_overtime 1", farlig.read_text())
             # Var kopia ska vara avvapnad, sa granskningen haller.
-            gamedir.granska(rot / "privat", val)
+            gamedir.granska(rot / "privat", val, rot / "qwprogs.pin")
 
     def test_neg_annat_usermode_avvapnar_riggen(self):
         """Fallan: byter servern lage kors DEN modens default.cfg sist, och
@@ -252,11 +270,11 @@ class TestGamedir(unittest.TestCase):
             rot = Path(d)
             kalla = bygg_kallträd(rot)
             val = gamedir.Riggval(tier="t3", **VAL_T3)
-            gamedir.bygg(kalla, rot / "privat", val, None)
+            gamedir.bygg(kalla, rot / "privat", val, None, rot / "qwprogs.pin")
             annat = rot / "privat" / "configs" / "usermodes" / "3on3" / "default.cfg"
             annat.write_text(annat.read_text() + "set k_noframechecks 0\n")
             with self.assertRaises(gamedir.Riggfel) as cm:
-                gamedir.granska(rot / "privat", val)
+                gamedir.granska(rot / "privat", val, rot / "qwprogs.pin")
             self.assertIn("k_noframechecks", str(cm.exception))
             self.assertIn("3on3", str(cm.exception))
 
@@ -265,11 +283,11 @@ class TestGamedir(unittest.TestCase):
             rot = Path(d)
             kalla = bygg_kallträd(rot)
             val = gamedir.Riggval(tier="t3", **VAL_T3)
-            gamedir.bygg(kalla, rot / "privat", val, None)
+            gamedir.bygg(kalla, rot / "privat", val, None, rot / "qwprogs.pin")
             s = rot / "privat" / "server.cfg"
             s.write_text(s.read_text() + "\nsetmaster master.quakeworld.nu:27000\n")
             with self.assertRaises(gamedir.Riggfel) as cm:
-                gamedir.granska(rot / "privat", val)
+                gamedir.granska(rot / "privat", val, rot / "qwprogs.pin")
             self.assertIn("masterservrar", str(cm.exception))
 
     def test_neg_gamedir_inuti_delade_tradet(self):
@@ -278,7 +296,7 @@ class TestGamedir(unittest.TestCase):
             kalla = bygg_kallträd(rot)
             val = gamedir.Riggval(tier="t3", **VAL_T3)
             with self.assertRaises(gamedir.Riggfel) as cm:
-                gamedir.bygg(kalla, kalla / "privat", val, None)
+                gamedir.bygg(kalla, kalla / "privat", val, None, rot / "qwprogs.pin")
             self.assertIn("delade källträdet", str(cm.exception))
 
     def test_neg_t4_utan_frogbotdata(self):
@@ -287,7 +305,7 @@ class TestGamedir(unittest.TestCase):
             kalla = bygg_kallträd(rot)
             val = gamedir.Riggval(tier="t4", **VAL_T3)
             with self.assertRaises(gamedir.Riggfel) as cm:
-                gamedir.bygg(kalla, rot / "privat", val, None)
+                gamedir.bygg(kalla, rot / "privat", val, None, rot / "qwprogs.pin")
             self.assertIn("frogbot", str(cm.exception))
 
     def test_t4_far_frogbots_t3_far_inte(self):
@@ -316,6 +334,107 @@ class TestGamedir(unittest.TestCase):
         # Vid 3 vagrar KTX tyst den fjarde frogboten.
         val = gamedir.Riggval(tier="t4", seats_per_side=4, timelimit_min=5, demodir="d", rcon_password="x")
         self.assertEqual(gamedir.overrides(val)["k_membercount"], "4")
+
+
+class TestSpelkoden(unittest.TestCase):
+    """Skarpvalideringens fynd 3: gamediren saknade KTX-spelkoden, sa mvdsv
+    foll tillbaka pa qwprogs.qvm och dog med
+    `PR1_LoadProgs: couldn't load progs.dat`."""
+
+    def test_spelkoden_kopieras_in_och_granskas(self):
+        with tempfile.TemporaryDirectory() as d:
+            rot = Path(d)
+            kalla = bygg_kallträd(rot)
+            val = gamedir.Riggval(tier="t3", **VAL_T3)
+            logg = gamedir.bygg(kalla, rot / "privat", val, None, rot / "qwprogs.pin")
+            dll = rot / "privat" / "qwprogs.so"
+            self.assertTrue(dll.is_file(), logg)
+            self.assertEqual(dll.read_bytes(), PIN_DATA)
+            bevis = gamedir.granska(rot / "privat", val, rot / "qwprogs.pin")
+            self.assertTrue(any("pinnad spelkod" in b for b in bevis), bevis)
+
+    def test_neg_gamedir_utan_spelkod_vagras(self):
+        with tempfile.TemporaryDirectory() as d:
+            rot = Path(d)
+            kalla = bygg_kallträd(rot)
+            val = gamedir.Riggval(tier="t3", **VAL_T3)
+            gamedir.bygg(kalla, rot / "privat", val, None, rot / "qwprogs.pin")
+            (rot / "privat" / "qwprogs.so").unlink()
+            with self.assertRaises(gamedir.Riggfel) as cm:
+                gamedir.granska(rot / "privat", val, rot / "qwprogs.pin")
+            self.assertIn("qwprogs.so", str(cm.exception))
+            self.assertIn("progs.dat", str(cm.exception))
+
+    def test_neg_spelkod_med_fel_sha_vagras(self):
+        """En annan bygga an den pinnade ar en annan matning."""
+        with tempfile.TemporaryDirectory() as d:
+            rot = Path(d)
+            kalla = bygg_kallträd(rot)
+            val = gamedir.Riggval(tier="t3", **VAL_T3)
+            gamedir.bygg(kalla, rot / "privat", val, None, rot / "qwprogs.pin")
+            (rot / "privat" / "qwprogs.so").write_bytes(b"nagon annan bygga\n")
+            with self.assertRaises(gamedir.Riggfel) as cm:
+                gamedir.granska(rot / "privat", val, rot / "qwprogs.pin")
+            self.assertIn("pinnen säger", str(cm.exception))
+
+    def test_neg_kallans_sha_stammer_inte_med_pinnen(self):
+        """Det delade tradet bar 81 qwprogs-varianter. Stammer inte den
+        pinnade byggan ska riggen inte resas alls."""
+        with tempfile.TemporaryDirectory() as d:
+            rot = Path(d)
+            kalla = bygg_kallträd(rot)
+            skriv_pin(rot, kalla, sha="0" * 64)
+            val = gamedir.Riggval(tier="t3", **VAL_T3)
+            with self.assertRaises(gamedir.Riggfel) as cm:
+                gamedir.bygg(kalla, rot / "privat", val, None, rot / "qwprogs.pin")
+            self.assertIn("fel sha256", str(cm.exception))
+
+    def test_neg_pinnad_bygga_saknas_i_tradet(self):
+        with tempfile.TemporaryDirectory() as d:
+            rot = Path(d)
+            kalla = bygg_kallträd(rot)
+            (kalla / PIN_NAMN).unlink()
+            val = gamedir.Riggval(tier="t3", **VAL_T3)
+            with self.assertRaises(gamedir.Riggfel) as cm:
+                gamedir.bygg(kalla, rot / "privat", val, None, rot / "qwprogs.pin")
+            self.assertIn("ägarbeslut", str(cm.exception))
+
+    def test_neg_pinnen_far_inte_vara_en_sokvag(self):
+        """Symlanklaxan: pinnen ar ett FILNAMN i det delade tradet. En sokvag
+        hade flyttat kallan ut ur tradet."""
+        with tempfile.TemporaryDirectory() as d:
+            rot = Path(d)
+            kalla = bygg_kallträd(rot)
+            skriv_pin(rot, kalla, namn="/nagon/annanstans/qwprogs.so")
+            with self.assertRaises(gamedir.Riggfel) as cm:
+                gamedir.las_pin(rot / "qwprogs.pin")
+            self.assertIn("inte en", str(cm.exception))
+
+    def test_neg_pinnen_saknas(self):
+        with self.assertRaises(gamedir.Riggfel):
+            gamedir.las_pin(Path("/finns/inte/qwprogs.pin"))
+
+    def test_neg_pinnen_har_tva_rader(self):
+        with tempfile.TemporaryDirectory() as d:
+            pin = Path(d) / "qwprogs.pin"
+            pin.write_text("%s  a.so\n%s  b.so\n" % (PIN_SHA, PIN_SHA))
+            with self.assertRaises(gamedir.Riggfel) as cm:
+                gamedir.las_pin(pin)
+            self.assertIn("två pinnar", str(cm.exception))
+
+    def test_neg_pinnen_har_trasig_sha(self):
+        with tempfile.TemporaryDirectory() as d:
+            pin = Path(d) / "qwprogs.pin"
+            pin.write_text("inte-en-sha  a.so\n")
+            with self.assertRaises(gamedir.Riggfel) as cm:
+                gamedir.las_pin(pin)
+            self.assertIn("64 hextecken", str(cm.exception))
+
+    def test_den_incheckade_pinnen_ar_lasbar(self):
+        """Pinnen som faktiskt galler ska ga att lasa, och namnge en bygga."""
+        namn, sha = gamedir.las_pin(gamedir.PIN_STANDARD)
+        self.assertTrue(namn.startswith("qwprogs"), namn)
+        self.assertEqual(len(sha), 64)
 
 
 class TestRiggvakt(unittest.TestCase):

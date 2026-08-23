@@ -18,6 +18,7 @@ assertion som faller — inte en mening någon ska komma ihåg att läsa.
 | `aterstall.py` | återställningskedjan (RUNBOOK §14) |
 | `aterstall.sh` | omslag för kedjan |
 | `frogbot-bots.sha256` | manifest över KTX:s `bots/`-data (pekare + hash) |
+| `qwprogs.pin` | pinnad KTX-spelkod: filnamn + sha256. Byte är ägarbeslut |
 | `test_rig.py` | enhetstester **och** negativkontroller |
 
 ## Två saker skripten aldrig gör
@@ -65,6 +66,9 @@ Riggen reses inte om något av detta gäller:
   annanstans hittas inte alls
 * basedir saknar `id1/` — då hittar mvdsv varken pak eller
   `maps/start.bsp` och dör med «Couldn't spawn a server»
+* den pinnade KTX-spelkoden saknas i det delade trädet, eller har fel
+  sha256 — riggen skulle mäta en annan spelkod än den bokförda
+* gamediren saknar `qwprogs.so`, eller den stämmer inte med pinnen
 * **servern kommer inte upp inom livsgrindens timeout.** Uniten stoppas,
   `reset-failed`:as och vår gamedir tas bort, och skriptet slutar med
   rc≠0. En rigg som inte svarar rapporteras aldrig som «klar»
@@ -130,11 +134,42 @@ Två fällor till, hittade skarpt 2026-08-23 och beskrivna ovan:
 |---|---|---|
 | 16 | arbetskatalog = gamediren ⇒ `Couldn't spawn a server` | `starta.start_argv()` |
 | 17 | «klar» rc=0 med död server | `starta.vanta_liv()`, anropad av `res.sh` |
+| 18 | gamedir utan spelkod ⇒ `PR1_LoadProgs: couldn't load progs.dat` | `gamedir.kopiera_qwprogs()` + `granska()` |
 
 Och en tredje, ur samma validering: en **failad transient unit** ligger
 kvar under sitt namn och vägras av nästa `systemd-run`. `reset-failed`
 ingår därför i både städningen och återställningskedjan — inte bara i
 felhanteringen.
+
+## Spelkoden är pinnad, inte ärvd ur en symlänk
+
+Utan game-dll i gamediren faller mvdsv tillbaka på `qwprogs.qvm` och dör:
+
+```
+Failed to load dll, looking for qvm.
+Loading vm file qwprogs.qvm... Failed.
+ERROR: SV_Error: PR1_LoadProgs: couldn't load progs.dat
+```
+
+`qwprogs.pin` namnger **en** bygga med sha256. Bygget kopierar den ur det
+delade trädet till `<privat gamedir>/qwprogs.so` och verifierar hashen både
+vid kopieringen och i granskningen. Fel hash eller saknad fil = vägran före
+start, som övriga vakter.
+
+Pinnen står på det de **levande** KTX-servrarna har mappat — mätt i
+`/proc/<pid>/maps`, inte avläst ur symlänken. De sammanfaller idag, men det
+delade trädets `qwprogs.so` är en symlänk som kan peka om, och trädet bär 81
+andra varianter. Ärver man symlänken tyst byter riggen spelkod utan att
+någon har bestämt det. **Att byta pinnen är ett ägarbeslut.**
+
+Pinnens namn är ett *filnamn* i det delade trädet, aldrig en sökväg att lösa
+upp: källan är `<delade trädet>/<namn>`. Samma läxa som mvdsv-symlänken.
+
+Pinnen går att pröva direkt mot trädet:
+
+```sh
+cd /home/xerial/nquakesv/ktx && sha256sum -c testsuite/rig/qwprogs.pin
+```
 
 ## Extern data — pekare och hash, inte incheckat
 
@@ -145,6 +180,7 @@ det ska hasha till.
 |---|---|---|
 | KTX frogbot-data | `/home/xerial/nquakesv/ktx/bots` | `frogbot-bots.sha256`, 128 filer |
 | `qw-analyze` v21 | `/home/xerial/kbot/qw-analyze-v21` | `fc3fd34be9323d67c9275af1acd4830df20f2ec14c4145f35aa1a8a8a062b0b9` |
+| KTX-spelkod | `/home/xerial/nquakesv/ktx/<pinnens namn>` | `qwprogs.pin` |
 | mvdsv | `/home/xerial/nquakesv/mvdsv` → `mvdsv-1.20-dev-03d482` | hashas av riggsätet vid körning |
 | delat KTX-träd | `/home/xerial/nquakesv/ktx` | kopieras, redigeras aldrig |
 
