@@ -166,6 +166,27 @@ pub enum Cmd {
     /// Hand-plant a `Drop` link from the cell nearest `from` to the cell nearest `to`, so a bot standing
     /// on a planted shelf has a way off it.
     PlanDrop { from: Vec3, to: Vec3 },
+    /// Remove existing links by id. The id says where to look; the anchor (`from`/`to`/`kind`)
+    /// says what must stand there. A raw id from another graph is refused.
+    ///
+    /// `lock_token` travels with the frame because `applicera_recept.py` sends it (S4c). Empty
+    /// deserialises for old senders; the engine may still apply.
+    RemoveLinks {
+        links: Vec<RemoveLinkSpec>,
+        #[serde(default)]
+        lock_token: String,
+    },
+}
+
+/// One link a [`Cmd::RemoveLinks`] takes out, with the anchor that proves it is the right one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveLinkSpec {
+    /// Live link index in the graph the caller pinned.
+    pub id: u32,
+    pub from: u32,
+    pub to: u32,
+    /// Link kind token as the dump writes it (`walk`, `jump`, `drop`, …), lowercase.
+    pub kind: String,
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -232,6 +253,7 @@ pub enum Resp {
     PlanLink(PlanLinkResp),
     PlanCell(PlanCellResp),
     PlanDrop(PlanDropResp),
+    RemoveLinks(RemoveLinksResp),
     Bsp(Box<BspResp>),
     /// Loadable map names, lowercased and sorted (see [`Cmd::Maps`]).
     Maps(Vec<String>),
@@ -678,6 +700,13 @@ pub struct PlanDropResp {
     pub cost: f32,
 }
 
+/// Reply to [`Cmd::RemoveLinks`] — S4c's 60 s timeout is the client; the engine must answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveLinksResp {
+    pub removed: u32,
+    pub remaining: u32,
+}
+
 // ---------------------------------------------------------------------------------------------------
 // Events (game -> MCP, async)
 // ---------------------------------------------------------------------------------------------------
@@ -905,6 +934,28 @@ mod tests {
         });
         let bytes = rmp_serde::to_vec_named(&drop).unwrap();
         assert_eq!(rmp_serde::from_slice::<Resp>(&bytes).unwrap(), drop);
+    }
+
+    #[test]
+    fn remove_links_cmd_and_resp_roundtrip() {
+        let cmd = Cmd::RemoveLinks {
+            links: vec![RemoveLinkSpec {
+                id: 35738,
+                from: 1450,
+                to: 2083,
+                kind: "speedjump".into(),
+            }],
+            lock_token: "s4c-ring2quad".into(),
+        };
+        let bytes = rmp_serde::to_vec_named(&cmd).unwrap();
+        assert_eq!(rmp_serde::from_slice::<Cmd>(&bytes).unwrap(), cmd);
+
+        let resp = Resp::RemoveLinks(RemoveLinksResp {
+            removed: 7,
+            remaining: 48201,
+        });
+        let bytes = rmp_serde::to_vec_named(&resp).unwrap();
+        assert_eq!(rmp_serde::from_slice::<Resp>(&bytes).unwrap(), resp);
     }
 
     use super::*;
