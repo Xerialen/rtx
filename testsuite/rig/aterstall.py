@@ -83,7 +83,13 @@ def aterstall(bild: dict, verkstall: bool, lasfil: Path | None) -> tuple[list[st
     avvik: list[str] = []
 
     # 1. Släck riggens egen unit och testklienterna.
+    #
+    #    `reset-failed` hör till kedjan, inte till felhanteringen: en failad
+    #    transient unit ligger kvar under sitt namn, och nästa `systemd-run`
+    #    vägrar det namnet. Utan det här steget blockerar en misslyckad
+    #    körning nästa körning — och felet syns först vid starten efter.
     bevis.append(_systemctl("stop", bild["unit"], verkstall=verkstall))
+    bevis.append(_systemctl("reset-failed", bild["unit"], verkstall=verkstall))
 
     # 2. Återställ modulbytena exakt, och bevisa likheten.
     for vag, uppg in sorted(bild.get("moduler", {}).items()):

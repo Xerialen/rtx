@@ -14,6 +14,7 @@ HAR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TIER=""; KORNING=""; GRUPP=""; KALLA=""; GAMEDIR=""; PORTLISTA=""
 LASFIL=""; RCONFIL=""; TIMELIMIT=""; SEATS=""; DEMODIR=""; KVITTO=""
 MVDSV=""; BOTS=""; BOTSMANIFEST=""; QWA=""; QWASHA=""; VERKSTALL=0
+LIVSTIMEOUT=90
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -34,6 +35,7 @@ while [ $# -gt 0 ]; do
     --bots-manifest) BOTSMANIFEST="$2"; shift 2;;
     --qw-analyze) QWA="$2"; shift 2;;
     --qw-analyze-sha256) QWASHA="$2"; shift 2;;
+    --livstimeout-s) LIVSTIMEOUT="$2"; shift 2;;
     --verkstall) VERKSTALL=1; shift;;
     *) echo "okand flagga: $1" >&2; exit 2;;
   esac
@@ -110,18 +112,21 @@ GD=( --tier "$TIER" --kalla "$KALLA" --gamedir "$GAMEDIR"
 [ -n "$BOTS" ] && GD+=( --bots "$BOTS" )
 python3 "$HAR/gamedir.py" "${GD[@]}"
 
-echo "== 5. res riggen =="
+echo "== 5. res riggen och bevisa att den lever =="
 UNIT="rtx-$TIER-$KORNING"
 # Monsterunit saknas for T3/T4, sa transient med 3h-taket. Aldrig enable,
 # aldrig daemon-reload: armerade drop-ins aktiveras retroaktivt av en reload.
-START=( systemd-run --user --unit="$UNIT" --working-directory="$GAMEDIR"
-        -p RuntimeMaxSec=10800 "$MVDSV" -port "$SPEL" -game "$(basename "$GAMEDIR")" )
-if [ "$VERKSTALL" -eq 1 ]; then
-  "${START[@]}"
-  echo "  startade $UNIT"
-else
-  echo "  TORRKORNING - skulle kora: ${START[*]}"
-  echo "  (lagg till --verkstall for att resa riggen skarpt)"
+#
+# starta.py bygger kommandot (cwd = mvdsv:s basedir, gamedir via -game) och
+# VANTAR pa att servern svarar. systemd-run atervander nar uniten ar startad,
+# inte nar servern lever - utan livsgrinden rapporterade det har steget
+# "klar" rc=0 med noll lyssnare och en failad unit.
+STARTA=( --unit "$UNIT" --mvdsv "$MVDSV" --gamedir "$GAMEDIR" --spel "$SPEL"
+         --runtime-max-s 10800 --timeout-s "$LIVSTIMEOUT" )
+[ "$VERKSTALL" -eq 1 ] && STARTA+=( --verkstall )
+if ! python3 "$HAR/starta.py" "${STARTA[@]}"; then
+  echo "VAGRAD: riggen $TIER kom inte upp. Ingen 'klar' skrivs for en dod rigg." >&2
+  exit 3
 fi
 
 echo "riggen $TIER klar (verkstalld=$VERKSTALL), kvitto i $KVITTO"

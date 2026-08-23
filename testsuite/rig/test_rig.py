@@ -10,6 +10,7 @@ Ingen rigg, ingen server, ingen port reses.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,7 @@ import aterstall  # noqa: E402
 import gamedir  # noqa: E402
 import portar  # noqa: E402
 import riggvakt  # noqa: E402
+import starta  # noqa: E402
 
 PORTLISTA = HAR.parent.parent / "docs" / "PORTAR.md"
 
@@ -424,6 +426,177 @@ class TestAterstallning(unittest.TestCase):
             self.assertEqual(avvik, [])
 
 
+def bygg_basedir(rot: Path, *, med_id1: bool = True) -> tuple[Path, Path]:
+    """Minimal basedir: mvdsv + id1/ + en gamedir som syskon."""
+    base = rot / "basedir"
+    base.mkdir(parents=True)
+    mvdsv = base / "mvdsv"
+    mvdsv.write_text("#!/bin/sh\n")
+    mvdsv.chmod(0o755)
+    if med_id1:
+        (base / "id1").mkdir()
+    gd = base / "privat-t3"
+    gd.mkdir()
+    return mvdsv, gd
+
+
+class TestStart(unittest.TestCase):
+    """Skarpvalideringen 2026-08-23: servern dog i samma sekund den startades,
+    for att arbetskatalogen var gamediren i stallet for basedir."""
+
+    def test_kor_i_basedir_inte_i_gamediren(self):
+        with tempfile.TemporaryDirectory() as d:
+            mvdsv, gd = bygg_basedir(Path(d))
+            argv = starta.start_argv("rtx-t3-prov", mvdsv, gd, 27580, 10800)
+            base = mvdsv.parent
+            # Arbetskatalogen ar basedir. mvdsv loser id1/ och -game mot cwd.
+            self.assertIn("--working-directory=%s" % base, argv)
+            self.assertNotIn("--working-directory=%s" % gd, argv)
+            # Gamediren namnges med -game, som ett NAMN, inte en sokvag.
+            self.assertIn("-game", argv)
+            self.assertEqual(argv[argv.index("-game") + 1], "privat-t3")
+            self.assertEqual(argv[argv.index("-port") + 1], "27580")
+
+    def test_mvdsv_som_symlank_flyttar_inte_basedir(self):
+        """`mvdsv` ar normalt en symlank till en versionsstamplad binar.
+        Foljer man den ut ur katalogen blir basedir fel katalog."""
+        with tempfile.TemporaryDirectory() as d:
+            rot = Path(d)
+            riktig = rot / "annan-plats" / "mvdsv-1.20-dev-abc123"
+            riktig.parent.mkdir(parents=True)
+            riktig.write_text("#!/bin/sh\n")
+            riktig.chmod(0o755)
+            base = rot / "basedir"
+            base.mkdir()
+            (base / "id1").mkdir()
+            lank = base / "mvdsv"
+            lank.symlink_to(riktig)
+            gd = base / "privat-t3"
+            gd.mkdir()
+            argv = starta.start_argv("u", lank, gd, 27580, 10800)
+            self.assertIn("--working-directory=%s" % base, argv)
+            self.assertNotIn("--working-directory=%s" % riktig.parent, argv)
+
+    def test_neg_gamedir_utanfor_basedir(self):
+        with tempfile.TemporaryDirectory() as d:
+            mvdsv, _ = bygg_basedir(Path(d))
+            annan = Path(d) / "nagon-annanstans"
+            annan.mkdir()
+            with self.assertRaises(riggvakt.Vaktfel) as cm:
+                starta.start_argv("u", mvdsv, annan, 27580, 10800)
+            self.assertIn("basedir", str(cm.exception))
+
+    def test_neg_basedir_utan_id1(self):
+        """Utan id1/ hittar mvdsv varken pak eller maps/start.bsp och dor med
+        'Couldn't spawn a server' - exakt felet skarpvalideringen sag."""
+        with tempfile.TemporaryDirectory() as d:
+            mvdsv, gd = bygg_basedir(Path(d), med_id1=False)
+            with self.assertRaises(riggvakt.Vaktfel) as cm:
+                starta.start_argv("u", mvdsv, gd, 27580, 10800)
+            self.assertIn("id1", str(cm.exception))
+
+
+class TestLivsgrind(unittest.TestCase):
+    """Skarpvalideringen: res.sh skrev 'klar' rc=0 med noll lyssnare och en
+    failad unit. systemd-run atervander nar uniten ar startad, inte nar
+    servern lever."""
+
+    def _tillstand(self, aktiv="active", pid=None):
+        pid = str(os.getpid()) if pid is None else str(pid)
+        return lambda unit, egenskap: aktiv if egenskap == "ActiveState" else pid
+
+    def test_slapper_igenom_nar_servern_svarar(self):
+        bevis = starta.vanta_liv(
+            "u", 27580, 5,
+            las_tillstand=self._tillstand(),
+            las_lyssnare=lambda p: 2,
+            sov=lambda s: None,
+        )
+        self.assertTrue(any("lyssnare" in b for b in bevis), bevis)
+
+    def test_neg_faller_nar_ingen_lyssnare(self):
+        """Processen lever men porten ar tyst - riggen svarar inte."""
+        with self.assertRaises(riggvakt.Vaktfel) as cm:
+            starta.vanta_liv(
+                "u", 27580, 2,
+                las_tillstand=self._tillstand(),
+                las_lyssnare=lambda p: 0,
+                sov=lambda s: None,
+            )
+        self.assertIn("noll lyssnare", str(cm.exception))
+
+    def test_neg_faller_direkt_pa_failad_unit(self):
+        with self.assertRaises(riggvakt.Vaktfel) as cm:
+            starta.vanta_liv(
+                "u", 27580, 60,
+                las_tillstand=self._tillstand(aktiv="failed"),
+                las_lyssnare=lambda p: 0,
+                sov=lambda s: None,
+            )
+        self.assertIn("kom aldrig upp", str(cm.exception))
+
+    def test_neg_faller_nar_mainpid_ar_noll(self):
+        with self.assertRaises(riggvakt.Vaktfel) as cm:
+            starta.vanta_liv(
+                "u", 27580, 2,
+                las_tillstand=self._tillstand(pid=0),
+                las_lyssnare=lambda p: 5,
+                sov=lambda s: None,
+            )
+        self.assertIn("MainPID", str(cm.exception))
+
+    def test_neg_faller_nar_pid_inte_finns_i_proc(self):
+        """Falskt negativ: servern dor mitt i. PID:en finns kvar i unitens
+        egenskaper men inte i /proc."""
+        with self.assertRaises(riggvakt.Vaktfel) as cm:
+            starta.vanta_liv(
+                "u", 27580, 2,
+                las_tillstand=self._tillstand(pid=999999),
+                las_lyssnare=lambda p: 5,
+                sov=lambda s: None,
+            )
+        self.assertIn("/proc", str(cm.exception))
+
+    def test_servern_far_komma_upp_langsamt(self):
+        """Riggen ska inte fallas for att den behover nagra sekunder."""
+        svar = iter([0, 0, 3])
+        bevis = starta.vanta_liv(
+            "u", 27580, 30,
+            las_tillstand=self._tillstand(),
+            las_lyssnare=lambda p: next(svar),
+            sov=lambda s: None,
+        )
+        self.assertTrue(bevis)
+
+
+class TestStadning(unittest.TestCase):
+    def test_lamnar_frammande_gamedir_ifred(self):
+        """En katalog utan var genererade markor ar inte var att radera."""
+        with tempfile.TemporaryDirectory() as d:
+            mvdsv, gd = bygg_basedir(Path(d))
+            (gd / "viktigt.txt").write_text("inte vart\n")
+            gjort = starta.stada("rtx-t3-prov-finns-ej", gd, mvdsv)
+            self.assertTrue(gd.is_dir())
+            self.assertTrue(any("inte vår" in g for g in gjort), gjort)
+
+    def test_stadar_var_egen_gamedir(self):
+        with tempfile.TemporaryDirectory() as d:
+            mvdsv, gd = bygg_basedir(Path(d))
+            mode = gd / "configs" / "usermodes" / "4on4"
+            mode.mkdir(parents=True)
+            (mode / "default.cfg").write_text("// GENERERAD av testsuite/rig\n")
+            gjort = starta.stada("rtx-t3-prov-finns-ej", gd, mvdsv)
+            self.assertFalse(gd.exists())
+            self.assertTrue(any("tog bort" in g for g in gjort), gjort)
+
+    def test_stadning_gor_reset_failed(self):
+        """En failad transient unit blockerar nasta systemd-run med samma namn."""
+        with tempfile.TemporaryDirectory() as d:
+            mvdsv, gd = bygg_basedir(Path(d))
+            gjort = starta.stada("rtx-t3-prov-finns-ej", gd, mvdsv)
+            self.assertTrue(any("reset-failed" in g for g in gjort), gjort)
+
+
 class TestSkriptenSjalva(unittest.TestCase):
     SKRIPT = ["res.sh", "res_t3.sh", "res_t4.sh", "aterstall.sh"]
 
@@ -438,6 +611,28 @@ class TestSkriptenSjalva(unittest.TestCase):
                 )
                 self.assertNotIn("systemctl %s" % verb, text, "%s innehaller %s" % (namn, verb))
 
+    def test_res_sh_reser_via_livsgrinden(self):
+        """res.sh far inte starta uniten sjalv. Gor den det ar vi tillbaka i
+        skarpvalideringens lage: 'klar' rc=0 med en dod server."""
+        text = (HAR / "res.sh").read_text(encoding="utf-8")
+        self.assertIn("starta.py", text)
+        # Ingen egen systemd-run forbi grinden.
+        kod = "\n".join(r.split("#", 1)[0] for r in text.splitlines())
+        self.assertNotIn("systemd-run", kod)
+        # Och en misslyckad start far inte fortsatta till "klar".
+        self.assertIn("exit 3", text)
+
+    def test_aterstallningskedjan_gor_reset_failed(self):
+        """En failad transient unit blockerar nasta systemd-run med samma namn."""
+        bild = {
+            "korning": "prov", "unit": "rtx-t3-prov",
+            "portar": {}, "aktiva_units": [], "moduler": {},
+        }
+        bevis, _ = aterstall.aterstall(bild, verkstall=False, lasfil=None)
+        self.assertTrue(
+            any("reset-failed rtx-t3-prov" in b for b in bevis), bevis
+        )
+
     def test_skripten_ar_syntaktiskt_hela(self):
         for namn in self.SKRIPT:
             r = subprocess.run(["bash", "-n", str(HAR / namn)], capture_output=True, text=True)
@@ -448,7 +643,7 @@ class TestSkriptenSjalva(unittest.TestCase):
         undantagen — den maste namna portar for att kunna prova dem."""
         import re
 
-        for namn in self.SKRIPT + ["portar.py", "riggvakt.py", "gamedir.py", "aterstall.py"]:
+        for namn in self.SKRIPT + ["portar.py", "riggvakt.py", "gamedir.py", "aterstall.py", "starta.py"]:
             text = (HAR / namn).read_text(encoding="utf-8")
             kod = "\n".join(
                 r.split("#", 1)[0] for r in text.splitlines() if not r.strip().startswith("//")

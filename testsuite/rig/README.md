@@ -11,6 +11,7 @@ assertion som faller — inte en mening någon ska komma ihåg att läsa.
 |---|---|
 | `res_t3.sh`, `res_t4.sh` | reser respektive rigg; tunna omslag |
 | `res.sh` | hela proceduren; **en** kopia, för två glider isär |
+| `starta.py` | startkommandot + livsgrinden; städar efter en död rigg |
 | `portar.py` | läser `docs/PORTAR.md`. Enda källan till portnummer |
 | `gamedir.py` | bygger den privata gamediren; fällorna som assertions |
 | `riggvakt.py` | förvillkorskontroll: lås, portar, pid-ägda tjänster, data |
@@ -61,8 +62,38 @@ Riggen reses inte om något av detta gäller:
   «efter»)
 * `--gamedir` ligger inte direkt under mvdsv:s basedir. mvdsv löser
   `-game <namn>` mot `<basedir>/<namn>`, så en «privat» gamedir någon
-  annanstans hittas inte alls — servern faller tillbaka på det delade
-  trädet, vilket är precis det gamediren finns för att undvika
+  annanstans hittas inte alls
+* basedir saknar `id1/` — då hittar mvdsv varken pak eller
+  `maps/start.bsp` och dör med «Couldn't spawn a server»
+* **servern kommer inte upp inom livsgrindens timeout.** Uniten stoppas,
+  `reset-failed`:as och vår gamedir tas bort, och skriptet slutar med
+  rc≠0. En rigg som inte svarar rapporteras aldrig som «klar»
+
+## Riggen står upp, eller så gjorde den inte det
+
+Två fel som skarpvalideringen 2026-08-23 fällde bor i `starta.py`, och
+båda är numera assertions:
+
+**Arbetskatalogen är basedir, inte gamediren.** mvdsv löser `id1/` och
+`-game <namn>` mot sin arbetskatalog. Med `--working-directory=<gamedir>`
+finns varken `id1/` eller `<cwd>/<namn>`, och servern dör i samma sekund:
+
+```
+couldn't exec server.cfg
+Can't find maps/start.bsp
+ERROR: SV_Error: Couldn't spawn a server
+```
+
+Samma form som de fungerande mätdrivrarna: cwd = katalogen som innehåller
+`mvdsv` och `id1/`, gamediren namngiven med `-game`.
+
+**`systemd-run` återvänder när uniten är startad, inte när servern lever.**
+Utan livsgrind skrev `res.sh` «riggen klar» rc=0 med noll lyssnare och en
+failad unit. Grinden väntar på MainPID i `/proc` **och** en lyssnare på
+spelporten, och faller direkt om uniten går till `failed`/`inactive`.
+
+Aldrig `pgrep -f`: mönstret matchar sitt eget kommando i en ssh-kedja och
+låser loopen med ett falskt positivt.
 
 ## De 15 fallgroparna, och var de blev kod
 
@@ -92,6 +123,18 @@ usermode-default. Den enda fil som körs efter båda är
 Steg 3 är den generella formen: **varje** riggkritisk cvar som reset-kedjan
 sätter måste stampas om av vår sist körda fil. Den fångar också fällor som
 ingen skrivit ner än.
+
+Två fällor till, hittade skarpt 2026-08-23 och beskrivna ovan:
+
+| # | fälla | var den blev kod |
+|---|---|---|
+| 16 | arbetskatalog = gamediren ⇒ `Couldn't spawn a server` | `starta.start_argv()` |
+| 17 | «klar» rc=0 med död server | `starta.vanta_liv()`, anropad av `res.sh` |
+
+Och en tredje, ur samma validering: en **failad transient unit** ligger
+kvar under sitt namn och vägras av nästa `systemd-run`. `reset-failed`
+ingår därför i både städningen och återställningskedjan — inte bara i
+felhanteringen.
 
 ## Extern data — pekare och hash, inte incheckat
 

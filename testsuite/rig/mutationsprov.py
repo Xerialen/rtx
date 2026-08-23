@@ -42,6 +42,15 @@ MUTATIONER = [
     ("riggvakt.py", 'if r.returncode != 0:', 'if False:', "test_neg_frogbotdata_stammer_inte"),
     ("riggvakt.py", 'if vantad_sha and sha != vantad_sha:', 'if False:', "test_neg_qw_analyze_fel_sha"),
     ("aterstall.py", 'if verb in FORBJUDNA_SYSTEMD_VERB:', 'if False:', "test_neg_forbjudna_systemd_verb"),
+    ("starta.py", '"--working-directory=%s" % basedir,', '"--working-directory=%s" % gamedir,', "test_kor_i_basedir_inte_i_gamediren"),
+    ("res.sh", 'if ! python3 "$HAR/starta.py" "${STARTA[@]}"; then', 'if ! systemd-run --user --unit="$UNIT" "${STARTA[@]}"; then', "test_res_sh_reser_via_livsgrinden"),
+    ("starta.py", '            if n:', '            if True:', "test_neg_faller_nar_ingen_lyssnare"),
+    ("starta.py", 'if tillstand in DODA_TILLSTAND:', 'if False:', "test_neg_faller_direkt_pa_failad_unit"),
+    ("starta.py", 'elif not Path("/proc/%d" % pid).is_dir():', 'elif False:', "test_neg_faller_nar_pid_inte_finns_i_proc"),
+    ("starta.py", 'if gamedir.parent.resolve() != basedir:', 'if False:', "test_neg_gamedir_utanfor_basedir"),
+    ("starta.py", 'if not (basedir / "id1").is_dir():', 'if False:', "test_neg_basedir_utan_id1"),
+    ("starta.py", 'if not marker or not any(', 'if False and not any(', "test_lamnar_frammande_gamedir_ifred"),
+    ("aterstall.py", 'bevis.append(_systemctl("reset-failed", bild["unit"], verkstall=verkstall))', 'pass', "test_aterstallningskedjan_gor_reset_failed"),
 ]
 
 
