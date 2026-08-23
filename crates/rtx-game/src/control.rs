@@ -508,6 +508,7 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
         Cmd::RemoveLinks { links, lock_token: _ } => {
             remove_links_resp(game, links).map(Resp::RemoveLinks)
         }
+        Cmd::Recost { links, lock_token: _ } => recost_resp(game, &links).map(Resp::Recost),
     };
     reply(game, conn, id, result);
 }
@@ -931,6 +932,10 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
             slut_hash: u.slut_hash.clone(),
             lankar: u.lankar,
         }),
+        // Prisregimen läses ur samma frame som allt annat bandet stämplas med, så ett band som
+        // stämplas vid stängning kan citera exakt den regim det kördes under.
+        recost: game.recost.as_entries(),
+        recost_hash: game.recost.hash().to_string(),
     }
 }
 
@@ -1471,6 +1476,32 @@ fn remove_links_resp(
 }
 
 /// Ta bort ankargrindade länkar. **En implementation, två anropare**:
+/// `Cmd::Recost`: prissätt namngivna länkar utan att röra grafen.
+///
+/// Ankargrinden körs mot den levande grafen och HELA satsen verifieras innan något sätts
+/// ([`crate::recost::recost_anchored`]) — en dålig spec lämnar motorn exakt som den var. Grafen
+/// tas som delad referens hela vägen: den här operationen får inte ändra grafidentiteten, och det
+/// är därför den kan köras på en mätarm utan att kassera någon korpus.
+///
+/// Svaret bär hela operatörstabellen plus `recost_hash`, så att Hopparen kan stämpla bandet med
+/// exakt vilket regim det kördes under.
+fn recost_resp(game: &mut GameState, specs: &[proto::RecostSpec]) -> Result<proto::RecostResp, String> {
+    // Grafens lån släpps innan tabellen skrivs — inget här får ta &mut på grafen.
+    let (entries, graph_hash) = {
+        let g = game.nav.graph.as_deref().ok_or("navmesh not ready")?;
+        (
+            crate::recost::recost_anchored(g, specs)?,
+            crate::graph_ident::graph_content_hash(g),
+        )
+    };
+    game.recost.set(entries, graph_hash);
+    Ok(proto::RecostResp {
+        set: game.recost.as_entries(),
+        graph_content_hash: game.recost.graph_hash().to_string(),
+        recost_hash: game.recost.hash().to_string(),
+    })
+}
+
 /// `Cmd::RemoveLinks` och receptautostarten. Speglar `plant_speed_jump_link`.
 pub(crate) fn remove_links_anchored(
     g: &mut rtx_nav::navmesh::NavGraph,

@@ -176,6 +176,27 @@ pub enum Cmd {
         #[serde(default)]
         lock_token: String,
     },
+    /// Set operator-controlled A* surcharges on named links — the measurement operator's way to
+    /// make a link expensive without editing the graph.
+    ///
+    /// The seconds land on the **runtime** pricing path ([`LinkCosts::penalties`] in `rtx-nav`),
+    /// never on `Link.cost`. That distinction is the whole point: the graph the server ships is
+    /// byte-identical before and after, so its identity hash does not move and no measurement
+    /// corpus is invalidated by pricing an arm.
+    ///
+    /// Same anchor discipline as [`Cmd::RemoveLinks`]: the id says where to look, the
+    /// `from`/`to`/`kind` anchor says what must stand there, and **every** spec is verified
+    /// before any is applied. A raw id from another graph is refused.
+    ///
+    /// **Declarative, not cumulative.** The list replaces the whole operator table, so the reply
+    /// states the complete operator state rather than a delta. An empty list is refused (say what
+    /// you mean); the table is cleared by a map load, which is also what drops it when the graph
+    /// it was anchored against goes away.
+    Recost {
+        links: Vec<RecostSpec>,
+        #[serde(default)]
+        lock_token: String,
+    },
 }
 
 /// One link a [`Cmd::RemoveLinks`] takes out, with the anchor that proves it is the right one.
@@ -187,6 +208,23 @@ pub struct RemoveLinkSpec {
     pub to: u32,
     /// Link kind token as the dump writes it (`walk`, `jump`, `drop`, …), lowercase.
     pub kind: String,
+}
+
+/// One link a [`Cmd::Recost`] prices, with the anchor that proves it is the right one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecostSpec {
+    /// Live link index in the graph the caller pinned.
+    pub id: u32,
+    pub from: u32,
+    pub to: u32,
+    /// Link kind token as the dump writes it (`walk`, `jump`, `drop`, `teleport`, …), lowercase.
+    pub kind: String,
+    /// Extra seconds charged for crossing this link.
+    ///
+    /// Must be finite and **non-negative**. A* here keeps a straight-line heuristic that is only
+    /// admissible while every cost term is non-negative (see [`LinkCosts`]); a negative surcharge
+    /// would not make a link cheap, it would make routes wrong. The engine refuses one.
+    pub extra_sec: f32,
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -254,6 +292,7 @@ pub enum Resp {
     PlanCell(PlanCellResp),
     PlanDrop(PlanDropResp),
     RemoveLinks(RemoveLinksResp),
+    Recost(RecostResp),
     Bsp(Box<BspResp>),
     /// Loadable map names, lowercased and sorted (see [`Cmd::Maps`]).
     Maps(Vec<String>),
@@ -299,6 +338,17 @@ pub struct StatusResp {
     /// osynlig i binarens sha256. `None` innan navmeshen ar byggd.
     #[serde(default)]
     pub recept: Option<ReceptInfo>,
+    /// The live operator surcharge table (see [`Cmd::Recost`]), sorted by link id. Empty when no
+    /// pricing is in force — which is the honest reading of an unpriced arm, not a missing field.
+    ///
+    /// Readable here as well as in [`RecostResp`] so a measurement band can be stamped at close
+    /// rather than at set-time and still quote the regime it actually ran under.
+    #[serde(default)]
+    pub recost: Vec<RecostEntry>,
+    /// SHA-256 over the graph identity and [`Self::recost`] — the stamp a band quotes. Empty
+    /// string when no pricing is in force.
+    #[serde(default)]
+    pub recost_hash: String,
 }
 
 /// Receptdeklarationen (facit-receptautostart-v2 §13): obligatorisk i evidensbundlar.
@@ -707,6 +757,36 @@ pub struct RemoveLinksResp {
     pub remaining: u32,
 }
 
+/// One priced link in the operator table.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecostEntry {
+    pub link: u32,
+    pub extra_sec: f32,
+}
+
+/// Reply to [`Cmd::Recost`] — the runtime provenance of a priced arm, in one frame.
+///
+/// This exists to be **stamped onto a measurement band**, so it carries the whole configuration
+/// rather than an acknowledgement: which links were priced and by how much, which graph they were
+/// anchored against, and one hash over both. A band that quotes `recost_hash` has said exactly
+/// what pricing produced it, and two bands agree on their regime iff their hashes agree.
+///
+/// The same three fields are readable at any later moment from [`StatusResp`], so a run that
+/// stamps at band-close rather than at set-time reads the identical values.
+///
+/// **No reply, no regime.** A `Recost` whose reply never arrives has left the engine in an unknown
+/// pricing state — the op may have applied, or not. Nothing measured after such a request is
+/// attributable, so the run stops rather than continuing on an assumption.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecostResp {
+    /// The complete operator table after the op, sorted by link id.
+    pub set: Vec<RecostEntry>,
+    /// Level-2 identity of the graph the table is anchored against.
+    pub graph_content_hash: String,
+    /// SHA-256 over the graph identity **and** the table. The stamp a band quotes.
+    pub recost_hash: String,
+}
+
 // ---------------------------------------------------------------------------------------------------
 // Events (game -> MCP, async)
 // ---------------------------------------------------------------------------------------------------
@@ -1041,6 +1121,59 @@ mod tests {
         });
         let bytes = rmp_serde::to_vec_named(&resp).unwrap();
         assert_eq!(rmp_serde::from_slice::<Resp>(&bytes).unwrap(), resp);
+    }
+
+    #[test]
+    fn recost_cmd_and_resp_roundtrip() {
+        let cmd = Cmd::Recost {
+            links: vec![RecostSpec {
+                id: 36314,
+                from: 1450,
+                to: 2083,
+                kind: "teleport".into(),
+                extra_sec: 4.0,
+            }],
+            lock_token: "d-arm".into(),
+        };
+        let bytes = rmp_serde::to_vec_named(&cmd).unwrap();
+        assert_eq!(rmp_serde::from_slice::<Cmd>(&bytes).unwrap(), cmd);
+
+        let resp = Resp::Recost(RecostResp {
+            set: vec![RecostEntry {
+                link: 36314,
+                extra_sec: 4.0,
+            }],
+            graph_content_hash: "f19ffd18".into(),
+            recost_hash: "a1b2c3d4".into(),
+        });
+        let bytes = rmp_serde::to_vec_named(&resp).unwrap();
+        assert_eq!(rmp_serde::from_slice::<Resp>(&bytes).unwrap(), resp);
+    }
+
+    /// An old sender's `Status` frame — one with no recost fields at all — still decodes, and
+    /// reads as "no pricing in force" rather than failing or inventing one.
+    #[test]
+    fn status_without_recost_fields_decodes_as_unpriced() {
+        let s = StatusResp {
+            map: "dm3".into(),
+            time: 1.0,
+            navmesh: "ready".into(),
+            cells: 5977,
+            links: 48207,
+            rj_links: 0,
+            match_: MatchInfo::default(),
+            oracle: OracleInfo::default(),
+            bots: Vec::new(),
+            players: Vec::new(),
+            graph_content_hash: "f19ffd18".into(),
+            recept: None,
+            recost: Vec::new(),
+            recost_hash: String::new(),
+        };
+        let bytes = rmp_serde::to_vec_named(&s).unwrap();
+        let back: StatusResp = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(back.recost.is_empty());
+        assert!(back.recost_hash.is_empty());
     }
 
     use super::*;
