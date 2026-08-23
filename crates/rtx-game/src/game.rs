@@ -701,11 +701,9 @@ impl GameState {
         // Fresh map: drop any prior navmesh so it's rebuilt lazily when bots are next wanted,
         // and the previous map's race routes with it.
         self.oracle.bump_epoch();
-        self.nav = navmesh::NavState::default();
-        // The operator surcharge table is anchored against one graph by link *index*; those
-        // indices mean different links in the next map's graph. Carrying it over would price
-        // whatever happened to land on those ids — silently, and only sometimes.
-        self.recost = crate::recost::RecostTable::default();
+        // Navmesh and the pricing anchored to it go together, in one call — see
+        // [`crate::recost::drop_for_map_load`] for why they must not be two statements.
+        crate::recost::drop_for_map_load(&mut self.nav, &mut self.recost);
         self.race = race::RaceState::default();
 
         // The worldspawn block configures `world` and runs the global precaches.

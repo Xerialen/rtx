@@ -29,7 +29,7 @@ fn read(rel: &str) -> String {
 fn the_operator_table_is_merged_into_the_bot_penalties() {
     let src = read("src/bot/mod.rs");
     let (_, after) = src
-        .split_once("for &(li, extra) in self.recost.entries() {")
+        .split_once("for &(li, extra) in self.recost.entries_for(self.nav.graph.as_ref()) {")
         .expect("RECOST_LOCK: the recost feed is gone from bot_link_pricing");
     let line = after.lines().nth(1).unwrap_or_default().trim();
     assert_eq!(
@@ -80,52 +80,87 @@ fn jitter_scales_against_base_cost_not_the_surcharge() {
 fn the_provenance_readouts_quote_the_live_table() {
     let src = read("src/control.rs");
 
-    let (_, status) = src
-        .split_once("proto::StatusResp {")
-        .expect("RECOST_LOCK: the status frame is gone from control.rs");
-    let status: Vec<&str> = status.lines().map(str::trim).collect();
+    // Anchor on the **construction literal**, not on `fn status_resp(..) -> proto::StatusResp {`.
+    // Opening the window at the signature spans the whole body, so a second, lying literal
+    // inside it still finds the pinned lines somewhere and passes — which is precisely how QA's
+    // M4 (lying status frame built at another site) survived the first version of this pin.
+    let lit = "\n    proto::StatusResp {";
+    assert_eq!(
+        src.matches(lit).count(),
+        1,
+        "RECOST_LOCK: there must be exactly one place a status frame is built. More than one and \
+         this pin cannot know which of them is returned."
+    );
+    let (_, frame) = src.split_once(lit).expect("RECOST_LOCK: the status frame is gone");
+    let end = frame
+        .find("\n    }")
+        .expect("RECOST_LOCK: the status frame literal does not close");
+    let frame: Vec<&str> = frame[..end].lines().map(str::trim).collect();
+
     for pinned in [
-        "recost: game.recost.as_entries(),",
-        "recost_hash: game.recost.hash().to_string(),",
+        "recost: game.recost.as_entries_for(game.nav.graph.as_ref()),",
+        "recost_hash: game.recost.hash_for(game.nav.graph.as_ref()).to_string(),",
     ] {
         assert!(
-            status.contains(&pinned),
+            frame.contains(&pinned),
             "RECOST_LOCK: the status frame must read the live table — `{pinned}` is gone. A frame \
-             that reports no pricing while pricing is in force mis-stamps every band taken under it."
+             reporting no pricing while pricing is in force mis-stamps every band taken under it."
+        );
+    }
+    // Presence is not enough: the frame must not *also* contain a constant that overrides it.
+    for lie in ["recost: Vec::new(),", "recost_hash: String::new(),", "recost: vec![],"] {
+        assert!(
+            !frame.contains(&lie),
+            "RECOST_LOCK: the status frame contains `{lie}` — a hardcoded 'unpriced' readout. \
+             An absent stamp stops a run; a wrong one is believed."
         );
     }
 
     let (_, reply) = src
         .split_once("Ok(proto::RecostResp {")
         .expect("RECOST_LOCK: the Recost reply is gone from control.rs");
-    let reply: Vec<&str> = reply.lines().map(str::trim).collect();
+    let end = reply
+        .find("\n    })")
+        .expect("RECOST_LOCK: the Recost reply literal does not close");
+    let reply: Vec<&str> = reply[..end].lines().map(str::trim).collect();
     for pinned in [
-        "set: game.recost.as_entries(),",
-        "graph_content_hash: game.recost.graph_hash().to_string(),",
-        "recost_hash: game.recost.hash().to_string(),",
+        "set: game.recost.as_entries_for(Some(&g)),",
+        "graph_content_hash: game.recost.graph_hash_for(Some(&g)).to_string(),",
+        "recost_hash: game.recost.hash_for(Some(&g)).to_string(),",
     ] {
         assert!(
             reply.contains(&pinned),
             "RECOST_LOCK: the Recost reply must state the table it just set — `{pinned}` is gone."
         );
     }
+    for lie in ["set: Vec::new(),", "set: vec![],", "recost_hash: String::new(),"] {
+        assert!(
+            !reply.contains(&lie),
+            "RECOST_LOCK: the Recost reply contains `{lie}` — a hardcoded readout."
+        );
+    }
 }
 
-/// The operator table is dropped on map load.
+/// The intended path: a map load drops the operator table.
 ///
-/// It is anchored to one graph by link *index*, and those indices name different links in the
-/// next map's graph. Carrying it over would price whatever happened to land on those ids —
-/// silently, and only sometimes, which is the worst way for a measurement to be wrong.
+/// **What this proves and what it does not.** It proves the assignment is present next to the
+/// navmesh reset. It cannot prove control flow reaches it — a text pin sees text, which is how
+/// an inverted gate walks past it. The guarantee itself is structural and lives in a behavioural
+/// test, `recost::tests::a_table_does_not_survive_the_graph_it_was_anchored_to`: a table that
+/// outlived its graph reads as no table at all, in the feed and in both readouts alike. This pin
+/// is defence in depth on top of that, not the thing standing between a stale table and a band.
 #[test]
 fn a_map_load_drops_the_operator_table() {
     let src = read("src/game.rs");
-    let (_, after) = src
-        .split_once("self.nav = navmesh::NavState::default();")
-        .expect("RECOST_LOCK: the map-load nav reset is gone from game.rs");
-    let window: String = after.lines().take(8).collect::<Vec<_>>().join("\n");
     assert!(
-        window.contains("self.recost = crate::recost::RecostTable::default();"),
-        "RECOST_LOCK: a map load must drop the operator surcharge table alongside the navmesh \
-         it is anchored to. Window after the nav reset:\n{window}"
+        src.contains("crate::recost::drop_for_map_load(&mut self.nav, &mut self.recost);"),
+        "RECOST_LOCK: the map load must drop navmesh and pricing in one call — two statements \
+         can drift apart, and the drift is silent"
+    );
+    // The navmesh reset must not have grown a second, pricing-free path back.
+    assert!(
+        !src.contains("self.nav = navmesh::NavState::default();"),
+        "RECOST_LOCK: a bare navmesh reset has reappeared in game.rs — that is the shape that \
+         lets pricing outlive its graph. Use `drop_for_map_load`."
     );
 }

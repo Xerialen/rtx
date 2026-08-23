@@ -2167,7 +2167,9 @@ impl GameState {
         // the bot has also just failed on must not silently erase the bot's own failed-link
         // penalty — that would change the bot's learning as a side effect of measuring it, and
         // the arm would be measuring a different bot than the unpriced one.
-        for &(li, extra) in self.recost.entries() {
+        // `entries_for` is empty unless the table is about the graph in play, so a table that
+        // outlived its graph prices nothing rather than pricing whatever landed on those ids.
+        for &(li, extra) in self.recost.entries_for(self.nav.graph.as_ref()) {
             merge_link_penalty(&mut penalties, li, extra);
         }
         let rj_extra = rj::rocket_jump_extra(&self.entities[e].v, self.entities[e].combat.super_damage_finished, now);

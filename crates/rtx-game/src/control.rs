@@ -934,8 +934,8 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
         }),
         // Prisregimen läses ur samma frame som allt annat bandet stämplas med, så ett band som
         // stämplas vid stängning kan citera exakt den regim det kördes under.
-        recost: game.recost.as_entries(),
-        recost_hash: game.recost.hash().to_string(),
+        recost: game.recost.as_entries_for(game.nav.graph.as_ref()),
+        recost_hash: game.recost.hash_for(game.nav.graph.as_ref()).to_string(),
     }
 }
 
@@ -1475,7 +1475,6 @@ fn remove_links_resp(
     })
 }
 
-/// Ta bort ankargrindade länkar. **En implementation, två anropare**:
 /// `Cmd::Recost`: prissätt namngivna länkar utan att röra grafen.
 ///
 /// Ankargrinden körs mot den levande grafen och HELA satsen verifieras innan något sätts
@@ -1486,22 +1485,20 @@ fn remove_links_resp(
 /// Svaret bär hela operatörstabellen plus `recost_hash`, så att Hopparen kan stämpla bandet med
 /// exakt vilket regim det kördes under.
 fn recost_resp(game: &mut GameState, specs: &[proto::RecostSpec]) -> Result<proto::RecostResp, String> {
-    // Grafens lån släpps innan tabellen skrivs — inget här får ta &mut på grafen.
-    let (entries, graph_hash) = {
-        let g = game.nav.graph.as_deref().ok_or("navmesh not ready")?;
-        (
-            crate::recost::recost_anchored(g, specs)?,
-            crate::graph_ident::graph_content_hash(g),
-        )
-    };
-    game.recost.set(entries, graph_hash);
+    // Grafen klonas som Arc (billig refräkning) så att lånet på `game.nav` är släppt innan
+    // tabellen skrivs. Inget här tar &mut på grafen — operationen får inte ändra identiteten.
+    let g = game.nav.graph.clone().ok_or("navmesh not ready")?;
+    let entries = crate::recost::recost_anchored(&g, specs)?;
+    let graph_hash = crate::graph_ident::graph_content_hash(&g);
+    game.recost.set(entries, graph_hash, &g);
     Ok(proto::RecostResp {
-        set: game.recost.as_entries(),
-        graph_content_hash: game.recost.graph_hash().to_string(),
-        recost_hash: game.recost.hash().to_string(),
+        set: game.recost.as_entries_for(Some(&g)),
+        graph_content_hash: game.recost.graph_hash_for(Some(&g)).to_string(),
+        recost_hash: game.recost.hash_for(Some(&g)).to_string(),
     })
 }
 
+/// Ta bort ankargrindade länkar. **En implementation, två anropare**:
 /// `Cmd::RemoveLinks` och receptautostarten. Speglar `plant_speed_jump_link`.
 pub(crate) fn remove_links_anchored(
     g: &mut rtx_nav::navmesh::NavGraph,

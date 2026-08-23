@@ -29,6 +29,8 @@
 //! term is non-negative. A negative surcharge would not make a link cheap; it would make routes
 //! wrong, silently and only sometimes. Refused at the gate.
 
+use std::sync::Arc;
+
 use sha2::{Digest, Sha256};
 
 use rtx_ctlproto as proto;
@@ -47,38 +49,108 @@ pub(crate) struct RecostTable {
     graph_hash: String,
     /// SHA-256 over `graph_hash` and `entries`. Empty while the table is empty.
     hash: String,
+    /// Which graph object the entries were anchored to. `None` while the table is empty.
+    anchor: Option<GraphAnchor>,
+}
+
+/// An O(1) identity for "the very graph this table was anchored to".
+///
+/// The level-2 hash is the *right* identity but costs a walk of the whole graph, and the pricing
+/// feed runs per bot per frame. This is the cheap standing check: the allocation the graph lives
+/// in, plus its shape. A map load replaces the `Arc`, so all three move together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GraphAnchor {
+    ptr: usize,
+    cells: u32,
+    links: u32,
+}
+
+impl GraphAnchor {
+    fn of(g: &Arc<NavGraph>) -> Self {
+        Self {
+            ptr: Arc::as_ptr(g) as usize,
+            cells: g.cells.len() as u32,
+            links: g.links.len() as u32,
+        }
+    }
 }
 
 impl RecostTable {
-    pub(crate) fn entries(&self) -> &[(u32, f32)] {
-        &self.entries
-    }
-
-    pub(crate) fn graph_hash(&self) -> &str {
-        &self.graph_hash
-    }
-
-    /// The stamp. Empty string while no pricing is in force — never a hash of nothing, because a
-    /// band quoting a hash must mean "this regime ran", not "some regime may have".
-    pub(crate) fn hash(&self) -> &str {
-        &self.hash
-    }
-
     /// Replace the whole table. `entries` must already be gate-checked by [`recost_anchored`].
-    pub(crate) fn set(&mut self, mut entries: Vec<(u32, f32)>, graph_hash: String) {
+    pub(crate) fn set(&mut self, mut entries: Vec<(u32, f32)>, graph_hash: String, g: &Arc<NavGraph>) {
         entries.sort_unstable_by_key(|&(li, _)| li);
         self.hash = stamp(&graph_hash, &entries);
         self.entries = entries;
         self.graph_hash = graph_hash;
+        self.anchor = Some(GraphAnchor::of(g));
     }
 
-    /// The wire form of the table, for a reply or a status frame.
-    pub(crate) fn as_entries(&self) -> Vec<proto::RecostEntry> {
-        self.entries
+    /// Is this table still about the graph in play?
+    ///
+    /// A map load drops the table outright, and that is the intended path. This is the standing
+    /// guarantee underneath it: **a table that outlived its graph reads as no table at all.** The
+    /// entries are link *indices*, and index 36314 names a different link in the next map's graph
+    /// — so a stale table would not merely be wrong, it would price whatever happened to land on
+    /// those ids, silently and only sometimes. Making the staleness structural means the property
+    /// does not depend on one assignment continuing to be reached.
+    fn live(&self, g: Option<&Arc<NavGraph>>) -> bool {
+        match (self.anchor, g) {
+            (Some(a), Some(g)) => a == GraphAnchor::of(g),
+            _ => false,
+        }
+    }
+
+    /// The surcharges to price `g` with — empty unless the table is about `g`.
+    pub(crate) fn entries_for(&self, g: Option<&Arc<NavGraph>>) -> &[(u32, f32)] {
+        if self.live(g) {
+            &self.entries
+        } else {
+            &[]
+        }
+    }
+
+    /// The wire form, for a reply or a status frame. Empty unless the table is about `g`, so a
+    /// readout can never describe a regime that is not in force.
+    pub(crate) fn as_entries_for(&self, g: Option<&Arc<NavGraph>>) -> Vec<proto::RecostEntry> {
+        self.entries_for(g)
             .iter()
             .map(|&(link, extra_sec)| proto::RecostEntry { link, extra_sec })
             .collect()
     }
+
+    /// The stamp. Empty string when no pricing is in force *for `g`* — never a hash of nothing,
+    /// because a band quoting a hash must mean "this regime ran", not "some regime may have".
+    pub(crate) fn hash_for(&self, g: Option<&Arc<NavGraph>>) -> &str {
+        if self.live(g) {
+            &self.hash
+        } else {
+            ""
+        }
+    }
+
+    /// Level-2 identity of the graph the live table is anchored against; empty when none is.
+    pub(crate) fn graph_hash_for(&self, g: Option<&Arc<NavGraph>>) -> &str {
+        if self.live(g) {
+            &self.graph_hash
+        } else {
+            ""
+        }
+    }
+}
+
+/// Drop the navmesh and the pricing anchored to it — the map-load event, as one call.
+///
+/// Deliberately a function over the two fields rather than two statements at the call site. Two
+/// statements can drift apart: one can be gated away, or moved, while the other stays, and the
+/// failure is silent — the next map would be priced on link indices that name different links.
+/// As one call they cannot separate, and gating it would take the navmesh down too, which is not
+/// a silent failure at all.
+///
+/// It is also why this is reachable from a test: a map load is a large thing to stand up, but
+/// *this* is the whole of what a map load does to pricing, and it runs on its own.
+pub(crate) fn drop_for_map_load(nav: &mut rtx_nav::navmesh::NavState, recost: &mut RecostTable) {
+    *nav = rtx_nav::navmesh::NavState::default();
+    *recost = RecostTable::default();
 }
 
 /// The provenance stamp: SHA-256 over the graph identity **and** the priced table.
@@ -278,7 +350,7 @@ mod tests {
     #[test]
     fn an_empty_table_has_no_stamp() {
         assert_eq!(stamp("graf-a", &[]), "");
-        assert_eq!(RecostTable::default().hash(), "");
+        assert_eq!(RecostTable::default().hash_for(None), "");
     }
 
     /// Two branches of exactly equal cost, so a tie-break decides which one A* takes.
@@ -360,13 +432,13 @@ mod tests {
     /// `Link.cost`.
     #[test]
     fn pricing_does_not_touch_the_graph() {
-        let g = diamond();
+        let g = Arc::new(diamond());
         let before = crate::graph_ident::graph_content_hash(&g);
         let costs_before: Vec<f32> = g.links.iter().map(|l| l.cost).collect();
 
         let entries = recost_anchored(&g, &[spec(0, 0, 1, "walk", 5.0)]).expect("anchor holds");
         let mut table = RecostTable::default();
-        table.set(entries, before.clone());
+        table.set(entries, before.clone(), &g);
 
         assert_eq!(
             crate::graph_ident::graph_content_hash(&g),
@@ -378,20 +450,95 @@ mod tests {
             costs_before,
             "Link.cost är struktur och ska vara orörd"
         );
-        assert_eq!(table.entries(), &[(0, 5.0)]);
+        assert_eq!(table.entries_for(Some(&g)), &[(0, 5.0)]);
     }
 
     /// The table is stored sorted, so the stamp does not depend on the order the operator
     /// happened to list the links in — two operators asking for the same regime agree.
     #[test]
     fn the_table_is_order_independent() {
+        let g = Arc::new(diamond());
         let mut a = RecostTable::default();
-        a.set(vec![(2, 1.0), (1, 4.0)], "graf-a".into());
+        a.set(vec![(2, 1.0), (1, 4.0)], "graf-a".into(), &g);
         let mut b = RecostTable::default();
-        b.set(vec![(1, 4.0), (2, 1.0)], "graf-a".into());
-        assert_eq!(a.entries(), b.entries());
-        assert_eq!(a.hash(), b.hash());
-        assert_eq!(a.entries(), &[(1, 4.0), (2, 1.0)]);
+        b.set(vec![(1, 4.0), (2, 1.0)], "graf-a".into(), &g);
+        assert_eq!(a.entries_for(Some(&g)), b.entries_for(Some(&g)));
+        assert_eq!(a.hash_for(Some(&g)), b.hash_for(Some(&g)));
+        assert_eq!(a.entries_for(Some(&g)), &[(1, 4.0), (2, 1.0)]);
+    }
+
+    /// **H2, behavioural.** Price a link, load a map, read the provenance: empty.
+    ///
+    /// The map load is modelled by what a map load *is* to this table — the graph it was
+    /// anchored to is gone and another one is in play. Every readout and the pricing feed must
+    /// then read as unpriced, together.
+    ///
+    /// This does not depend on the reset assignment in `load_entities` being reached: that
+    /// assignment is the intended path, and this is the guarantee underneath it. A text pin can
+    /// only see that the line is present, never that control flow reaches it — which is exactly
+    /// how an inverted gate slips through. Staleness is structural instead.
+    #[test]
+    fn a_table_does_not_survive_the_graph_it_was_anchored_to() {
+        let old = Arc::new(diamond());
+        let mut t = RecostTable::default();
+        let entries = recost_anchored(&old, &[spec(0, 0, 1, "walk", 5.0)]).expect("anchor holds");
+        t.set(entries, crate::graph_ident::graph_content_hash(&old), &old);
+
+        // In force for the graph it was set against.
+        assert_eq!(t.entries_for(Some(&old)), &[(0, 5.0)]);
+        assert!(!t.hash_for(Some(&old)).is_empty());
+        assert_eq!(t.as_entries_for(Some(&old)).len(), 1);
+
+        // Map load: another graph is in play.
+        let new = Arc::new(diamond());
+        assert_eq!(
+            t.entries_for(Some(&new)),
+            &[],
+            "en tabell från förra grafen får inte prissätta den nya — id:na namnger andra länkar"
+        );
+        assert!(
+            t.as_entries_for(Some(&new)).is_empty(),
+            "proveniensen måste läsa tom, annars stämplas bandet med en regim som inte gäller"
+        );
+        assert_eq!(t.hash_for(Some(&new)), "");
+        assert_eq!(t.graph_hash_for(Some(&new)), "");
+
+        // And with no graph at all (mid-rebuild), likewise.
+        assert_eq!(t.entries_for(None), &[]);
+        assert_eq!(t.hash_for(None), "");
+    }
+
+    /// **H2, the map-load event itself, executed.**
+    ///
+    /// Set a price, run what a map load does to pricing, read the provenance: empty. This runs
+    /// the real statement rather than reading it, so a gate around it — `if false { … }`, an
+    /// early return, a moved line — fails here instead of passing a pin that only sees text.
+    #[test]
+    fn a_map_load_drops_the_price_and_the_provenance_with_it() {
+        let g = Arc::new(diamond());
+        let mut nav = rtx_nav::navmesh::NavState::default();
+        let mut recost = RecostTable::default();
+
+        let entries = recost_anchored(&g, &[spec(0, 0, 1, "walk", 5.0)]).expect("anchor holds");
+        recost.set(entries, crate::graph_ident::graph_content_hash(&g), &g);
+        assert_eq!(recost.entries_for(Some(&g)), &[(0, 5.0)], "priset är satt");
+        assert!(!recost.hash_for(Some(&g)).is_empty(), "stämpeln finns");
+
+        drop_for_map_load(&mut nav, &mut recost);
+
+        assert!(nav.graph.is_none(), "kartladdningen släpper navmeshen");
+        assert_eq!(
+            recost.entries_for(Some(&g)),
+            &[],
+            "priset måste vara borta efter kartladdning — även mot den gamla grafen"
+        );
+        assert!(
+            recost.as_entries_for(Some(&g)).is_empty(),
+            "proveniensen måste läsa tom"
+        );
+        assert_eq!(recost.hash_for(Some(&g)), "");
+        assert_eq!(recost.graph_hash_for(Some(&g)), "");
+        assert_eq!(recost, RecostTable::default(), "inget spår kvar");
     }
 
     /// The wire form says exactly what the table holds — the readout does not lie.
@@ -402,12 +549,17 @@ mod tests {
     /// and the misdescription would be invisible — the numbers would still look like numbers.
     #[test]
     fn the_wire_form_mirrors_the_table_exactly() {
+        let g = Arc::new(diamond());
         let mut t = RecostTable::default();
-        t.set(vec![(9, 1.5), (1, 4.0), (36314, 0.0)], "graf-a".into());
+        t.set(vec![(9, 1.5), (1, 4.0), (36314, 0.0)], "graf-a".into(), &g);
 
-        let wire = t.as_entries();
-        assert_eq!(wire.len(), t.entries().len(), "readouten tappar eller hittar på rader");
-        for (w, &(link, extra)) in wire.iter().zip(t.entries()) {
+        let wire = t.as_entries_for(Some(&g));
+        assert_eq!(
+            wire.len(),
+            t.entries_for(Some(&g)).len(),
+            "readouten tappar eller hittar på rader"
+        );
+        for (w, &(link, extra)) in wire.iter().zip(t.entries_for(Some(&g))) {
             assert_eq!(w.link, link, "länk-id måste följa med orört");
             assert_eq!(
                 w.extra_sec.to_bits(),
@@ -420,6 +572,6 @@ mod tests {
         // A zero surcharge is a real entry, not an absence: the operator said "price this link at
         // nothing", and a band must be able to tell that apart from an unpriced link.
         assert_eq!(wire[2].extra_sec, 0.0);
-        assert!(!t.hash().is_empty(), "en satt tabell har en stämpel");
+        assert!(!t.hash_for(Some(&g)).is_empty(), "en satt tabell har en stämpel");
     }
 }
