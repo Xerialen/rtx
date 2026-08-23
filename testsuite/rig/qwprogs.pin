@@ -1,0 +1,29 @@
+# Pinnad KTX-spelkod för T3/T4.
+#
+# Ägar-/Fable-beslut 2026-08-23: T3- och T4-riggarna kör exakt det bygge de
+# levande KTX-servrarna kör. Pinnen följer live-KTX, och ATT BYTA DEN ÄR ETT
+# ÄGARBESLUT — inte något som ärvs tyst ur en symlänk.
+#
+# Belägg, mätt 2026-08-23 (inte avskrivet ur symlänken):
+#
+#   $ sudo grep qwprogs /proc/1331/maps /proc/1332/maps
+#   /home/xerial/nquakesv/ktx/qwprogs-kbot-0.28.1-pentrj2.so   (båda)
+#
+#   $ readlink -f /home/xerial/nquakesv/ktx/qwprogs.so
+#   /home/xerial/nquakesv/ktx/qwprogs-kbot-0.28.1-pentrj2.so
+#
+# De två sammanfaller idag. Pinnen står på det de LEVANDE servrarna har
+# mappat, inte på symlänken: symlänken kan peka om, och det delade trädet
+# bär 81 andra qwprogs-varianter. Ärver man symlänken tyst byter riggen
+# spelkod utan att någon har bestämt det.
+#
+# Namnet nedan är ett FILNAMN i det delade KTX-trädet, aldrig en sökväg att
+# lösa upp: `gamedir.py` läser källan som <delade trädet>/<namn> och kopierar
+# den till <privat gamedir>/qwprogs.so. Att lösa upp sökvägen hade flyttat
+# basedir — samma fälla som mvdsv-symlänken (se GOTCHAS).
+#
+# Formatet är sha256sum:s, så pinnen går att pröva direkt mot trädet:
+#
+#   $ cd /home/xerial/nquakesv/ktx && sha256sum -c testsuite/rig/qwprogs.pin
+#
+8906bc6f28c4b8120fc9c6468012cae656091798e00fd16fa9607316ee621b5c  qwprogs-kbot-0.28.1-pentrj2.so
