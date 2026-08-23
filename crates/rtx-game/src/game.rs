@@ -118,6 +118,11 @@ pub struct GameState {
     /// Vad receptautostarten gjorde vid senaste kartladdningen (facit §13). Bor har
     /// och inte i `NavState`, eftersom addendum 1 binder att inget annat i rtx-nav rors.
     pub(crate) recept: Option<crate::recept::Utfall>,
+    /// Operator-set per-link A* surcharges (`Cmd::Recost`). Runtime pricing, never graph
+    /// structure — see [`crate::recost`]. Bor har och inte i `NavState` av samma skal som
+    /// `recept`: inget annat i rtx-nav ror vi. Nollstalls vid kartladdning, eftersom tabellen
+    /// ar ankrad mot en graf och en ny karta ar en ny graf.
+    pub(crate) recost: crate::recost::RecostTable,
     /// The map's KTX race routes (from `race/routes/*.route` and/or embedded
     /// `race_route_*` entities), loaded at the end of `load_entities`. See [`crate::race`].
     pub(crate) race: race::RaceState,
@@ -245,6 +250,7 @@ impl GameState {
             ext_fields: ext_field::ExtFields::default(),
             nav: navmesh::NavState::default(),
             recept: None,
+            recost: crate::recost::RecostTable::default(),
             race: race::RaceState::default(),
             opponents: bot::model::OpponentModel::default(),
             client_lead: 0.0,
@@ -695,7 +701,9 @@ impl GameState {
         // Fresh map: drop any prior navmesh so it's rebuilt lazily when bots are next wanted,
         // and the previous map's race routes with it.
         self.oracle.bump_epoch();
-        self.nav = navmesh::NavState::default();
+        // Navmesh and the pricing anchored to it go together, in one call — see
+        // [`crate::recost::drop_for_map_load`] for why they must not be two statements.
+        crate::recost::drop_for_map_load(&mut self.nav, &mut self.recost);
         self.race = race::RaceState::default();
 
         // The worldspawn block configures `world` and runs the global precaches.

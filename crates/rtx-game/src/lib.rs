@@ -52,6 +52,7 @@ mod obituary;
 pub(crate) mod pak;
 mod plats;
 mod recept;
+mod recost;
 mod player;
 mod pmove_sim;
 mod race;
