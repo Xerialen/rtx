@@ -28,7 +28,9 @@ duration_s = 300            # MUST equal the match server's usermode timelimit *
 reference_client = ""       # path to the reference (main) rtx-client build - REQUIRED for t3
 branch_client = ""          # path to the branch-under-test rtx-client build - REQUIRED for t3
 seats_per_side = 4          # server default usermode must be <n>on<n> for this n
-match_server = "127.0.0.1:27700"  # dedicated mvdsv+KTX instance, idle in Standby
+match_server = ""           # host:port of the dedicated mvdsv+KTX instance, idle
+                            # in Standby - REQUIRED for t3. Take the port from
+                            # docs/PORTAR.md; never copy a port number here.
 basedir = ""                # quake basedir passed to both rtx-client processes
 control_port_base = 28100   # branch client control port; reference uses base+1
 reference_branch = "main"   # what the reference client was built from (operator claim)

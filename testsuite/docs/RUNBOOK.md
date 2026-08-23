@@ -87,6 +87,8 @@ sha256sum "$RUN/state/qwprogs.before.so" \
 - [ ] Required maps, `pak0.pak`, mvdsv, KTX, Frogbot data, analyzer, and
       demo directories exist and are readable.
 - [ ] T1/T2, T3, and T4 ports are free or owned by the expected units only.
+      Take the numbers from `docs/PORTAR.md`, the repository's single port
+      table; never copy port numbers into a runbook or a script.
 - [ ] No Cargo build, competing test runner, or stale `rtx-client` is running.
 - [ ] Acquire the machine-wide build lock before Cargo work.
 - [ ] Save active service names and hashes of every module that will be replaced.
