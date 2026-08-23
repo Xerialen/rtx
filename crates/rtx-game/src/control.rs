@@ -1704,6 +1704,7 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, now: f32) {
     let dz = (origin.z - target.z).abs();
     let crossed_finish = goto_crossed_finish(&game.entities[e].bot.puppet.traj, origin, target);
     if (dxy <= GOTO_ARRIVE_XY || crossed_finish) && dz <= GOTO_ARRIVE_Z {
+        let branch = arrival_branch(dxy);
         let traj = traj_rows(&std::mem::take(&mut game.entities[e].bot.puppet.traj));
         // A goto commonly ends while the bot is airborne and carrying several hundred ups. Merely
         // swapping the order to Hold leaves the active hop controller, route, and momentum intact for
@@ -1720,6 +1721,9 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, now: f32) {
                 origin: a3(origin),
                 target: a3(target),
                 dist: dxy,
+                dxy,
+                dz,
+                branch,
                 traj,
             },
         );
@@ -1761,6 +1765,23 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, now: f32) {
                 traj,
             },
         );
+    }
+}
+
+/// Which limb of the arrival gate fired, for a goto that has just passed it.
+///
+/// **Reporting only.** The gate is `(dxy <= GOTO_ARRIVE_XY || crossed_finish) && dz <=
+/// GOTO_ARRIVE_Z` and this function does not participate in it — it reads the same `dxy` the
+/// gate just read and names the limb. Given the gate passed, `dxy > GOTO_ARRIVE_XY` can only
+/// mean the finish-plane crossing is what let it through.
+///
+/// It is a named function rather than an inline `if` so that the labelling is bound by a test
+/// instead of being asserted about a copy of itself.
+fn arrival_branch(dxy: f32) -> proto::ArrivalBranch {
+    if dxy <= GOTO_ARRIVE_XY {
+        proto::ArrivalBranch::PointArrival
+    } else {
+        proto::ArrivalBranch::CrossedFinish
     }
 }
 
@@ -2043,6 +2064,172 @@ mod tests {
     #[test]
     fn c5_short_of_the_plane_returns_early() {
         assert!(!crossed(0.0, -22.0));
+    }
+
+    // --- issue #2: `arrived` is an instrument reading, so it must carry its provenance ---
+
+    /// An `arrived` row built the way `poll_goto` builds it, at a given distance and branch.
+    fn arrived_row(dxy: f32, dz: f32) -> serde_json::Value {
+        let ev = Event::Arrived {
+            bot: 1,
+            t: 4.25,
+            origin: [250.0, -703.0 + dxy, 320.0 + dz],
+            target: [250.0, -703.0, 320.0],
+            dist: dxy,
+            dxy,
+            dz,
+            branch: arrival_branch(dxy),
+            traj: Vec::new(),
+        };
+        serde_json::to_value(&ev).expect("arrived row serialises")
+    }
+
+    /// The row an instrument actually receives carries the distances and the branch by name.
+    ///
+    /// `dist` alone was never enough: it is one scalar with no Z and no statement about *why*
+    /// the gate fired.
+    #[test]
+    fn arrived_row_carries_dxy_dz_and_branch() {
+        let row = &arrived_row(12.0, 8.0)["Arrived"];
+        assert_eq!(row["dxy"], 12.0);
+        assert_eq!(row["dz"], 8.0);
+        assert_eq!(row["branch"], "point_arrival");
+        // `dist` is preserved for the consumers that already read it.
+        assert_eq!(row["dist"], 12.0);
+    }
+
+    /// The branch label is the thing that separates the two arrival claims.
+    ///
+    /// `GOTO_ARRIVE_XY` is the boundary and it is inclusive, matching the gate's own `<=`.
+    #[test]
+    fn arrival_branch_names_the_limb_that_fired() {
+        assert_eq!(arrival_branch(0.0), proto::ArrivalBranch::PointArrival);
+        assert_eq!(
+            arrival_branch(GOTO_ARRIVE_XY),
+            proto::ArrivalBranch::PointArrival,
+            "the gate's boundary is inclusive; the label must agree with the gate"
+        );
+        assert_eq!(
+            arrival_branch(GOTO_ARRIVE_XY + 0.1),
+            proto::ArrivalBranch::CrossedFinish
+        );
+    }
+
+    /// The route killer, in one assertion: a bot declared home 101u out and a bot that is
+    /// genuinely there are now different rows.
+    ///
+    /// Both are `arrived`. Judged on the engine's flag they are identical; judged on the
+    /// provenance the first is a finish-plane crossing 101u from the declared target, which no
+    /// facit predicate on a 70u disk would accept.
+    #[test]
+    fn a_crossing_101u_out_is_distinguishable_from_a_point_arrival() {
+        let killer = arrived_row(101.0, 12.0);
+        let genuine = arrived_row(12.0, 12.0);
+        assert_eq!(killer["Arrived"]["branch"], "crossed_finish");
+        assert_eq!(genuine["Arrived"]["branch"], "point_arrival");
+        assert_ne!(killer["Arrived"]["branch"], genuine["Arrived"]["branch"]);
+    }
+
+    /// An `arrived` row without the provenance fields is classified, not counted.
+    ///
+    /// This is the distance axis of the rule `50a613c` already settled on the time axis:
+    /// missing time is not a hit, and now missing distance or missing branch is not a hit
+    /// either. The instrument must be able to *name* the defect — a row that merely fails to
+    /// decode gets dropped as a malformed frame and the reason is lost.
+    #[test]
+    fn arrived_without_provenance_classifies_as_missing_arrival_provenance() {
+        // The pre-issue-#2 row: bot, time, origin, target, dist — no dxy, no dz, no branch.
+        let legacy = serde_json::json!({
+            "bot": 1, "t": 4.25,
+            "origin": [250.0, -602.0, 332.0], "target": [250.0, -703.0, 320.0],
+            "dist": 101.0, "traj": []
+        });
+        let prov: proto::ArrivedProvenance =
+            serde_json::from_value(legacy).expect("a legacy row still decodes as provenance");
+        assert_eq!(
+            prov.judgeable(),
+            Err(proto::MISSING_ARRIVAL_PROVENANCE),
+            "an arrived row with no distances and no branch is not evidence of arrival"
+        );
+
+        // A row carrying all three is judgeable, and yields exactly what the facit needs.
+        let full = arrived_row(101.0, 12.0)["Arrived"].clone();
+        let prov: proto::ArrivedProvenance = serde_json::from_value(full).expect("a provenance-carrying row decodes");
+        assert_eq!(prov.judgeable(), Ok((101.0, 12.0, proto::ArrivalBranch::CrossedFinish)));
+    }
+
+    /// Each provenance field is individually load-bearing — no two-out-of-three passes.
+    #[test]
+    fn every_provenance_field_is_required_on_its_own() {
+        for (missing, row) in [
+            ("dxy", serde_json::json!({ "dz": 8.0, "branch": "point_arrival" })),
+            ("dz", serde_json::json!({ "dxy": 12.0, "branch": "point_arrival" })),
+            ("branch", serde_json::json!({ "dxy": 12.0, "dz": 8.0 })),
+        ] {
+            let prov: proto::ArrivedProvenance =
+                serde_json::from_value(row).expect("partial row decodes as provenance");
+            assert_eq!(
+                prov.judgeable(),
+                Err(proto::MISSING_ARRIVAL_PROVENANCE),
+                "a row missing only `{missing}` must still be unjudgeable"
+            );
+        }
+    }
+
+    /// The whole arrival path in `poll_goto`, pinned as text: the gate, the branch it computes,
+    /// and the fields it reports.
+    ///
+    /// Everything above binds `arrival_branch` and the provenance types as *functions*. None of
+    /// it reaches the lines that call them, because `poll_goto` needs a live `GameState`. So the
+    /// path is pinned the way `ra_room_lock.rs` pins the mållinje names — as source text, in the
+    /// one place a unit test cannot otherwise stand.
+    ///
+    /// The window deliberately opens at the **gate**, not at `Event::Arrived {`. Opening it at
+    /// the emission left the line that computes the branch outside the pin, and
+    /// `arrival_branch(dz)` — reading the wrong distance entirely — passed all 411 tests
+    /// (QA mutation Q1, 2026-08-23). Two earlier mutations found the same class of hole at the
+    /// emission itself (`dz: 0.0` passed all 410). A pin that stops short of the argument is a
+    /// pin that watches the wrong thing.
+    #[test]
+    fn the_arrived_emission_wires_the_measured_provenance() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/control.rs");
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        // From the gate in `poll_goto` through the end of the event it emits. `split_once` takes
+        // the first occurrence, and `poll_goto` precedes both `arrival_branch` and this module.
+        let gate = "if (dxy <= GOTO_ARRIVE_XY || crossed_finish) && dz <= GOTO_ARRIVE_Z {";
+        let (_, body) = src.split_once(gate).expect("the arrival gate is still in control.rs");
+        let at = body
+            .find("Event::Arrived {")
+            .expect("the arrived emission still follows the gate");
+        let end = at + body[at..].find("},").expect("the emission block closes");
+        let lines: Vec<&str> = body[..end].lines().map(str::trim).collect();
+        for pinned in [
+            // The branch must be computed from the XY distance the gate itself tested.
+            "let branch = arrival_branch(dxy);",
+            // …and every measured field must reach the wire.
+            "dist: dxy,",
+            "dxy,",
+            "dz,",
+            "branch,",
+        ] {
+            assert!(
+                lines.contains(&pinned),
+                "the arrival path no longer contains `{pinned}` — an arrived row without its \
+                 measured dxy/dz/branch is not evidence of arrival (issue #2). Lines found: {lines:?}"
+            );
+        }
+    }
+
+    /// The taxonomy token's **spelling**, written out once.
+    ///
+    /// Every other test compares against `proto::MISSING_ARRIVAL_PROVENANCE`, so they all agree
+    /// with the constant whatever it says: changing its value left all 411 tests green (QA
+    /// mutation Q3, 2026-08-23). The string is the contract — an instrument downstream matches
+    /// on it, and a taxonomy reason that silently renames itself is a reason nothing can file
+    /// under. This is the one place the literal appears, so this is the one test that binds it.
+    #[test]
+    fn the_taxonomy_token_is_spelled_missing_arrival_provenance() {
+        assert_eq!(proto::MISSING_ARRIVAL_PROVENANCE, "missing_arrival_provenance");
     }
 
     #[test]

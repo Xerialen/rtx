@@ -711,16 +711,101 @@ pub struct RemoveLinksResp {
 // Events (game -> MCP, async)
 // ---------------------------------------------------------------------------------------------------
 
+/// Which limb of the goto arrival gate fired.
+///
+/// `arrived` is an **instrument reading produced by the control channel under test**, not an
+/// observation of the world, and the gate that produces it has two limbs that mean different
+/// things. A point arrival is inside the bot's own arrival ball. A finish-plane crossing is a
+/// different claim entirely: it can legitimately fire while the bot is ~100u from the declared
+/// target, because what it detects is a line being crossed, not a place being reached.
+///
+/// Nothing on the wire used to separate them. Under the route killer, `arrived`/`Hold` was set
+/// 87-101u from the target in 7 of 8 attempts (margins 0.68-1.72u against the 96u corridor
+/// bound), and in the event stream a bot declared home 101u away was indistinguishable from one
+/// that was actually there — 54 climbs were booked as successes that stopped 87-101u short.
+///
+/// The same failure class was already paid for on the time axis: late and timeless `arrived`
+/// counted as a hit until `50a613c`. This is the distance axis of the same lesson.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrivalBranch {
+    /// `dxy <= GOTO_ARRIVE_XY` — the bot is inside the arrival ball around the declared target.
+    PointArrival,
+    /// The bounded finish-plane crossing fired. `dxy` may be far outside the arrival ball; read
+    /// this as "crossed the line", never as "is at the point".
+    CrossedFinish,
+}
+
+/// The taxonomy token an instrument files an `arrived` row under when it cannot be judged.
+///
+/// Closed reason, in the sense of the diagnostics taxonomy: it names a defect in the *reading*,
+/// not in the bot. Unlock by re-running with the distance and branch fields present, or by
+/// judging the attempt against the facit's own goal predicate instead of the engine's flag.
+pub const MISSING_ARRIVAL_PROVENANCE: &str = "missing_arrival_provenance";
+
+/// The instrument-side reading of an `arrived` row's provenance.
+///
+/// A lenient twin of the provenance fields on [`Event::Arrived`]: every field is optional here,
+/// on purpose. [`Event::Arrived`] makes them mandatory, so a row that lacks them fails to decode
+/// as an event at all — which drops it as a malformed frame and loses the very thing worth
+/// knowing. Decoding into this instead lets an instrument *classify* the row as
+/// [`MISSING_ARRIVAL_PROVENANCE`] and say so, rather than silently discarding it or, worse,
+/// counting it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ArrivedProvenance {
+    /// XY distance to the declared target at the moment the gate fired.
+    #[serde(default)]
+    pub dxy: Option<f32>,
+    /// Absolute Z distance to the declared target at the moment the gate fired.
+    #[serde(default)]
+    pub dz: Option<f32>,
+    /// Which limb of the gate fired.
+    #[serde(default)]
+    pub branch: Option<ArrivalBranch>,
+}
+
+impl ArrivedProvenance {
+    /// The distances and branch, or [`MISSING_ARRIVAL_PROVENANCE`] if the row cannot be judged.
+    ///
+    /// Missing time already means "not a hit" (`50a613c`). This is the same rule on the distance
+    /// axis: **a missing distance or a missing branch is not a hit either.** An `arrived` without
+    /// `dxy`, `dz` and `branch` is not evidence of arrival.
+    pub fn judgeable(&self) -> Result<(f32, f32, ArrivalBranch), &'static str> {
+        match (self.dxy, self.dz, self.branch) {
+            (Some(dxy), Some(dz), Some(branch)) => Ok((dxy, dz, branch)),
+            _ => Err(MISSING_ARRIVAL_PROVENANCE),
+        }
+    }
+}
+
 /// A puppet order's lifecycle event, emitted as the order plays out over frames.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     /// A `Goto` reached its target.
+    ///
+    /// The goal predicate belongs to the facit, not to the engine: this event may **confirm** an
+    /// arrival but never define one. The fields below are what let a measurement apparatus judge
+    /// the claim against the facit's own predicate in coordinates and thresholds, instead of
+    /// taking the engine's word for it.
     Arrived {
         bot: u32,
         t: f32,
         origin: Vec3,
         target: Vec3,
+        /// XY distance to the target when the gate fired. The same number as `dxy`, under the
+        /// name consumers already read (`flyprobe`, the MCP's JSON row); kept rather than renamed
+        /// so this stays an additive wire change.
         dist: f32,
+        /// XY distance to the **declared target** when the gate fired.
+        ///
+        /// Mandatory. Together with `dz` and `branch` this is the provenance that makes the row
+        /// judgeable; see [`ArrivedProvenance`] for what an instrument does with a row that has
+        /// no such fields.
+        dxy: f32,
+        /// Absolute Z distance to the declared target when the gate fired.
+        dz: f32,
+        /// Which limb of the arrival gate fired — see [`ArrivalBranch`].
+        branch: ArrivalBranch,
         traj: Vec<TrajRow>,
     },
     /// A `Goto` stalled (no progress) — the source is (currently) inaccessible.
