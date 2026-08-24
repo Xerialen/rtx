@@ -1153,6 +1153,7 @@ mod tests {
     }
 
     const BAS_NIVA2: &str = "58787ce0d27ddd49ef109fa380ad5aca1c5fb65ba5125d485ad0e2ebd0f88ad9";
+    const EFTER_NIVA2: &str = "dcb487f79abdd4157eda0637d617ea8ddd17764e56ad68e3f49e53e5f21dd87a";
 
     #[test]
     fn k2_bake_identitet_feeea6b4_och_mutation_andrar_hash() {
@@ -1417,5 +1418,144 @@ mod tests {
             assert_eq!(g.cells.len(), 5977, "RA_ROOM_LOCK: K2-bake-hash ≠ feeea6b4… (celler)");
             assert_eq!(g.links.len(), 48212, "RA_ROOM_LOCK: K2-bake-hash ≠ feeea6b4… (länkar)");
         }
+    }
+
+    /// K7 — hela ring2quad-graftransformen reproducerad OFFLINE mot fixturen,
+    /// geometriankrad.
+    ///
+    /// Receptet deklarerar sin egen metod: «Ankaret ar GEOMETRIN, inte id:na».
+    /// Det ar ingen stilfraga har. Fixturens LANK-index ar **permuterade** mot
+    /// receptets deklarerade id: 34501, 34503, 35683, 35761, 35762, 35592,
+    /// 35738 later i fixturen pa 13967, 14061, 13879, 10224, 10298, 13876,
+    /// 11944. En id-baserad applicering hade tagit fel lankar — och fallts av
+    /// ankargrinden, inte tyst lyckats. Nivan-2-hashen ar permutationsokanslig
+    /// (`canonical_inventory` sorterar), sa hash-assertionen star anda.
+    ///
+    /// Ordningen ar last: de sju loses upp FORE planteringen. Den planterade
+    /// lanken far samma fran/mal-koordinater som spec 35738
+    /// («originalavfarten»), sa en upplosning efterat hade gett tva traffar pa
+    /// den specen och en tvetydig borttagning.
+    #[test]
+    fn ring2quad_offline_repro_geometriankrad() {
+        use crate::graph_ident::graph_content_hash;
+
+        let mut g = dm3_fork_bas();
+        assert_eq!(g.cells.len(), 5977, "RING2QUAD_LOCK: fixturens cellantal");
+        assert_eq!(g.links.len(), 48207, "RING2QUAD_LOCK: fixturens lankantal inkl. prunade");
+        assert_eq!(graph_content_hash(&g), BAS_NIVA2, "RING2QUAD_LOCK: basgrafen ar 58787ce0");
+
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../reference/recept/vf5_ring2quad_forkmain.json"
+        ))
+        .expect("RING2QUAD_LOCK: vf5_ring2quad_forkmain.json saknas");
+        let r = las_recept(text.as_bytes(), "vf5_ring2quad_forkmain.json")
+            .expect("RING2QUAD_LOCK: receptet ska ga att lasa");
+        assert_eq!(r.steg.len(), 2, "RING2QUAD_LOCK: receptet har tva steg");
+        assert_eq!(r.bas.as_deref(), Some(BAS_NIVA2), "RING2QUAD_LOCK: receptets bas ar 58787ce0");
+
+        let plan = r.steg.iter().find(|s| s.remove.is_none())
+            .expect("RING2QUAD_LOCK: receptet har ett PlanLink-steg");
+        let specar = r.steg.iter().find_map(|s| s.remove.as_ref())
+            .expect("RING2QUAD_LOCK: receptet har ett RemoveLinks-steg");
+        assert_eq!(specar.len(), 7, "RING2QUAD_LOCK: exakt sju lankar tas bort");
+
+        // Geometrin star i radokumentet: `fran_pos` / `mal_pos`.
+        let raw: serde_json::Value =
+            serde_json::from_str(&text).expect("RING2QUAD_LOCK: receptet ar giltig JSON");
+        let rm_raw = raw["steg"].as_array().expect("RING2QUAD_LOCK: steg ar en lista")
+            .iter().find(|s| s["op"] == "RemoveLinks")
+            .expect("RING2QUAD_LOCK: RemoveLinks-steget finns i radokumentet");
+        let geom = rm_raw["lankar"].as_array()
+            .expect("RING2QUAD_LOCK: RemoveLinks listar lankar");
+        assert_eq!(geom.len(), specar.len(), "RING2QUAD_LOCK: lika manga specar i bada vyerna");
+
+        let vek = |v: &serde_json::Value| -> glam::Vec3 {
+            let a = v.as_array().expect("RING2QUAD_LOCK: position ar en lista");
+            glam::Vec3::new(
+                a[0].as_f64().unwrap() as f32,
+                a[1].as_f64().unwrap() as f32,
+                a[2].as_f64().unwrap() as f32,
+            )
+        };
+
+        let mut ids: Vec<u32> = Vec::with_capacity(7);
+        for (spec, rad) in specar.iter().zip(geom.iter()) {
+            let fran = vek(&rad["fran_pos"]);
+            let mal = vek(&rad["mal_pos"]);
+            let kind = kind_ur_token(&spec.kind);
+            let traffar: Vec<u32> = g
+                .links
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| {
+                    l.kind == kind
+                        && g.cells[l.from as usize].origin == fran
+                        && g.cells[l.to as usize].origin == mal
+                })
+                .map(|(i, _)| i as u32)
+                .collect();
+            assert_eq!(
+                traffar.len(), 1,
+                "RING2QUAD_LOCK: geometrin {fran:?} -> {mal:?} ({kind:?}) ska traffa exakt en lank"
+            );
+            let id = traffar[0];
+            // Cellankaret ur den PARSADE specen maste peka pa samma lank.
+            // Cell-id ar stabila mellan fixtur och motor; det ar LANK-id som
+            // ar permuterade (A2).
+            let l = g.links[id as usize];
+            assert_eq!(
+                (l.from, l.to), (spec.from, spec.to),
+                "RING2QUAD_LOCK: geometrin och receptets cellankare ska peka pa samma lank"
+            );
+            ids.push(id);
+        }
+        assert_eq!(
+            ids,
+            vec![13967, 14061, 13879, 10224, 10298, 13876, 11944],
+            "RING2QUAD_LOCK: geometrin loser upp fixturens EGNA lank-index (A2)"
+        );
+        let deklarerade: Vec<u32> = specar.iter().map(|s| s.id).collect();
+        assert_eq!(
+            deklarerade,
+            vec![34501, 34503, 35683, 35761, 35762, 35592, 35738],
+            "RING2QUAD_LOCK: receptets deklarerade lank-id"
+        );
+        assert_ne!(
+            ids, deklarerade,
+            "RING2QUAD_LOCK: A2 — fixturens lank-id ar permuterade mot receptets; \
+             gar de nagon gang ihop ar fixturen utbytt och K7 provar inte langre \
+             det den pastar sig prova"
+        );
+
+        // PlanLink: samma vag som `applicera` anvander.
+        crate::control::plant_speed_jump_link(
+            &mut g,
+            glam::Vec3::from(plan.from),
+            glam::Vec3::from(plan.takeoff),
+            glam::Vec3::from(plan.tgt),
+            plan.v_req,
+            plan.gain,
+            800.0,
+        )
+        .expect("RING2QUAD_LOCK: planteringen ska lyckas");
+        assert_eq!(g.links.len(), 48208, "RING2QUAD_LOCK: 48207 + 1 planterad");
+
+        // RemoveLinks: aterupplivar prunade lankar och remappar sidotabeller.
+        let borttagna = g
+            .remove_links_by_id(&ids)
+            .expect("RING2QUAD_LOCK: borttagningen ska lyckas");
+        assert_eq!(borttagna.len(), 7, "RING2QUAD_LOCK: sju lankar borttagna");
+
+        assert_eq!(g.cells.len(), 5977, "RING2QUAD_LOCK: cellantalet oforandrat");
+        assert_eq!(
+            g.links.len(), 48201,
+            "RING2QUAD_LOCK: 48207 + 1 planterad - 7 borttagna = 48201"
+        );
+        assert_eq!(
+            graph_content_hash(&g), EFTER_NIVA2,
+            "RING2QUAD_LOCK: slutidentiteten ar dcb487f7"
+        );
+        assert_eq!(r.efter.as_deref(), Some(EFTER_NIVA2), "RING2QUAD_LOCK: receptets efter-hash");
     }
 }
