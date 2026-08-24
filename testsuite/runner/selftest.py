@@ -578,6 +578,73 @@ def _t4_units() -> list[str]:
     check("ktx.no_document", t4_dom.ktx_shots(None, "brch"), None)
     check("ktx.empty_roster", t4_dom.ktx_shots({"players": []}, "brch"), None)
 
+    # Why `stats.tk` and not the derivation — the corrected justification
+    # (QA delta, 2026-08-24), pinned so nobody has to take the prose on trust.
+    # KTX's counters are not independent: the identity holds almost everywhere,
+    # and it is the one row that breaks it that decides the reading.
+    def identity_rows(document: dict[str, Any]) -> list[tuple[str, bool]]:
+        out = []
+        for player in document.get("players", []):
+            stats = player.get("stats") or {}
+            holds = (
+                stats["kills"] - stats["tk"] - stats["suicides"] == stats["frags"]
+            )
+            out.append((str(player.get("name")), holds))
+        return out
+
+    t3_card = json.loads(
+        (card_path.parent / "ktx-demoinfo-20260824-1635-t3.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    t3_rows = identity_rows(t3_card)
+    t4_rows = identity_rows(ktx)
+    check("identity.t3_all_hold", [name for name, ok in t3_rows if not ok], [])
+    check("identity.t3_row_count", len(t3_rows), 8)
+    check("identity.t4_row_count", len(t4_rows), 8)
+    check("identity.t4_breakers", sum(1 for _, ok in t4_rows if not ok), 1)
+    # Named, not indexed: a test that raises IndexError when its own premise
+    # fails reports a crash where it owes a verdict.
+    breakers = [name for name, ok in t4_rows if not ok]
+    check(
+        "identity.t4_breaker_is_brch3",
+        breakers[0].endswith("brch3") if breakers else f"no breaker: {breakers}",
+        True,
+    )
+    # On the T3 card the derivation and the counter agree exactly, which is the
+    # proof that the counters are not independent.
+    for team, expected in (("brch", 10), ("ref", 11)):
+        rows = [
+            player
+            for player in t3_card["players"]
+            if str(player.get("team")) == team
+        ]
+        derived = sum(
+            row["stats"]["kills"] - row["stats"]["frags"] - row["stats"]["suicides"]
+            for row in rows
+        )
+        counted = sum(row["stats"]["tk"] for row in rows)
+        check(f"identity.t3_{team}_derived", derived, expected)
+        check(f"identity.t3_{team}_counted", counted, expected)
+    # On the T4 card the single broken row is the whole difference: 11 derived
+    # against 10 counted.
+    brch_rows = [
+        player for player in ktx["players"] if str(player.get("team")) == "brch"
+    ]
+    derived = sum(
+        row["stats"]["kills"] - row["stats"]["frags"] - row["stats"]["suicides"]
+        for row in brch_rows
+    )
+    check("identity.t4_derived", derived, 11)
+    check("identity.t4_counted", sum(row["stats"]["tk"] for row in brch_rows), 10)
+    # And the choice is not verdict-breaking: both readings fell gate (b).
+    for teamkills in (10, 11):
+        check(
+            f"identity.gate_b_fells_on_{teamkills}",
+            t4_dom.failed_gates({"teamkills": teamkills, "kills_total": 1}),
+            ["b:teamkill_share"],
+        )
+
     # The precedence between the two sources, and that the second one is
     # actually reached. The qw-analyze card wins when it derives a pair, so an
     # envelope carrying a card stays recountable; KTX answers when it does not.

@@ -217,14 +217,28 @@ def teamkills_from_card(card: Any, team: str) -> tuple[int | None, int | None]:
 # down rather than assumed:
 #
 #  * `teamkills` is the card's OWN `stats.tk`, not `kills - frags - suicides`.
-#    On this card the derivation gives 11 teamkills on 1 kill and the A1 guard
-#    would (rightly) refuse it: KTX counts enemy kills in `kills` and team
-#    kills in `tk` as two independent counters, so the derivation's premise
-#    does not hold here. Reading a field that exists beats deriving one that
-#    does not.
-#  * `tk > kills` is therefore normal on this card and is NOT a malformed
-#    reading — 10 team kills and 1 enemy kill is exactly what the gate wants
-#    to hear about.
+#
+#    The reason is narrower than it first looks, and the first version of this
+#    comment got it wrong (QA delta, 2026-08-24). KTX's counters are NOT
+#    independent: the identity `frags = kills - tk - suicides` holds on 15 of
+#    the 16 player rows across the evening's two cards — all 8 on the T3 card,
+#    where the derivation equals `tk` exactly for both teams, and 7 of 8 on
+#    the T4 card. The single exception is `bot.brch3` (`frags = -8` where
+#    `kills - tk - suicides = -7`), and that one row is the whole of the
+#    difference between a derived 11 and a counted 10 at team level.
+#
+#    So the rule is not "always prefer `tk`". It is: **when a row breaks the
+#    identity the derivation cannot carry the number and the direct counter
+#    can.** Here the derivation gives 11 teamkills on 1 kill, which the A1
+#    guard refuses — correctly — leaving no number at all, which is the very
+#    failure this source exists to repair. Reading a field that exists beats
+#    deriving one that does not.
+#  * `tk > kills` is therefore not a malformed reading on this card: `kills`
+#    counts enemy kills and `tk` team kills, and 10 team kills against 1 enemy
+#    kill is exactly what the gate wants to hear about.
+#
+# The choice is not verdict-breaking either way: 10/1 and 11/1 both sit far
+# above the 20 % threshold, so gate (b) fells under both readings.
 #
 # What still makes it unavailable: a missing card, no rows for our team, a
 # missing or non-numeric or negative counter. Never a zero standing in for an

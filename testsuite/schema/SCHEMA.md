@@ -383,11 +383,17 @@ stops before T1 when T0 import is missing or FAIL.
   vocabulary is refused. A rung carrying a qw-analyze card that derives the
   pair must use it, so the validator can always recount that path.
   On the KTX card the counters are read outright: `weapons.<w>.acc.attacks`
-  for shots and `stats.tk` for teamkills — **not** `kills - frags - suicides`,
-  because KTX counts enemy kills and team kills as two independent counters
-  and the derivation's premise does not hold there (on the 2026-08-24 card it
-  yields 11 teamkills on 1 kill). `tk > kills` is therefore an ordinary
-  reading on that source, not a malformed one. A zero shot count is believed
+  for shots and `stats.tk` for teamkills — **not** `kills - frags - suicides`.
+  The reason is narrow: the identity `frags = kills - tk - suicides` holds on
+  15 of the 16 player rows across the evening's two cards, and the one row
+  that breaks it (`bot.brch3`, `-8` against a derived `-7`) is the whole
+  difference between a derived 11 and a counted 10 at team level. When a row
+  breaks the identity the derivation cannot carry the number and the direct
+  counter can — and here the derivation's 11 teamkills on 1 kill is refused by
+  the guard above, leaving no number at all. `tk > kills` is an ordinary
+  reading on that source, not a malformed one: `kills` counts enemy kills and
+  `tk` counts team kills. Both readings fell gate (b) far over threshold, so
+  the choice does not change a verdict. A zero shot count is believed
   only after the card has been shown to carry accuracy at all: KTX omits `acc`
   for a weapon never fired, so a card with no accuracy anywhere is unavailable.
 - `teamkills` from the qw-analyze card is `kills - frags - suicides` for team
