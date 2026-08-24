@@ -157,8 +157,14 @@ fn receptets_identitet_och_innehall() {
 }
 
 // ---------------------------------------------------------------------------
-// C-instrumentet — pinnat efter QA-varvet
+// Filartefakterna — C-instrumentet och predikat-v2, pinnade efter QA-varven
 // ---------------------------------------------------------------------------
+
+/// R2Q-matpredikatet. Byteidentisk kopia av riggens
+/// `~/hopptraning/predikat-v2/v2/hoppa.py`.
+const PREDIKAT_V2: &str = "testsuite/tools/predikat_v2_hoppa.py";
+const PREDIKAT_V2_SHA: &str =
+    "8e5418f00e0792d565dcb2dd95dc89240b08b3605b433390a6ec191308ea8547";
 
 /// Fixklassbeslutet ar C (Sol GODKANN rev2). Instrumentet som producerar
 /// C-talen ar darmed lastbarande och pinnas som fil.
@@ -167,6 +173,20 @@ fn receptets_identitet_och_innehall() {
 /// det forsta varvets `5331eb5b…` bar en PlanTick-avlasning som gav
 /// `0 planerade` — ett positivt felaktigt pastaende som pekade at exakt det
 /// hall Sols rev2 faller. Att pinna det hade gjort felet varaktigt.
+///
+/// Testet bar sedan 2026-08-24 OCKSA r2q-matpredikatet, `predikat-v2`. Det ar
+/// samma sorts pinne pa samma sorts artefakt (en fil i `testsuite/tools/` med
+/// sidofil), och det ligger har i stallet for i en egen `#[test]` av ett
+/// medvetet skal: arbetsflodets steg «lasfilens egna tester» rakar
+/// `running=N` och kraver **exakt 5**. Den raknaren ar sjalv ett skydd — den
+/// faller en PR som tommer lasfilen — och ska inte vridas at for att gora
+/// plats. En sjatte testfunktion hade gjort det. Vaxer laset igen hor
+/// raknaren och pinnen ihop i samma ceremoni.
+///
+/// Filhuvudets not «predikatets ovriga karnkonstanter … bor i riggens
+/// `hoppa.py` … Ett CI-jobb har kan inte pinna dem» galler darmed DELVIS inte
+/// langre: sjalva predikatet ligger nu i tradet. Hoppens start- och
+/// malkoordinater bor fortfarande i orderdokumenten (K5).
 #[test]
 fn c_instrumentet_ar_pinnat() {
     for (fil, vantad, vad) in [
@@ -184,6 +204,11 @@ fn c_instrumentet_ar_pinnat() {
             "testsuite/tools/proveniens/arm-r.json",
             "5d1c6ab780869484fbab735f29161fe98e1b0686f73a4631449e2d48205e84b7",
             "ARM-R:s proveniensartefakt",
+        ),
+        (
+            PREDIKAT_V2,
+            PREDIKAT_V2_SHA,
+            "r2q-matpredikatet predikat-v2",
         ),
     ] {
         assert_eq!(sha256(fil), vantad, "RING2QUAD_LOCK: {vad} ({fil})");
@@ -206,6 +231,43 @@ fn c_instrumentet_ar_pinnat() {
         "RING2QUAD_LOCK: ARM-R:s identitet far inte sta i instrumentet — \
          den kommer ur proveniensartefakten"
     );
+
+    // --- predikat-v2 (Sols kontrasignatur 2026-08-24, villkor 2) -----------
+    // «En main-grind som pinnar predikat-shan saknas fortfarande. Sidofilen
+    // racker for detta avgransade bruk men ar inte likvardig med en rod
+    // main-grind.» Filpinnen i loopen ovan ar den roda grinden. Sidofilen ar
+    // riggens egen 0444-forseglade manifest, kopierad ordagrant.
+    let v2_sidofil = las("testsuite/tools/predikat_v2.SHA256SUMS");
+    exakt_en(
+        &v2_sidofil,
+        &format!("{PREDIKAT_V2_SHA}  v2/hoppa.py"),
+        "predikat-v2:s sidofil ska bara bara EN rad for v2/hoppa.py",
+    );
+
+    // Innehallsasserter, av samma skal som receptets: en pinne som bara sager
+    // «sha skiljer» tvingar nasta person att diffa 34 kB python.
+    //
+    // Men de gor mer an sa, och det ar hela poangen med v2. V1-predikatet bar
+    // `FL_ONGROUND = 512` — en bit som var satt i 266 795 av 266 795
+    // registratorbilder och som darfor aldrig kunde falla nagot. Konstanten
+    // SAG lastbarande ut. En sha-pinne ensam hade inte fangat en atergang:
+    // den som byter masken och uppdaterar bade pinnen och sidofilen passerar
+    // sha-kontrollen. Asserterna nedan fangar honom. Darfor pinnas ocksa
+    // `fl & FL_MARK` — att masken faktiskt ANVANDS, inte bara deklareras.
+    let p = las(PREDIKAT_V2);
+    for (nal, vad) in [
+        ("FL_MARK = 2", "markbiten (v1:s 512 var en dod konstant)"),
+        ("fl & FL_MARK", "markbiten anvands, inte bara deklareras"),
+        ("MAX_STEG_U = 300.0", "kontinuitetstaket"),
+        ("AVFART_R = 56.0", "avfartens radie"),
+        ("AVFART_DZ = 12.0", "avfartens hojdtolerans"),
+        ("START_R = 56.0", "startidentitetens radie"),
+        ("FASTNAD_R = 64.0", "fastnadradien"),
+        ("FASTNAD_N_S = 3.0", "fastnadfonstret"),
+        ("EFTERSPELNING_S = 0.40", "efterspelningen fore registratoravlasning"),
+    ] {
+        exakt_en(&p, nal, vad);
+    }
 }
 
 // ---------------------------------------------------------------------------
