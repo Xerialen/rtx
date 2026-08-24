@@ -76,7 +76,7 @@ const PHASE_LOCK_MIN_SPEED: f32 = 600.0;
 /// *signed along-corridor* runway, so crossing the takeoff line (progress `< LIP_REACH`, incl. negative
 /// past it) triggers the leap — a radial ball the weave can skirt would U-turn. Distinct from the eager
 /// [`LAUNCH_MIN_FRAC`] leap a plain hop takes. `pub` so steer gates the run-up aim on the same threshold.
-pub const LIP_REACH: f32 = 28.0;
+pub const LIP_REACH: f32 = 30.0;
 /// Run-up remaining (units) within which the takeoff regime's speed-building weave tightens onto the
 /// run-up axis, and the half-angle it may then swing.
 ///
