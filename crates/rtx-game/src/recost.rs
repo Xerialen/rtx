@@ -541,6 +541,55 @@ mod tests {
         assert_eq!(recost, RecostTable::default(), "inget spår kvar");
     }
 
+    /// **The premise this whole module rests on, pinned by fixture (QA Q4).**
+    ///
+    /// `link_extra_breakdown` scans `penalties` and **breaks at the first match**. Everything here
+    /// follows from that one line: it is why `recost_anchored` refuses a batch that names the same
+    /// link twice, why the bot side merges through `merge_link_penalty` instead of pushing, and
+    /// why `p_penalty` on a `PlanTick` row can be read as *the* surcharge for that leg rather than
+    /// one of several.
+    ///
+    /// Until now that premise was asserted in prose and relied on by three call sites. If the
+    /// scan ever became "last wins" or "sum all", every one of those would be quietly wrong — the
+    /// duplicate refusal would be guarding nothing, the merge would be redundant, and a priced arm
+    /// would charge a different number than its provenance says. So it is a fixture now.
+    #[test]
+    fn the_nav_query_honours_exactly_one_penalty_per_link() {
+        let g = diamond();
+        let plain = LinkCosts::default();
+        let base = g.link_extra_breakdown(0, &plain).penalty;
+        assert_eq!(base, 0.0, "unpriced leg carries no penalty");
+
+        // Two entries for the same link. First wins; the second is not summed and not preferred.
+        let dupes = [(0u32, 5.0f32), (0u32, 100.0f32)];
+        let costs = LinkCosts {
+            penalties: &dupes,
+            ..Default::default()
+        };
+        assert_eq!(
+            g.link_extra_breakdown(0, &costs).penalty,
+            5.0,
+            "the scan must break at the first match — not sum (105) and not take the last (100)"
+        );
+
+        // Order is what decides, which is exactly why a duplicate is refused at the gate rather
+        // than resolved here: the answer would depend on the order an operator happened to type.
+        let swapped = [(0u32, 100.0f32), (0u32, 5.0f32)];
+        let costs = LinkCosts {
+            penalties: &swapped,
+            ..Default::default()
+        };
+        assert_eq!(
+            g.link_extra_breakdown(0, &costs).penalty,
+            100.0,
+            "reversing the two entries changes the charge — an operator must never be able to \
+             reach this, which is what `the_same_link_twice_is_refused` guarantees"
+        );
+
+        // A second link is untouched by either entry.
+        assert_eq!(g.link_extra_breakdown(2, &costs).penalty, 0.0);
+    }
+
     /// The wire form says exactly what the table holds — the readout does not lie.
     ///
     /// This is what a band's stamp is worth: Hopparen reads `(link, extra_sec)` off the reply or

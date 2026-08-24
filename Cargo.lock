@@ -2758,6 +2758,7 @@ dependencies = [
  "binrw",
  "glam",
  "rayon",
+ "sha2",
 ]
 
 [[package]]

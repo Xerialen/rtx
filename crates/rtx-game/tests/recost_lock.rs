@@ -59,10 +59,19 @@ fn jitter_scales_against_base_cost_not_the_surcharge() {
         .find(|l| l.contains("JITTER_FRAC"))
         .expect("RECOST_LOCK: the jitter term no longer mentions JITTER_FRAC")
         .trim();
-    assert_eq!(
-        term, "extra += (h as f32 / u32::MAX as f32) * JITTER_FRAC * self.links[li as usize].cost;",
-        "RECOST_LOCK: jitter must scale against the link's own `cost`, not against `extra` or a \
-         penalty — otherwise pricing a link makes it divert non-deterministically. Found: {term:?}"
+    // The **multiplicand** is the invariant, not the name on the left of the `=`. Pinning the
+    // whole statement also pinned an incidental: the planner-telemetry work split `link_extra`
+    // into a per-term `LinkExtra`, so `extra +=` legitimately became `e.jitter =` while the term
+    // itself was untouched. A pin that fails on a faithful refactor teaches people to edit the
+    // pin, which is the opposite of what it is for.
+    assert!(
+        term.ends_with("* JITTER_FRAC * self.links[li as usize].cost;"),
+        "RECOST_LOCK: jitter must scale against the link's own `cost` — otherwise pricing a link \
+         makes it divert non-deterministically. Found: {term:?}"
+    );
+    assert!(
+        !term.contains("penalt") && !term.contains("costs.penalties"),
+        "RECOST_LOCK: the jitter term must not read a penalty. Found: {term:?}"
     );
 }
 

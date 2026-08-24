@@ -637,6 +637,14 @@ pub struct CellResp {
     pub ledge: bool,
     pub out: Vec<CellLinkOut>,
     pub incoming: Vec<CellLinkIn>,
+    /// Links this cell is the source of that **nothing can traverse** — pruned from the adjacency by
+    /// the teleport carve, but still in the link array so ids stay stable.
+    ///
+    /// Without this a dump has to choose between two wrong answers: walk the adjacency and silently
+    /// omit them, or walk the array and silently present them as walkable. The first is what produced
+    /// the 48208-vs-48193 gap in the dm3 dump. Reported separately so an inventory can be complete
+    /// *and* honest about what is actually traversable.
+    pub out_pruned: Vec<CellLinkOut>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -963,6 +971,13 @@ pub enum Event {
         nav_ready: bool,
         alive: bool,
     },
+    /// One bot's planning decision for one tick — see [`PlanTick`].
+    ///
+    /// Boxed because it is by far the largest payload here and every other variant would otherwise
+    /// pay its size on the stack.
+    PlanTick(Box<PlanTick>),
+    /// Which graph the `PlanTick` stream is measured against — see [`PlanContract`].
+    PlanContract(PlanContract),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -979,6 +994,433 @@ pub struct PmovePlayer {
     pub on_ground: bool,
     /// The entity being stood on, or -1 for none/invalid.
     pub ground_ent: i32,
+}
+
+/// The contract name and version every [`PlanTick`] is written against.
+pub const PLAN_SCHEMA: &str = "qw-nav-graph/1";
+
+/// Sentinel for "no cell / no link" in a [`PlanTick`].
+///
+/// Plan telemetry is the *row* layer, and rows carry sentinels, never the string `unknown` — that
+/// belongs to the verdict layer downstream (attribution, clustering, action classes). The two mean
+/// different things and merging them loses a fact: `link == PLAN_NONE` says the bot was demonstrably
+/// off-route, where `unknown` in a verdict says nobody could tell.
+pub const PLAN_NONE: u32 = u32::MAX;
+
+/// Sentinel for "no planned speed band" in [`PlanTick::band`].
+pub const PLAN_NO_BAND: u8 = u8::MAX;
+
+/// Sentinel for a float the engine did not measure this tick (an unprobed lip, an uncapped weave).
+pub const PLAN_UNSET: f32 = -1.0;
+
+/// What the planner decided for one bot on one tick, and the controller state it decided it in.
+///
+/// The stall stream ([`Event::BotStall`]) says a bot noticed it was going nowhere; this says what it
+/// was *trying* to do every tick, whether or not anything went wrong. That difference is the point:
+/// a failure that never trips a watchdog — a route silently re-priced onto a longer way, a jump the
+/// bot declined to attempt — leaves no trace at all in the stall stream.
+///
+/// Emitted only with both `rtx_telemetry` and `rtx_plan_telemetry` set; see `rtx-game`'s `control`.
+///
+/// **No field is ever absent or null.** Missing values are the sentinels above, so a consumer never
+/// has to distinguish "key not present" from "value not known", and an old dataset run through an
+/// adapter stays byte-comparable with a fresh one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlanTick {
+    // --- identity and joining ---------------------------------------------------------------
+    /// [`PLAN_SCHEMA`] — pinned on every row so a line is self-describing without a side channel.
+    pub schema: String,
+    /// Which navmesh instance these numbers mean anything against; expanded by [`PlanContract`].
+    /// Two rows with different stamps must never be compared.
+    ///
+    /// **Level 1 — the row pin.** Over the map name and the shape counts: enough to keep two maps
+    /// apart, and cheap enough to carry on every row.
+    /// The row's **only** graph pin. Level 2 — the inventory hash — rides on [`PlanContract`] and
+    /// the attribution sidecar, never on a row: it is 32 bytes against the pin's 8, it does not vary
+    /// within a capture, and a structural verdict has to consult the contract anyway.
+    pub graph_stamp: u64,
+    /// Engine client number (`1..=maxclients`), the same index the rest of the harness stamps.
+    pub bot: u32,
+    /// Server time. The join key against the harness row, alongside `bot`: both are read from the
+    /// same `game.time()` in the same `frame_end`, so they match exactly rather than approximately.
+    pub t: f32,
+    /// Per-bot monotone counter. Events are droppable under backlog (by design — replies are not),
+    /// so a gap here is the only way a consumer can tell "the planner did nothing" from "the row
+    /// never made it". A run with gaps must be reported as such, not read as an absence of events.
+    pub seq: u32,
+
+    // --- the planner's decision -------------------------------------------------------------
+    /// The cell the bot resolved itself to this planning frame ([`PLAN_NONE`] if none).
+    pub cell: u32,
+    /// The cell it is routing toward ([`PLAN_NONE`] if none).
+    pub goal_cell: u32,
+    pub route_len: u32,
+    pub route_pos: u32,
+    /// **The active leg** — the link index the bot is steering along right now ([`PLAN_NONE`] when
+    /// off-route or arrived). This is the decision the whole event exists to record.
+    pub link: u32,
+    /// That leg's `LinkKind` as its `Debug` name; empty when off-route.
+    pub kind: String,
+    /// The active leg's source and target cells ([`PLAN_NONE`] when off-route). Carried so an
+    /// attribution pass never has to re-open the graph to resolve a link index.
+    pub link_from: u32,
+    pub link_to: u32,
+    /// The banded planner's planned *entry* speed band for this leg ([`PLAN_NO_BAND`] if none).
+    pub band: u8,
+    /// A repath ran this tick.
+    pub replanned: bool,
+    /// The goal the last repath was handed, and the cell A\* actually searched to after
+    /// reachability redirection and LOD truncation ([`PLAN_NONE`] if none).
+    pub route_goal: u32,
+    pub route_target: u32,
+    /// The banded planner's total cost for the committed route, in seconds ([`PLAN_UNSET`] when the
+    /// route came from an unbanded search or none was committed).
+    pub plan_cost: f32,
+    /// What finishing the current plan costs from where the bot actually is, in the seconds A\*
+    /// minimises.
+    pub remaining_cost: f32,
+    /// Whether the goal cell was reachable **as pure topology** in this graph, and whether the
+    /// search target was consequently redirected away from it.
+    ///
+    /// `plan_fail` alone cannot decide `structural_missing_link`: `unreachable` may be an ordinary
+    /// reachability redirection, and `no_path` can also come from a priced-out window. This pair is
+    /// the topological half of the question, pinned to `graph_stamp` — "no traversable chain from
+    /// where the bot stood to the goal cell exists in *this* graph" is then a machine fact rather
+    /// than an inference.
+    ///
+    /// The other half — whether the trace stopped outside the goal predicate (the IN-ring 70u top
+    /// disk) — is the harness's to supply, because the predicate is a property of the scenario and
+    /// not of the graph. Until both halves are present, older data classes as `unknown`.
+    pub goal_reachable: bool,
+    pub goal_redirected: bool,
+    /// Why the last repath produced nothing: empty when it succeeded, else `no_path`, `priced_out`
+    /// or `unreachable`.
+    ///
+    /// This is the field that separates a *structurally missing link* from an *execution failure* —
+    /// the distinction the IN-ring oracle turns on. A bot failing repeatedly with `plan_fail` empty
+    /// had a route and could not fly it; one with `no_path` was never offered a way at all, and no
+    /// amount of steering work would have helped.
+    pub plan_fail: String,
+
+    // --- what the active leg cost, term by term ---------------------------------------------
+    /// The leg's static cost, and each dynamic term A\* charged on top of it this tick, in seconds.
+    ///
+    /// A sum cannot be acted on: 100000.4s is a shut gate plus jitter, or an unfit rocket jump plus
+    /// a failed-link strike, and those want opposite fixes. Split, the reason is readable directly.
+    /// New terms may be added as further `p_*` fields — a consumer that meets one it does not know
+    /// must ignore it, so instrumenting a fork's extra pricing is an extension, not a break.
+    pub p_base: f32,
+    pub p_gate: f32,
+    pub p_penalty: f32,
+    pub p_jitter: f32,
+    pub p_rj: f32,
+    pub p_water: f32,
+    pub p_hazard: f32,
+    pub p_chained: f32,
+    /// What A\* actually paid: the sum of the `p_*` terms present on this row.
+    pub p_total: f32,
+
+    // --- speed, recorded but never a cause ---------------------------------------------------
+    /// Required takeoff speed for a committed speed jump (`0` = not a speed jump), and the speed
+    /// actually carried.
+    ///
+    /// **Logged, never a causal label.** The v_req-gap reading of V296 was investigated and
+    /// falsified; these fields exist so that hypothesis can be re-tested and re-refuted, not so a
+    /// consumer can classify a failure from them. Cause comes from the controller state below.
+    pub v_req: f32,
+    /// Where the bot was and how it was moving. Carried in full rather than as a magnitude: the
+    /// V296 record turns on reading a takeoff's actual arc, which a scalar speed cannot express.
+    pub origin: Vec3,
+    pub vel: Vec3,
+    /// Horizontal speed — `vel`'s xy magnitude, which is the quantity every run-up gate reads.
+    pub speed: f32,
+    /// This speed jump has no run-up of its own and depends on carried entry speed.
+    pub chained: bool,
+    /// Air-curl gain (`0` = a straight speed jump) and the run-up weave half-angle in degrees
+    /// ([`PLAN_UNSET`] when uncapped).
+    pub curl_gain: f32,
+    pub weave_cap: f32,
+
+    // --- controller state: the V296 oracle ----------------------------------------------------
+    /// `FL_ONGROUND` this tick.
+    pub on_ground: bool,
+    /// The hop controller's phase after this frame's step, and what it was before it.
+    ///
+    /// The pair is the point: V296's belayed mechanism is a *transition* — `Prestrafe` to `Hop` in
+    /// the virtual lip zone — and a single after-the-fact phase cannot show a transition at all.
+    pub phase: String,
+    pub phase_prev: String,
+    /// Straight corridor remaining — on a speed jump, the run-up left to the takeoff — as handed to
+    /// the hop controller. Valid only when `runway_measured`.
+    pub runway: f32,
+    /// Signed along-corridor distance to the takeoff line: **negative past the lip**. Valid only when
+    /// `sj_progress_measured`.
+    ///
+    /// Distinct from `runway`, which falls back to a radial distance when this is unavailable. The
+    /// facit names both, and they disagree exactly where it matters.
+    pub sj_progress: f32,
+    /// Whether `runway` / `sj_progress` were measured this tick.
+    ///
+    /// Both quantities are *signed*, so no in-band value can mean "not measured" — a `-1` would be a
+    /// perfectly good reading of a bot one unit past the lip. Hence an explicit flag rather than a
+    /// sentinel: the one place in this row where absence cannot be encoded in the number itself.
+    pub runway_measured: bool,
+    pub sj_progress_measured: bool,
+    /// The active speed jump's source cell and the takeoff point itself ([`PLAN_NONE`] when the leg
+    /// is not a speed jump; `takeoff_xyz` is meaningful only then, since the origin is a legitimate
+    /// coordinate and cannot double as a sentinel).
+    ///
+    /// `takeoff_cell` is the **link's source cell** — read it as `source_cell_for_takeoff`. It is not
+    /// "the cell nearest the takeoff point", and the two can differ: V296-C1's physical cell is 1139
+    /// while the link's configured `from` sits at z=296. Comparing the wrong one against a facit is
+    /// the mistake this note exists to prevent.
+    pub takeoff_cell: u32,
+    pub takeoff_xyz: Vec3,
+    /// Speed carried toward the steering waypoint, and the distance to it.
+    pub runup: f32,
+    pub wp: f32,
+    /// Floor left ahead before it falls away ([`PLAN_UNSET`] when not probed). What the takeoff is
+    /// really racing.
+    pub lip: f32,
+    /// The run-up gate's verdict, and whether a speed jump's leap is held for its envelope.
+    pub takeoff_ok: bool,
+    pub sj_held: bool,
+    /// At the edge but too slow to clear the gap: keep building, do not leap.
+    pub hold_jump: bool,
+    /// Whether `+jump` is set in the usercmd **actually sent** this tick.
+    ///
+    /// Read after the whole button chain, including the late clears — an intention that never
+    /// reached the engine is exactly the jump-cmd-on-ground race this telemetry exists to catch, so
+    /// recording the wish instead of the command would hide the bug it is here to expose.
+    pub jump_cmd: bool,
+    /// Vertical speed on the first *emitted airborne PlanTick* of the current hop — equal to
+    /// that row's `vel[2]`. Not a pre-pmove takeoff impulse (JUMP_VZ / 0 at the lip). Valid only
+    /// when `first_air_vz_measured`. Attestation (`takeoff_outcome`) uses this bound value.
+    ///
+    /// Signed, and **zero is a real reading**: a bot that left the ground with no upward impulse
+    /// measures exactly that. So absence rides on the flag, like `runway` and `sj_progress`, and for
+    /// the same reason — there is no out-of-domain number to spare.
+    pub first_air_vz: f32,
+    /// Whether a first airborne PlanTick has been bound in the current hop. Set at emit when
+    /// `on_ground` is false; cleared on landing.
+    pub first_air_vz_measured: bool,
+    /// Hops taken in this engagement, and why the last one ended (`veto`, `runway`, `leg`; empty if
+    /// still engaged or never engaged).
+    pub hops: u32,
+    pub off_reason: String,
+}
+
+/// The outcome of a takeoff, as the row can actually attest it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TakeoffOutcome {
+    /// No takeoff observed in the current hop — nothing to conclude either way.
+    NotObserved,
+    /// The bot left the ground with no upward impulse (first air `vz <= 0`). The V296-C1 shape.
+    NoImpulse,
+    /// The bot left the ground under a real jump (first air `vz > 0`). The V296-C2 shape.
+    Launched,
+}
+
+/// Why a proposed causal label is not supported.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CauseRejected {
+    /// The label that was refused, as written.
+    pub label: String,
+    /// Why, in one line, for the verdict record.
+    pub reason: &'static str,
+}
+
+/// Labels that were tested and refuted, and so may never be written again.
+///
+/// `v_req_deficit` is the falsified V296 hypothesis: C1 and C2 both run `v_req = 320` and reach
+/// speeds above *and* below it, so the label cannot separate the two cases it was invented to
+/// explain. It has no [`Cause`] variant — it is not representable, not merely discouraged — and
+/// [`Cause::from_label`] refuses it by name so a consumer parsing strings gets a reason rather than
+/// silence.
+pub const REFUTED_LABELS: &[(&str, &str)] = &[(
+    "v_req_deficit",
+    "falsified hypothesis: v_req and speed are logged, never a cause",
+)];
+
+/// The causal labels plan telemetry can attest, as a closed set.
+///
+/// Closed on purpose. A free-string label is a place where a refuted conclusion can grow back, and
+/// the sealed facit exists because one already did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cause {
+    /// V296's belayed mechanism: the hop cycle engaged in the virtual lip zone, yet the jump never
+    /// reached the engine and the bot left the ground with no upward impulse.
+    VirtualRunwayGroundRace,
+    /// A jump was commanded and produced real vertical speed — the positive control (V296-C2).
+    TakeoffLaunched,
+    /// The graph offers no traversable chain to the goal at all. The **engine half** of
+    /// `structural_missing_link`; the harness still owns the goal predicate.
+    StructuralNoPath,
+}
+
+impl Cause {
+    /// The wire/verdict spelling. Crate-private: a verdict writer must go through
+    /// [`AttestedCause`] — an unattested `Cause` must not be serialisable as a causal label.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Cause::VirtualRunwayGroundRace => "virtual_runway_ground_race",
+            Cause::TakeoffLaunched => "takeoff_launched",
+            Cause::StructuralNoPath => "structural_no_path",
+        }
+    }
+
+    /// Parse a label, refusing refuted and unknown ones.
+    pub fn from_label(label: &str) -> Result<Cause, CauseRejected> {
+        for (name, reason) in REFUTED_LABELS {
+            if *name == label {
+                return Err(CauseRejected { label: label.to_string(), reason });
+            }
+        }
+        for c in [Cause::VirtualRunwayGroundRace, Cause::TakeoffLaunched, Cause::StructuralNoPath] {
+            if c.as_str() == label {
+                return Ok(c);
+            }
+        }
+        Err(CauseRejected {
+            label: label.to_string(),
+            reason: "not a cause this telemetry can attest",
+        })
+    }
+}
+
+/// A cause that has been checked against the row it is claimed for.
+///
+/// The inner value is private, so this cannot be built outside this module — the only way to obtain
+/// one is [`PlanTick::attest`]. A verdict layer that must hold an `AttestedCause` to write a label
+/// therefore *cannot* write an unchecked one. That is the difference between a rule and a helper
+/// somebody may forget to call, which is exactly the gap this closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttestedCause(Cause);
+
+impl AttestedCause {
+    pub const fn cause(self) -> Cause {
+        self.0
+    }
+    /// The only public spelling of a causal label. Requires attestation.
+    pub const fn as_str(self) -> &'static str {
+        self.0.as_str()
+    }
+}
+
+impl Serialize for AttestedCause {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl PlanTick {
+    /// What this row can attest about the current hop's takeoff.
+    ///
+    /// Zero is a real first-air reading, so the flag — not the number — decides whether anything was
+    /// observed at all. C1 is [`TakeoffOutcome::NoImpulse`], C2 is [`TakeoffOutcome::Launched`].
+    pub fn takeoff_outcome(&self) -> TakeoffOutcome {
+        if !self.first_air_vz_measured {
+            TakeoffOutcome::NotObserved
+        } else if self.first_air_vz > 0.0 {
+            TakeoffOutcome::Launched
+        } else {
+            TakeoffOutcome::NoImpulse
+        }
+    }
+
+    /// Whether this row shows the run-up-to-hop handover the ground race is made of.
+    fn prestrafe_to_hop(&self) -> bool {
+        self.phase_prev == "Prestrafe" && self.phase == "Hop"
+    }
+
+    /// Check a cause against this row, and hand back the only token a verdict can be written from.
+    ///
+    /// Each variant is tested against the state that actually defines it, not against a generic
+    /// "some controller fields are populated". `VirtualRunwayGroundRace` in particular is the
+    /// conjunction the facit describes: the Prestrafe→Hop handover, a measured run-up position, a
+    /// takeoff that produced no impulse, and a jump command that never went out. A row where the
+    /// jump *was* commanded and the bot *did* rise is C2 — the control case — and must not be
+    /// labelled a race.
+    pub fn attest(&self, cause: Cause, contract: Option<&PlanContract>)
+        -> Result<AttestedCause, CauseRejected> {
+        let reason: Option<&'static str> = match cause {
+            Cause::VirtualRunwayGroundRace => {
+                if !self.prestrafe_to_hop() {
+                    Some("not the Prestrafe->Hop handover this label describes")
+                } else if !self.sj_progress_measured {
+                    // The "virtual runway" is a position along the corridor. Without it there is no
+                    // evidence the handover happened in the lip zone at all — which is why the facit
+                    // leaves old replays `unknown` rather than guessing.
+                    Some("no run-up position measured: cannot place the handover at the lip")
+                } else if self.takeoff_outcome() != TakeoffOutcome::NoImpulse {
+                    Some("takeoff was not impulse-free: not a ground race")
+                } else if self.jump_cmd {
+                    Some("jump was commanded: the race is that it never went out")
+                } else {
+                    None
+                }
+            }
+            Cause::TakeoffLaunched => {
+                if self.takeoff_outcome() != TakeoffOutcome::Launched {
+                    Some("no launched takeoff observed")
+                } else if !self.jump_cmd {
+                    Some("rose without a jump command: not a launch")
+                } else {
+                    None
+                }
+            }
+            Cause::StructuralNoPath => {
+                // A claim about topology has to name the topology it was read from, and the row pin
+                // cannot: two carves of one map can share every count while differing in exactly what
+                // this claim is about. So the contract must be present, carry a level-2 hash, and be
+                // the contract *this row belongs to*.
+                match contract {
+                    None => Some("no graph contract: the structural claim cannot be bound to a graph"),
+                    Some(c) if c.graph_content_hash.is_empty() => {
+                        Some("contract carries no inventory hash")
+                    }
+                    Some(c) if c.graph_stamp != self.graph_stamp => {
+                        Some("contract is for a different graph than this row")
+                    }
+                    Some(_) if self.goal_reachable => {
+                        Some("the goal is reachable: no structural claim to make")
+                    }
+                    Some(_) => None,
+                }
+            }
+        };
+        match reason {
+            Some(r) => Err(CauseRejected { label: cause.as_str().to_string(), reason: r }),
+            None => Ok(AttestedCause(cause)),
+        }
+    }
+}
+
+/// Which graph a run of [`PlanTick`]s was measured against.
+///
+/// Sent once when plan telemetry is switched on and again whenever the navmesh is rebuilt, so a
+/// capture stands on its own: [`PlanTick::graph_stamp`] is a bare integer, and this is what it means.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlanContract {
+    /// [`PLAN_SCHEMA`].
+    pub schema: String,
+    /// The stamp every [`PlanTick`] in this run carries (level 1), and the inventory hash that
+    /// identifies the graph's contents (level 2). Both, so a capture can be checked at either level:
+    /// the stamp says which map and shape, the content hash says which carve.
+    ///
+    /// The content hash is lowercase hex of SHA-256 over the canonical inventory — see
+    /// `WORK_LOGS/graphstamp-kontrakt.md` §8. Empty when the engine did not compute one.
+    pub graph_stamp: u64,
+    pub graph_content_hash: String,
+    pub map: String,
+    /// The graph's shape — the same counts the harness records, so engine and harness can be checked
+    /// against each other on the same graph.
+    pub cells: u32,
+    pub links: u32,
+    pub rj_links: u32,
+    /// The engine build the numbers came from (its package version — the engine carries no git
+    /// commit; run identity is the harness's to record).
+    pub build: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -1380,5 +1822,350 @@ mod tests {
         assert!(read_frame(&mut cur).unwrap().is_none());
         assert_eq!(decode::<Request>(&f1).unwrap().id, 1);
         assert_eq!(decode::<Request>(&f2).unwrap().cmd, Cmd::Audit { bot: 2, lines: 50 });
+    }
+
+    /// A `PlanTick` survives the wire exactly as sent.
+    ///
+    /// Plan rows are the record later analysis reasons from, and they go out as msgpack behind a
+    /// length prefix like everything else. A field that silently failed to round-trip would not show
+    /// up as an error anywhere — it would show up as a wrong conclusion about a bot, months later.
+    #[test]
+    fn plan_tick_round_trips() {
+        let tick = PlanTick {
+            schema: PLAN_SCHEMA.to_string(),
+            graph_stamp: 0xdead_beef_1234_5678,
+            bot: 3,
+            t: 12.345,
+            seq: 918,
+            cell: 503,
+            goal_cell: 194,
+            route_len: 9,
+            route_pos: 2,
+            link: 1373,
+            kind: "SpeedJump".to_string(),
+            link_from: 56,
+            link_to: 99,
+            band: 2,
+            replanned: true,
+            route_goal: 194,
+            route_target: 188,
+            plan_cost: 4.25,
+            remaining_cost: 3.5,
+            plan_fail: String::new(),
+            goal_reachable: true,
+            goal_redirected: false,
+            p_base: 1.5,
+            p_gate: 0.0,
+            p_penalty: 2.5,
+            p_jitter: 0.125,
+            p_rj: 0.0,
+            p_water: 0.37,
+            p_hazard: 0.0,
+            p_chained: 0.0,
+            p_total: 4.495,
+            v_req: 320.0,
+            origin: [81.1, -553.3, 312.0],
+            vel: [201.4, -205.1, -12.0],
+            speed: 287.5,
+            chained: true,
+            curl_gain: 0.35,
+            weave_cap: -1.0,
+            on_ground: false,
+            phase: "Hop".to_string(),
+            phase_prev: "Prestrafe".to_string(),
+            runway: -4.5,
+            sj_progress: -4.5,
+            runway_measured: true,
+            sj_progress_measured: true,
+            takeoff_cell: 56,
+            takeoff_xyz: [93.1, -587.8, 296.0],
+            runup: 301.0,
+            wp: 48.0,
+            lip: -1.0,
+            takeoff_ok: true,
+            sj_held: true,
+            hold_jump: false,
+            jump_cmd: true,
+            first_air_vz: 270.0,
+            first_air_vz_measured: true,
+            hops: 4,
+            off_reason: String::new(),
+        };
+        let frame = to_frame(&Msg::Event(Event::PlanTick(Box::new(tick.clone()))));
+        let mut cursor = &frame[..];
+        let body = read_frame(&mut cursor).expect("frame reads back").expect("a whole frame was there");
+        match decode::<Msg>(&body).expect("decodes") {
+            Msg::Event(Event::PlanTick(got)) => assert_eq!(*got, tick),
+            other => panic!("wrong message back: {other:?}"),
+        }
+    }
+
+    /// The sentinels are the row layer's only way of saying "nothing here", so they must survive the
+    /// wire as themselves — and stay distinct from the zeros that mean a real measured zero.
+    #[test]
+    fn plan_sentinels_are_distinct_from_zero() {
+        assert_eq!(PLAN_NONE, u32::MAX);
+        assert_eq!(PLAN_NO_BAND, u8::MAX);
+        assert_eq!(PLAN_UNSET, -1.0);
+        assert_ne!(PLAN_NONE, 0, "a missing link must not read as link 0");
+        assert_ne!(PLAN_NO_BAND, 0, "a missing band must not read as band 0");
+        assert!(PLAN_UNSET < 0.0, "an unprobed float must not read as a measured 0.0");
+    }
+
+    /// The contract round-trips too — a capture whose stamp cannot be expanded is a capture nobody
+    /// can safely compare against another.
+    #[test]
+    fn plan_contract_round_trips() {
+        let c = PlanContract {
+            schema: PLAN_SCHEMA.to_string(),
+            graph_stamp: 0xdead_beef_1234_5678,
+            graph_content_hash: "680b540a642e90cdd9eac76debd35af687ff918e7b1b5f6583e5cf34f4759ec0".to_string(),
+            map: "dm3".to_string(),
+            cells: 4581,
+            links: 19822,
+            rj_links: 311,
+            build: "0.1.0".to_string(),
+        };
+        let frame = to_frame(&Msg::Event(Event::PlanContract(c.clone())));
+        let mut cursor = &frame[..];
+        let body = read_frame(&mut cursor).expect("frame reads back").expect("a whole frame was there");
+        match decode::<Msg>(&body).expect("decodes") {
+            Msg::Event(Event::PlanContract(got)) => assert_eq!(got, c),
+            other => panic!("wrong message back: {other:?}"),
+        }
+    }
+
+    /// A row shaped like the sealed facit's V296 cases, so the two can be told apart in a test.
+    fn v296_row(source_cell: u32, phase_prev: &str, phase: &str, on_ground: bool,
+                jump_cmd: bool, first_air_vz: f32, measured: bool) -> PlanTick {
+        PlanTick {
+            schema: PLAN_SCHEMA.to_string(),
+            graph_stamp: 13_090_435_456_435_551_592,
+            bot: 1,
+            t: 474.842,
+            seq: 1,
+            cell: source_cell,
+            goal_cell: 700,
+            route_len: 5,
+            route_pos: 1,
+            link: 4242,
+            kind: "SpeedJump".to_string(),
+            link_from: source_cell,
+            link_to: 701,
+            band: 2,
+            replanned: false,
+            route_goal: 700,
+            route_target: 700,
+            plan_cost: 3.0,
+            remaining_cost: 2.0,
+            plan_fail: String::new(),
+            goal_reachable: true,
+            goal_redirected: false,
+            p_base: 1.0,
+            p_gate: 0.0,
+            p_penalty: 0.0,
+            p_jitter: 0.0,
+            p_rj: 0.0,
+            p_water: 0.0,
+            p_hazard: 0.0,
+            p_chained: 0.0,
+            p_total: 1.0,
+            // Both facit cases run the *same* v_req. That is the whole reason speed cannot separate
+            // them, and why the label built on it is refused.
+            v_req: 320.0,
+            origin: [81.1, -553.3, 312.0],
+            vel: [200.0, -200.0, first_air_vz],
+            speed: 282.8,
+            chained: true,
+            curl_gain: 5.5,
+            weave_cap: -1.0,
+            on_ground,
+            phase: phase.to_string(),
+            phase_prev: phase_prev.to_string(),
+            runway: -4.5,
+            sj_progress: -4.5,
+            runway_measured: true,
+            sj_progress_measured: true,
+            takeoff_cell: source_cell,
+            takeoff_xyz: [93.1, -587.8, 296.0],
+            runup: 300.0,
+            wp: 40.0,
+            lip: -1.0,
+            takeoff_ok: true,
+            sj_held: true,
+            hold_jump: false,
+            jump_cmd,
+            first_air_vz,
+            first_air_vz_measured: measured,
+            hops: 1,
+            off_reason: String::new(),
+        }
+    }
+
+    /// The facit's two V296 cases separate on controller state — and never on speed.
+    ///
+    /// C1 (false jump at the 312 edge) and C2 (grounded jump) share `v_req = 320`. Any rule that
+    /// reads the deficit therefore cannot tell them apart, which is exactly why the sealed facit
+    /// falsified it. `takeoff_outcome` reads the leap instead, and does separate them.
+    #[test]
+    fn v296_cases_separate_on_controller_state_not_speed() {
+        let c1 = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        let c2 = v296_row(1167, "Prestrafe", "Hop", false, true, 260.4, true);
+        assert_eq!(c1.v_req, c2.v_req, "the facit's premise: same v_req in both cases");
+        assert_eq!(c1.takeoff_outcome(), TakeoffOutcome::NoImpulse);
+        assert_eq!(c2.takeoff_outcome(), TakeoffOutcome::Launched);
+        assert_eq!(c1.takeoff_cell, 1139, "C1's physical source cell");
+        assert_eq!(c2.takeoff_cell, 1167, "C2's physical source cell");
+    }
+
+    /// `v_req_deficit` is not refused — it is *unrepresentable*.
+    ///
+    /// There is no `Cause` variant for it, so no verdict can carry it however the consumer is
+    /// written; parsing the string back gives an explicit refusal with the reason rather than a
+    /// silent miss. This is the difference terra asked for: a rule the type system enforces, not a
+    /// helper somebody may forget to call.
+    #[test]
+    fn refuted_labels_cannot_be_written_at_all() {
+        let err = Cause::from_label("v_req_deficit").expect_err("must be refused");
+        assert_eq!(err.label, "v_req_deficit");
+        assert!(err.reason.contains("never a cause"));
+        // No variant spells it, so there is nothing to attest even with a row in hand.
+        for c in [Cause::VirtualRunwayGroundRace, Cause::TakeoffLaunched, Cause::StructuralNoPath] {
+            assert_ne!(c.as_str(), "v_req_deficit");
+        }
+        // An invented label is refused too — the set is closed, not merely filtered.
+        assert!(Cause::from_label("carve_invisible_surface").is_err());
+        // And every variant round-trips through its own spelling.
+        for c in [Cause::VirtualRunwayGroundRace, Cause::TakeoffLaunched, Cause::StructuralNoPath] {
+            assert_eq!(Cause::from_label(c.as_str()).unwrap(), c);
+        }
+    }
+
+    /// A causal label on the wire requires [`AttestedCause`]. `Cause` itself is not `Serialize`.
+    #[test]
+    fn causal_label_serialisation_requires_attested_cause() {
+        let c1 = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        let attested = c1.attest(Cause::VirtualRunwayGroundRace, None).unwrap();
+        let bytes = rmp_serde::to_vec(&attested).expect("AttestedCause is the wire form");
+        let back: String = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(back, "virtual_runway_ground_race");
+        // Unattested Cause has no public as_str outside this crate; in-crate we can still
+        // name the variant, but we must not treat that as a verdict string without attest.
+        let raw = Cause::VirtualRunwayGroundRace;
+        assert_ne!(format!("{raw:?}"), "virtual_runway_ground_race");
+    }
+
+    /// The ground-race label is checked against the state that defines it, not against "some
+    /// controller fields are populated".
+    #[test]
+    fn ground_race_is_attested_only_on_its_own_predicate() {
+        // C1: the Prestrafe->Hop handover, run-up measured, no impulse, jump never commanded.
+        let c1 = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        assert_eq!(
+            c1.attest(Cause::VirtualRunwayGroundRace, None).unwrap().as_str(),
+            "virtual_runway_ground_race",
+        );
+
+        // C2 is the control case: the jump went out and the bot rose. Labelling it a race would
+        // erase the very contrast the facit is built on.
+        let c2 = v296_row(1167, "Prestrafe", "Hop", false, true, 260.4, true);
+        let err = c2.attest(Cause::VirtualRunwayGroundRace, None).expect_err("C2 is not a race");
+        assert!(err.reason.contains("not impulse-free") || err.reason.contains("jump was commanded"));
+        assert_eq!(c2.attest(Cause::TakeoffLaunched, None).unwrap().cause(), Cause::TakeoffLaunched);
+
+        // Wrong handover: two non-empty phase strings are not evidence of *this* transition.
+        let wrong_phase = v296_row(1139, "Off", "Zigzag", false, false, -9.6, true);
+        let err = wrong_phase.attest(Cause::VirtualRunwayGroundRace, None).expect_err("wrong transition");
+        assert!(err.reason.contains("Prestrafe->Hop"));
+
+        // No run-up position: the handover cannot be placed at the lip, so the label is withheld —
+        // which is what the facit means by leaving old replays unknown.
+        let mut no_runup = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        no_runup.sj_progress_measured = false;
+        assert!(no_runup.attest(Cause::VirtualRunwayGroundRace, None).is_err());
+
+        // No observed takeoff at all.
+        let unobserved = v296_row(1139, "Prestrafe", "Hop", false, false, 0.0, false);
+        assert!(unobserved.attest(Cause::VirtualRunwayGroundRace, None).is_err());
+        assert!(unobserved.attest(Cause::TakeoffLaunched, None).is_err());
+    }
+
+    /// A contract for the graph a row was measured against.
+    fn contract_for(stamp: u64, content: &str) -> PlanContract {
+        PlanContract {
+            schema: PLAN_SCHEMA.to_string(),
+            graph_stamp: stamp,
+            graph_content_hash: content.to_string(),
+            map: "dm3".to_string(),
+            cells: 5978,
+            links: 48208,
+            rj_links: 0,
+            build: "0.1.0".to_string(),
+        }
+    }
+
+    /// The structural claim needs an unreachable goal *and* a contract that binds it to a graph.
+    ///
+    /// The row's own pin is not enough and is not consulted for this: level 1 is a map-and-shape tag,
+    /// and two carves of one map can share it while differing in precisely what "no way there" means.
+    #[test]
+    fn structural_claim_needs_an_unreachable_goal_and_a_bound_contract() {
+        let good = contract_for(13_090_435_456_435_551_592, "680b540a642e90cd");
+
+        let reachable = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        assert!(reachable.goal_reachable);
+        let err = reachable.attest(Cause::StructuralNoPath, Some(&good)).expect_err("reachable");
+        assert!(err.reason.contains("no structural claim"));
+
+        let mut severed = reachable.clone();
+        severed.goal_reachable = false;
+        assert_eq!(
+            severed.attest(Cause::StructuralNoPath, Some(&good)).unwrap().cause(),
+            Cause::StructuralNoPath,
+        );
+
+        // No contract at all: nothing to bind the claim to.
+        let err = severed.attest(Cause::StructuralNoPath, None).expect_err("unbound");
+        assert!(err.reason.contains("no graph contract"));
+
+        // A contract without level 2 is not a binding either.
+        let empty = contract_for(severed.graph_stamp, "");
+        assert!(severed.attest(Cause::StructuralNoPath, Some(&empty)).is_err());
+
+        // A contract for a *different* graph is the dangerous case: it looks like evidence.
+        let other = contract_for(severed.graph_stamp ^ 1, "680b540a642e90cd");
+        let err = severed.attest(Cause::StructuralNoPath, Some(&other)).expect_err("wrong graph");
+        assert!(err.reason.contains("different graph"));
+    }
+
+    /// Zero is a real first-air reading, so only the flag can mean "not observed".
+    ///
+    /// This is the last signed field to get the treatment `runway` and `sj_progress` already had —
+    /// a leap that left the ground with no upward impulse measures exactly `0.0`, and a sentinel
+    /// there would erase the very case the facit is about.
+    #[test]
+    fn zero_first_air_vz_is_a_reading_not_an_absence() {
+        let flat = v296_row(1139, "Prestrafe", "Hop", false, false, 0.0, true);
+        assert_eq!(flat.takeoff_outcome(), TakeoffOutcome::NoImpulse,
+                   "a measured 0.0 is a failed leap, not a missing one");
+        let none = v296_row(1139, "Prestrafe", "Hop", false, false, 0.0, false);
+        assert_eq!(none.takeoff_outcome(), TakeoffOutcome::NotObserved);
+        assert_eq!(flat.first_air_vz, none.first_air_vz, "same number, different meaning");
+    }
+
+    /// The topological half of `structural_missing_link` is carried explicitly.
+    ///
+    /// `plan_fail` alone cannot decide it: `unreachable` may be an ordinary redirection. The flags
+    /// say what the graph itself allows, and are pinned to `graph_stamp`.
+    #[test]
+    fn goal_reachability_is_carried_separately_from_plan_fail() {
+        let mut row = v296_row(1139, "Prestrafe", "Hop", false, false, -9.6, true);
+        assert!(row.goal_reachable && !row.goal_redirected);
+        row.goal_reachable = false;
+        row.goal_redirected = true;
+        row.plan_fail = "unreachable".to_string();
+        // A redirection and a severed graph are different facts, and both are on the row.
+        assert!(!row.goal_reachable, "topology says there is no chain at all");
+        assert!(row.goal_redirected, "and the search was aimed elsewhere as a result");
     }
 }
