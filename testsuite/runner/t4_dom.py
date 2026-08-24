@@ -201,6 +201,184 @@ def teamkills_from_card(card: Any, team: str) -> tuple[int | None, int | None]:
     return int(derived), int(kills)
 
 
+# ---------------------------------------------------------------------------
+# The KTX demoinfo card as a second source (spec addendum to v6 §3, ordered by
+# Fable 2026-08-24 after QA's finding 2).
+#
+# `evidence.match_scoreboard` needs a non-empty MVD and the analyzer. The
+# evening of 2026-08-24 the server was torn down before it flushed the demo, so
+# the MVD was 0 bytes and both `shots_fired` and `teamkills` went unavailable —
+# while the frag oracle in the very same run had already read KTX's own
+# demoinfo card, which carries per-player `stats.kills`, `stats.tk` and
+# `weapons.<w>.acc.attacks`. The truth was in the bundle; nothing was reading
+# it. The card is a scoreboard, so it is a §3 source.
+#
+# Two things about this source differ from the qw-analyze card and are written
+# down rather than assumed:
+#
+#  * `teamkills` is the card's OWN `stats.tk`, not `kills - frags - suicides`.
+#    On this card the derivation gives 11 teamkills on 1 kill and the A1 guard
+#    would (rightly) refuse it: KTX counts enemy kills in `kills` and team
+#    kills in `tk` as two independent counters, so the derivation's premise
+#    does not hold here. Reading a field that exists beats deriving one that
+#    does not.
+#  * `tk > kills` is therefore normal on this card and is NOT a malformed
+#    reading — 10 team kills and 1 enemy kill is exactly what the gate wants
+#    to hear about.
+#
+# What still makes it unavailable: a missing card, no rows for our team, a
+# missing or non-numeric or negative counter. Never a zero standing in for an
+# absence.
+KTX_AMMO_WEAPONS = ("sg", "ssg", "ng", "sng", "gl", "rl", "lg")
+
+SOURCE_QW_CARD = "qw-analyze/card"
+SOURCE_KTX_CARD = "ktx/demoinfo"
+SOURCE_MVD_AMMO = "mvd/ammo"
+MEASUREMENT_SOURCES = (SOURCE_QW_CARD, SOURCE_KTX_CARD, SOURCE_MVD_AMMO)
+
+
+def _ktx_rows(document: Any, team: str) -> list[dict[str, Any]] | None:
+    if not isinstance(document, dict):
+        return None
+    players = document.get("players")
+    if not isinstance(players, list) or not players:
+        return None
+    rows = [
+        player
+        for player in players
+        if isinstance(player, dict) and str(player.get("team", "")) == team
+    ]
+    return rows or None
+
+
+def _counter(block: Any, field: str) -> int | None:
+    """A non-negative whole counter out of a card, or None."""
+    if not isinstance(block, dict):
+        return None
+    value = block.get(field)
+    number = _number(value)
+    if number is None or number < 0 or number != int(number):
+        return None
+    return int(number)
+
+
+def _ktx_attacks(row: Any) -> int | None:
+    """One player's attack count, or None when the row cannot be read.
+
+    KTX leaves the `acc` block out entirely for a weapon that was never fired,
+    so an absent block is a zero *for that weapon* — but only once the card has
+    been shown to express accuracy at all. That check lives in `ktx_shots`.
+    """
+    if not isinstance(row, dict):
+        return None
+    weapons = row.get("weapons")
+    if not isinstance(weapons, dict):
+        return None
+    total = 0
+    for weapon in weapons.values():
+        if not isinstance(weapon, dict):
+            continue
+        accuracy = weapon.get("acc")
+        if accuracy is None:
+            continue  # never fired this weapon; KTX omits the block
+        attacks = _counter(accuracy, "attacks")
+        if attacks is None:
+            # An accuracy block we cannot read is a card we do not understand.
+            return None
+        total += attacks
+    return total
+
+
+def ktx_shots(document: Any, team: str) -> int | None:
+    """Shots for one team out of the KTX card's per-weapon attack counters.
+
+    A zero here is only believed once the card has been shown capable of a
+    non-zero reading: KTX omits `acc` for a weapon that was never fired, so a
+    team with no `acc` blocks anywhere looks identical to a card whose format
+    does not carry accuracy at all. The document must therefore contain at
+    least one readable `acc.attacks` somewhere — on either team — before this
+    returns a number. That is the negative control the bench's own rule
+    demands, applied to the instrument before its output is used.
+
+    The axe carries no counter here either, exactly as in the ammo signal, so
+    this is a floor on the count rather than the whole of it — and a team that
+    only ever axed reads as zero shots and fells gate (a), which is the honest
+    reading of "did not shoot at the enemy".
+    """
+    rows = _ktx_rows(document, team)
+    if rows is None:
+        return None
+    everyone = document.get("players") if isinstance(document, dict) else None
+    expresses_accuracy = any(
+        isinstance(player, dict)
+        and isinstance(player.get("weapons"), dict)
+        and any(
+            isinstance(weapon, dict) and _counter(weapon.get("acc"), "attacks") is not None
+            for weapon in player["weapons"].values()
+        )
+        for player in (everyone if isinstance(everyone, list) else [])
+    )
+    if not expresses_accuracy:
+        return None
+    total = 0
+    for row in rows:
+        attacks = _ktx_attacks(row)
+        if attacks is None:
+            return None
+        total += attacks
+    return total
+
+
+def ktx_teamkills(document: Any, team: str) -> tuple[int | None, int | None]:
+    """`(teamkills, kills)` for one team out of the KTX card's own counters."""
+    rows = _ktx_rows(document, team)
+    if rows is None:
+        return None, None
+    teamkills = 0
+    kills = 0
+    for row in rows:
+        stats = row.get("stats")
+        row_tk = _counter(stats, "tk")
+        row_kills = _counter(stats, "kills")
+        if row_tk is None or row_kills is None:
+            return None, None
+        teamkills += row_tk
+        kills += row_kills
+    return teamkills, kills
+
+
+def pick_teamkills(
+    card: Any, ktx_document: Any, team: str
+) -> tuple[int | None, int | None, str | None]:
+    """`(teamkills, kills, source)` from the best source that has an answer.
+
+    The qw-analyze card wins whenever it derives a pair, so an envelope that
+    carries a card can always be recounted against it. KTX's own card is the
+    fallback for the case that produced this function: a demo the server never
+    flushed leaves no MVD, no analyzer card, and the counters sitting unread in
+    the demoinfo file the frag oracle already opened.
+    """
+    teamkills, kills = teamkills_from_card(card, team)
+    if teamkills is not None:
+        return teamkills, kills, SOURCE_QW_CARD
+    teamkills, kills = ktx_teamkills(ktx_document, team)
+    if teamkills is not None:
+        return teamkills, kills, SOURCE_KTX_CARD
+    return None, None, None
+
+
+def pick_shots(
+    mvd_shots: Any, ktx_document: Any, team: str
+) -> tuple[int | None, str | None]:
+    """`(shots, source)` — the MVD's ammo signal first, then the KTX card."""
+    if _int_or_none(mvd_shots) is not None:
+        return int(mvd_shots), SOURCE_MVD_AMMO
+    shots = ktx_shots(ktx_document, team)
+    if shots is not None:
+        return shots, SOURCE_KTX_CARD
+    return None, None
+
+
 def reached_from_ladder(ladder: Any) -> int:
     """The highest *won* skill; 0 when nothing was won (§2).
 
@@ -256,6 +434,17 @@ RUNG_MEASURED_FIELDS = (
     # the normal reading rather than the alarm. The first live run has to show
     # this number before (d) can be trusted in anger.
     "items_tracked",
+)
+
+#: Fields a rung MAY carry beside the required ones. They are optional so that
+#: envelopes written before they existed keep validating: a field added to the
+#: receipt must not retroactively fell evidence that was accepted when it was
+#: written. Nothing here feeds a gate.
+RUNG_MEASURED_OPTIONAL = (
+    # Seconds spent waiting for the server to flush this match's demo, or null
+    # when it never flushed. The receipt that says whether every demo-derived
+    # field had a demo to derive from.
+    "demo_flush_s",
 )
 
 

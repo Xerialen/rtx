@@ -30,7 +30,14 @@ from . import combat_lock as combat_lock_mod
 from . import evidence as evidence_mod
 from . import t4_dom
 from .control import ControlError
-from .runlib import RigLifecycle, RigLock, RunRecorder, config_path, utc_text
+from .runlib import (
+    RigLifecycle,
+    RigLock,
+    RunRecorder,
+    config_path,
+    utc_text,
+    wait_for_demo_flush,
+)
 from .t3 import (
     _IDLE_STATUSES,
     GateError,
@@ -39,6 +46,7 @@ from .t3 import (
     _md5_file,
     _movement_check,
     _read_demoinfo,
+    _read_demoinfo_document,
     _udp_serverinfo,
     _wait_serverinfo,
 )
@@ -48,6 +56,11 @@ FROG_TEAM = "frog"
 #: derivation off the same row, so the name lives in `t4_dom`.
 BRANCH_TEAM = t4_dom.BRANCH_TEAM
 SEATS = 4
+#: The accumulation window T4 hands its side channel. It has to be wider than
+#: T4's own sampling period or `_Side` counts no stillness at all — the
+#: 2026-08-24 failure, where a bot that never moved measured 0.0 s. Named so a
+#: unit can assert the relation instead of trusting the call site.
+SIDE_SAMPLE_WINDOW_S = t4_dom.STILL_SAMPLE_GAP_MAX_S
 # KTX echoes e.g. `skill &cf0010&r` to the seating client: colour code &cf00
 # followed by the skill digits, closed by &r.
 SKILL_ECHO = re.compile(r"skill &c[0-9a-f]{3}(\d+)&r")
@@ -157,7 +170,7 @@ class _StillWatch:
             return
         self._due = now + self.interval_s
         before = side.polls
-        side.sample()
+        side.sample(now)
         if side.polls == before:
             # `_Side.sample` swallows a dead control channel and returns; the
             # poll counter is the only way to tell a sample from a silence.
@@ -171,13 +184,26 @@ class _StillWatch:
         self._last_ok = now
         self.samples += 1
 
-    def measured(self) -> bool:
+    def measured(self, side: Any) -> bool:
+        """Whether the number the side accumulated is a measurement at all.
+
+        The third condition is the one 2026-08-24 taught: `_Side` only counts
+        a stretch of stillness when two polls are closer together than its own
+        accumulation window, so a watch that samples slower than that window
+        measures nothing and reports 0.0 — the best possible value — for a bot
+        that stood still the whole match. The gap instrument saw nothing wrong,
+        because sampling *happened*; it just did not measure. A blind
+        instrument has to say `unavailable`, not "green".
+        """
+        window = getattr(side, "sample_window_s", 0.0)
+        if window <= self.interval_s:
+            return False
         if self.samples < 2 or self.gap_max_seen is None:
             return False
         return self.gap_max_seen <= self.gap_max_s
 
     def still_s_per_bot(self, side: Any) -> float | None:
-        if not self.measured():
+        if not self.measured(side):
             return None
         return round(side.still_s / max(1, side.bots_seen), 1)
 
@@ -464,7 +490,16 @@ def _play_rung(
 ) -> dict[str, Any]:
     t4 = config["t4"]
     duration = t4["duration_s"]
-    side = _Side("branch", binary, t4["control_port"])
+    # The window has to cover T4's own sampling period or `still_s` measures
+    # nothing at all and reports 0.0 — the best possible value — for a bot that
+    # never moved (QA, 2026-08-24, punkt 3). The gap ceiling is already the
+    # contract for how far apart two samples may be, so it is the window too.
+    side = _Side(
+        "branch",
+        binary,
+        t4["control_port"],
+        sample_window_s=SIDE_SAMPLE_WINDOW_S,
+    )
     still_watch = _StillWatch()
     item_watch = _ItemWatch()
     started_wallclock = time.time()
@@ -525,14 +560,20 @@ def _play_rung(
             raise RuntimeError(
                 f"rung {skill}: client process died before the match ended"
             )
-        time.sleep(3.0)  # let KTX finish the MVD and demoinfo embed
+        # Not a fixed sleep: mvdsv holds the recording in memory and writes it
+        # when KTX stops recording. Tearing the rig down before that happens is
+        # what produced 14 of 17 zero-byte T4 demos.
+        flush = wait_for_demo_flush(demo_dir, started_wallclock)
         _verify_skill_echoes(seater.log_path, skill, offset=log_offset)
         try:
             seater.command("botcmd removeall")
             time.sleep(1.0)
         except Exception:
             pass  # the next rung's removeall covers it
-        demoinfo = _read_demoinfo(demo_dir, started_wallclock)
+        demoinfo_document = _read_demoinfo_document(demo_dir, started_wallclock)
+        demoinfo = _read_demoinfo(
+            demo_dir, started_wallclock, document=demoinfo_document
+        )
         if demoinfo is None:
             raise RuntimeError(
                 f"rung {skill}: no KTX demoinfo found — the ladder has no other "
@@ -551,7 +592,18 @@ def _play_rung(
     scoreboard = evidence_mod.match_scoreboard(
         config, demo_dir, mvd, map_name, config["t4"]["duration_s"], config_path
     )
-    teamkills, kills = t4_dom.teamkills_from_card(scoreboard, BRANCH_TEAM)
+    # Primary: the qw-analyze card and the MVD's ammo signal. Both need a demo
+    # the server actually wrote.
+    # Second source: KTX's own card, which the frag oracle has already read in
+    # this same function and which carries the counters outright. Only when the
+    # primary produced nothing, so a present qw-analyze card always wins and
+    # the validator can keep recounting it.
+    teamkills, kills, teamkills_source = t4_dom.pick_teamkills(
+        scoreboard, demoinfo_document, BRANCH_TEAM
+    )
+    shots, shots_source = t4_dom.pick_shots(
+        _rung_shots(config, demo_dir, mvd), demoinfo_document, BRANCH_TEAM
+    )
     rung = {
         "skill": skill,
         "frags_for": frags_for,
@@ -562,10 +614,12 @@ def _play_rung(
         # What this match contributed to the four judged fields, beside the
         # match it came from. A ladder number nobody can trace back to a rung
         # is a number nobody can check.
+        "sources": {"shots_fired": shots_source, "teamkills": teamkills_source},
         "measured": {
-            "shots_fired": _rung_shots(config, demo_dir, mvd),
+            "shots_fired": shots,
             "teamkills": teamkills,
             "kills": kills,
+            "demo_flush_s": flush["waited_s"] if flush["state"] == "flushed" else None,
             "still_s_per_bot": still_watch.still_s_per_bot(side),
             "still_gap_max_s": (
                 round(still_watch.gap_max_seen, 3)

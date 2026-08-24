@@ -82,6 +82,10 @@
      "item_takes": 27,
      "items_poll_gap_max_s": 1.2,
      "items_tracked": 42
+    },
+    "sources": {
+     "shots_fired": "mvd/ammo",
+     "teamkills": "qw-analyze/card"
     }
    }
   ],

@@ -368,6 +368,97 @@ class RigLifecycle(AbstractContextManager["RigLifecycle"]):
             subprocess.run(self.down, shell=True, check=False)
 
 
+#: How long a tier waits for the server to flush its demo before giving up.
+#: Generous on purpose: the wait costs nothing when the flush is quick, and the
+#: thing it protects against costs the whole match's evidence.
+DEMO_FLUSH_TIMEOUT_S = 90.0
+#: The demo is considered written once its size has held still for this long.
+DEMO_FLUSH_STABLE_S = 3.0
+
+
+def wait_for_demo_flush(
+    demo_dir: "Path | None",
+    since_wallclock: float,
+    timeout_s: float = DEMO_FLUSH_TIMEOUT_S,
+    stable_s: float = DEMO_FLUSH_STABLE_S,
+    poll_s: float = 1.0,
+) -> dict[str, Any]:
+    """Wait, bounded, for this match's MVD to exist on disk with content.
+
+    `sv_demoUseCache 1` makes mvdsv hold the recording in memory and write it
+    out when KTX stops recording ("Server starts recording (memory)" ->
+    "Server recording completed"). The runner used to sleep three seconds and
+    then tear the rig down, which on 2026-08-24 killed the server before the
+    cache was ever written: the file existed, named correctly, and was 0 bytes.
+    The pattern is old and it is not rare — 14 of 17 T4 demos and 19 of 53 T3
+    demos on the rig are 0 bytes (QA, 2026-08-24, punkt 5). Everything
+    downstream that reads the demo — the match card, the ammo signal, the
+    combat lock — silently went unavailable because of it.
+
+    The observable is the file itself rather than the journal: the bench does
+    not read journald, and "size > 0 and no longer growing" is the same fact
+    the "recording completed" line reports.
+
+    Returns a receipt, and never raises. A timeout is reported honestly and
+    loudly and then flows into the ordinary unavailable path: a ladder that was
+    actually played is not thrown away because its evidence was not, but no
+    caller can mistake the outcome for success either.
+    """
+    receipt: dict[str, Any] = {
+        "state": "no-demo-dir",
+        "waited_s": 0.0,
+        "path": None,
+        "bytes": None,
+        "timeout_s": timeout_s,
+    }
+    if demo_dir is None:
+        return receipt
+    began = time.monotonic()
+    receipt["state"] = "timeout"
+    last_size: int | None = None
+    steady_since: float | None = None
+    while time.monotonic() - began < timeout_s:
+        newest = None
+        try:
+            candidates = [
+                path
+                for path in demo_dir.glob("*.mvd")
+                if path.stat().st_mtime >= since_wallclock - 5
+            ]
+            newest = max(candidates, key=lambda p: p.stat().st_mtime, default=None)
+        except OSError:
+            candidates = []
+        if newest is not None:
+            try:
+                size = newest.stat().st_size
+            except OSError:
+                size = 0
+            receipt["path"] = newest.name
+            receipt["bytes"] = size
+            if size > 0:
+                if size == last_size:
+                    if steady_since is None:
+                        steady_since = time.monotonic()
+                    elif time.monotonic() - steady_since >= stable_s:
+                        receipt["state"] = "flushed"
+                        break
+                else:
+                    steady_since = None
+            last_size = size
+        time.sleep(poll_s)
+    receipt["waited_s"] = round(time.monotonic() - began, 1)
+    if receipt["state"] != "flushed":
+        print(
+            f"demo flush FAILED after {receipt['waited_s']} s: "
+            f"{receipt['path'] or 'no .mvd appeared'} is "
+            f"{receipt['bytes']} bytes. The server was about to be torn down "
+            "with the recording still in its cache; every field that reads the "
+            "demo will be unavailable for this match.",
+            flush=True,
+        )
+    return receipt
+
+
 class RigLock(AbstractContextManager["RigLock"]):
     """Exclusive local lock for one configured control port."""
 

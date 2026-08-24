@@ -33,6 +33,10 @@
      "item_takes": null,
      "items_poll_gap_max_s": null,
      "items_tracked": null
+    },
+    "sources": {
+     "shots_fired": null,
+     "teamkills": null
     }
    }
   ],

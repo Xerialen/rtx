@@ -33,6 +33,10 @@
      "item_takes": null,
      "items_poll_gap_max_s": null,
      "items_tracked": 42
+    },
+    "sources": {
+     "shots_fired": "mvd/ammo",
+     "teamkills": "ktx/demoinfo"
     }
    }
   ],

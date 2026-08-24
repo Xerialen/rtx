@@ -374,7 +374,23 @@ stops before T1 when T0 import is missing or FAIL.
   (d) `item_pickups == 0` over the whole ladder. The thresholds are calibrated
   against the existing corpus, copied into the envelope, and pinned: a run that
   restates its own gate is refused.
-- `teamkills` comes off the match card as `kills - frags - suicides` for team
+- **Two sources, in order (addendum to v6 §3, 2026-08-24).** `shots_fired` and
+  `teamkills` come first from the MVD (the ammo signal and the qw-analyze card)
+  and, when the MVD is missing or empty, from **KTX's own demoinfo card** — the
+  same file the frag oracle already reads. Each rung names what it used in
+  `sources` (`mvd/ammo`, `qw-analyze/card`, `ktx/demoinfo`); a measured field
+  without a source, a source without a measurement, or a source outside that
+  vocabulary is refused. A rung carrying a qw-analyze card that derives the
+  pair must use it, so the validator can always recount that path.
+  On the KTX card the counters are read outright: `weapons.<w>.acc.attacks`
+  for shots and `stats.tk` for teamkills — **not** `kills - frags - suicides`,
+  because KTX counts enemy kills and team kills as two independent counters
+  and the derivation's premise does not hold there (on the 2026-08-24 card it
+  yields 11 teamkills on 1 kill). `tk > kills` is therefore an ordinary
+  reading on that source, not a malformed one. A zero shot count is believed
+  only after the card has been shown to carry accuracy at all: KTX omits `acc`
+  for a weapon never fired, so a card with no accuracy anywhere is unavailable.
+- `teamkills` from the qw-analyze card is `kills - frags - suicides` for team
   `brch`, and is **unavailable** — never a number — when any component is
   missing, non-numeric or negative, or when the derived count exceeds the
   team's own kills. Five real cards in the corpus derive more teamkills than
@@ -391,6 +407,12 @@ stops before T1 when T0 import is missing or FAIL.
   (d) is measuring the wide channel it was calibrated on or has quietly
   narrowed to the two powerups (46 of 51 ten-minute T2 runs saw zero quad+pent
   takes, so a narrow channel would make `item_pickups == 0` the normal reading).
+- `measured.demo_flush_s` is how long the tier waited for the server to write
+  this match's demo, or null when it never appeared. `sv_demoUseCache 1` keeps
+  the recording in memory until KTX stops recording, and a fixed sleep before
+  teardown left 14 of 17 T4 demos at 0 bytes — with every demo-derived field
+  silently unavailable behind it. The tier now waits for the file, bounded,
+  and says so.
 - `measured` per rung is the ladder's audit trail: when every rung carries it, the
   validator refolds it and refuses `measurements`/`sampling` that disagree.
 - Draw rule: a draw does not advance the ladder and stops it (recorded as

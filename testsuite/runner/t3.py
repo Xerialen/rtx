@@ -75,10 +75,29 @@ def _client_binary(config: dict[str, Any], side: str) -> Path:
 class _Side:
     """One client process plus its control connection and running measurement."""
 
-    def __init__(self, side: str, binary: Path, control_port: int):
+    #: The longest gap between two polls that still counts as one measured
+    #: stretch of a bot's movement. T3's own loop runs at ~4 Hz, so 0.6 s is
+    #: 2.4x its period and the default keeps T3's numbers exactly where they
+    #: were. It is a parameter because T4 samples at 1.0 s: with the constant
+    #: hardcoded at 0.6 every T4 sample fell outside the window, `still_s`
+    #: stayed at 0.0 for a match in which a bot never moved, and gate (c)
+    #: reported the *best possible* value where the truth was the worst
+    #: possible (QA, 2026-08-24, punkt 3). A caller that samples slower than
+    #: the window measures nothing at all, so the window has to follow the
+    #: caller's period rather than the other way round.
+    DEFAULT_SAMPLE_WINDOW_S = 0.6
+
+    def __init__(
+        self,
+        side: str,
+        binary: Path,
+        control_port: int,
+        sample_window_s: float = DEFAULT_SAMPLE_WINDOW_S,
+    ):
         self.side = side
         self.binary = binary
         self.control_port = control_port
+        self.sample_window_s = float(sample_window_s)
         self.process: subprocess.Popen | None = None
         self.control: Control | None = None
         self.stalls: list[dict[str, Any]] = []
@@ -148,10 +167,16 @@ class _Side:
         assert self.control is not None
         return self.control.request("status", timeout=8.0)["data"].get("bots", [])
 
-    def sample(self) -> None:
-        """One measurement poll: origins, per-second speed, stillness, stalls."""
+    def sample(self, now: float | None = None) -> None:
+        """One measurement poll: origins, per-second speed, stillness, stalls.
+
+        `now` is injectable so the caller's clock and this one are the same
+        reading — and so the stillness arithmetic can be driven over a whole
+        simulated match offline. It was not testable before, which is how a
+        sampling period that measured nothing shipped.
+        """
         assert self.control is not None
-        now = time.monotonic()
+        now = time.monotonic() if now is None else now
         try:
             bots = self.status_bots()
         except Exception:
@@ -168,7 +193,7 @@ class _Side:
             previous = self._previous.get(entity)
             if bot.get("alive") and previous is not None:
                 elapsed = now - previous[1]
-                if 0.01 < elapsed < 0.6:
+                if 0.01 < elapsed < self.sample_window_s:
                     speed = math.hypot(
                         origin[0] - previous[0][0], origin[1] - previous[0][1]
                     ) / elapsed
@@ -427,9 +452,17 @@ def _combat_lock(
     }
 
 
-def _read_demoinfo(
+def _read_demoinfo_document(
     demo_dir: Path | None, started_wallclock: float
-) -> tuple[dict[str, int], str] | None:
+) -> dict[str, Any] | None:
+    """KTX's own card for the match that just ended, parsed, or None.
+
+    Split out of `_read_demoinfo` because the card carries more than the frag
+    oracle ever read out of it: per-player `stats.kills`, `stats.tk` and
+    `weapons.<w>.acc.attacks`. T4 reads those as a second measurement source
+    when the MVD is missing or empty (spec addendum to v6 §3). Both callers
+    must see the same file, so the choosing happens once, here.
+    """
     if demo_dir is None:
         return None
     candidates = [
@@ -445,6 +478,18 @@ def _read_demoinfo(
     try:
         document = json.loads(newest.read_text(encoding="utf-8", errors="replace"))
     except (OSError, ValueError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _read_demoinfo(
+    demo_dir: Path | None,
+    started_wallclock: float,
+    document: dict[str, Any] | None = None,
+) -> tuple[dict[str, int], str] | None:
+    if document is None:
+        document = _read_demoinfo_document(demo_dir, started_wallclock)
+    if document is None:
         return None
     frags_by_team: dict[str, int] = {}
     for player in document.get("players", []):
@@ -542,7 +587,10 @@ def run(config: dict[str, Any]) -> Path:
                             f"{side.side} client process died before the match "
                             "ended — the score does not cover the full match"
                         )
-                time.sleep(3.0)  # let KTX finish the MVD and demoinfo embed
+                # mvdsv holds the recording in memory and writes it when KTX
+                # stops recording; a fixed sleep let the teardown kill 19 of 53
+                # T3 demos mid-cache. Wait for the file, bounded.
+                wait_for_demo_flush(demo_dir, started_wallclock)
                 oracle = "control-status"
                 mvd = ""
                 demo_dir_value = t3.get("demoinfo_dir", "")

@@ -44,12 +44,16 @@
  "t4_item_proxy_unlabelled.json": ".payload.dom.labels: a judged (d) outcome carries the 'item-pickups-proxy'",
  "t4_ladder_out_of_order.json": ".payload.ladder[1].skill: ladder must use 10,12,14,16,18,20",
  "t4_legacy_outside_inventory.json": "is not one of them",
+ "t4_measurement_without_a_source.json": ".sources.teamkills: a measured field has to say where it came from",
  "t4_ok_despite_declared_absence.json": ".payload.verdict: expected OMÄTT: omätta fält: t4:item_chase",
  "t4_ok_with_unavailable.json": ".payload.measurements: expected {'shots_fired': 402,",
  "t4_reached_counts_the_draw.json": ".payload.reached: expected 10 — the highest won skill, 0 if none was won",
  "t4_reached_on_a_loss.json": ".payload.reached: expected 0 — the highest won skill, 0 if none was won",
+ "t4_source_not_in_vocabulary.json": ".sources.shots_fired: expected one of qw-analyze/card, ktx/demoinfo, mvd/ammo",
+ "t4_source_without_a_measurement.json": ".sources.shots_fired: names a source for a field that was not measured",
  "t4_still_gap_over_ceiling.json": ".payload.sampling.still_gap_max_s: gap 4.2 s exceeds the 3.0 s ceiling",
- "t4_teamkills_off_a_bad_card.json": ".measured.teamkills: expected (None, None) from this rung's own match card",
+ "t4_teamkills_disagree_with_card.json": ".measured.teamkills: expected (8, 45) from this rung's own match card",
+ "t4_teamkills_off_a_bad_card.json": ".sources.teamkills: names the match card as the source, but this rung's card derives nothing",
  "t4_threshold_loosened.json": ".payload.thresholds: a run cannot restate its own gate",
  "t4_v2_complete.json": ".payload.verdict: expected one of VINST, OK, FAIL, OMÄTT, OAVGJORD"
 }

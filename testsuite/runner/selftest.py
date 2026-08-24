@@ -115,7 +115,11 @@ def _t4_units() -> list[str]:
     zero. Every check here fails on the code as it stood before the change,
     because none of these functions existed.
     """
+    import copy
+
     from . import combat_lock as combat_lock_mod
+    from . import runlib as runlib_mod
+    from . import t3 as t3_mod
     from . import t4 as t4_mod
     from . import t4_dom
 
@@ -410,8 +414,9 @@ def _t4_units() -> list[str]:
             self.alive = alive
             self.still_s = 40.0
             self.bots_seen = 4
+            self.sample_window_s = t4_dom.STILL_SAMPLE_GAP_MAX_S
 
-        def sample(self) -> None:
+        def sample(self, now: float | None = None) -> None:
             if self.alive:
                 self.polls += 1
 
@@ -425,21 +430,21 @@ def _t4_units() -> list[str]:
     watch, side = watch_over([0.0, 1.0, 2.0, 3.0, 4.0])
     check("nk16.tight.samples", watch.samples, 5)
     check("nk16.tight.gap", round(watch.gap_max_seen, 3), 1.0)
-    check("nk16.tight.measured", watch.measured(), True)
+    check("nk16.tight.measured", watch.measured(side), True)
     check("nk16.tight.value", watch.still_s_per_bot(side), 10.0)
 
     watch, side = watch_over([0.0, 1.0, 5.5, 6.5])
     check("nk16.gapped.gap", round(watch.gap_max_seen, 3), 4.5)
-    check("nk16.gapped.measured", watch.measured(), False)
+    check("nk16.gapped.measured", watch.measured(side), False)
     check("nk16.gapped.value", watch.still_s_per_bot(side), None)
 
     watch, side = watch_over([0.0, 1.0, 2.0], alive=False)
     check("nk16.dead_channel.samples", watch.samples, 0)
-    check("nk16.dead_channel.measured", watch.measured(), False)
+    check("nk16.dead_channel.measured", watch.measured(side), False)
     check("nk16.dead_channel.value", watch.still_s_per_bot(side), None)
 
-    watch, _ = watch_over([0.0])
-    check("nk16.one_sample.measured", watch.measured(), False)
+    watch, side = watch_over([0.0])
+    check("nk16.one_sample.measured", watch.measured(side), False)
 
     # NK 9 / NK 16, item side: a take is an available -> unavailable edge, the
     # first look only seeds the state, and a poll gap over the ceiling makes
@@ -501,6 +506,222 @@ def _t4_units() -> list[str]:
     check("fold.summed", folded["shots_fired"], 140)
     check("fold.partial_is_unavailable", folded["item_pickups"], None)
     check("fold.absent_block", t4_dom.measure_ladder([{"skill": 10}])["shots_fired"], None)
+
+    # --- Rond 2, QA 2026-08-24 -------------------------------------------
+    # Punkt 2: KTX's own card as the second measurement source. The fixture is
+    # the evening's real card, byte for byte (sha b54bdbf1…), so this is the
+    # actual match being re-judged rather than a story about it.
+    card_path = (
+        Path(__file__).resolve().parent.parent
+        / "schema" / "fixtures" / "cards" / "ktx-demoinfo-20260824-1642.json"
+    )
+    ktx = json.loads(card_path.read_text(encoding="utf-8"))
+    check("ktx.real_shots", t4_dom.ktx_shots(ktx, "brch"), 0)
+    check("ktx.real_teamkills", t4_dom.ktx_teamkills(ktx, "brch"), (10, 1))
+    check("ktx.enemy_shots", t4_dom.ktx_shots(ktx, "frog"), 1286)
+    check("ktx.enemy_teamkills", t4_dom.ktx_teamkills(ktx, "frog"), (1, 82))
+    # Fable's NK: this card must fell gates (a) AND (b).
+    evening = {
+        "shots_fired": t4_dom.ktx_shots(ktx, "brch"),
+        "teamkills": t4_dom.ktx_teamkills(ktx, "brch")[0],
+        "kills_total": t4_dom.ktx_teamkills(ktx, "brch")[1],
+        "still_s_per_bot_max": None,
+        "item_pickups": 211,
+    }
+    check(
+        "ktx.gates_fell",
+        t4_dom.failed_gates(evening),
+        ["a:shots_fired", "b:teamkill_share"],
+    )
+    check(
+        "ktx.verdict",
+        t4_dom.adjudicate(evening, {"drew": False, "won_top": False, "reached": 0})[
+            "verdict"
+        ],
+        "FAIL",
+    )
+    # The derivation §3 names would refuse this same card, which is why the KTX
+    # source reads `stats.tk` instead: KTX counts enemy kills and team kills as
+    # two independent counters, so 10 teamkills on 1 kill is a reading, not a
+    # contradiction.
+    check(
+        "ktx.derivation_would_refuse",
+        t4_dom.teamkills_from_card(
+            {"teams": [{"name": "brch", "kills": 1, "frags": -10, "suicides": 0}]},
+            "brch",
+        ),
+        (None, None),
+    )
+    # Malformed cards. A zero is only believed once the card has been shown
+    # able to say something else: KTX omits `acc` for a weapon never fired, so
+    # a card with no accuracy anywhere is unavailable, not zero.
+    blind_card = copy.deepcopy(ktx)
+    for player in blind_card["players"]:
+        for weapon in (player.get("weapons") or {}).values():
+            if isinstance(weapon, dict):
+                weapon.pop("acc", None)
+    check("ktx.no_accuracy_anywhere", t4_dom.ktx_shots(blind_card, "brch"), None)
+    negative = copy.deepcopy(ktx)
+    negative["players"][0]["weapons"]["sg"]["acc"]["attacks"] = -3
+    check("ktx.negative_attacks", t4_dom.ktx_shots(negative, "frog"), None)
+    no_tk = copy.deepcopy(ktx)
+    for player in no_tk["players"]:
+        if str(player.get("team")) == "brch":
+            player["stats"].pop("tk", None)
+    check("ktx.missing_tk", t4_dom.ktx_teamkills(no_tk, "brch"), (None, None))
+    fractional = copy.deepcopy(ktx)
+    for player in fractional["players"]:
+        if str(player.get("team")) == "brch":
+            player["stats"]["tk"] = 1.5
+    check("ktx.fractional_counter", t4_dom.ktx_teamkills(fractional, "brch"), (None, None))
+    check("ktx.unknown_team", t4_dom.ktx_teamkills(ktx, "nope"), (None, None))
+    check("ktx.no_document", t4_dom.ktx_shots(None, "brch"), None)
+    check("ktx.empty_roster", t4_dom.ktx_shots({"players": []}, "brch"), None)
+
+    # The precedence between the two sources, and that the second one is
+    # actually reached. The qw-analyze card wins when it derives a pair, so an
+    # envelope carrying a card stays recountable; KTX answers when it does not.
+    good_card = {"teams": [{"name": "brch", "kills": 45, "frags": 34, "suicides": 3}]}
+    check(
+        "source.card_wins",
+        t4_dom.pick_teamkills(good_card, ktx, "brch"),
+        (8, 45, t4_dom.SOURCE_QW_CARD),
+    )
+    check(
+        "source.ktx_when_no_card",
+        t4_dom.pick_teamkills(None, ktx, "brch"),
+        (10, 1, t4_dom.SOURCE_KTX_CARD),
+    )
+    check(
+        "source.ktx_when_card_derives_nothing",
+        t4_dom.pick_teamkills(
+            {"teams": [{"name": "brch", "kills": 6, "frags": -5, "suicides": 0}]},
+            ktx,
+            "brch",
+        ),
+        (10, 1, t4_dom.SOURCE_KTX_CARD),
+    )
+    check(
+        "source.nothing_anywhere",
+        t4_dom.pick_teamkills(None, None, "brch"),
+        (None, None, None),
+    )
+    check(
+        "source.mvd_wins_for_shots",
+        t4_dom.pick_shots(17, ktx, "brch"),
+        (17, t4_dom.SOURCE_MVD_AMMO),
+    )
+    check(
+        "source.ktx_shots_when_no_mvd",
+        t4_dom.pick_shots(None, ktx, "brch"),
+        (0, t4_dom.SOURCE_KTX_CARD),
+    )
+    check(
+        "source.no_shots_anywhere",
+        t4_dom.pick_shots(None, None, "brch"),
+        (None, None),
+    )
+
+    # Punkt 3: the stillness instrument. A bot that never moved, sampled at the
+    # spec's own 1.0 s, over a whole 300 s match.
+    class FakeControl:
+        def __init__(self) -> None:
+            self.events: list[Any] = []
+
+        def request(self, *args: Any, **kwargs: Any) -> Any:
+            return {"data": {"bots": []}}
+
+    def still_over_a_match(window_s: float | None) -> tuple[Any, Any]:
+        side = (
+            t3_mod._Side("branch", Path("/nonexistent"), 1)
+            if window_s is None
+            else t3_mod._Side("branch", Path("/nonexistent"), 1, sample_window_s=window_s)
+        )
+        side.control = FakeControl()
+        side.status_bots = lambda: [
+            {"ent": 1, "alive": True, "origin": [0.0, 0.0, 0.0], "frags": 0}
+        ]
+        watch = t4_mod._StillWatch()
+        for tick in range(301):
+            watch.maybe_sample(side, 1000.0 + tick * t4_dom.STILL_SAMPLE_INTERVAL_S)
+        return watch, side
+
+    # The window the runner actually hands the side channel, not one the test
+    # picked: a window at or below the sampling period measures nothing.
+    check(
+        "still.wiring_covers_the_period",
+        t4_mod.SIDE_SAMPLE_WINDOW_S > t4_dom.STILL_SAMPLE_INTERVAL_S,
+        True,
+    )
+    watch, side = still_over_a_match(t4_mod.SIDE_SAMPLE_WINDOW_S)
+    check("still.motionless_match", watch.still_s_per_bot(side), 300.0)
+    check("still.measured", watch.measured(side), True)
+    check(
+        "still.gate_fells",
+        t4_dom.failed_gates({"still_s_per_bot_max": watch.still_s_per_bot(side)}),
+        ["c:still_s"],
+    )
+    # The old window against the spec's own sampling period: it accumulated
+    # nothing and would have reported 0.0 — the best possible value — for the
+    # worst possible truth. It now reports unavailable instead.
+    blind_watch, blind_side = still_over_a_match(None)
+    check("still.old_window_accumulates_nothing", blind_side.still_s, 0.0)
+    check("still.old_window_is_unavailable", blind_watch.still_s_per_bot(blind_side), None)
+    check("still.old_window_not_measured", blind_watch.measured(blind_side), False)
+
+    # A normally moving bot does not fell the gate. 200 units per second is
+    # ordinary running; the stillness test is `speed < 16`.
+    moving_side = t3_mod._Side("branch", Path("/nonexistent"), 1, sample_window_s=3.0)
+    moving_side.control = FakeControl()
+    position = {"x": 0.0}
+
+    def moving_bots() -> list[dict[str, Any]]:
+        position["x"] += 200.0
+        return [{"ent": 1, "alive": True, "origin": [position["x"], 0.0, 0.0], "frags": 0}]
+
+    moving_side.status_bots = moving_bots
+    moving_watch = t4_mod._StillWatch()
+    for tick in range(301):
+        moving_watch.maybe_sample(moving_side, 2000.0 + tick * 1.0)
+    check("still.moving_match", moving_watch.still_s_per_bot(moving_side), 0.0)
+    check(
+        "still.moving_does_not_fell",
+        t4_dom.failed_gates(
+            {"still_s_per_bot_max": moving_watch.still_s_per_bot(moving_side)}
+        ),
+        [],
+    )
+
+    # Punkt 5: the demo flush wait. A fixed sleep let the teardown kill the
+    # recording while it was still in the server's cache.
+    import tempfile as _tempfile
+
+    with _tempfile.TemporaryDirectory(prefix="rtx-t4-flush-") as temp:
+        demo_dir = Path(temp)
+        empty = demo_dir / "4on4_frog[dm3]-empty.mvd"
+        empty.write_bytes(b"")
+        # Tonight's exact shape: the file exists, correctly named, 0 bytes.
+        receipt = runlib_mod.wait_for_demo_flush(
+            demo_dir, 0.0, timeout_s=0.6, stable_s=0.2, poll_s=0.1
+        )
+        check("flush.zero_bytes_times_out", receipt["state"], "timeout")
+        check("flush.zero_bytes_reported", receipt["bytes"], 0)
+        written = demo_dir / "4on4_frog[dm3]-written.mvd"
+        written.write_bytes(b"MVD" * 1000)
+        receipt = runlib_mod.wait_for_demo_flush(
+            demo_dir, 0.0, timeout_s=3.0, stable_s=0.2, poll_s=0.1
+        )
+        check("flush.written_is_flushed", receipt["state"], "flushed")
+        check("flush.written_bytes", receipt["bytes"], 3000)
+        check("flush.names_the_file", receipt["path"], written.name)
+    receipt = runlib_mod.wait_for_demo_flush(None, 0.0, timeout_s=0.2)
+    check("flush.no_demo_dir", receipt["state"], "no-demo-dir")
+    with _tempfile.TemporaryDirectory(prefix="rtx-t4-flush-") as temp:
+        receipt = runlib_mod.wait_for_demo_flush(
+            Path(temp), 0.0, timeout_s=0.4, stable_s=0.2, poll_s=0.1
+        )
+        check("flush.nothing_appeared", receipt["state"], "timeout")
+        check("flush.nothing_named", receipt["path"], None)
 
     # §6: a FAIL without a matching T1/T3 run says so in words.
     import tempfile

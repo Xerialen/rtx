@@ -1023,27 +1023,68 @@ def _t4_ladder(data: dict[str, Any], path: str) -> int:
             value,
             item_path,
             {"skill", "frags_for", "frags_against", "win", "mvd"},
-            {"draw", "scoreboard", "measured"},
+            {"draw", "scoreboard", "measured", "sources"},
         )
         if "measured" in item:
             measured = _fields(
                 item["measured"],
                 f"{item_path}.measured",
                 set(t4_dom.RUNG_MEASURED_FIELDS),
+                set(t4_dom.RUNG_MEASURED_OPTIONAL),
             )
-            for field in t4_dom.RUNG_MEASURED_FIELDS:
-                if measured[field] is not None:
+            for field in t4_dom.RUNG_MEASURED_FIELDS + t4_dom.RUNG_MEASURED_OPTIONAL:
+                if measured.get(field) is not None:
                     _num(measured[field], f"{item_path}.measured.{field}", 0)
-            # The teamkill pair is the one measurement whose source travels in
-            # the envelope beside it, so it is recounted rather than believed.
-            # Five real cards in the corpus derive a teamkill count larger than
-            # the team's own kills; a rung that reports a number off such a card
-            # is reporting something the card cannot say.
-            if item.get("scoreboard") is not None:
-                recount = t4_dom.teamkills_from_card(
-                    item["scoreboard"], t4_dom.BRANCH_TEAM
+            # Where each of the two demo-derived numbers came from. Optional,
+            # because a rung that measured neither has nothing to name — but a
+            # source and its measurement have to agree about whether the field
+            # exists, or the naming is decoration.
+            sources = {"shots_fired": None, "teamkills": None}
+            if "sources" in item:
+                sources = _fields(
+                    item["sources"],
+                    f"{item_path}.sources",
+                    {"shots_fired", "teamkills"},
                 )
-                if (measured["teamkills"], measured["kills"]) != recount:
+                for field in ("shots_fired", "teamkills"):
+                    name = sources[field]
+                    if name is None:
+                        continue
+                    if _str(name, f"{item_path}.sources.{field}") not in (
+                        t4_dom.MEASUREMENT_SOURCES
+                    ):
+                        _fail(
+                            f"{item_path}.sources.{field}",
+                            f"expected one of {', '.join(t4_dom.MEASUREMENT_SOURCES)}",
+                        )
+                    if measured[field] is None:
+                        _fail(
+                            f"{item_path}.sources.{field}",
+                            "names a source for a field that was not measured",
+                        )
+                if measured["teamkills"] is not None and sources["teamkills"] is None:
+                    _fail(
+                        f"{item_path}.sources.teamkills",
+                        "a measured field has to say where it came from",
+                    )
+                if measured["shots_fired"] is not None and sources["shots_fired"] is None:
+                    _fail(
+                        f"{item_path}.sources.shots_fired",
+                        "a measured field has to say where it came from",
+                    )
+            # The teamkill pair is the one measurement whose source can travel
+            # in the envelope beside it, so when it does, it is recounted rather
+            # than believed. Five real qw-analyze cards in the corpus derive a
+            # teamkill count larger than the team's own kills; a rung that
+            # reports a number off such a card is reporting something the card
+            # cannot say. The KTX demoinfo card is the other source and does not
+            # travel in the envelope — it is named, not recounted.
+            recount = t4_dom.teamkills_from_card(
+                item.get("scoreboard"), t4_dom.BRANCH_TEAM
+            )
+            pair = (measured["teamkills"], measured["kills"])
+            if recount != (None, None):
+                if pair != recount:
                     _fail(
                         f"{item_path}.measured.teamkills",
                         f"expected {recount} from this rung's own match card"
@@ -1051,6 +1092,18 @@ def _t4_ladder(data: dict[str, Any], path: str) -> int:
                         f" {t4_dom.BRANCH_TEAM!r}, unavailable unless"
                         f" 0 <= derived <= kills and no component is negative)",
                     )
+                if sources["teamkills"] not in (None, t4_dom.SOURCE_QW_CARD):
+                    _fail(
+                        f"{item_path}.sources.teamkills",
+                        "this rung carries a match card that derives the pair,"
+                        f" so the source is {t4_dom.SOURCE_QW_CARD!r}",
+                    )
+            elif sources["teamkills"] == t4_dom.SOURCE_QW_CARD:
+                _fail(
+                    f"{item_path}.sources.teamkills",
+                    "names the match card as the source, but this rung's card"
+                    " derives nothing",
+                )
         if index >= len(expected_skills) or item["skill"] != expected_skills[index]:
             _fail(f"{item_path}.skill", "ladder must use 10,12,14,16,18,20")
         if stopped:
