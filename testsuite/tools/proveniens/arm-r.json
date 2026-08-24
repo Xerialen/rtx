@@ -1,0 +1,22 @@
+{
+  "schema": "rtx-c-proveniens/1",
+  "arm": "ARM-R",
+  "graph_content_hash": "ac0f7386edb6074a4367f56a706f30dccdb1e912b1a56ef3eea7190248e3a1af",
+  "celler": 5977,
+  "lankar": 48206,
+  "lage": "kombi: K2-bake (OSATT) + A-koerningens recept-apply (vf5 live), efter apply",
+  "kalla": "WORK_LOGS/2026-08-23-kombi-c-korkvitto.md rad 23, 'efter apply - NY IDENTITET'",
+  "utgangsgraf_fore_apply": {
+    "graph_content_hash": "feeea6b41284a1cddf3907f2d9e1ff668b48da524b865530df81925b997dbaa9",
+    "celler": 5977,
+    "lankar": 48212
+  },
+  "anm": [
+    "Detta aer den ENDA tillatna kombi-identiteten foer ARM-R.",
+    "Instrumentet unionerar aldrig flera identiteter och hardkodar ingen:",
+    "identiteten kommer haerifran, och bandstaempel + levande grafavlaesning",
+    "maste stamma exakt mot den (Sols villkor 5).",
+    "Att aendra denna artefakt aer ett aegarbeslut och kraever ny fil-sha i",
+    "sidofilen samt ny pinne i kvittot."
+  ]
+}
