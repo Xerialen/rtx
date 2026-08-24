@@ -401,6 +401,40 @@ def safe_relative_card_path(value: Any) -> str | None:
     return value
 
 
+def contained_card_path(envelope_dir: Any, relative: str) -> Any:
+    """The card's real location, or None if it is not under the envelope.
+
+    `safe_relative_card_path` refuses every *textual* escape, which is not the
+    same promise as "under the envelope's own directory": a directory that is
+    a symlink pointing elsewhere carries the path out without a `..` ever
+    appearing in it (QA, 2026-08-25). Both sides are resolved and compared
+    here, so the check is about where the bytes actually live rather than about
+    how the string looks.
+
+    No false number could get through either way — the recount binds the value
+    to the bytes whatever their location — but the evidence bundle is only
+    self-contained if the card is genuinely inside it, and the refusal message
+    only means what it says if this holds.
+
+    **Known and deliberately not closed: TOCTOU.** The path is resolved and
+    read at validation time, so a card that is swapped between the runner
+    archiving it and the validator reading it would be caught by the digest,
+    while a symlink retargeted between this check and the read would not. The
+    consequence is bounded to provenance, never to the number: the digest and
+    the recount still have to agree with what the envelope claims, so the worst
+    case is a right number with a misdescribed origin. Closing it needs an
+    open-then-verify-the-handle path, which is a bigger change than the risk.
+    """
+    from pathlib import Path as _Path
+
+    try:
+        root = _Path(envelope_dir).resolve()
+        resolved = (root / relative).resolve()
+    except OSError:
+        return None
+    return resolved if resolved.is_relative_to(root) else None
+
+
 def recount_card(raw: bytes, team: str) -> dict[str, Any]:
     """Everything a KTX card can say about one team, straight from its bytes.
 

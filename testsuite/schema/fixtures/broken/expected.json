@@ -45,6 +45,7 @@
  "t4_item_proxy_unlabelled.json": ".payload.dom.labels: a judged (d) outcome carries the 'item-pickups-proxy'",
  "t4_ktx_card_does_not_say_that.json": ".payload.ladder[0].measured.shots_fired: expected 0 from demos/4on4_frog[dm3]20260824-1642.txt",
  "t4_ktx_card_escapes_the_directory.json": ".payload.ladder[0].card.path: expected a plain relative path under the envelope's own directory",
+ "t4_ktx_card_leaves_via_symlink.json": ".payload.ladder[0].card.path: utanfor/ktx-demoinfo-20260824-1642.json resolves outside the envelope's own directory",
  "t4_ktx_card_missing_artefact.json": ".payload.ladder[0].card.path: the archived card is not there to recount",
  "t4_ktx_card_wrong_hash.json": ".payload.ladder[0].card.sha256: demos/4on4_frog[dm3]20260824-1642.txt hashes to b54bdbf1a0a5acbd167aaf5abbe00fd5436f069ae5bde4f5f79a42ad7ed9513c",
  "t4_ktx_without_a_card.json": ".payload.ladder[0].card: shots_fired, teamkills came from 'ktx/demoinfo', so the card has to travel with the envelope",

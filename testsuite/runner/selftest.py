@@ -116,6 +116,7 @@ def _t4_units() -> list[str]:
     because none of these functions existed.
     """
     import copy
+    import tempfile as _tempfile
 
     from . import combat_lock as combat_lock_mod
     from . import runlib as runlib_mod
@@ -763,6 +764,42 @@ def _t4_units() -> list[str]:
     }
     check("archive.other_sources_survive", t4_dom.drop_unprovenanced(mvd_reading, None), mvd_reading)
 
+    # Containment is about where the bytes live, not about how the string
+    # looks: a directory that is a symlink carries a path with no `..` in it
+    # straight out of the bundle (QA, 2026-08-25). Built with a real symlink so
+    # the check is exercised, not described.
+    with _tempfile.TemporaryDirectory(prefix="rtx-t4-card-") as temp:
+        bundle = Path(temp) / "evidence"
+        (bundle / "demos").mkdir(parents=True)
+        (bundle / "demos" / "card.txt").write_bytes(card_bytes)
+        outside = Path(temp) / "someone-elses"
+        outside.mkdir()
+        (outside / "card.txt").write_bytes(card_bytes)
+        (bundle / "utanfor").symlink_to(outside, target_is_directory=True)
+        check(
+            "card.contained_ok",
+            t4_dom.contained_card_path(bundle, "demos/card.txt"),
+            (bundle / "demos" / "card.txt").resolve(),
+        )
+        check(
+            "card.symlink_escape_refused",
+            t4_dom.contained_card_path(bundle, "utanfor/card.txt"),
+            None,
+        )
+        # A symlink that stays inside the bundle is fine — the rule is
+        # containment, not a ban on symlinks.
+        (bundle / "inside").symlink_to(bundle / "demos", target_is_directory=True)
+        check(
+            "card.symlink_inside_allowed",
+            t4_dom.contained_card_path(bundle, "inside/card.txt"),
+            (bundle / "demos" / "card.txt").resolve(),
+        )
+        check(
+            "card.textual_escape_still_refused",
+            t4_dom.contained_card_path(bundle, "../someone-elses/card.txt"),
+            None,
+        )
+
     # The contract version is the compatibility mechanism, not optionality.
     check("card.contract_bumped", t4_dom.T4_SCHEMA, 3)
     check("card.old_contract_still_supported", 2 in t4_dom.SUPPORTED_T4_SCHEMAS, True)
@@ -844,8 +881,6 @@ def _t4_units() -> list[str]:
 
     # Punkt 5: the demo flush wait. A fixed sleep let the teardown kill the
     # recording while it was still in the server's cache.
-    import tempfile as _tempfile
-
     with _tempfile.TemporaryDirectory(prefix="rtx-t4-flush-") as temp:
         demo_dir = Path(temp)
         empty = demo_dir / "4on4_frog[dm3]-empty.mvd"

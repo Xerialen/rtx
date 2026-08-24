@@ -1057,7 +1057,13 @@ def _t4_ktx_card(
         )
     # `<envelope>.payload.ladder[n]` -> the envelope's own path -> its directory.
     source_file = _source_file(item_path.split(".payload", 1)[0])
-    resolved = (Path(source_file).parent / relative).resolve()
+    resolved = t4_dom.contained_card_path(Path(source_file).parent, relative)
+    if resolved is None:
+        _fail(
+            f"{item_path}.card.path",
+            f"{relative} resolves outside the envelope's own directory, so the"
+            " evidence bundle does not contain the card it names",
+        )
     try:
         raw = resolved.read_bytes()
     except OSError as exc:

@@ -381,8 +381,14 @@ stops before T1 when T0 import is missing or FAIL.
   new runs in order to spare old ones.
 - **From contract 3, a KTX-sourced number carries its card.** The rung's `card`
   block is `{"path": "demos/<file>", "sha256": "<64 hex>"}`, the path is
-  relative to the envelope's own directory and may not leave it (no absolute
-  path, no `..`, no backslash). The validator resolves it, hashes the bytes
+  relative to the envelope's own directory and may not leave it — checked twice,
+  once textually (no absolute path, no `..`, no backslash) and once after
+  resolution, so a directory that is a symlink cannot carry the path out of the
+  bundle without a `..` ever appearing in it. **Known and not closed: TOCTOU.**
+  The path is resolved and then read, so a symlink retargeted in between would
+  not be caught. The exposure is bounded to provenance and never to the number:
+  the pinned digest and the recount still have to agree with what the envelope
+  claims, so the worst case is a correct number with a misdescribed origin. The validator resolves it, hashes the bytes
   against the pin, and **recounts `shots_fired`/`teamkills`/`kills` out of those
   bytes**; a card that cannot be found, does not hash, does not parse, or does
   not produce the reported number fells the envelope. A rung that carries a card
