@@ -532,6 +532,106 @@ impl NavGraph {
         self.under_plat.get(cell as usize).copied().flatten().map(usize::from)
     }
 
+    /// The canonical inventory of this graph, as bytes — see `WORK_LOGS/graphstamp-kontrakt.md` §8.2.
+    ///
+    /// Two sections, each sorted so the bytes depend on what the graph *is* and not on the order it
+    /// was built in: cells by id, then every link by `(source, target, kind, T)`. Tab between fields,
+    /// LF between records, no trailing LF.
+    ///
+    /// `T` is adjacency membership — `1` traversable, `0` severed by the teleport carve. It is the
+    /// axis the counts cannot see and the one a structural verdict rests on: two graphs differing
+    /// only in a pruned walk-out of a trigger cell answer "is there a way there" differently, and
+    /// without `T` they would hash the same.
+    ///
+    /// Side-table parameters (a speed jump's `chained`, and so on) are a defined extension that both
+    /// sides take up together once the harness dump carries them; emitting them here first would
+    /// simply break parity with the dump the contract is measured against.
+    ///
+    /// The harness builds the same bytes from its dump document. That is the whole point of a written
+    /// contract rather than a shared function: two independent implementations that must agree, and a
+    /// golden value that catches it when they stop.
+    pub fn canonical_inventory(&self) -> Vec<u8> {
+        fn fmt_num(v: f32) -> String {
+            // Integers plain, everything else at two decimals — matching the harness's `_fmt`.
+            // Rust's `{:.2}` rounds half-to-even, as Python's `round` does.
+            let r = (v as f64 * 100.0).round() / 100.0;
+            if r == r.trunc() {
+                format!("{}", r as i64)
+            } else {
+                format!("{r:.2}")
+            }
+        }
+        let mut lines: Vec<String> = Vec::with_capacity(self.cells.len() + self.links.len());
+        // Cells are keyed by their index, which *is* the id, so they are already in ascending order.
+        for (id, c) in self.cells.iter().enumerate() {
+            lines.push(format!(
+                "C\t{}\t{}\t{}\t{}",
+                id,
+                fmt_num(c.origin.x),
+                fmt_num(c.origin.y),
+                fmt_num(c.origin.z)
+            ));
+        }
+        // Every link in the array, including the ones the carve severed — with `T` saying which is
+        // which. Omitting the severed ones would hide the difference a structural verdict turns on;
+        // including them unmarked would promote them to walkable. Rocket jumps are ordinary L records
+        // with `kind = rocketjump`; there is no separate section.
+        let mut links: Vec<(u32, u32, &'static str, u8)> = self
+            .links
+            .iter()
+            .enumerate()
+            .map(|(li, l)| {
+                let traversable = self.adjacency[l.from as usize].contains(&(li as u32));
+                (l.from, l.to, super::kind_token(l.kind), traversable as u8)
+            })
+            .collect();
+        links.sort_unstable();
+        for (src, dst, kind, t) in &links {
+            lines.push(format!("L\t{src}\t{dst}\t{kind}\t{t}"));
+        }
+        lines.join("\n").into_bytes()
+    }
+
+    /// SHA-256 over [`Self::canonical_inventory`], lowercase hex — the level-2 graph identity.
+    ///
+    /// Level 1 (the FNV row pin over map name and counts) is a cheap tag that says which map and
+    /// shape. It is deliberately not collision-resistant, which is fine for pinning a row and not
+    /// fine for a *structural verdict*: `structural_missing_link` says the graph offers no way, and
+    /// a claim like that bought with a 64-bit non-cryptographic hash could rest on two different
+    /// inventories that happened to collide. Hence SHA-256 here, and hence the rule that the
+    /// structural verdict is bound to this and never to the pin.
+    pub fn content_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(self.canonical_inventory());
+        let mut out = String::with_capacity(64);
+        for b in digest {
+            out.push_str(&format!("{b:02x}"));
+        }
+        out
+    }
+
+    /// Links this cell is the source of that the planner can **not** take, because they were pruned
+    /// from the adjacency.
+    ///
+    /// Two carve passes prune deliberately (see `splice`): a teleport trigger's cell keeps only its
+    /// teleport exit, since standing in a trigger is not a thing a player can do and every other way
+    /// out is a fiction the planner would believe; and links whose segment crosses a teleport volume
+    /// go the same way. Both keep the link in the array so ids — and the side tables keyed by them —
+    /// stay stable, which is why `links.len()` counts them and the adjacency does not.
+    ///
+    /// Reported so a dump can be *complete and honest*: every link the graph holds, with the ones
+    /// nothing can traverse marked as such. A dump built only from the adjacency silently omits them,
+    /// and a dump built only from the array silently promotes them to walkable.
+    pub fn pruned_out_links(&self, cell: CellId) -> Vec<u32> {
+        let live = &self.adjacency[cell as usize];
+        self.links
+            .iter()
+            .enumerate()
+            .filter(|(li, l)| l.from == cell && !live.contains(&(*li as u32)))
+            .map(|(li, _)| li as u32)
+            .collect()
+    }
+
     /// Counts per link kind, for the load-time debug line.
     pub fn summary(&self) -> LinkCounts {
         let mut c = LinkCounts::default();

@@ -227,6 +227,25 @@ pub struct Link {
     pub cost: f32,
 }
 
+/// The canonical spelling of a link kind in the graph inventory contract (`graphstamp-kontrakt.md`
+/// §8.2). Lowercase, and deliberately *not* `Debug`: `JumpGap` is written `jump` there, and a
+/// derived name would silently drift the moment a variant is renamed.
+pub fn kind_token(kind: LinkKind) -> &'static str {
+    match kind {
+        LinkKind::Walk => "walk",
+        LinkKind::Step => "step",
+        LinkKind::Drop => "drop",
+        LinkKind::JumpGap => "jump",
+        LinkKind::DoubleJump => "doublejump",
+        LinkKind::SpeedJump => "speedjump",
+        LinkKind::Plat => "plat",
+        LinkKind::Teleport => "teleport",
+        LinkKind::Hook => "hook",
+        LinkKind::RocketJump => "rocketjump",
+        LinkKind::Swim => "swim",
+    }
+}
+
 /// The built navigation graph: cells, directed links, per-cell adjacency (indices into
 /// `links`), and an XY spatial index for `nearest`/neighbor queries.
 ///
@@ -441,6 +460,43 @@ pub struct HazardPrice {
     /// more timid. Carried per query rather than read as a constant so the tuning harness can sweep it
     /// live (`rtx_bot_hazard_k`) without a rebuild.
     pub k: f32,
+}
+
+/// What a link's dynamic surcharge is *made of* — [`NavGraph::link_extra`] split term by term.
+///
+/// A\* only ever needs the sum, and that is all `link_extra` returns. Planner telemetry needs to say
+/// *why* a leg was priced as it was, which the sum cannot answer: a leg at 100000.4s is a shut gate
+/// plus jitter, or an unfit rocket jump plus a failed-link strike, and those call for opposite fixes.
+/// Rather than keep a second copy of the arithmetic beside the first — two truths that drift apart on
+/// the first term anyone adds — `link_extra` is *defined* as this breakdown's [`Self::total`]. One
+/// place computes the terms, one place sums them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LinkExtra {
+    /// A shut gate on this link: [`LinkCosts::open_gate_cost`] for a caller that flagged it openable,
+    /// else [`CLOSED_GATE_PENALTY`].
+    pub gate: f32,
+    /// This caller's per-link surcharge — failed legs, teleport re-use, team occupancy.
+    pub penalty: f32,
+    /// Per-bot route-variety jitter, a fraction of the link's own cost.
+    pub jitter: f32,
+    /// The [`RJ_UNFIT_PENALTY`] block on a rocket jump this bot can't fly.
+    pub rj: f32,
+    /// Swimming/wading surcharge baked into the graph.
+    pub water: f32,
+    /// Health spent crossing lava or slime, converted to seconds against this bot's strength.
+    pub hazard: f32,
+}
+
+impl LinkExtra {
+    /// The surcharge A\* actually pays.
+    ///
+    /// The summation order is load-bearing: it reproduces the sequential `extra += …` this replaced,
+    /// term for term, so every route is priced to the same bit as before the split. Float addition is
+    /// not associative — reordering these six would silently re-price the whole graph.
+    #[inline]
+    pub fn total(&self) -> f32 {
+        self.gate + self.penalty + self.jitter + self.rj + self.water + self.hazard
+    }
 }
 
 impl HazardPrice {
@@ -1267,45 +1323,62 @@ impl NavGraph {
     /// [`find_path_banded`](Self::find_path_banded) and [`costs_from`](Self::costs_from) all route
     /// through here — which is why the liquid prices live here rather than baked into `link.cost`,
     /// where the banded planner never saw them.
+    ///
+    /// Defined as [`LinkExtra::total`] so the per-term breakdown the telemetry reads and the sum A\*
+    /// pays can never disagree — see [`LinkExtra`].
     #[inline]
     fn link_extra(&self, li: u32, costs: &LinkCosts) -> f32 {
-        let mut extra = match self.gate_of_link(li) {
-            Some(g) if costs.gate_closed.get(g).copied().unwrap_or(false) => {
-                // A closed gate this caller flagged openable (its button is reachable on our side) is
-                // an errand, not a wall — price it so, but only for the query that asked. Every other
-                // caller leaves `openable_gates` empty and pays the full route-around penalty.
-                if costs.openable_gates.get(g).copied().unwrap_or(false) {
-                    costs.open_gate_cost
-                } else {
-                    CLOSED_GATE_PENALTY
+        self.link_extra_breakdown(li, costs).total()
+    }
+
+    /// [`Self::link_extra`] split into its terms, for planner telemetry — see [`LinkExtra`].
+    ///
+    /// Off the hot path by construction: A\* calls `link_extra`, which inlines this and sums it, so a
+    /// build with telemetry compiled in pays nothing for it until a caller asks for the breakdown.
+    /// Marked `#[inline]` explicitly rather than trusting LTO to collapse the one-line caller —
+    /// A\*'s innermost relaxation should not depend on the optimiser's mood.
+    #[inline]
+    pub fn link_extra_breakdown(&self, li: u32, costs: &LinkCosts) -> LinkExtra {
+        let mut e = LinkExtra {
+            gate: match self.gate_of_link(li) {
+                Some(g) if costs.gate_closed.get(g).copied().unwrap_or(false) => {
+                    // A closed gate this caller flagged openable (its button is reachable on our side) is
+                    // an errand, not a wall — price it so, but only for the query that asked. Every other
+                    // caller leaves `openable_gates` empty and pays the full route-around penalty.
+                    if costs.openable_gates.get(g).copied().unwrap_or(false) {
+                        costs.open_gate_cost
+                    } else {
+                        CLOSED_GATE_PENALTY
+                    }
                 }
-            }
-            _ => 0.0,
+                _ => 0.0,
+            },
+            ..LinkExtra::default()
         };
         for &(l, sec) in costs.penalties {
             if l == li {
-                extra += sec;
+                e.penalty = sec;
                 break;
             }
         }
         if costs.jitter_seed != 0 {
             let h = hash32(costs.jitter_seed ^ li.wrapping_mul(0x9e37_79b1));
-            extra += (h as f32 / u32::MAX as f32) * JITTER_FRAC * self.links[li as usize].cost;
+            e.jitter = (h as f32 / u32::MAX as f32) * JITTER_FRAC * self.links[li as usize].cost;
         }
         if costs.rocket_jump_extra > 0.0 && self.links[li as usize].kind == LinkKind::RocketJump {
-            extra += costs.rocket_jump_extra;
+            e.rj = costs.rocket_jump_extra;
         }
-        extra += self.water_extra.get(li as usize).copied().unwrap_or(0.0);
+        e.water = self.water_extra.get(li as usize).copied().unwrap_or(0.0);
         // Health is only convertible to seconds against a particular bot's health, so an unpriced
-        // query (`hazard_strength: None`) skips it — and the vast majority of links cost no health at
-        // all, so check that first.
+        // query (`hazard: None`) skips it — and the vast majority of links cost no health at all, so
+        // check that first.
         if let Some(price) = costs.hazard {
             let hp = self.hazard_hp.get(li as usize).copied().unwrap_or(0.0);
             if hp > 0.0 {
-                extra += hazard_cost(hp, price);
+                e.hazard = hazard_cost(hp, price);
             }
         }
-        extra
+        e
     }
 
     /// The block a *speed-unaware* query (`find_path`, `costs_from`) must add to a chained speed
@@ -1313,7 +1386,7 @@ impl NavGraph {
     /// never take one. Large enough to sever it in practice, finite so it never poisons `g` beyond
     /// the existing [`CLOSED_GATE_PENALTY`] scale. The banded planner ([`Self::find_path_banded`])
     /// bypasses this and gates chained jumps on the entry band instead.
-    pub(super) fn chained_block(&self, li: u32) -> f32 {
+    pub fn chained_block(&self, li: u32) -> f32 {
         match self.speed_jump_of_link(li) {
             Some(t) if t.chained => CLOSED_GATE_PENALTY,
             _ => 0.0,
@@ -4908,5 +4981,361 @@ mod tests {
         };
         assert!(e.contains("duplicate link id"), "{e}");
         assert_eq!(g.links.len(), fore);
+    }
+
+    /// A graph that charges all six of [`LinkExtra`]'s terms at once: lava on the cheap branch, a gate
+    /// on link 0, a water surcharge on link 2, and link 3 turned into a rocket jump.
+    fn diamond_priced_every_way() -> NavGraph {
+        let mut g = diamond_with_lava_on_branch_1();
+        let gate = g.gates.push(Gate {
+            obstruction: 0,
+            closed_origin: g.cells[1].origin,
+            closed_min: Vec3::ZERO,
+            closed_max: Vec3::ZERO,
+            activator: 0,
+            button_cell: 0,
+            aim: g.cells[0].origin,
+            shoot: false,
+        });
+        g.gates.tag(0, gate);
+        g.water_extra = vec![0.0, 0.0, 0.37, 0.0];
+        g.links[3].kind = LinkKind::RocketJump;
+        g
+    }
+
+    /// The pre-split `link_extra`, transcribed verbatim from before [`LinkExtra`] existed: one
+    /// accumulator, `+=` per term, in this order. The oracle the split is measured against.
+    fn link_extra_pre_split(g: &NavGraph, li: u32, costs: &LinkCosts) -> f32 {
+        let mut extra = match g.gate_of_link(li) {
+            Some(gi) if costs.gate_closed.get(gi).copied().unwrap_or(false) => {
+                if costs.openable_gates.get(gi).copied().unwrap_or(false) {
+                    costs.open_gate_cost
+                } else {
+                    CLOSED_GATE_PENALTY
+                }
+            }
+            _ => 0.0,
+        };
+        for &(l, sec) in costs.penalties {
+            if l == li {
+                extra += sec;
+                break;
+            }
+        }
+        if costs.jitter_seed != 0 {
+            let h = hash32(costs.jitter_seed ^ li.wrapping_mul(0x9e37_79b1));
+            extra += (h as f32 / u32::MAX as f32) * JITTER_FRAC * g.links[li as usize].cost;
+        }
+        if costs.rocket_jump_extra > 0.0 && g.links[li as usize].kind == LinkKind::RocketJump {
+            extra += costs.rocket_jump_extra;
+        }
+        extra += g.water_extra.get(li as usize).copied().unwrap_or(0.0);
+        if let Some(price) = costs.hazard {
+            let hp = g.hazard_hp.get(li as usize).copied().unwrap_or(0.0);
+            if hp > 0.0 {
+                extra += hazard_cost(hp, price);
+            }
+        }
+        extra
+    }
+
+    /// Splitting `link_extra` into [`LinkExtra`] re-prices nothing — to the bit.
+    ///
+    /// This is the guard the whole telemetry branch rests on: `link_extra` sits in A\*'s innermost
+    /// relaxation, so a single ulp of drift here silently reorders routes across every map, and no
+    /// movement test would name the cause. Float addition is not associative, so the property being
+    /// asserted is not "close enough" but *identical summation order* — hence `to_bits`, not an
+    /// epsilon. Swept over every link under the cost shapes the six terms actually appear in.
+    #[test]
+    fn link_extra_split_is_bit_identical() {
+        let g = diamond_priced_every_way();
+        let closed = [true];
+        let openable = [true];
+        let penalties = [(0u32, 2.5f32), (3u32, 0.75f32)];
+        let mut checked = 0usize;
+        // Every combination that turns a term on or off: gate shut/open/openable, penalties, jitter
+        // (seed 0 = off, and two live seeds), the rocket-jump block, and hazard priced/unpriced.
+        for gate_closed in [&[][..], &closed[..]] {
+            for openable_gates in [&[][..], &openable[..]] {
+                for pens in [&[][..], &penalties[..]] {
+                    for jitter_seed in [0u32, 1, 7] {
+                        for rocket_jump_extra in [0.0f32, RJ_UNFIT_PENALTY] {
+                            for hazard in [None, Some(HazardPrice::new(100.0)), Some(HazardPrice::new(25.0))] {
+                                let costs = LinkCosts {
+                                    gate_closed,
+                                    openable_gates,
+                                    open_gate_cost: 4.0,
+                                    penalties: pens,
+                                    jitter_seed,
+                                    rocket_jump_extra,
+                                    hazard,
+                                };
+                                for li in 0..g.links.len() as u32 {
+                                    let want = link_extra_pre_split(&g, li, &costs);
+                                    let got = g.link_extra_breakdown(li, &costs).total();
+                                    assert_eq!(
+                                        want.to_bits(),
+                                        got.to_bits(),
+                                        "link {li} re-priced: pre-split {want} vs breakdown {got} \
+                                         (gate_closed {:?}, openable {:?}, penalties {:?}, jitter {jitter_seed}, \
+                                         rj {rocket_jump_extra}, hazard {:?})",
+                                        gate_closed,
+                                        openable_gates,
+                                        pens,
+                                        hazard.map(|h| h.strength),
+                                    );
+                                    checked += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 2 * 2 * 2 * 3 * 2 * 3 * 4, "sweep covered every combination");
+    }
+
+    /// Every term the breakdown reports is separately non-zero on the fixture that charges all six —
+    /// otherwise the bit-identity sweep above could pass while quietly testing nothing but zeros.
+    #[test]
+    fn link_extra_breakdown_attributes_each_term() {
+        let g = diamond_priced_every_way();
+        let closed = [true];
+        let penalties = [(0u32, 2.5f32)];
+        let costs = LinkCosts {
+            gate_closed: &closed,
+            penalties: &penalties,
+            jitter_seed: 7,
+            rocket_jump_extra: RJ_UNFIT_PENALTY,
+            hazard: Some(HazardPrice::new(50.0)),
+            ..Default::default()
+        };
+        // Link 0: gated, penalised, jittered. Link 2: water. Link 3: the rocket-jump block.
+        let gated = g.link_extra_breakdown(0, &costs);
+        assert_eq!(gated.gate, CLOSED_GATE_PENALTY, "shut gate priced");
+        assert_eq!(gated.penalty, 2.5, "this caller's link penalty priced");
+        assert!(gated.jitter > 0.0, "jitter priced: {}", gated.jitter);
+        assert_eq!(g.link_extra_breakdown(2, &costs).water, 0.37, "water priced");
+        assert_eq!(g.link_extra_breakdown(3, &costs).rj, RJ_UNFIT_PENALTY, "rocket-jump block priced");
+        // The lava fixture sits on the 0→1 branch, so some link carries a hazard price.
+        let hazard_total: f32 = (0..g.links.len() as u32).map(|li| g.link_extra_breakdown(li, &costs).hazard).sum();
+        assert!(hazard_total > 0.0, "hazard priced somewhere: {hazard_total}");
+        // And the parts still add up to what A* pays.
+        for li in 0..g.links.len() as u32 {
+            let e = g.link_extra_breakdown(li, &costs);
+            assert_eq!(
+                g.priced_link_cost(li, &costs).to_bits(),
+                (g.links[li as usize].cost + e.total() + g.chained_block(li)).to_bits(),
+                "link {li}: breakdown does not reconstruct priced_link_cost",
+            );
+        }
+    }
+
+    /// A graph broad enough that the bit-identity sweep means something: many links, every kind,
+    /// and every price term live across a spread of magnitudes.
+    ///
+    /// Not dm3 — a unit test has no BSP to build from — but the property under test is arithmetic,
+    /// not topology, and what it needs is *variety in the operands*: costs spanning several orders of
+    /// magnitude, hazards from a scratch to lethal, water charges that do and do not round cleanly.
+    /// Four links of one kind could not catch a term that only misbehaves when two large addends meet
+    /// a small one.
+    fn wide_priced_graph() -> NavGraph {
+        const KINDS: [LinkKind; 11] = [
+            LinkKind::Walk, LinkKind::Step, LinkKind::Drop, LinkKind::JumpGap,
+            LinkKind::DoubleJump, LinkKind::SpeedJump, LinkKind::Plat, LinkKind::Teleport,
+            LinkKind::Hook, LinkKind::RocketJump, LinkKind::Swim,
+        ];
+        const N: usize = 240;
+        let cells: Vec<Cell> = (0..=N)
+            .map(|i| Cell {
+                origin: Vec3::new(i as f32 * 37.0, (i % 13) as f32 * 51.0, (i % 7) as f32 * 24.0),
+                gx: 0,
+                gy: 0,
+            })
+            .collect();
+        // Costs deliberately span 0.03 .. ~30s: the addition order only shows itself when the terms
+        // differ enough in magnitude for the low bits to fall off.
+        let links: Vec<Link> = (0..N)
+            .map(|i| Link {
+                from: i as CellId,
+                to: (i + 1) as CellId,
+                kind: KINDS[i % KINDS.len()],
+                cost: 0.03 + (i % 97) as f32 * 0.31,
+            })
+            .collect();
+        let mut g = NavGraph::test_graph(cells, links);
+        g.water_extra = (0..N)
+            .map(|i| if i % 5 == 0 { 0.0 } else { (i % 23) as f32 * 0.017 })
+            .collect();
+        g.hazard_hp = (0..N)
+            .map(|i| if i % 3 == 0 { 0.0 } else { (i % 71) as f32 * 1.9 })
+            .collect();
+        // Every eleventh link sits behind a gate, so the closed/openable branches are exercised
+        // across the sweep rather than on a single link.
+        for i in (0..N).step_by(11) {
+            let gate = g.gates.push(Gate {
+                obstruction: 0,
+                closed_origin: g.cells[i].origin,
+                closed_min: Vec3::ZERO,
+                closed_max: Vec3::ZERO,
+                activator: 0,
+                button_cell: 0,
+                aim: g.cells[0].origin,
+                shoot: false,
+            });
+            g.gates.tag(i, gate);
+        }
+        g
+    }
+
+    /// The bit-identity property holds across a wide graph, not just the four-link diamond.
+    ///
+    /// The narrow sweep proves the transcription matches on the shapes it covers; this one covers
+    /// every link kind, gated and ungated links, hazards and water at many magnitudes, and costs
+    /// spanning three orders. Still an oracle test against the pre-split arithmetic — the dm3 sweep
+    /// belongs to the rig grind, where a real graph exists.
+    #[test]
+    fn link_extra_split_is_bit_identical_on_a_wide_graph() {
+        let g = wide_priced_graph();
+        let closed: Vec<bool> = (0..g.gate_count()).map(|i| i % 2 == 0).collect();
+        let openable: Vec<bool> = (0..g.gate_count()).map(|i| i % 3 == 0).collect();
+        let penalties: Vec<(u32, f32)> =
+            (0..g.links.len() as u32).step_by(7).map(|li| (li, 0.25 + li as f32 * 0.013)).collect();
+        let mut checked = 0usize;
+        for jitter_seed in [0u32, 1, 0x9e37_79b1, u32::MAX] {
+            for rocket_jump_extra in [0.0f32, RJ_UNFIT_PENALTY] {
+                for hazard in [None, Some(HazardPrice::new(1.0)), Some(HazardPrice::new(250.0))] {
+                    for open_gate_cost in [0.0f32, 3.75] {
+                        let costs = LinkCosts {
+                            gate_closed: &closed,
+                            openable_gates: &openable,
+                            open_gate_cost,
+                            penalties: &penalties,
+                            jitter_seed,
+                            rocket_jump_extra,
+                            hazard,
+                        };
+                        for li in 0..g.links.len() as u32 {
+                            let want = link_extra_pre_split(&g, li, &costs);
+                            let got = g.link_extra_breakdown(li, &costs).total();
+                            assert_eq!(
+                                want.to_bits(),
+                                got.to_bits(),
+                                "link {li} re-priced: {want} vs {got} (seed {jitter_seed}, \
+                                 rj {rocket_jump_extra}, gate_cost {open_gate_cost})",
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 4 * 2 * 3 * 2 * 240, "the whole sweep ran");
+    }
+
+    /// The content hash sees what the shape counts cannot.
+    ///
+    /// Two carves of one map can hold the same number of cells and links and still offer different
+    /// ways through. The row pin is deliberately blind to that — it is a cheap per-row map tag — so
+    /// any claim *about* the topology has to be bound to something that is not. This is that thing,
+    /// and these are the differences it must not miss.
+    #[test]
+    fn content_hash_distinguishes_equal_shaped_graphs() {
+        let base = diamond();
+        let h = base.content_hash();
+        assert_eq!(h, diamond().content_hash(), "stable for one graph");
+
+        // A severed link is a different graph even though nothing else moved: same links, same
+        // counts, different answer to "is there a way there". This is the axis the counts cannot see.
+        let mut severed = diamond();
+        severed.adjacency[0].retain(|&li| li != 0);
+        assert_eq!(severed.links.len(), base.links.len(), "the array is untouched...");
+        assert_ne!(severed.content_hash(), h, "...but the graph is not the same to walk");
+
+        // Same counts, one link re-pointed: a different graph to walk.
+        let mut rerouted = diamond();
+        rerouted.links[1].to = 2;
+        assert_eq!(rerouted.links.len(), base.links.len(), "identical shape...");
+        assert_eq!(rerouted.cells.len(), base.cells.len());
+        assert_ne!(rerouted.content_hash(), h, "...but not an identical graph");
+
+        // Same counts, one link's kind changed: a Drop is not a Walk to a planner.
+        let mut recast = diamond();
+        recast.links[2].kind = LinkKind::Drop;
+        assert_ne!(recast.content_hash(), h, "link kind is part of the inventory");
+
+        // Direction matters: a reversed link is a different traversal.
+        let mut reversed = diamond();
+        let (f, t) = (reversed.links[0].from, reversed.links[0].to);
+        reversed.links[0].from = t;
+        reversed.links[0].to = f;
+        assert_ne!(reversed.content_hash(), h, "endpoints are directed");
+    }
+
+    /// Cost is priced per query, not carved into the graph, so it is deliberately outside the hash.
+    ///
+    /// The inventory answers "what can be traversed", not "what does it cost right now" — the latter
+    /// changes with gates, hazards and per-bot jitter on every tick, and folding it in would make the
+    /// identity useless for the one job it has.
+    #[test]
+    fn content_hash_ignores_per_query_pricing() {
+        let base = diamond();
+        let mut pricier = diamond();
+        pricier.links[0].cost += 5.0;
+        assert_eq!(pricier.content_hash(), base.content_hash(),
+                   "static cost is not part of what the graph *contains*");
+    }
+
+    /// SHA-256 and the hex encoding match the contract's own vector.
+    ///
+    /// The engine and the harness build these bytes independently — that is what a written contract
+    /// is for — so the digest path has to be pinned to a value neither side chose. Taken verbatim
+    /// from `WORK_LOGS/graphstamp-kontrakt.md` §8.4.
+    #[test]
+    fn content_hash_matches_the_contract_vector() {
+        use sha2::{Digest, Sha256};
+        let msg = "C\t10\t0\t0\t0\nC\t11\t32\t0\t0\nL\t10\t11\twalk\nL\t11\t10\twalk";
+        let hex: String = Sha256::digest(msg.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, "1dbb72548adce39a7f54a0b2e91261c9275fdc13f40037148e8c9c04f2816f9b");
+    }
+
+    /// The canonical inventory has the shape the contract describes: C then L then R, sorted, tabs
+    /// between fields, LF between records, and no trailing LF.
+    #[test]
+    fn canonical_inventory_has_the_contract_shape() {
+        let g = diamond();
+        let bytes = g.canonical_inventory();
+        let text = String::from_utf8(bytes).expect("utf-8");
+        assert!(!text.ends_with('\n'), "no trailing LF");
+        let lines: Vec<&str> = text.split('\n').collect();
+        // Four cells, four links, no rocket jumps.
+        assert_eq!(lines.len(), 8);
+        assert_eq!(lines[0], "C\t0\t0\t0\t0");
+        assert_eq!(lines[1], "C\t1\t100\t50\t0");
+        // Links sorted by (source, target, kind, T) — not by the order they were built in — and
+        // every one carries its traversability flag.
+        assert_eq!(lines[4], "L\t0\t1\twalk\t1");
+        assert_eq!(lines[5], "L\t0\t2\twalk\t1");
+        assert_eq!(lines[6], "L\t1\t3\twalk\t1");
+        assert_eq!(lines[7], "L\t2\t3\twalk\t1");
+        assert!(!text.contains("\nR\t"), "rocket jumps are L records, not a separate section");
+    }
+
+    /// A link pruned from the adjacency is still in the array, and is reported as such.
+    ///
+    /// This is the 48208-vs-48193 gap: two carve passes drop links from the adjacency while keeping
+    /// them in the array so ids stay stable. A dump built from the adjacency alone silently omits
+    /// them; one built from the array alone silently promotes them to walkable. Both are wrong for a
+    /// structural verdict, so the engine reports the difference rather than hiding it.
+    #[test]
+    fn pruned_links_are_reported_not_hidden() {
+        let mut g = diamond();
+        assert!(g.pruned_out_links(0).is_empty(), "nothing pruned to begin with");
+        // Drop link 0 (0->1) from cell 0's adjacency, as the teleport carve does.
+        g.adjacency[0].retain(|&li| li != 0);
+        assert_eq!(g.pruned_out_links(0), vec![0], "the array still holds it, the planner cannot take it");
+        assert_eq!(g.links.len(), 4, "and the id space is untouched");
+        // The other cells are unaffected.
+        assert!(g.pruned_out_links(1).is_empty());
     }
 }

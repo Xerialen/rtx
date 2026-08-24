@@ -18,3 +18,10 @@
 /.github/workflows/ra-room-lock.yml              @Xerialen
 /.github/workflows/lock-guard.yml                @Xerialen
 /.github/CODEOWNERS                              @Xerialen
+
+# RING2QUAD lock — K11: BARA dessa tre. `control.rs`, `navmesh/mod.rs`,
+# `bhop.rs` och `physics.rs` ar ytor som SNG-MEGA, PENT och YA-BRIDGE maste
+# rora; de far inte in har.
+/.github/workflows/ring2quad-lock.yml            @Xerialen
+/crates/rtx-game/tests/ring2quad_lock.rs         @Xerialen
+/reference/recept/vf5_ring2quad_forkmain.json    @Xerialen

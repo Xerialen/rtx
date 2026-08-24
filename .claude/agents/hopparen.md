@@ -26,8 +26,8 @@ Mätregler:
   aldrig tidigare rapporter som kvitto. n=1-observationer märks "n=1, inget mätvärde".
 - Rigghygien: befintliga mönster-units (ra-drill-*) med 3h-taket
   (RuntimeMaxSec=10800-drop-in); transient unit ENDAST om mönsterunit saknas.
-  Förbjudna portar
-  (27550, 27991, 27530, 27700, 28502, 28503) rörs aldrig, rigglåset (~/lab/.rig-lock)
+  Portar: `docs/PORTAR.md` är repots enda giltiga portlista — läs den, kopiera
+  aldrig portnummer hit. Rigglåset (~/lab/.rig-lock)
   tas i körningens namn före plantering och släpps med bevis, riggen släcks efter
   körning och portarna verifieras tysta.
 - Vänta aldrig på processer via pgrep-mönster (självmatchning!) — vänta på PID via

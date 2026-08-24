@@ -104,6 +104,12 @@ pub(crate) struct ControlState {
     threads: Vec<std::thread::JoinHandle<()>>,
     /// One clone per live reader thread; [`shutdown`] waits for the count to fall back to its own.
     readers: Option<Arc<()>>,
+    /// The navmesh identity plan telemetry is currently stamping rows with. Cached because deriving
+    /// it counts every link and this sits on the per-frame path — see [`PlanGraphId`].
+    plan_graph: Option<PlanGraphId>,
+    /// The graph stamp whose [`proto::PlanContract`] has already been announced, so the expansion is
+    /// sent once per graph rather than once per frame. `0` = nothing announced yet.
+    plan_contract: u64,
 }
 
 /// Take the control channel down and wait for its threads to leave our code — called from
@@ -191,6 +197,35 @@ pub(crate) fn frame_end(game: &mut GameState) {
     if telemetry {
         send_event(game, Event::Pmove(pmove_event(game, now, maxclients)));
     }
+    // Plan telemetry rides *inside* the telemetry switch: it adds further variants of its own, and
+    // the rule that nothing new goes on the wire without the operator's opt-in applies to them too.
+    let gate = plan_gate(
+        telemetry,
+        game.host.cvar(c"rtx_plan_telemetry"),
+        game.host.cvar(c"rtx_plan_telemetry_div"),
+    );
+    let plan_stamp = if gate.on { plan_graph_identity(game) } else { None };
+    if let Some(PlanGraphId { stamp, ref content_hash, cells, links, rj_links, .. }) = plan_stamp {
+        // Announce the graph once per graph, not once per frame: the rows carry a bare integer, and
+        // this is the only thing that says what it means. Re-sent after a rebuild, since the same
+        // cell index then names a different place.
+        if game.control.plan_contract != stamp {
+            game.control.plan_contract = stamp;
+            send_event(
+                game,
+                Event::PlanContract(proto::PlanContract {
+                    schema: proto::PLAN_SCHEMA.to_string(),
+                    graph_stamp: stamp,
+                    graph_content_hash: content_hash.clone(),
+                    map: game.level.mapname.clone(),
+                    cells,
+                    links,
+                    rj_links,
+                    build: env!("CARGO_PKG_VERSION").to_string(),
+                }),
+            );
+        }
+    }
     for i in 1..=maxclients {
         let e = EntId(i);
         if !game.entities[e].bot.is_bot || !game.entities[e].in_use {
@@ -225,6 +260,25 @@ pub(crate) fn frame_end(game: &mut GameState) {
                 },
             );
         }
+        // One plan row per steering pass. Gated on frame identity (`plan.fresh`), not f32 time:
+        // steer stamps at think-time `game.time()`, this function reads `now` later, and those
+        // two f32s are never bit-identical live. A bot that did not steer this frame (dead, not
+        // in play) has `fresh == false` and must not emit a stale row.
+        if let Some(id) = plan_stamp.as_ref() {
+            let due = {
+                let p = &game.entities[e].bot.plan;
+                plan_row_due(gate, p.fresh, p.seq)
+            };
+            if due {
+                // Bind first_air_vz to *this* row's vel.z before the snapshot is taken.
+                game.entities[e].bot.plan.bind_first_air_to_row();
+                let row = plan_tick(game, i, e, id.stamp);
+                send_event(game, Event::PlanTick(Box::new(row)));
+            }
+        }
+        // Consume the frame mark even when the gate is shut or this seq is decimated: otherwise a
+        // later frame that does not steer would still look fresh.
+        game.entities[e].bot.plan.fresh = false;
         match game.entities[e].bot.puppet.order {
             None | Some(ControlOrder::Hold) => {}
             Some(ControlOrder::Goto { target }) => {
@@ -508,6 +562,7 @@ fn exec_request(game: &mut GameState, conn: u64, req: Request) {
         Cmd::RemoveLinks { links, lock_token: _ } => {
             remove_links_resp(game, links).map(Resp::RemoveLinks)
         }
+        Cmd::Recost { links, lock_token: _ } => recost_resp(game, &links).map(Resp::Recost),
     };
     reply(game, conn, id, result);
 }
@@ -819,6 +874,222 @@ fn pmove_event(game: &GameState, now: f32, maxclients: u32) -> proto::PmoveEvent
     proto::PmoveEvent { t: now, players }
 }
 
+/// FNV-1a, one byte at a time.
+fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Which navmesh a plan row's cell and link indices mean anything against.
+///
+/// Over exactly the four facts the harness's own `nav_stamp` records (map name and the three shape
+/// counts), in that order, so the engine's stamp and the harness's can be compared directly on the
+/// same graph. The harness owns this definition; this is the mirror of it. Two rows with different
+/// stamps describe different graphs and must never be compared — a link index is only a name for a
+/// link within one build.
+fn graph_stamp(map: &str, cells: u32, links: u32, rj_links: u32) -> u64 {
+    let h = fnv1a(0xcbf2_9ce4_8422_2325, map.as_bytes());
+    let h = fnv1a(h, &cells.to_le_bytes());
+    let h = fnv1a(h, &links.to_le_bytes());
+    fnv1a(h, &rj_links.to_le_bytes())
+}
+
+/// The graph identity plan rows are stamped with, cached against the build it was derived from.
+#[derive(Clone, Debug)]
+pub(crate) struct PlanGraphId {
+    /// The address of the `Arc<NavGraph>` this was derived from — the build's identity.
+    ///
+    /// A rebuild allocates its replacement while the outgoing graph is still held, so the two can
+    /// never share an address. That makes this exact where the shape counts are only suggestive: a
+    /// re-carve that swapped a link's *kind* without changing any count would keep the same
+    /// `(map, cells, links)` and a different `rj_links`, and stamping those rows with the old graph's
+    /// identity is precisely the silent comparability the stamp exists to prevent.
+    token: usize,
+    /// Checked alongside the token, because a map change is the case that matters most and is free
+    /// to verify. Two maps of identical shape must never share a stamp.
+    map: String,
+    cells: u32,
+    links: u32,
+    rj_links: u32,
+    /// Level 1: the row pin, over map name and shape counts.
+    stamp: u64,
+    /// Level 2: SHA-256 hex of the graph's canonical inventory. Derived once per build — the token
+    /// above is what notices a build change, which is both cheaper and stricter than re-reading the
+    /// counts, and satisfies the contract's rule that invalidation must not key on counts alone.
+    content_hash: String,
+}
+
+/// The live graph's identity, or `None` with no graph loaded.
+///
+/// Recomputed only when the build changes — counting link kinds is O(links) and this sits on the
+/// per-frame path, while the validity check is O(1).
+fn plan_graph_identity(game: &mut GameState) -> Option<PlanGraphId> {
+    let g = game.nav.graph.as_ref()?;
+    let token = Arc::as_ptr(g) as usize;
+    let (cells, links) = (g.cells.len() as u32, g.links.len() as u32);
+    if let Some(cached) = game.control.plan_graph.as_ref() {
+        if cached.token == token
+            && cached.cells == cells
+            && cached.links == links
+            && cached.map == game.level.mapname
+        {
+            return Some(cached.clone());
+        }
+    }
+    let rj_links = g.summary().rocket_jump as u32;
+    let content_hash = g.content_hash();
+    let id = PlanGraphId {
+        token,
+        map: game.level.mapname.clone(),
+        cells,
+        links,
+        rj_links,
+        stamp: graph_stamp(&game.level.mapname, cells, links, rj_links),
+        content_hash,
+    };
+    game.control.plan_graph = Some(id.clone());
+    Some(id)
+}
+
+/// Whether plan telemetry may go on the wire this frame, and how thinly.
+///
+/// Lifted out of [`frame_end`] so it can be tested without an engine. This is the only thing standing
+/// between a pre-branch typed consumer — the deployed nav viewer — and a variant it cannot decode, and
+/// "we read the cvars in the right order" is not a claim that should rest on inspection alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PlanGate {
+    pub on: bool,
+    pub div: u32,
+}
+
+/// The gate for one frame, from the two cvars that govern it.
+///
+/// `rtx_plan_telemetry` alone is never enough: the whole new-variant surface is subordinate to
+/// `rtx_telemetry`, so an operator who set only the fine switch still gets nothing on the wire.
+pub(crate) fn plan_gate(telemetry: bool, plan_cvar: f32, div_cvar: f32) -> PlanGate {
+    PlanGate {
+        on: telemetry && plan_cvar > 0.0,
+        // Clamped so a nonsense value thins nothing rather than dividing by zero.
+        div: (div_cvar as u32).max(1),
+    }
+}
+
+/// Whether this bot's row goes out this frame.
+///
+/// `fresh` is the frame identity: [`crate::bot::state::PlanDiag::begin_frame`] sets it, and
+/// [`frame_end`] clears it after the check. A bot that did not steer (dead, not in play) is not
+/// fresh, and emitting it would report a decision it never made.
+///
+/// Do **not** key this on `stamped == now`. Those are two `game.time()` readings — think vs
+/// `frame_end` — and live they are never bit-identical (think ~77 Hz, frame_end ~50 Hz). The
+/// times travel on the row as payload; they are not the emit key.
+pub(crate) fn plan_row_due(gate: PlanGate, fresh: bool, seq: u32) -> bool {
+    gate.on && fresh && seq % gate.div == 0
+}
+
+/// The leg the row reports: the link **steering stamped**, and that same link's endpoints.
+///
+/// Pure, and separate from [`plan_tick`], so the one claim the whole event exists to make — "A\*
+/// chose link X" — is bound by a test that *runs* it rather than by a pin that reads the source.
+/// `plan_tick` itself needs a live `GameState` and is out of reach of a unit test; this is not.
+///
+/// All three values come from the same `p.link`, so they cannot name different legs. That is the
+/// property, not an implementation detail: a row whose `link_from` belonged to some other leg
+/// would be a re-derivation wearing an attestation's clothes, and nothing downstream could catch
+/// the disagreement.
+///
+/// A stamped link with no graph in hand still reports the link — the id is what steering decided,
+/// and losing it because the endpoints cannot be resolved would throw away the decision to avoid
+/// admitting a gap.
+fn plan_leg(p: &crate::bot::state::PlanDiag, graph: Option<&NavGraph>) -> (u32, u32, u32) {
+    let none = proto::PLAN_NONE;
+    let Some(l) = p.link else {
+        return (none, none, none);
+    };
+    let (from, to) = graph.map_or((none, none), |g| (g.link_source(l), g.link_target(l)));
+    (l, from, to)
+}
+
+/// One bot's plan row for this frame — see [`proto::PlanTick`].
+///
+/// Every value is read from what steering already stamped on the bot (`bot.plan`, `bot.takeoff`,
+/// `bot.bhop`); nothing is re-derived here, because a re-derivation in `frame_end` would be a
+/// different frame's answer to the same question.
+fn plan_tick(game: &GameState, bot_num: u32, e: EntId, stamp: u64) -> proto::PlanTick {
+    let b = &game.entities[e].bot;
+    let p = &b.plan;
+    let none = proto::PLAN_NONE;
+    let (link, link_from, link_to) = plan_leg(p, game.nav.graph.as_deref());
+    proto::PlanTick {
+        schema: proto::PLAN_SCHEMA.to_string(),
+        graph_stamp: stamp,
+        bot: bot_num,
+        t: p.stamped,
+        seq: p.seq,
+
+        cell: b.cell.unwrap_or(none),
+        goal_cell: b.goal_cell.unwrap_or(none),
+        route_len: b.route.len() as u32,
+        route_pos: b.route_pos as u32,
+        link,
+        kind: p.kind.map(|k| format!("{k:?}")).unwrap_or_default(),
+        link_from,
+        link_to,
+        band: p.band.unwrap_or(proto::PLAN_NO_BAND),
+        replanned: b.replanned,
+        route_goal: b.route_goal.unwrap_or(none),
+        route_target: b.route_target.unwrap_or(none),
+        plan_cost: p.plan_cost,
+        remaining_cost: p.remaining_cost,
+        plan_fail: p.plan_fail.to_string(),
+        goal_reachable: p.goal_reachable,
+        goal_redirected: p.goal_redirected,
+
+        p_base: p.p_base,
+        p_gate: p.extra.gate,
+        p_penalty: p.extra.penalty,
+        p_jitter: p.extra.jitter,
+        p_rj: p.extra.rj,
+        p_water: p.extra.water,
+        p_hazard: p.extra.hazard,
+        p_chained: p.p_chained,
+        p_total: p.p_total,
+
+        v_req: p.v_req,
+        origin: a3(p.origin),
+        vel: a3(p.vel),
+        speed: p.speed,
+        chained: p.chained,
+        curl_gain: p.curl_gain,
+        weave_cap: p.weave_cap,
+
+        on_ground: p.on_ground,
+        phase: format!("{:?}", b.bhop.phase),
+        phase_prev: format!("{:?}", p.phase_prev),
+        runway: p.runway,
+        sj_progress: p.sj_progress,
+        runway_measured: p.runway_measured,
+        sj_progress_measured: p.sj_progress_measured,
+        // The takeoff is measured from the jump leg's source cell — meaningless off a speed jump.
+        takeoff_cell: if p.v_req > 0.0 { link_from } else { none },
+        takeoff_xyz: a3(p.takeoff_xyz),
+        runup: b.takeoff.runup,
+        wp: b.takeoff.wp,
+        lip: b.takeoff.lip.unwrap_or(proto::PLAN_UNSET),
+        takeoff_ok: b.takeoff.ok,
+        sj_held: b.takeoff.sj_held,
+        hold_jump: p.hold_jump,
+        jump_cmd: p.jump_cmd,
+        first_air_vz: p.first_air_vz,
+        first_air_vz_measured: p.first_air_vz_measured,
+        hops: b.bhop.hops,
+        off_reason: b.bhop.off_reason.to_string(),
+    }
+}
+
 fn status_resp(game: &GameState) -> proto::StatusResp {
     let (navmesh, cells, links, rj_links) = match game.nav.graph.as_ref() {
         Some(g) => (
@@ -931,6 +1202,10 @@ fn status_resp(game: &GameState) -> proto::StatusResp {
             slut_hash: u.slut_hash.clone(),
             lankar: u.lankar,
         }),
+        // Prisregimen läses ur samma frame som allt annat bandet stämplas med, så ett band som
+        // stämplas vid stängning kan citera exakt den regim det kördes under.
+        recost: game.recost.as_entries_for(game.nav.graph.as_ref()),
+        recost_hash: game.recost.hash_for(game.nav.graph.as_ref()).to_string(),
     }
 }
 
@@ -1094,6 +1369,23 @@ fn describe_cell(g: &NavGraph, cell: u32) -> proto::CellResp {
             water_extra: g.link_water_extra(li),
         });
     }
+    // The links leaving this cell that the carve severed: present in the array, absent from the
+    // adjacency, and untraversable. Same shape as `out` so a consumer can merge the two into a
+    // complete inventory and keep the distinction.
+    let out_pruned = g
+        .pruned_out_links(cell)
+        .into_iter()
+        .map(|li| proto::CellLinkOut {
+            link: li,
+            kind: kind_name(g.link_kind(li)).to_string(),
+            to_cell: g.link_target(li),
+            to: a3(g.cell_origin(g.link_target(li))),
+            cost: g.link_cost(li),
+            tgt_hazard: format!("{:?}", g.cell_hazard(g.link_target(li))),
+            hazard_hp: g.link_hazard_hp(li),
+            water_extra: g.link_water_extra(li),
+        })
+        .collect();
     for li in 0..g.links.len() as u32 {
         if g.link_target(li) == cell {
             incoming.push(proto::CellLinkIn {
@@ -1111,6 +1403,7 @@ fn describe_cell(g: &NavGraph, cell: u32) -> proto::CellResp {
         ledge: g.is_ledge(cell),
         out,
         incoming,
+        out_pruned,
     }
 }
 
@@ -1470,6 +1763,29 @@ fn remove_links_resp(
     })
 }
 
+/// `Cmd::Recost`: prissätt namngivna länkar utan att röra grafen.
+///
+/// Ankargrinden körs mot den levande grafen och HELA satsen verifieras innan något sätts
+/// ([`crate::recost::recost_anchored`]) — en dålig spec lämnar motorn exakt som den var. Grafen
+/// tas som delad referens hela vägen: den här operationen får inte ändra grafidentiteten, och det
+/// är därför den kan köras på en mätarm utan att kassera någon korpus.
+///
+/// Svaret bär hela operatörstabellen plus `recost_hash`, så att Hopparen kan stämpla bandet med
+/// exakt vilket regim det kördes under.
+fn recost_resp(game: &mut GameState, specs: &[proto::RecostSpec]) -> Result<proto::RecostResp, String> {
+    // Grafen klonas som Arc (billig refräkning) så att lånet på `game.nav` är släppt innan
+    // tabellen skrivs. Inget här tar &mut på grafen — operationen får inte ändra identiteten.
+    let g = game.nav.graph.clone().ok_or("navmesh not ready")?;
+    let entries = crate::recost::recost_anchored(&g, specs)?;
+    let graph_hash = crate::graph_ident::graph_content_hash(&g);
+    game.recost.set(entries, graph_hash, &g);
+    Ok(proto::RecostResp {
+        set: game.recost.as_entries_for(Some(&g)),
+        graph_content_hash: game.recost.graph_hash_for(Some(&g)).to_string(),
+        recost_hash: game.recost.hash_for(Some(&g)).to_string(),
+    })
+}
+
 /// Ta bort ankargrindade länkar. **En implementation, två anropare**:
 /// `Cmd::RemoveLinks` och receptautostarten. Speglar `plant_speed_jump_link`.
 pub(crate) fn remove_links_anchored(
@@ -1704,6 +2020,7 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, now: f32) {
     let dz = (origin.z - target.z).abs();
     let crossed_finish = goto_crossed_finish(&game.entities[e].bot.puppet.traj, origin, target);
     if (dxy <= GOTO_ARRIVE_XY || crossed_finish) && dz <= GOTO_ARRIVE_Z {
+        let branch = arrival_branch(dxy);
         let traj = traj_rows(&std::mem::take(&mut game.entities[e].bot.puppet.traj));
         // A goto commonly ends while the bot is airborne and carrying several hundred ups. Merely
         // swapping the order to Hold leaves the active hop controller, route, and momentum intact for
@@ -1720,6 +2037,9 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, now: f32) {
                 origin: a3(origin),
                 target: a3(target),
                 dist: dxy,
+                dxy,
+                dz,
+                branch,
                 traj,
             },
         );
@@ -1761,6 +2081,23 @@ fn poll_goto(game: &mut GameState, e: EntId, bot: u32, target: Vec3, now: f32) {
                 traj,
             },
         );
+    }
+}
+
+/// Which limb of the arrival gate fired, for a goto that has just passed it.
+///
+/// **Reporting only.** The gate is `(dxy <= GOTO_ARRIVE_XY || crossed_finish) && dz <=
+/// GOTO_ARRIVE_Z` and this function does not participate in it — it reads the same `dxy` the
+/// gate just read and names the limb. Given the gate passed, `dxy > GOTO_ARRIVE_XY` can only
+/// mean the finish-plane crossing is what let it through.
+///
+/// It is a named function rather than an inline `if` so that the labelling is bound by a test
+/// instead of being asserted about a copy of itself.
+fn arrival_branch(dxy: f32) -> proto::ArrivalBranch {
+    if dxy <= GOTO_ARRIVE_XY {
+        proto::ArrivalBranch::PointArrival
+    } else {
+        proto::ArrivalBranch::CrossedFinish
     }
 }
 
@@ -2045,6 +2382,172 @@ mod tests {
         assert!(!crossed(0.0, -22.0));
     }
 
+    // --- issue #2: `arrived` is an instrument reading, so it must carry its provenance ---
+
+    /// An `arrived` row built the way `poll_goto` builds it, at a given distance and branch.
+    fn arrived_row(dxy: f32, dz: f32) -> serde_json::Value {
+        let ev = Event::Arrived {
+            bot: 1,
+            t: 4.25,
+            origin: [250.0, -703.0 + dxy, 320.0 + dz],
+            target: [250.0, -703.0, 320.0],
+            dist: dxy,
+            dxy,
+            dz,
+            branch: arrival_branch(dxy),
+            traj: Vec::new(),
+        };
+        serde_json::to_value(&ev).expect("arrived row serialises")
+    }
+
+    /// The row an instrument actually receives carries the distances and the branch by name.
+    ///
+    /// `dist` alone was never enough: it is one scalar with no Z and no statement about *why*
+    /// the gate fired.
+    #[test]
+    fn arrived_row_carries_dxy_dz_and_branch() {
+        let row = &arrived_row(12.0, 8.0)["Arrived"];
+        assert_eq!(row["dxy"], 12.0);
+        assert_eq!(row["dz"], 8.0);
+        assert_eq!(row["branch"], "point_arrival");
+        // `dist` is preserved for the consumers that already read it.
+        assert_eq!(row["dist"], 12.0);
+    }
+
+    /// The branch label is the thing that separates the two arrival claims.
+    ///
+    /// `GOTO_ARRIVE_XY` is the boundary and it is inclusive, matching the gate's own `<=`.
+    #[test]
+    fn arrival_branch_names_the_limb_that_fired() {
+        assert_eq!(arrival_branch(0.0), proto::ArrivalBranch::PointArrival);
+        assert_eq!(
+            arrival_branch(GOTO_ARRIVE_XY),
+            proto::ArrivalBranch::PointArrival,
+            "the gate's boundary is inclusive; the label must agree with the gate"
+        );
+        assert_eq!(
+            arrival_branch(GOTO_ARRIVE_XY + 0.1),
+            proto::ArrivalBranch::CrossedFinish
+        );
+    }
+
+    /// The route killer, in one assertion: a bot declared home 101u out and a bot that is
+    /// genuinely there are now different rows.
+    ///
+    /// Both are `arrived`. Judged on the engine's flag they are identical; judged on the
+    /// provenance the first is a finish-plane crossing 101u from the declared target, which no
+    /// facit predicate on a 70u disk would accept.
+    #[test]
+    fn a_crossing_101u_out_is_distinguishable_from_a_point_arrival() {
+        let killer = arrived_row(101.0, 12.0);
+        let genuine = arrived_row(12.0, 12.0);
+        assert_eq!(killer["Arrived"]["branch"], "crossed_finish");
+        assert_eq!(genuine["Arrived"]["branch"], "point_arrival");
+        assert_ne!(killer["Arrived"]["branch"], genuine["Arrived"]["branch"]);
+    }
+
+    /// An `arrived` row without the provenance fields is classified, not counted.
+    ///
+    /// This is the distance axis of the rule `50a613c` already settled on the time axis:
+    /// missing time is not a hit, and now missing distance or missing branch is not a hit
+    /// either. The instrument must be able to *name* the defect — a row that merely fails to
+    /// decode gets dropped as a malformed frame and the reason is lost.
+    #[test]
+    fn arrived_without_provenance_classifies_as_missing_arrival_provenance() {
+        // The pre-issue-#2 row: bot, time, origin, target, dist — no dxy, no dz, no branch.
+        let legacy = serde_json::json!({
+            "bot": 1, "t": 4.25,
+            "origin": [250.0, -602.0, 332.0], "target": [250.0, -703.0, 320.0],
+            "dist": 101.0, "traj": []
+        });
+        let prov: proto::ArrivedProvenance =
+            serde_json::from_value(legacy).expect("a legacy row still decodes as provenance");
+        assert_eq!(
+            prov.judgeable(),
+            Err(proto::MISSING_ARRIVAL_PROVENANCE),
+            "an arrived row with no distances and no branch is not evidence of arrival"
+        );
+
+        // A row carrying all three is judgeable, and yields exactly what the facit needs.
+        let full = arrived_row(101.0, 12.0)["Arrived"].clone();
+        let prov: proto::ArrivedProvenance = serde_json::from_value(full).expect("a provenance-carrying row decodes");
+        assert_eq!(prov.judgeable(), Ok((101.0, 12.0, proto::ArrivalBranch::CrossedFinish)));
+    }
+
+    /// Each provenance field is individually load-bearing — no two-out-of-three passes.
+    #[test]
+    fn every_provenance_field_is_required_on_its_own() {
+        for (missing, row) in [
+            ("dxy", serde_json::json!({ "dz": 8.0, "branch": "point_arrival" })),
+            ("dz", serde_json::json!({ "dxy": 12.0, "branch": "point_arrival" })),
+            ("branch", serde_json::json!({ "dxy": 12.0, "dz": 8.0 })),
+        ] {
+            let prov: proto::ArrivedProvenance =
+                serde_json::from_value(row).expect("partial row decodes as provenance");
+            assert_eq!(
+                prov.judgeable(),
+                Err(proto::MISSING_ARRIVAL_PROVENANCE),
+                "a row missing only `{missing}` must still be unjudgeable"
+            );
+        }
+    }
+
+    /// The whole arrival path in `poll_goto`, pinned as text: the gate, the branch it computes,
+    /// and the fields it reports.
+    ///
+    /// Everything above binds `arrival_branch` and the provenance types as *functions*. None of
+    /// it reaches the lines that call them, because `poll_goto` needs a live `GameState`. So the
+    /// path is pinned the way `ra_room_lock.rs` pins the mållinje names — as source text, in the
+    /// one place a unit test cannot otherwise stand.
+    ///
+    /// The window deliberately opens at the **gate**, not at `Event::Arrived {`. Opening it at
+    /// the emission left the line that computes the branch outside the pin, and
+    /// `arrival_branch(dz)` — reading the wrong distance entirely — passed all 411 tests
+    /// (QA mutation Q1, 2026-08-23). Two earlier mutations found the same class of hole at the
+    /// emission itself (`dz: 0.0` passed all 410). A pin that stops short of the argument is a
+    /// pin that watches the wrong thing.
+    #[test]
+    fn the_arrived_emission_wires_the_measured_provenance() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/control.rs");
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        // From the gate in `poll_goto` through the end of the event it emits. `split_once` takes
+        // the first occurrence, and `poll_goto` precedes both `arrival_branch` and this module.
+        let gate = "if (dxy <= GOTO_ARRIVE_XY || crossed_finish) && dz <= GOTO_ARRIVE_Z {";
+        let (_, body) = src.split_once(gate).expect("the arrival gate is still in control.rs");
+        let at = body
+            .find("Event::Arrived {")
+            .expect("the arrived emission still follows the gate");
+        let end = at + body[at..].find("},").expect("the emission block closes");
+        let lines: Vec<&str> = body[..end].lines().map(str::trim).collect();
+        for pinned in [
+            // The branch must be computed from the XY distance the gate itself tested.
+            "let branch = arrival_branch(dxy);",
+            // …and every measured field must reach the wire.
+            "dist: dxy,",
+            "dxy,",
+            "dz,",
+            "branch,",
+        ] {
+            assert!(
+                lines.contains(&pinned),
+                "the arrival path no longer contains `{pinned}` — an arrived row without its \
+                 measured dxy/dz/branch is not evidence of arrival (issue #2). Lines found: {lines:?}"
+            );
+        }
+    }
+
+    /// The taxonomy token's **spelling**, written out once.
+    ///
+    /// Every other test compares against `proto::MISSING_ARRIVAL_PROVENANCE`, so they all agree
+    /// with the constant whatever it says: changing its value left all 411 tests green (QA
+    /// mutation Q3, 2026-08-23). The string is the contract — an instrument downstream matches
+    /// on it, and a taxonomy reason that silently renames itself is a reason nothing can file
+    /// under. This is the one place the literal appears, so this is the one test that binds it.
+    #[test]
+    fn the_taxonomy_token_is_spelled_missing_arrival_provenance() {
+        assert_eq!(proto::MISSING_ARRIVAL_PROVENANCE, "missing_arrival_provenance");
+    }
+
     #[test]
     fn cvar_name_guard() {
         assert!(valid_cvar_name("rtx_rj_stance"));
@@ -2230,5 +2733,185 @@ mod tests {
             &[rl_spec(0, 0, 3, "jump"), rl_spec(2, 3, 1, "walk")],
         )
         .expect("O båda bort");
+    }
+    /// The graph stamp separates graphs and is stable within one.
+    ///
+    /// A link index is only a name for a link *within one build*. Rows from two graphs that shared a
+    /// stamp would silently be comparable, and the comparison would attribute one map's failures to
+    /// another's cells — so every part of the graph's identity has to move the stamp.
+    #[test]
+    fn graph_stamp_separates_graphs() {
+        let base = graph_stamp("dm3", 4581, 19822, 311);
+        assert_eq!(base, graph_stamp("dm3", 4581, 19822, 311), "stable for one graph");
+        assert_ne!(base, graph_stamp("dm2", 4581, 19822, 311), "map matters");
+        assert_ne!(base, graph_stamp("dm3", 4582, 19822, 311), "cell count matters");
+        assert_ne!(base, graph_stamp("dm3", 4581, 19823, 311), "link count matters");
+        assert_ne!(base, graph_stamp("dm3", 4581, 19822, 312), "rocket-jump link count matters");
+    }
+
+    /// The stamp matches the harness's, byte for byte, on the graph they will actually be compared on.
+    ///
+    /// The engine and the harness each compute this independently — that is the point of a contract
+    /// rather than a shared function — so the only thing that keeps them honest is both being checked
+    /// against the same fixed answers. The golden value is dm3 as T1h measured it; the three FNV
+    /// vectors catch a wrong basis or a multiply-before-XOR, which the dm3 value alone would not
+    /// localise. See WORK_LOGS/graphstamp-kontrakt.md (track A owns the definition).
+    #[test]
+    fn graph_stamp_matches_the_harness_contract() {
+        // Standard FNV-1a-64 vectors, over the message alone.
+        assert_eq!(fnv1a(0xcbf2_9ce4_8422_2325, b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a(0xcbf2_9ce4_8422_2325, b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a(0xcbf2_9ce4_8422_2325, b"foobar"), 0x8594_4171_f739_67e8);
+        // The graph T1h was measured against.
+        assert_eq!(graph_stamp("dm3", 5978, 48208, 0), 13_090_435_456_435_551_592);
+        assert_eq!(graph_stamp("dm3", 5978, 48208, 0), 0xb5aa_91b1_0804_fd68);
+    }
+
+    /// The counts are hashed as distinct fields, not run together — otherwise a graph that traded
+    /// cells for links would collide with one that did not.
+    #[test]
+    fn graph_stamp_does_not_confuse_field_boundaries() {
+        assert_ne!(
+            graph_stamp("dm3", 1, 2, 3),
+            graph_stamp("dm3", 2, 1, 3),
+            "swapping cell and link counts must not collide",
+        );
+        assert_ne!(graph_stamp("a", 0, 0, 0), graph_stamp("", 0, 0, 0), "an empty map name is its own graph");
+    }
+
+    /// The emit gate refuses every configuration but the one the operator explicitly opted into.
+    ///
+    /// This is the only thing between a pre-branch typed consumer and a variant it cannot decode —
+    /// the deployed nav viewer reads an unknown `Event` as a dead connection. The truth table is
+    /// small enough to state in full, and too important to leave to inspection.
+    #[test]
+    fn plan_gate_needs_both_cvars() {
+        // The fine switch alone is not enough: the whole new-variant surface is subordinate to
+        // `rtx_telemetry`, which is what an operator opts in with.
+        assert!(!plan_gate(false, 1.0, 1.0).on, "plan on, telemetry off: nothing on the wire");
+        assert!(!plan_gate(false, 0.0, 1.0).on, "both off");
+        assert!(!plan_gate(true, 0.0, 1.0).on, "telemetry on, plan off: today's stream, unchanged");
+        assert!(plan_gate(true, 1.0, 1.0).on, "both on: the opted-in case");
+        // Defaults are both zero, so a server nobody configured stays silent.
+        assert!(!plan_gate(false, 0.0, 0.0).on, "stock server emits nothing");
+    }
+
+    /// A nonsense divisor thins nothing instead of dividing by zero.
+    #[test]
+    fn plan_gate_divisor_is_clamped() {
+        assert_eq!(plan_gate(true, 1.0, 0.0).div, 1, "zero would panic the modulo");
+        assert_eq!(plan_gate(true, 1.0, -5.0).div, 1, "negative is meaningless, not thinning");
+        assert_eq!(plan_gate(true, 1.0, 1.0).div, 1);
+        assert_eq!(plan_gate(true, 1.0, 4.0).div, 4);
+    }
+
+    // --- the reported leg, run rather than read (QA Q2/Q3) -----------------------------------
+
+    /// Four cells, three walk links: 0→1 (id 0), 1→2 (id 1), 2→3 (id 2).
+    fn leg_graph() -> rtx_nav::navmesh::NavGraph {
+        use rtx_nav::navmesh::{Link, LinkKind, NavGraph};
+        let w = |from: u32, to: u32| Link {
+            from,
+            to,
+            kind: LinkKind::Walk,
+            cost: 1.0,
+        };
+        NavGraph::from_topology(
+            &[
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(32.0, 0.0, 0.0),
+                Vec3::new(64.0, 0.0, 0.0),
+                Vec3::new(96.0, 0.0, 0.0),
+            ],
+            &[w(0, 1), w(1, 2), w(2, 3)],
+        )
+    }
+
+    fn diag_on(link: Option<u32>) -> crate::bot::state::PlanDiag {
+        crate::bot::state::PlanDiag {
+            link,
+            ..Default::default()
+        }
+    }
+
+    /// The row reports the leg steering stamped, and the endpoints of **that same** leg.
+    ///
+    /// This is the claim `PlanTick` exists to make. If the row could report one link and the
+    /// endpoints of another, an attribution pass would place a real decision on the wrong pair of
+    /// cells — and it would look exactly like a correct row while doing it.
+    #[test]
+    fn the_row_reports_the_leg_steering_stamped() {
+        let g = leg_graph();
+        for (link, want) in [(0u32, (0u32, 1u32)), (1, (1, 2)), (2, (2, 3))] {
+            let got = plan_leg(&diag_on(Some(link)), Some(&g));
+            assert_eq!(
+                got,
+                (link, want.0, want.1),
+                "leg {link} must report itself and its own endpoints"
+            );
+        }
+    }
+
+    /// Off-route is a demonstrable reading, not a missing one: all three go to `PLAN_NONE`
+    /// together, so a consumer never sees an id with no endpoints or endpoints with no id.
+    #[test]
+    fn an_unstamped_leg_reports_none_across_all_three() {
+        let g = leg_graph();
+        let none = proto::PLAN_NONE;
+        assert_eq!(plan_leg(&diag_on(None), Some(&g)), (none, none, none));
+        assert_eq!(plan_leg(&diag_on(None), None), (none, none, none));
+    }
+
+    /// No graph in hand: the decision still survives.
+    ///
+    /// The id is what steering decided; dropping it because the endpoints cannot be resolved
+    /// would discard the decision in order to avoid admitting a gap. The endpoints say `PLAN_NONE`
+    /// — which is the truth about them — and the link says what it always said.
+    #[test]
+    fn a_stamped_leg_survives_a_missing_graph() {
+        let none = proto::PLAN_NONE;
+        assert_eq!(plan_leg(&diag_on(Some(7)), None), (7, none, none));
+    }
+
+    /// A row goes out only for a bot that actually steered this frame, and only on its turn.
+    #[test]
+    fn plan_row_due_requires_a_fresh_stamp() {
+        let on = plan_gate(true, 1.0, 1.0);
+        let off = plan_gate(true, 0.0, 1.0);
+        assert!(plan_row_due(on, true, 0), "steered this frame");
+        assert!(!plan_row_due(on, false, 0), "stale: the bot did not steer");
+        assert!(!plan_row_due(off, true, 0), "gate shut beats a fresh stamp");
+        // Decimation picks every div-th row per bot, and never starves a bot entirely.
+        let thin = plan_gate(true, 1.0, 3.0);
+        let due: Vec<u32> = (0..9).filter(|&s| plan_row_due(thin, true, s)).collect();
+        assert_eq!(due, vec![0, 3, 6], "every third row, deterministically");
+    }
+
+    /// Regression: think and frame_end read `game.time()` at different instants.
+    /// The old `stamped == now` predicate dropped every live row; this test feeds
+    /// two unequal f32 times and still requires emit when the frame is fresh.
+    #[test]
+    fn plan_row_due_emits_when_think_and_frame_end_times_differ() {
+        let on = plan_gate(true, 1.0, 1.0);
+        let think_t = 12.0_f32;
+        let frame_end_t = 12.5_f32;
+        assert_ne!(
+            think_t.to_bits(),
+            frame_end_t.to_bits(),
+            "the live clocks disagree"
+        );
+        assert_ne!(think_t, frame_end_t);
+        assert!(
+            think_t != frame_end_t,
+            "the old f32-bit-equality predicate would drop this row"
+        );
+        assert!(
+            plan_row_due(on, true, 0),
+            "fresh this frame must emit even when the two game.time() readings differ"
+        );
+        assert!(
+            !plan_row_due(on, false, 0),
+            "without freshness a time match is not an emit"
+        );
     }
 }

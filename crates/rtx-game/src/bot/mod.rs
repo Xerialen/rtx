@@ -1630,6 +1630,19 @@ fn emit(
         game.entities[e].bot.audit.push(frame, audit_cap(&host));
     }
 
+    // Plan telemetry: the jump button as *sent*, stamped at the one instant it is final — the hook
+    // and rocket-jump gates above may still have set it after steering had its say, and the swim and
+    // nav-jump branches may still have cleared it. Logging steering's intention instead would show a
+    // jump the physics never saw, which is exactly the on-ground jump race this is here to expose.
+    // Gated on the frame mark rather than a second cvar read: only a steering pass with telemetry on
+    // leaves `plan.fresh`. Do not compare `stamped == now` — those clocks are the think/frame_end
+    // pair that never matched live.
+    {
+        let b = &mut game.entities[e].bot;
+        if b.plan.fresh {
+            b.plan.jump_cmd = buttons & BUTTON_JUMP != 0;
+        }
+    }
     host.set_bot_cmd(client, msec, view, forward, side, up, buttons, impulse);
 }
 
@@ -2161,6 +2174,16 @@ impl GameState {
                     }
                 }
             }
+        }
+        // Operator-set surcharges (`Cmd::Recost`) ride the same one-extra-per-link path as every
+        // other penalty, and are **merged**, never assigned. A measurement arm that priced a link
+        // the bot has also just failed on must not silently erase the bot's own failed-link
+        // penalty — that would change the bot's learning as a side effect of measuring it, and
+        // the arm would be measuring a different bot than the unpriced one.
+        // `entries_for` is empty unless the table is about the graph in play, so a table that
+        // outlived its graph prices nothing rather than pricing whatever landed on those ids.
+        for &(li, extra) in self.recost.entries_for(self.nav.graph.as_ref()) {
+            merge_link_penalty(&mut penalties, li, extra);
         }
         let rj_extra = rj::rocket_jump_extra(&self.entities[e].v, self.entities[e].combat.super_damage_finished, now);
         LinkPricing {

@@ -663,7 +663,8 @@ S5. **Valet av N1-b utlöste V9 — se §3.1, den meningen ska in i ägarrapport
   släpps med bevis. **Praxis är att tömma filen; RIGG-REGLER säger ta bort den —
   likriktning är en öppen punkt.**
 - **Förbjudna portar (rörs aldrig):** 27550, 27991, 27530, 27700, **28502,
-  28503** (KTX-paret).
+  28503** (KTX-paret). *Läget 2026-08-21; detta är ett protokoll, inte en
+  regel. Kanonisk, mätt och daterad lista: `docs/PORTAR.md`.*
 - Mätriggar ska vara **släckta i vila**; mönster-units (`ra-drill-*`) med
   3h-tak (`RuntimeMaxSec=10800`-drop-in), transient endast om mönsterunit saknas.
 - **Ö12 (öppen, och INTE lokaliserad) (R11):** `RTX_RIG_LOCK`-drop-in:en ska

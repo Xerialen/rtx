@@ -218,6 +218,9 @@ pub struct BotState {
     /// route cursor alone (the leg's kind lives in the graph, and the gate is a velocity test against
     /// a waypoint that moves). See [`crate::bot::steer`]'s run-up gate.
     pub takeoff: TakeoffDiag,
+    /// What the planner decided this frame, for the plan-telemetry event. Diagnostic only; see
+    /// [`PlanDiag`].
+    pub plan: PlanDiag,
 }
 
 /// One frame's view of the leg being flown and its takeoff gate. Diagnostic only.
@@ -236,6 +239,155 @@ pub struct TakeoffDiag {
     pub ok: bool,
     /// A speed jump's leap is held for its certified envelope this frame.
     pub sj_held: bool,
+}
+
+/// What the planner chose this frame and what it cost — the engine half of the plan-telemetry row.
+///
+/// Everything here is either unavailable to [`crate::control`] at drain time or would be *wrong* by
+/// then. The active leg is the clear case: `route_pos` is read after steering, but `hook`/`rj` advance
+/// it on landing, so recomputing `route[route_pos]` in `frame_end` would sometimes name the next leg
+/// rather than the one just flown. The price terms need the frame's `LinkCosts`, which lives only
+/// inside `steer`. So steering stamps, and the control channel drains — the same split
+/// [`StallRecord`] uses, and for the same reason: `steer` has no `&GameState`.
+///
+/// Fields fall into three lifetimes, which is why there is no blanket per-frame reset:
+/// **frame-scoped** (the leg, its price, the controller's state) are cleared by
+/// [`Self::begin_frame`] so a frame that never reaches a stamp reads as "not measured" instead of
+/// repeating last frame's answer; **route-scoped** (`plan_cost`, `plan_fail`) describe the plan in
+/// force and must survive the frames between repaths; **stream-scoped** (`seq`) and **hop-scoped**
+/// (`first_air_vz`) follow their own clocks.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlanDiag {
+    /// Game time this diagnostic describes (think-time `game.time()`). Payload on the row, not the
+    /// emit key — see [`Self::fresh`].
+    pub stamped: f32,
+    /// Frame identity. Set by [`Self::begin_frame`], consumed by [`crate::control::frame_end`].
+    /// A bot that did not steer this frame stays false and produces no row rather than a stale one.
+    pub fresh: bool,
+    /// Per-bot row counter. Events are droppable under backlog, so this is what lets a consumer tell
+    /// a gap in the record from an absence of decisions.
+    pub seq: u32,
+
+    // --- frame-scoped: cleared by `begin_frame` ---------------------------------------------
+    /// The leg being steered along, its kind, and its planned entry speed band.
+    pub link: Option<u32>,
+    pub kind: Option<rtx_nav::navmesh::LinkKind>,
+    pub band: Option<u8>,
+    /// The dynamic surcharge A\* charged this leg, term by term, plus the static and chained parts
+    /// and the total. Split because a sum cannot be acted on — see [`rtx_nav::navmesh::LinkExtra`].
+    pub extra: rtx_nav::navmesh::LinkExtra,
+    pub p_base: f32,
+    pub p_chained: f32,
+    pub p_total: f32,
+    /// The speed jump on this leg, if it is one: required takeoff speed, whether it depends on
+    /// carried entry speed, its air-curl gain and its run-up weave cap.
+    pub v_req: f32,
+    pub chained: bool,
+    pub curl_gain: f32,
+    pub weave_cap: f32,
+    /// What finishing the current plan costs from where the bot actually is.
+    pub remaining_cost: f32,
+    /// The hop controller's run-up measurement and its too-slow-to-leap verdict.
+    pub runway: f32,
+    pub hold_jump: bool,
+    /// Physical state as steering saw it, and whether `+jump` survived into the command actually
+    /// sent. The command, not the intention: a press cleared later in the chain never reached the
+    /// engine, and that gap is exactly what this telemetry is for.
+    pub on_ground: bool,
+    pub origin: Vec3,
+    pub vel: Vec3,
+    pub speed: f32,
+    pub jump_cmd: bool,
+    /// Controller phase at the *opening* of this emit-window (first steer after the last
+    /// `frame_end` consume), i.e. the phase *before* the controller stepped in this window.
+    /// Think runs faster than frame_end; a later steer in the same window must not overwrite
+    /// this or Prestrafe→Hop becomes Hop→Hop.
+    pub phase_prev: crate::bot::bhop::Phase,
+    /// The takeoff point of the active speed jump; meaningful only alongside a speed-jump leg.
+    pub takeoff_xyz: Vec3,
+    /// Signed along-corridor distance to the takeoff line, and whether it was measured at all. Both
+    /// this and `runway` are signed, so absence needs a flag rather than an out-of-band value.
+    pub sj_progress: f32,
+    pub sj_progress_measured: bool,
+    pub runway_measured: bool,
+
+    // --- route-scoped: survive between repaths ----------------------------------------------
+    /// The banded planner's total cost for the route in force, or `-1` when it came from an unbanded
+    /// search.
+    pub plan_cost: f32,
+    /// Why the last repath produced nothing: `""` on success, else `no_path`, `priced_out` or
+    /// `unreachable`. Separates a missing link from a botched execution — the one distinction the
+    /// route record cannot otherwise make.
+    pub plan_fail: &'static str,
+    /// Whether the goal was reachable as pure topology, and whether the search target was redirected
+    /// away from it as a result. The topological half of `structural_missing_link`.
+    pub goal_reachable: bool,
+    pub goal_redirected: bool,
+
+    // --- hop-scoped -------------------------------------------------------------------------
+    /// Vertical speed bound to the first *emitted airborne PlanTick* of the current hop
+    /// (`vel.z` on that row). Not a pre-pmove takeoff impulse. Zero is a real reading, so the
+    /// flag carries absence. Bound in [`Self::bind_first_air_to_row`] at emit time.
+    pub first_air_vz: f32,
+    pub first_air_vz_measured: bool,
+}
+
+impl PlanDiag {
+    /// Start a frame: clear what is measured per frame, keep what outlives one.
+    ///
+    /// A frame-scoped field left over from last frame is worse than no field at all — it reads as a
+    /// measurement and is silently one tick stale, which is unfalsifiable in the log.
+    pub fn begin_frame(&mut self, now: f32) {
+        let PlanDiag {
+            stamped,
+            seq,
+            plan_cost,
+            plan_fail,
+            goal_reachable,
+            goal_redirected,
+            first_air_vz,
+            first_air_vz_measured,
+            phase_prev,
+            ..
+        } = *self;
+        *self = PlanDiag {
+            stamped: now,
+            fresh: true,
+            seq,
+            plan_cost,
+            plan_fail,
+            goal_reachable,
+            goal_redirected,
+            first_air_vz,
+            first_air_vz_measured,
+            phase_prev,
+            // Not measured until something stamps it. `weave_cap` is a half-angle and never
+            // negative, so -1 is safely out of band; `runway` and `sj_progress` are *signed* and have
+            // no such value, which is why their absence is carried by a flag instead.
+            weave_cap: -1.0,
+            ..PlanDiag::default()
+        };
+        let _ = stamped;
+    }
+
+    /// Latch the controller phase at the opening of this emit-window only.
+    ///
+    /// Subsequent steer passes in the same window (think ~77 Hz vs frame_end ~50 Hz) must keep
+    /// the first value: otherwise a Prestrafe→Hop step is reported as prev=Hop on the first Hop row.
+    pub fn latch_phase_prev(&mut self, current: crate::bot::bhop::Phase) {
+        if !self.fresh {
+            self.phase_prev = current;
+        }
+    }
+
+    /// Bind `first_air_vz` to *this row's* `vel.z` the first time an airborne PlanTick is emitted
+    /// in the hop. Later air rows keep the bound value. Landing (steer, `on_ground`) clears it.
+    pub fn bind_first_air_to_row(&mut self) {
+        if !self.on_ground && !self.first_air_vz_measured {
+            self.first_air_vz = self.vel.z;
+            self.first_air_vz_measured = true;
+        }
+    }
 }
 
 impl BotState {
@@ -899,5 +1051,127 @@ mod tests {
         assert_eq!(bot.goal.commit, GoalCommit::None);
         assert_eq!(bot.goal.next_pick, 5.0);
         assert!(!bot.is_avoided(10, 5.0));
+    }
+
+    /// `begin_frame` clears what is measured per frame and keeps what outlives one.
+    ///
+    /// The whole point of the split: a frame-scoped field carried over reads as a measurement and is
+    /// silently one tick stale, which nothing downstream can falsify. A route-scoped one cleared too
+    /// eagerly would blank the plan's cost on every frame between repaths, which is most of them.
+    #[test]
+    fn plan_diag_begin_frame_respects_field_lifetimes() {
+        let mut p = PlanDiag {
+            stamped: 1.0,
+            seq: 42,
+            link: Some(7),
+            kind: None,
+            band: Some(2),
+            p_base: 1.5,
+            p_total: 4.0,
+            v_req: 320.0,
+            chained: true,
+            runway: -4.5,
+            runway_measured: true,
+            sj_progress: -4.5,
+            sj_progress_measured: true,
+            hold_jump: true,
+            on_ground: true,
+            speed: 280.0,
+            jump_cmd: true,
+            plan_cost: 4.25,
+            plan_fail: "no_path",
+            first_air_vz: 270.0,
+            ..PlanDiag::default()
+        };
+        p.begin_frame(2.0);
+
+        // Frame-scoped: gone, and reading as "not measured" rather than as a measured zero where a
+        // zero would be a real value.
+        assert_eq!(p.link, None);
+        assert_eq!(p.band, None);
+        assert_eq!(p.p_base, 0.0);
+        assert_eq!(p.p_total, 0.0);
+        assert_eq!(p.v_req, 0.0);
+        assert!(!p.chained);
+        assert!(!p.hold_jump);
+        assert!(!p.on_ground);
+        assert_eq!(p.speed, 0.0);
+        assert!(!p.jump_cmd);
+        assert_eq!(p.weave_cap, -1.0, "an unmeasured weave cap is not a cap of zero");
+        // `runway` and `sj_progress` are signed — a bot past the lip reads negative — so no in-band
+        // value can mean "not measured". Their absence rides on the flags, and the flags must clear.
+        assert!(!p.runway_measured, "last frame's run-up must not be presented as this frame's");
+        assert!(!p.sj_progress_measured);
+
+        // Route-scoped: still describing the plan in force.
+        assert_eq!(p.plan_cost, 4.25);
+        assert_eq!(p.plan_fail, "no_path");
+        // Hop-scoped and stream-scoped: their own clocks.
+        assert_eq!(p.first_air_vz, 270.0);
+        assert_eq!(p.seq, 42);
+        // And the frame it now describes.
+        assert_eq!(p.stamped, 2.0);
+        assert!(p.fresh, "begin_frame marks the frame, independent of the clock");
+    }
+
+    /// A default `PlanDiag` is never mistaken for a stamped one: `control` gates emission on
+    /// `fresh`, and a bot that never steered must not produce a row.
+    #[test]
+    fn plan_diag_default_is_not_a_fresh_stamp() {
+        let p = PlanDiag::default();
+        assert_eq!(p.stamped, 0.0);
+        assert!(!p.fresh, "never steered");
+        assert_eq!(p.seq, 0);
+        assert_eq!(p.link, None);
+    }
+
+    /// Kimi B2 FLAGGA 1 / f2: three Prestrafe rows then Hop must report prev=Prestrafe.
+    ///
+    /// The live bug was a second think in the same emit-window overwriting phase_prev after
+    /// the controller had already stepped to Hop.
+    #[test]
+    fn phase_prev_survives_extra_think_in_the_same_emit_window() {
+        use crate::bot::bhop::Phase;
+        let mut p = PlanDiag::default();
+        assert!(!p.fresh);
+
+        // Three Prestrafe emit-windows (one steer each, as a clean 50 Hz match).
+        for _ in 0..3 {
+            p.latch_phase_prev(Phase::Prestrafe);
+            p.begin_frame(1.0);
+            assert_eq!(p.phase_prev, Phase::Prestrafe);
+            p.fresh = false; // frame_end consume
+        }
+
+        // Hop window: first think still Prestrafe, controller steps to Hop, then a second think.
+        p.latch_phase_prev(Phase::Prestrafe);
+        p.begin_frame(1.0);
+        assert_eq!(p.phase_prev, Phase::Prestrafe, "window opened on Prestrafe");
+        // second think — controller already in Hop
+        p.latch_phase_prev(Phase::Hop);
+        p.begin_frame(1.1);
+        assert_eq!(
+            p.phase_prev,
+            Phase::Prestrafe,
+            "extra think must not rewrite prev to Hop"
+        );
+    }
+
+    /// first_air_vz is the bound airborne row's vel.z, not a leftover 0.0 from an earlier think.
+    #[test]
+    fn first_air_vz_binds_to_the_emitted_row_vel_z() {
+        let mut p = PlanDiag::default();
+        // An earlier think left the ground with vz=0 (the old latch would freeze this).
+        p.on_ground = false;
+        p.vel = Vec3::new(114.7, -324.1, 0.0);
+        // We do not bind until emit. A later think in the same hop has the row's vel.
+        p.vel = Vec3::new(114.7, -324.1, -9.6);
+        p.bind_first_air_to_row();
+        assert!(p.first_air_vz_measured);
+        assert_eq!(p.first_air_vz, -9.6);
+        // Subsequent air rows keep the first bound value.
+        p.vel = Vec3::new(100.0, -300.0, -19.2);
+        p.bind_first_air_to_row();
+        assert_eq!(p.first_air_vz, -9.6);
     }
 }
