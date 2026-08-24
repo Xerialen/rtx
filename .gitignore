@@ -1,6 +1,10 @@
 /target
 /.idea
 *.txt
+# ...except the KTX demoinfo cards checked in as fixtures. A contract-3 T4
+# envelope names its card by path and sha256 and the validator resolves and
+# recounts it, so the fixture is only a fixture if the card is actually there.
+!testsuite/schema/fixtures/*/demos/*.txt
 *.pem
 /playground
 .DS_Store
