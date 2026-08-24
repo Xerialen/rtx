@@ -990,6 +990,29 @@ pub(crate) fn plan_row_due(gate: PlanGate, fresh: bool, seq: u32) -> bool {
     gate.on && fresh && seq % gate.div == 0
 }
 
+/// The leg the row reports: the link **steering stamped**, and that same link's endpoints.
+///
+/// Pure, and separate from [`plan_tick`], so the one claim the whole event exists to make — "A\*
+/// chose link X" — is bound by a test that *runs* it rather than by a pin that reads the source.
+/// `plan_tick` itself needs a live `GameState` and is out of reach of a unit test; this is not.
+///
+/// All three values come from the same `p.link`, so they cannot name different legs. That is the
+/// property, not an implementation detail: a row whose `link_from` belonged to some other leg
+/// would be a re-derivation wearing an attestation's clothes, and nothing downstream could catch
+/// the disagreement.
+///
+/// A stamped link with no graph in hand still reports the link — the id is what steering decided,
+/// and losing it because the endpoints cannot be resolved would throw away the decision to avoid
+/// admitting a gap.
+fn plan_leg(p: &crate::bot::state::PlanDiag, graph: Option<&NavGraph>) -> (u32, u32, u32) {
+    let none = proto::PLAN_NONE;
+    let Some(l) = p.link else {
+        return (none, none, none);
+    };
+    let (from, to) = graph.map_or((none, none), |g| (g.link_source(l), g.link_target(l)));
+    (l, from, to)
+}
+
 /// One bot's plan row for this frame — see [`proto::PlanTick`].
 ///
 /// Every value is read from what steering already stamped on the bot (`bot.plan`, `bot.takeoff`,
@@ -999,8 +1022,7 @@ fn plan_tick(game: &GameState, bot_num: u32, e: EntId, stamp: u64) -> proto::Pla
     let b = &game.entities[e].bot;
     let p = &b.plan;
     let none = proto::PLAN_NONE;
-    let link_from = p.link.map_or(none, |l| game.nav.graph.as_ref().map_or(none, |g| g.link_source(l)));
-    let link_to = p.link.map_or(none, |l| game.nav.graph.as_ref().map_or(none, |g| g.link_target(l)));
+    let (link, link_from, link_to) = plan_leg(p, game.nav.graph.as_deref());
     proto::PlanTick {
         schema: proto::PLAN_SCHEMA.to_string(),
         graph_stamp: stamp,
@@ -1012,7 +1034,7 @@ fn plan_tick(game: &GameState, bot_num: u32, e: EntId, stamp: u64) -> proto::Pla
         goal_cell: b.goal_cell.unwrap_or(none),
         route_len: b.route.len() as u32,
         route_pos: b.route_pos as u32,
-        link: p.link.unwrap_or(none),
+        link,
         kind: p.kind.map(|k| format!("{k:?}")).unwrap_or_default(),
         link_from,
         link_to,
@@ -2781,6 +2803,74 @@ mod tests {
         assert_eq!(plan_gate(true, 1.0, -5.0).div, 1, "negative is meaningless, not thinning");
         assert_eq!(plan_gate(true, 1.0, 1.0).div, 1);
         assert_eq!(plan_gate(true, 1.0, 4.0).div, 4);
+    }
+
+    // --- the reported leg, run rather than read (QA Q2/Q3) -----------------------------------
+
+    /// Four cells, three walk links: 0→1 (id 0), 1→2 (id 1), 2→3 (id 2).
+    fn leg_graph() -> rtx_nav::navmesh::NavGraph {
+        use rtx_nav::navmesh::{Link, LinkKind, NavGraph};
+        let w = |from: u32, to: u32| Link {
+            from,
+            to,
+            kind: LinkKind::Walk,
+            cost: 1.0,
+        };
+        NavGraph::from_topology(
+            &[
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(32.0, 0.0, 0.0),
+                Vec3::new(64.0, 0.0, 0.0),
+                Vec3::new(96.0, 0.0, 0.0),
+            ],
+            &[w(0, 1), w(1, 2), w(2, 3)],
+        )
+    }
+
+    fn diag_on(link: Option<u32>) -> crate::bot::state::PlanDiag {
+        crate::bot::state::PlanDiag {
+            link,
+            ..Default::default()
+        }
+    }
+
+    /// The row reports the leg steering stamped, and the endpoints of **that same** leg.
+    ///
+    /// This is the claim `PlanTick` exists to make. If the row could report one link and the
+    /// endpoints of another, an attribution pass would place a real decision on the wrong pair of
+    /// cells — and it would look exactly like a correct row while doing it.
+    #[test]
+    fn the_row_reports_the_leg_steering_stamped() {
+        let g = leg_graph();
+        for (link, want) in [(0u32, (0u32, 1u32)), (1, (1, 2)), (2, (2, 3))] {
+            let got = plan_leg(&diag_on(Some(link)), Some(&g));
+            assert_eq!(
+                got,
+                (link, want.0, want.1),
+                "leg {link} must report itself and its own endpoints"
+            );
+        }
+    }
+
+    /// Off-route is a demonstrable reading, not a missing one: all three go to `PLAN_NONE`
+    /// together, so a consumer never sees an id with no endpoints or endpoints with no id.
+    #[test]
+    fn an_unstamped_leg_reports_none_across_all_three() {
+        let g = leg_graph();
+        let none = proto::PLAN_NONE;
+        assert_eq!(plan_leg(&diag_on(None), Some(&g)), (none, none, none));
+        assert_eq!(plan_leg(&diag_on(None), None), (none, none, none));
+    }
+
+    /// No graph in hand: the decision still survives.
+    ///
+    /// The id is what steering decided; dropping it because the endpoints cannot be resolved
+    /// would discard the decision in order to avoid admitting a gap. The endpoints say `PLAN_NONE`
+    /// — which is the truth about them — and the link says what it always said.
+    #[test]
+    fn a_stamped_leg_survives_a_missing_graph() {
+        let none = proto::PLAN_NONE;
+        assert_eq!(plan_leg(&diag_on(Some(7)), None), (7, none, none));
     }
 
     /// A row goes out only for a bot that actually steered this frame, and only on its turn.

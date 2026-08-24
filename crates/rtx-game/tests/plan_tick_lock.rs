@@ -18,59 +18,91 @@ fn control_src() -> String {
     fs::read_to_string(&p).unwrap_or_else(|e| panic!("PLANTICK_LOCK: cannot read {}: {e}", p.display()))
 }
 
-/// The emitted link id is the leg **steering stamped**, not a re-derivation.
+/// The row is built in **one** place, and that place wires the leg from `plan_leg`.
 ///
-/// This is the whole point of the event. `PlanTick` exists so that "A\* chose link X" is a machine
-/// fact instead of an inference from positions, and the moment the row computes its own answer the
-/// event is worth less than nothing — it would look like attestation while being a second guess,
-/// and a second guess that disagrees with the first is undetectable downstream.
+/// The behaviour — that `link`, `link_from` and `link_to` all name the same leg — is bound by
+/// tests that *run* `plan_leg` (`the_row_reports_the_leg_steering_stamped` and its two
+/// neighbours). What those cannot reach is `plan_tick` itself, which needs a live `GameState`. So
+/// this pins the wiring, and only the wiring.
 ///
-/// `frame_end` runs at a different rate from think, so anything re-derived here would be a
-/// different frame's answer to the same question even when the derivation is correct.
+/// **Anchored on the construction literal, not the signature.** `fn plan_tick(..) ->
+/// proto::PlanTick {` matches the bare type name first, and a window opened there spans the whole
+/// body — so a second, lying literal inside it would still satisfy every check somewhere and pass.
+/// Build honestly, lie afterwards is exactly the shape this must refuse, which is why the build
+/// site is counted rather than merely found. Same hole `recost_lock` was fixed for; the lesson was
+/// written down there and not carried here, so it had to be learned twice.
 #[test]
-fn the_row_reports_the_link_steering_chose() {
+fn the_row_is_built_once_and_wires_the_stamped_leg() {
     let src = control_src();
+
+    let lit = "\n    proto::PlanTick {";
+    assert_eq!(
+        src.matches(lit).count(),
+        1,
+        "PLANTICK_LOCK: there must be exactly one place a PlanTick row is built. More than one and \
+         this pin cannot know which of them is returned."
+    );
     let (_, body) = src
-        .split_once("proto::PlanTick {")
+        .split_once(lit)
         .expect("PLANTICK_LOCK: the PlanTick construction is gone from control.rs");
     let end = body
         .find("\n    }")
         .expect("PLANTICK_LOCK: the PlanTick literal does not close");
     let lines: Vec<&str> = body[..end].lines().map(str::trim).collect();
 
-    assert!(
-        lines.contains(&"link: p.link.unwrap_or(none),"),
-        "PLANTICK_LOCK: the row's `link` must be the leg steering stamped (`p.link`), verbatim. \
-         Anything else is a re-derivation dressed as an attestation. Lines: {lines:?}"
-    );
+    for pinned in ["link,", "link_from,", "link_to,"] {
+        assert!(
+            lines.contains(&pinned),
+            "PLANTICK_LOCK: the row must carry `{pinned}` from the destructured `plan_leg` result, \
+             so the id and its endpoints cannot come from different sources. Lines: {lines:?}"
+        );
+    }
     assert!(
         lines.contains(&"kind: p.kind.map(|k| format!(\"{k:?}\")).unwrap_or_default(),"),
         "PLANTICK_LOCK: `kind` must come from the same stamp as `link`, or the two can disagree"
     );
-    // The endpoints are resolved from that same `p.link` above the literal, so they cannot name a
-    // different leg than `link` does.
-    for pinned in ["link_from,", "link_to,"] {
+    // Presence is not enough while a constant can sit beside the wired value and win.
+    for lie in ["link: none,", "link_from: none,", "link_to: none,", "link: 0,"] {
         assert!(
-            lines.contains(&pinned),
-            "PLANTICK_LOCK: `{pinned}` must be the pre-resolved endpoints of `p.link`"
+            !lines.contains(&lie),
+            "PLANTICK_LOCK: the row contains `{lie}` — a hardcoded leg. A row reporting a leg the \
+             bot did not steer is worse than no row: it looks like an attestation."
         );
     }
-    // Each endpoint is bound to **its own** line. Checking the pair against a window with `any`
-    // let a mutation that rewrote `link_from` pass, because the untouched `link_to` line still
-    // satisfied the pattern — the pin proved "one of these two is right", which is not the claim.
-    for (name, resolver) in [("link_from", "g.link_source(l)"), ("link_to", "g.link_target(l)")] {
-        let decl = format!("let {name} = ");
-        let line = src
-            .lines()
-            .find(|l| l.trim_start().starts_with(&decl))
-            .unwrap_or_else(|| panic!("PLANTICK_LOCK: `{name}` is no longer resolved at all"))
-            .trim();
-        assert!(
-            line.contains("p.link.map_or(none,") && line.contains(resolver),
-            "PLANTICK_LOCK: `{name}` must resolve from `p.link` — the same stamp `link` reports — \
-             not from a second source that can name a different leg. Found: {line:?}"
-        );
-    }
+}
+
+/// The leg is destructured from `plan_leg` **exactly once**, so nothing can shadow it.
+///
+/// A second `let (link, link_from, link_to) = …` after the first silently wins, and the pin above
+/// — which reads only the literal — would see the same three names and pass. Rust allows the
+/// shadow without a warning, so nothing else catches it either.
+#[test]
+fn the_leg_is_bound_exactly_once() {
+    let src = control_src();
+    let binds: Vec<&str> = src
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("let (link, link_from, link_to)"))
+        .collect();
+    assert_eq!(
+        binds.len(),
+        1,
+        "PLANTICK_LOCK: the leg must be bound exactly once — a later binding shadows the first \
+         without a warning and the literal reads identically. Found: {binds:?}"
+    );
+    assert_eq!(
+        binds[0], "let (link, link_from, link_to) = plan_leg(p, game.nav.graph.as_deref());",
+        "PLANTICK_LOCK: the leg must come from `plan_leg`, the function the behavioural tests bind"
+    );
+    // And `plan_leg` must still start from the stamp rather than deriving its own answer.
+    let (_, f) = src
+        .split_once("fn plan_leg(")
+        .expect("PLANTICK_LOCK: plan_leg is gone from control.rs");
+    let head: String = f.lines().take(8).collect::<Vec<_>>().join("\n");
+    assert!(
+        head.contains("let Some(l) = p.link else {"),
+        "PLANTICK_LOCK: `plan_leg` must start from `p.link` — the leg steering stamped. Found:\n{head}"
+    );
 }
 
 /// The row's price split is the planner's own, term by term — not a total, not a recomputation.
@@ -82,8 +114,9 @@ fn the_row_reports_the_link_steering_chose() {
 #[test]
 fn the_row_carries_the_price_split_the_planner_used() {
     let src = control_src();
+    // Construction literal, not the signature — see `the_row_is_built_once_and_wires_the_stamped_leg`.
     let (_, body) = src
-        .split_once("proto::PlanTick {")
+        .split_once("\n    proto::PlanTick {")
         .expect("PLANTICK_LOCK: the PlanTick construction is gone");
     let end = body.find("\n    }").expect("PLANTICK_LOCK: the literal does not close");
     let lines: Vec<&str> = body[..end].lines().map(str::trim).collect();
