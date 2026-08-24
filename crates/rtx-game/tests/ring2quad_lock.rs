@@ -225,8 +225,24 @@ egen startpunkt precis som nar hoppen mattes var for sig. Kedjan raknas som \
 hel endast om alla tre benen lyckas; fall var som helst bryter hela \
 kedjeforsoket direkt och boten parkeras.";
 
+/// Sha256 av `KEDJA_29_2` ordagrant.
+///
+/// Utan den har ar pinnen tandlos: definitionen och de lasbara asserterna bor
+/// i SAMMA fil, sa ett enda `sed` skriver om bada och grinden forblir gron.
+/// Det ar hal B — att andra asserten i stallet for kallan — och det hittades
+/// av mutationsprovet, inte av att sviten var gron. En hash gar inte att
+/// skriva om i samma svep; den maste raknas om medvetet.
+const KEDJA_29_2_SHA256: &str = "79ee66e8f1e0d52a7d565b1871635a28c02ef3b893231ed3aed2c98b2cc74b91";
+
 #[test]
 fn kedjeprotokollet_29_2_ar_pinnat() {
+    assert_eq!(
+        format!("{:x}", Sha256::digest(KEDJA_29_2.as_bytes())),
+        KEDJA_29_2_SHA256,
+        "RING2QUAD_LOCK: kedjedefinitionen §29.2 ar omskriven"
+    );
+    assert_eq!(KEDJA_29_2.len(), 259, "RING2QUAD_LOCK: §29.2 langd");
+
     // Tre ben, alla tre maste lyckas, fall bryter direkt.
     for bit in [
         "de tre benen i foljd",
