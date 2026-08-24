@@ -1,0 +1,205 @@
+# Check-namnet `ring2quad-lock` ÄR kontraktet (jobs.<id>.name, inte filnamnet).
+# Förbjudet här: paths:, paths-ignore:, continue-on-error, och varje if: som kan
+# göra jobbet skipped — GitHub räknar skipped och neutral som godkänt på en
+# required check (K1).
+#
+# Varje --exact-steg går genom fail_if_empty: ett felstavat testnamn ger annars
+# `running 0 tests` OCH rc=0, alltså en grön grind som inte provar något
+# (hål A, PR #48). Väntat N står per steg (K3).
+#
+# Låset pinnar INTE cvar-frön — `ra-room-lock` äger dem, och dubbellåsning på en
+# delad fil låser nästa modul (K10). Kravet uppfylls i stället av att det här
+# jobbet kör på VARJE PR utan path-filter: en cvars.rs-only-PR kör alltså hela
+# ring2quad-låset ändå.
+name: ring2quad-lock
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ring2quad-lock:
+    name: ring2quad-lock
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: meta — låsfilen finns och bär sina pinnar
+        run: |
+          # K8: egen fil, så en PR som raderar lib-testerna faller ändå här.
+          # Aldrig `grep -c <fil>` — det ger `path:N` och kraschar jämförelsen
+          # med "integer expression expected" (hål M3, PR #48).
+          test -f crates/rtx-game/tests/ring2quad_lock.rs
+          n=$(grep -o 'RING2QUAD_LOCK' crates/rtx-game/tests/ring2quad_lock.rs | wc -l)
+          n=${n// /}
+          echo "RING2QUAD_LOCK_PREFIX=$n"
+          test "$n" -ge 25
+
+      - name: meta — kärnkonstanten LIP_REACH = 28.0 i källtext
+        run: |
+          # K5. Det befintliga lip_reach_matches_the_curl_certifier pinnar bara
+          # att de två är LIKA med varandra; ändras båda till 30.0 är det grönt.
+          # Därför pinnas värdet, och exakt en gång (ingen andra, ljugande rad).
+          for f in "crates/rtx-game/src/bot/bhop.rs:pub const LIP_REACH: f32 = 28.0;" \
+                   "crates/rtx-nav/src/navmesh/physics.rs:pub const CURL_LIP_REACH: f32 = 28.0;"; do
+            fil="${f%%:*}"
+            token="${f#*:}"
+            n=$(grep -o -F "$token" "$fil" | wc -l)
+            n=${n// /}
+            echo "LIP_REACH_TOKEN $fil = $n"
+            test "$n" -eq 1
+          done
+
+      - name: meta — receptets sha256
+        run: |
+          # K6. Innehållsasserterna bor i ring2quad_lock.rs; här står identiteten
+          # så att en bytt receptfil fälls redan innan cargo startar.
+          echo '471e9b85612045e0b14593a4882a75f4a634c460326ed1ca925d3c9c4efd2da7  reference/recept/vf5_ring2quad_forkmain.json' \
+            | sha256sum -c -
+
+      - name: meta — C-instrumentet pinnat och självtestet grönt
+        run: |
+          # Fixklassbeslutet är C, så instrumentet som producerar C-talen är
+          # lastbärande. Värdena är de NYA efter QA-varvet; det första varvets
+          # 5331eb5b… bar en PlanTick-avläsning som gav "0 planerade".
+          sha256sum -c - <<'SUMS'
+          c398ead95ba7afcaa392c40169a5148d475a238d391341b907b107d01b61e358  testsuite/tools/fixklass_c.py
+          cd11de36b7d0de0e60523cd6f1ce2caec69bb50a36f5f50df963d1ac3dbabe0f  testsuite/tools/mutationsprov_c.py
+          5d1c6ab780869484fbab735f29161fe98e1b0686f73a4631449e2d48205e84b7  testsuite/tools/proveniens/arm-r.json
+          SUMS
+          # Självtestet är fail-closed i instrumentet, men det som fäller HÄR är
+          # att det körs och är grönt — ett instrument som får användas oprövat
+          # är inget instrument.
+          log=$(mktemp)
+          python3 testsuite/tools/fixklass_c.py --sjalvtest | tee "$log"
+          grep -qE '^[0-9]+ fall, ALLA OK$' "$log"
+          n=$(sed -n 's/^\([0-9][0-9]*\) fall, ALLA OK$/\1/p' "$log")
+          echo "C_SJALVTEST_FALL=$n"
+          test "$n" -ge 29
+          # Kanonkatalogen ska vara orörd efteråt (villkor 1).
+          test ! -e reference/ra-room/__pycache__
+
+      - name: lock tests (per-pinne --exact, fail-om-tomt)
+        run: |
+          set -o pipefail
+          fail_if_empty() {
+            local label="$1"
+            local log="$2"
+            local want="${3:-1}"
+            local n
+            local bad=0
+            n=$(sed -n 's/^running \([0-9][0-9]*\) tests\?$/\1/p' "$log" | tail -n 1)
+            echo "${label}: running=${n:-MISSING} want=${want}"
+            if ! test -n "$n" || ! test "$n" -eq "$want"; then
+              echo "${label}: fail-om-tomt (running != ${want})"
+              bad=1
+            fi
+            if grep -E 'test result:.*FAILED' "$log" >/dev/null; then
+              echo "${label}: test result FAILED"
+              bad=1
+            fi
+            return "$bad"
+          }
+
+          kor() {
+            local krets="$1"
+            local sort="$2"
+            shift 2
+            for t in "$@"; do
+              log=$(mktemp)
+              set +e
+              cargo test -p "$krets" --locked "$sort" -- --exact --nocapture "$t" | tee "$log"
+              rc=$?
+              set -e
+              fail_if_empty "$krets $t" "$log" 1
+              test "$rc" -eq 0
+            done
+          }
+
+          # K4 — RemoveLinks-kontraktet. Riggens enda väg in i modulen; S4c-STOPPet
+          # 21/8 var exakt "ingen Cmd → 60 s timeout".
+          kor rtx-ctlproto --lib \
+            tests::remove_links_cmd_and_resp_roundtrip
+
+          kor rtx-game --lib \
+            control::tests::remove_links_refuses_a_mismatched_anchor \
+            control::tests::remove_links_verifies_every_anchor_before_removing_any \
+            control::tests::remove_links_refuses_an_unknown_id_and_an_unknown_kind \
+            control::tests::remove_links_refuses_an_empty_list \
+            control::tests::remove_links_takes_a_link_with_no_table_entry \
+            control::tests::remove_links_is_deterministic \
+            control::tests::remove_links_refuses_new_one_way_trap \
+            control::tests::remove_links_resurrects_pruned_links_like_the_recipes_do \
+            recept::tests::las_recept_accepterar_removelinks_pa_namngiven_fil \
+            recept::tests::las_recept_inbaddad_vagrar_removelinks \
+            recept::tests::las_recept_vagrar_tom_removelinks_och_okand_op \
+            recept::tests::namngiven_removelinks_applicerar_ratt_idn_failclosed_okanda \
+            recept::tests::inbaddad_applicera_hoppar_over_removelinks
+
+          kor rtx-nav --lib \
+            navmesh::tests::remove_links_unknown_or_duplicate_fails_closed \
+            navmesh::tests::remove_links_remaps_hazard_hp_and_water_extra \
+            navmesh::tests::remove_two_links_shift2_taxes_follow_kept_links \
+            navmesh::tests::from_topology_leaves_tax_columns_empty
+
+          # Recost-kontraktet. Wire-roundtripen är riggens väg in; merge_link_penalty-
+          # premissen är numera fixtur i recost_lock.rs.
+          kor rtx-ctlproto --lib \
+            tests::recost_cmd_and_resp_roundtrip \
+            tests::status_without_recost_fields_decodes_as_unpriced
+
+          kor rtx-game --lib \
+            recost::tests::the_wire_form_mirrors_the_table_exactly \
+            recost::tests::the_stamp_binds_both_the_graph_and_the_table \
+            recost::tests::the_nav_query_honours_exactly_one_penalty_per_link \
+            recost::tests::a_mismatched_anchor_is_refused \
+            recost::tests::one_bad_spec_refuses_the_whole_batch \
+            recost::tests::a_table_does_not_survive_the_graph_it_was_anchored_to
+
+          # K9 — bas-grinden. Det är den som gör att RING2QUAD-receptet inte kan
+          # appliceras tyst ovanpå RA-rummets K2-bakade graf.
+          kor rtx-game --lib \
+            recept::tests::fel_bas_kor_inget_steg \
+            recept::tests::bas_grinden_kraver_full_langd
+
+          # K7 — hela graftransformen offline, geometriankrad, mot fixturen.
+          kor rtx-game --lib \
+            recept::tests::ring2quad_offline_repro_geometriankrad
+
+      - name: låsfilens egna tester
+        run: |
+          set -o pipefail
+          log=$(mktemp)
+          set +e
+          cargo test -p rtx-game --locked --test ring2quad_lock -- --nocapture | tee "$log"
+          rc=$?
+          set -e
+          n=$(sed -n 's/^running \([0-9][0-9]*\) tests\?$/\1/p' "$log" | tail -n 1)
+          echo "ring2quad_lock: running=${n:-MISSING} want=5"
+          test -n "$n" && test "$n" -eq 5
+          ! grep -E 'test result:.*FAILED' "$log"
+          test "$rc" -eq 0
+
+      - name: recost_lock — merge_link_penalty-premissen som fixtur
+        run: |
+          set -o pipefail
+          log=$(mktemp)
+          set +e
+          cargo test -p rtx-game --locked --test recost_lock -- --nocapture | tee "$log"
+          rc=$?
+          set -e
+          n=$(sed -n 's/^running \([0-9][0-9]*\) tests\?$/\1/p' "$log" | tail -n 1)
+          echo "recost_lock: running=${n:-MISSING} want=4"
+          test -n "$n" && test "$n" -eq 4
+          ! grep -E 'test result:.*FAILED' "$log"
+          test "$rc" -eq 0
