@@ -1,6 +1,7 @@
 # Portar på mätriggen — kanonisk lista
 
-**Detta är den enda giltiga portlistan i repot.** Datum: **2026-08-23**.
+**Detta är den enda giltiga portlistan i repot.** Datum: **2026-08-23**,
+reviderad **2026-08-24** (ägarbeslut: testsvitens portar).
 Maskin: `lanister` (`100.64.0.2`).
 
 Kopiera aldrig tabellen. Länka hit. En kopierad portlista är samma fälla
@@ -26,10 +27,11 @@ som läser den, inte tolkas välvilligt.
 | 27592 | deploy | spel | tbx-d1 | portvaktens atomära par med 27996 |
 | 27594 | deploy | spel | tbx-d3 | portvaktens atomära par med 27998 |
 | 27599 | orord | spel | frammande | `/fte/qtv` pid 2481951, annan användare (container), uppe 11 dygn |
-| 27700 | forbjuden | spel | t3 | se «Öppen punkt 1» |
+| 27700 | testsvit | spel | t3 | ägarbeslut 2026-08-24: T3:s `match_server`; se «Öppen punkt 1» |
+| 27710 | testsvit | spel | t4 | ägarbeslut 2026-08-24: T4:s `frogbot_server` |
 | 27960 | lab | ctl | lab-a | lab-trio A |
 | 27970 | lab | ctl | lab-b | lab-trio B |
-| 27980 | forbjuden | ctl | rtxfast | kontrollkanalen till 27530; se «Öppen punkt 2» |
+| 27980 | testsvit | ctl | rtxfast | kontrollkanalen till 27530; ägarbeslut 2026-08-24, se «Öppen punkt 2» |
 | 27990 | ra-kontroll | ctl | fasttrack-ra | RA-riggens kontrollkanal; rörs endast på uttrycklig order |
 | 27991 | forbjuden | ctl | main | kontrollkanalen till 27550 |
 | 27996 | deploy | ctl | tbx-d1 | portvaktens atomära par med 27592 |
@@ -54,6 +56,7 @@ hinner bli fel.
 | `deploy` | portvaktens atomära deploy-par (`tbx-d1`, `tbx-d3`) | **neka** — de reses av deploy-kedjan, inte av testriggen |
 | `lab` | fri att resa en mätrigg på | **tillåt** |
 | `ra-kontroll` | RA-riggen | **neka utan uttrycklig order** |
+| `testsvit` | upptagen av T0–T4-testsviten (ägarbeslut 2026-08-24) | **tillåt endast testsvitens runner**; alla andra skript nekar |
 
 Att en `forbjuden` port är tyst betyder inte att den är ledig. `27550` är
 nere sedan 2026-08-15 och är fortfarande förbjuden: den som tar en tyst
@@ -118,11 +121,15 @@ Samtidigt beskrev `testsuite/config.example.toml` samma port som T3:s
 `match_server` — «dedicated mvdsv+KTX instance». Två av repots egna filer
 sade alltså emot varandra om samma port.
 
-Motsägelsen är **inte** avgjord här. Exempelkonfigurationen har fått
+Motsägelsen var **inte** avgjord här. Exempelkonfigurationen har fått
 värdet borttaget — fältet är obligatoriskt och tomt som filens övriga
 obligatoriska fält — så att ingen kopierar ett portnummer som kanske är
 fel. Vilken port T3-riggen ska stå på är ett ägar-/Fable-beslut, och när
 det är fattat är det den här tabellen som ändras. Ingen annan fil.
+
+**AVGJORD 2026-08-24 (ägarbeslut):** `27700` är T3:s `match_server` och
+står som `testsvit` i tabellen. Testsvitens operativa `config.toml` på
+riggen behåller värdet.
 
 ## Öppen punkt 2 — `27980` och T1/T2
 
@@ -133,8 +140,15 @@ att mäta mot precis den server Hopparens riggregler förbjuder honom att
 röra.
 
 Det är en verklig kollision mellan två arbetssätt, inte ett skrivfel, och
-den avgörs inte här. Tabellen nekar `27980` tills någon beslutar. Ett
-skript som behöver den ska vägra och säga varför — inte gissa.
+den avgjordes inte här. Tabellen nekade `27980` tills någon beslutade.
+Ett skript som behöver den ska vägra och säga varför — inte gissa.
+
+**AVGJORD 2026-08-24 (ägarbeslut):** testsviten får mäta mot
+fasttrack-motorns kontrollkanal `27980` och står som `testsvit` i
+tabellen. Kvarstående regel: spelservern `27530` är fortsatt `forbjuden`
+för alla — testsviten talar bara kontrollkanalen. En testsvitskörning
+får inte pågå samtidigt som en annan mätning använder samma motor;
+krocken riskbedöms per körning som alla parallella jobb.
 
 ## Vad som inte är kanon
 
