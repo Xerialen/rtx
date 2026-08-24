@@ -34,5 +34,19 @@
  "t2_null_with_cells.json": ".payload.cells: zones from a build that emits no stall events",
  "t2_null_without_reason.json": ".payload.stats.stall_firings: a measurement that did not happen must be named in capabilities.unavailable",
  "t3_team_percentage.json": ".payload.scoreboard.teams[0].efficiency: a percentage outside 0-100",
- "t4_continues_after_loss.json": ".payload.ladder[1]: ladder continues after a loss or draw"
+ "t4_absence_not_declared.json": ".payload.dom.missing: capabilities.unavailable must name exactly the unmeasured T4 fields: ['t4:shots_fired'], not []",
+ "t4_continues_after_draw.json": ".payload.ladder[2]: ladder continues after a loss or draw",
+ "t4_continues_after_loss.json": ".payload.ladder[1]: ladder continues after a loss or draw",
+ "t4_draw_hides_failed_gate.json": ".payload.dom.failed_gates: expected ['d:item_pickups'] from the measurements",
+ "t4_draw_without_semantics.json": ".payload.draw_semantik: an OAVGJORD envelope carries 'ägarbeslut saknas'",
+ "t4_fail_without_cross_alarm.json": ".payload.cross_alarm: expected string",
+ "t4_item_proxy_unlabelled.json": ".payload.dom.labels: a judged (d) outcome carries the 'item-pickups-proxy'",
+ "t4_legacy_outside_inventory.json": "is not one of them",
+ "t4_ok_despite_declared_absence.json": ".payload.verdict: expected OMÄTT: omätta fält: t4:item_chase",
+ "t4_ok_with_unavailable.json": ".payload.measurements: expected {'shots_fired': 402,",
+ "t4_reached_counts_the_draw.json": ".payload.reached: expected 10 — the highest won skill, 0 if none was won",
+ "t4_reached_on_a_loss.json": ".payload.reached: expected 0 — the highest won skill, 0 if none was won",
+ "t4_still_gap_over_ceiling.json": ".payload.sampling.still_gap_max_s: gap 4.2 s exceeds the 3.0 s ceiling",
+ "t4_threshold_loosened.json": ".payload.thresholds: a run cannot restate its own gate",
+ "t4_v2_complete.json": ".payload.verdict: expected one of VINST, OK, FAIL, OMÄTT, OAVGJORD"
 }

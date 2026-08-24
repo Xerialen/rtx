@@ -866,15 +866,39 @@ def t3_level(
     return item, snapshots
 
 
+#: T4:s femvardesvokabular (SPEC T4-domen v6 §2), plus den pensionerade
+#: literalen. `COMPLETE` lever kvar ENBART for de inventerade kuvert som fanns
+#: fore bytet, och da med etiketten `legacy` — sidan far inte visa ett gammalt
+#: kuvert som om det domts pa de nya grindarna.
+T4_VERDICTS = ("VINST", "OK", "FAIL", "OMÄTT", "OAVGJORD")
+T4_LEGACY_VERDICT = "COMPLETE"
+#: Visningsklass per verdict. OMÄTT och OAVGJORD ar egna, ICKE-grona klasser:
+#: ett omatt kuvert far aldrig hamna i en gron kolumn, och ett oavgjort ar inte
+#: ett godkant resultat. Kartan speglar `verdictClass` i template.html.
+T4_VERDICT_CLASS = {
+    "VINST": "pass",
+    "OK": "pass",
+    T4_LEGACY_VERDICT: "pass",
+    "FAIL": "fail",
+    "OMÄTT": "unmeasured",
+    "OAVGJORD": "draw",
+}
+
+
 def t4_level(envelope: dict[str, Any]) -> dict[str, Any]:
     item = base_level("t4", envelope)
     if item["status"] != "complete":
         return item
     payload = envelope["payload"]
+    raw_verdict = payload.get("verdict")
+    legacy = payload.get("t4_schema") is None
+    known = raw_verdict in T4_VERDICTS or (
+        legacy and raw_verdict == T4_LEGACY_VERDICT
+    )
     if (
         not isinstance(payload.get("ladder"), list)
         or number(payload.get("reached")) is None
-        or payload.get("verdict") != "COMPLETE"
+        or not known
     ):
         return incomplete_level("t4", envelope, "T4-payload följer inte kontraktet")
     ladder = payload.get("ladder") if isinstance(payload.get("ladder"), list) else []
@@ -893,12 +917,41 @@ def t4_level(envelope: dict[str, Any]) -> dict[str, Any]:
         }
     rungs = [played.get(skill, unplayed_rung(skill)) for skill in LADDER_SKILLS]
     reached = number(payload.get("reached"))
-    verdict = payload.get("verdict") if payload.get("verdict") == "COMPLETE" else "OFULLSTÄNDIG"
+    verdict = raw_verdict
+    dom = payload.get("dom") if isinstance(payload.get("dom"), dict) else {}
+    missing = [text(name, "") for name in dom.get("missing") or [] if text(name, "")]
+    failed = [text(name, "") for name in dom.get("failed_gates") or [] if text(name, "")]
+    labels = [text(name, "") for name in dom.get("labels") or [] if text(name, "")]
+    # Enradaren ar det forsta nagon laser, och for de tva icke-grona varderna
+    # ar hogsta vunna skill inte det viktigaste den kan saga.
+    if verdict == "OMÄTT":
+        key = "omätt: " + (", ".join(missing) or "saknade fält ej namngivna")
+    elif verdict == "FAIL":
+        key = "fälld: " + (", ".join(failed) or "grind ej namngiven")
+    elif verdict == "OAVGJORD":
+        key = f"oavgjort på skill {reached if reached is not None else '–'} — draw-semantik: ägarbeslut saknas"
+    else:
+        key = f"nådde skill {reached if reached is not None else '–'}"
     item.update(
         verdict=verdict,
-        key=f"nådde skill {reached if reached is not None else '–'}",
+        verdictClass=T4_VERDICT_CLASS.get(verdict, "not-run"),
+        legacy=legacy,
+        key=key + (" · legacy-kuvert, dömt före femvärdesdomen" if legacy else ""),
         reached=reached,
         rungs=rungs,
+        dom={
+            "missing": missing,
+            "failedGates": failed,
+            "labels": labels,
+            "reason": text(dom.get("reason"), "") or None,
+            "crossAlarm": text(payload.get("cross_alarm"), "") or None,
+            "drawSemantics": text(payload.get("draw_semantik"), "") or None,
+        }
+        if not legacy
+        else None,
+        measurements=payload.get("measurements")
+        if isinstance(payload.get("measurements"), dict)
+        else None,
     )
     return item
 
@@ -1225,8 +1278,12 @@ def selftest() -> None:
         assert "golden-complete" in html
         assert '"verdict":"MÄTT"' in html
         assert '"verdict":"PIPELINE-OK"' in html
-        assert '"verdict":"COMPLETE"' in html
         assert '"kind":"aggregate"' in html
+        # T4:s femvärdesdom, alla fem på sidan samtidigt (SPEC v6 §2), plus den
+        # pensionerade literalen som bara de inventerade kuverten bär.
+        for verdict in T4_VERDICTS:
+            assert f'"verdict":"{verdict}"' in html, verdict
+        assert '"verdict":"COMPLETE"' in html
         assert '"key":"nådde skill 12"' in html
         assert '"synthetic":true' in html
         assert '"verdict":"FAILED"' in html
@@ -1239,6 +1296,56 @@ def selftest() -> None:
         assert "http://" not in html
         assert "https://" not in html
         assert len(runs) >= 5
+        # --- T4:s femvärdesdom (SPEC v6 §2, §5) ---------------------------
+        # Vilka verdikt som får se gröna ut avgörs på två ställen — här och i
+        # template.html:s VERDICT_CLASS — och de måste vara samma karta. En
+        # framtida redigering som gör OMÄTT grönt fastnar på raderna nedan.
+        assert T4_VERDICT_CLASS["OMÄTT"] != "pass"
+        assert T4_VERDICT_CLASS["OAVGJORD"] != "pass"
+        for verdict, klass in T4_VERDICT_CLASS.items():
+            assert f'"{verdict}": "{klass}"' in html, verdict
+
+        # NK 18: ett omätt kuvert är varken grönt eller OK, och domraden säger
+        # vilka fält som saknades i stället för att tiga.
+        unmeasured = next(run for run in runs if run["branch"] == "unmeasured-t4")
+        level = unmeasured["levels"]["t4"]
+        assert level["verdict"] == "OMÄTT"
+        assert level["verdictClass"] == "unmeasured"
+        assert level["legacy"] is False
+        assert level["dom"]["missing"] == [
+            "t4:shots_fired", "t4:teamkills", "t4:still_s", "t4:item_chase"
+        ]
+        assert level["key"].startswith("omätt: t4:shots_fired")
+        assert level["measurements"]["shots_fired"] is None
+        assert level["dom"]["labels"] == []
+        for run in runs:
+            t4 = run["levels"]["t4"]
+            if t4.get("verdict") in {"OMÄTT", "OAVGJORD"}:
+                assert t4["verdictClass"] != "pass", run["branch"]
+
+        # NK 3/6: en fälld mätt grind är FAIL, och FAIL bär korslarmet.
+        silent = next(run for run in runs if run["branch"] == "silent-t4")["levels"]["t4"]
+        assert silent["verdict"] == "FAIL" and silent["verdictClass"] == "fail"
+        assert silent["dom"]["failedGates"] == ["a:shots_fired"]
+        assert silent["dom"]["crossAlarm"] == "no matching T1/T3 run found"
+
+        # NK 4: draw med allt mätt och grönt är OAVGJORD, och sidan säger rakt
+        # ut att draw-semantiken är en öppen ägarfråga.
+        drew = next(run for run in runs if run["branch"] == "draw-t4")["levels"]["t4"]
+        assert drew["verdict"] == "OAVGJORD" and drew["verdictClass"] == "draw"
+        assert drew["dom"]["drawSemantics"] == "ägarbeslut saknas"
+        assert "ägarbeslut saknas" in drew["key"]
+        assert drew["dom"]["labels"] == ["item-pickups-proxy"]
+
+        # NK 10: ett verkligt kuvert från inventeringen visas, men märkt — det
+        # dömdes aldrig på de fyra grindarna.
+        legacy = next(
+            run for run in runs if run["levels"]["t4"].get("legacy") is True
+        )["levels"]["t4"]
+        assert legacy["verdict"] == "COMPLETE"
+        assert legacy["dom"] is None
+        assert "legacy-kuvert" in legacy["key"]
+
         # A drill the build could not be asked: no verdict, no attempts, and a
         # denominator that counts only the drills that were run. Counting it
         # among them would report the build as failing a drill nobody gave it.

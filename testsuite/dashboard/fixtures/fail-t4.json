@@ -1,14 +1,14 @@
 {
  "schema": "rtx-testflow/1",
- "run_id": "t4-20260727T102700Z-aaaaaaaa",
+ "run_id": "t4-20260727T121500Z-cccccccc",
  "tier": "T4",
  "status": "complete",
- "started_utc": "2026-07-27T10:27:00Z",
- "ended_utc": "2026-07-27T10:42:00Z",
+ "started_utc": "2026-07-27T12:15:00Z",
+ "ended_utc": "2026-07-27T12:30:00Z",
  "map": "dm3",
  "build": {
-  "branch": "golden-complete",
-  "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "branch": "silent-t4",
+  "commit": "cccccccccccccccccccccccccccccccccccccccc",
   "digest_md5": "aaaabbbb",
   "dirty": false
  },
@@ -25,7 +25,7 @@
     "win": true,
     "mvd": "demos/10.mvd",
     "measured": {
-     "shots_fired": 402,
+     "shots_fired": 0,
      "teamkills": 8,
      "kills": 45,
      "still_s_per_bot": 18.4,
@@ -41,7 +41,7 @@
     "win": true,
     "mvd": "demos/12.mvd",
     "measured": {
-     "shots_fired": 402,
+     "shots_fired": 0,
      "teamkills": 8,
      "kills": 45,
      "still_s_per_bot": 18.4,
@@ -57,7 +57,7 @@
     "win": false,
     "mvd": "demos/14.mvd",
     "measured": {
-     "shots_fired": 402,
+     "shots_fired": 0,
      "teamkills": 8,
      "kills": 45,
      "still_s_per_bot": 18.4,
@@ -69,10 +69,10 @@
   ],
   "reached": 12,
   "skill_verified_by": "server-log addbot sequence",
-  "verdict": "OK",
+  "verdict": "FAIL",
   "t4_schema": 2,
   "measurements": {
-   "shots_fired": 1206,
+   "shots_fired": 0,
    "teamkills": 24,
    "kills_total": 135,
    "still_s_per_bot_max": 18.4,
@@ -94,12 +94,15 @@
    "items_poll_gap_max_s": 3.0
   },
   "dom": {
-   "failed_gates": [],
+   "failed_gates": [
+    "a:shots_fired"
+   ],
    "missing": [],
-   "reason": "spelad stege; alla fyra fält mätta och gröna",
+   "reason": "fällda mätta grindar: a:shots_fired",
    "labels": [
     "item-pickups-proxy"
    ]
-  }
+  },
+  "cross_alarm": "no matching T1/T3 run found"
  }
 }

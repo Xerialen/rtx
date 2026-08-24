@@ -70,6 +70,15 @@
      "demo": "m.mvd",
      "source": "qw-analyze/demoinfo",
      "link": "/demo-player/?demoUrl=%2Fdemos%2Fm.mvd&map=dm3&duration=300&from=0.0"
+    },
+    "measured": {
+     "shots_fired": 402,
+     "teamkills": 8,
+     "kills": 45,
+     "still_s_per_bot": 18.4,
+     "still_gap_max_s": 1.8,
+     "item_takes": 27,
+     "items_poll_gap_max_s": 1.2
     }
    },
    {
@@ -124,6 +133,15 @@
      "demo": "m.mvd",
      "source": "qw-analyze/demoinfo",
      "link": "/demo-player/?demoUrl=%2Fdemos%2Fm.mvd&map=dm3&duration=300&from=0.0"
+    },
+    "measured": {
+     "shots_fired": 402,
+     "teamkills": 8,
+     "kills": 45,
+     "still_s_per_bot": 18.4,
+     "still_gap_max_s": 1.8,
+     "item_takes": 27,
+     "items_poll_gap_max_s": 1.2
     }
    },
    {
@@ -131,32 +149,99 @@
     "frags_for": 60,
     "frags_against": 40,
     "win": true,
-    "mvd": "demos/14.mvd"
+    "mvd": "demos/14.mvd",
+    "measured": {
+     "shots_fired": 402,
+     "teamkills": 8,
+     "kills": 45,
+     "still_s_per_bot": 18.4,
+     "still_gap_max_s": 1.8,
+     "item_takes": 27,
+     "items_poll_gap_max_s": 1.2
+    }
    },
    {
     "skill": 16,
     "frags_for": 60,
     "frags_against": 40,
     "win": true,
-    "mvd": "demos/16.mvd"
+    "mvd": "demos/16.mvd",
+    "measured": {
+     "shots_fired": 402,
+     "teamkills": 8,
+     "kills": 45,
+     "still_s_per_bot": 18.4,
+     "still_gap_max_s": 1.8,
+     "item_takes": 27,
+     "items_poll_gap_max_s": 1.2
+    }
    },
    {
     "skill": 18,
     "frags_for": 60,
     "frags_against": 40,
     "win": true,
-    "mvd": "demos/18.mvd"
+    "mvd": "demos/18.mvd",
+    "measured": {
+     "shots_fired": 402,
+     "teamkills": 8,
+     "kills": 45,
+     "still_s_per_bot": 18.4,
+     "still_gap_max_s": 1.8,
+     "item_takes": 27,
+     "items_poll_gap_max_s": 1.2
+    }
    },
    {
     "skill": 20,
     "frags_for": 60,
     "frags_against": 40,
     "win": true,
-    "mvd": "demos/20.mvd"
+    "mvd": "demos/20.mvd",
+    "measured": {
+     "shots_fired": 402,
+     "teamkills": 8,
+     "kills": 45,
+     "still_s_per_bot": 18.4,
+     "still_gap_max_s": 1.8,
+     "item_takes": 27,
+     "items_poll_gap_max_s": 1.2
+    }
    }
   ],
   "reached": 20,
   "skill_verified_by": "server-log addbot sequence",
-  "verdict": "COMPLETE"
+  "verdict": "VINST",
+  "t4_schema": 2,
+  "measurements": {
+   "shots_fired": 2412,
+   "teamkills": 48,
+   "kills_total": 270,
+   "still_s_per_bot_max": 18.4,
+   "item_pickups": 162
+  },
+  "sampling": {
+   "still_interval_s": 1.0,
+   "still_gap_max_s": 1.8,
+   "items_poll_s": 1.0,
+   "items_poll_gap_max_s": 1.2
+  },
+  "thresholds": {
+   "teamkill_share_max": 0.2,
+   "still_s_per_bot_max": 75.0,
+   "item_pickups_min": 1,
+   "still_sample_interval_s": 1.0,
+   "still_sample_gap_max_s": 3.0,
+   "items_poll_s": 1.0,
+   "items_poll_gap_max_s": 3.0
+  },
+  "dom": {
+   "failed_gates": [],
+   "missing": [],
+   "reason": "vann mot level 20; alla fyra fält mätta och gröna",
+   "labels": [
+    "item-pickups-proxy"
+   ]
+  }
  }
 }

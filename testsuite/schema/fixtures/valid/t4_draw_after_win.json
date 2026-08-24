@@ -1,10 +1,10 @@
 {
  "schema": "rtx-testflow/1",
- "run_id": "t4-20260727T220000Z-11111111",
+ "run_id": "t4-20260727T230000Z-11111111",
  "tier": "T4",
  "status": "complete",
- "started_utc": "2026-07-27T22:00:00Z",
- "ended_utc": "2026-07-27T22:05:00Z",
+ "started_utc": "2026-07-27T23:00:00Z",
+ "ended_utc": "2026-07-27T23:10:00Z",
  "map": "dm3",
  "build": {
   "branch": "testsuite",
@@ -20,10 +20,27 @@
   "ladder": [
    {
     "skill": 10,
-    "frags_for": 38,
-    "frags_against": 52,
-    "win": false,
+    "frags_for": 60,
+    "frags_against": 40,
+    "win": true,
     "mvd": "demos/10.mvd",
+    "measured": {
+     "shots_fired": 402,
+     "teamkills": 8,
+     "kills": 45,
+     "still_s_per_bot": 18.4,
+     "still_gap_max_s": 1.8,
+     "item_takes": 27,
+     "items_poll_gap_max_s": 1.2
+    }
+   },
+   {
+    "skill": 12,
+    "frags_for": 50,
+    "frags_against": 50,
+    "win": false,
+    "draw": true,
+    "mvd": "demos/12.mvd",
     "measured": {
      "shots_fired": 402,
      "teamkills": 8,
@@ -37,14 +54,14 @@
   ],
   "skill_verified_by": "client console skill echo (KTX addbot)",
   "t4_schema": 2,
-  "reached": 0,
-  "verdict": "OK",
+  "reached": 10,
+  "verdict": "OAVGJORD",
   "measurements": {
-   "shots_fired": 402,
-   "teamkills": 8,
-   "kills_total": 45,
+   "shots_fired": 804,
+   "teamkills": 16,
+   "kills_total": 90,
    "still_s_per_bot_max": 18.4,
-   "item_pickups": 27
+   "item_pickups": 54
   },
   "sampling": {
    "still_interval_s": 1.0,
@@ -64,10 +81,11 @@
   "dom": {
    "failed_gates": [],
    "missing": [],
-   "reason": "spelad stege; alla fyra fält mätta och gröna",
+   "reason": "stegen slutade oavgjort; alla fyra fält mätta och gröna",
    "labels": [
     "item-pickups-proxy"
    ]
-  }
+  },
+  "draw_semantik": "ägarbeslut saknas"
  }
 }

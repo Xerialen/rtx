@@ -123,6 +123,11 @@
   .verdict-chip.pass { color: var(--good); }
   .verdict-chip.fail { color: var(--bad); }
   .verdict-chip.partial { color: var(--warn); }
+  /* OMÄTT och OAVGJORD har egna klasser och ingen av dem är grön: ett omätt
+     kuvert får inte se ut som ett godkänt, och ett oavgjort är inte ett
+     resultat förrän ägaren sagt vad ett draw betyder. */
+  .verdict-chip.unmeasured { color: var(--warn); border-style: dashed; }
+  .verdict-chip.draw { color: var(--ink-2); border-style: dashed; }
   .verdict-chip.not-run { color: var(--muted); }
   .step.active .verdict-chip { color: var(--halo); }
   .data-chip { color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
@@ -542,7 +547,11 @@ const TERM_TITLES = {
   "PASS": "alla trösklar klarade",
   "FAIL": "minst en tröskel missad",
   "PIPELINE-OK": "en singelmatch verifierar pipeline, inte grenkvalitet",
-  "COMPLETE": "stegen kördes korrekt till första icke-vinst",
+  "COMPLETE": "pensionerat T4-verdikt: stegen kördes korrekt till första icke-vinst, men ingen av de fyra beteendegrindarna mättes — visas bara för de inventerade kuvert som fanns före femvärdesdomen",
+  "VINST": "vann mot level 20, och alla fyra beteendefält var mätta och gröna",
+  "OK": "spelad stege som förlorade någonstans, med alla fyra beteendefält mätta och gröna — OK utfärdas aldrig med förbehåll",
+  "OMÄTT": "ingen mätt grind föll, men minst ett av de fyra fälten gick inte att mäta — räknas aldrig som grönt eller OK",
+  "OAVGJORD": "stegen slutade oavgjort med alla fyra fält mätta och gröna; vad ett draw ska betyda för stegen är en öppen ägarfråga",
   "FAILED": "körningen misslyckades; eventuell delpayload används inte",
   "ABORTED": "körningen avbröts; eventuell delpayload används inte",
   "OFULLSTÄNDIG": "envelopen saknar komplett användbar payload",
@@ -606,10 +615,21 @@ function evidenceLink(evidence, label) {
   return linkTag(evidence.link, label, evidenceTitle(evidence), "evidence-link");
 }
 
+// T4:s femvärdesdom (SPEC v6 §2). Kartan är den enda platsen som avgör om ett
+// verdict får se grönt ut, och OMÄTT/OAVGJORD står medvetet utanför "pass".
+// build_dashboard.py bär samma karta i T4_VERDICT_CLASS och skriver ut
+// verdictClass per T4-rad; ändras den ena måste den andra ändras med.
+const VERDICT_CLASS = {
+  "PASS": "pass", "PIPELINE-OK": "pass", "COMPLETE": "pass",
+  "VINST": "pass", "OK": "pass",
+  "FAIL": "fail", "FAILED": "fail", "ABORTED": "fail",
+  "OMÄTT": "unmeasured",
+  "OAVGJORD": "draw",
+  "MÄTT": "partial", "FÖRSÖK": "partial"
+};
+
 function verdictClass(verdict) {
-  return ["PASS", "PIPELINE-OK", "COMPLETE"].includes(verdict) ? "pass" :
-    ["FAIL", "FAILED", "ABORTED"].includes(verdict) ? "fail" :
-    ["MÄTT", "FÖRSÖK"].includes(verdict) ? "partial" : "not-run";
+  return VERDICT_CLASS[verdict] || "not-run";
 }
 
 function verdictChip(verdict) {

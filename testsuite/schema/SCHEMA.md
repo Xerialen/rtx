@@ -330,25 +330,65 @@ stops before T1 when T0 import is missing or FAIL.
 
 ```json
 {
+  "t4_schema": 2,
   "duration_s_per_match": 300,
   "ladder": [
     {"skill": 10, "frags_for": 61, "frags_against": 45, "win": true, "mvd": "...",
-     "scoreboard": { }},
-    {"skill": 12, "frags_for": 54, "frags_against": 49, "win": true, "mvd": "..."},
-    {"skill": 14, "frags_for": 42, "frags_against": 50, "win": false, "mvd": "..."}
+     "scoreboard": { },
+     "measured": {"shots_fired": 402, "teamkills": 8, "kills": 45,
+                  "still_s_per_bot": 18.4, "still_gap_max_s": 1.8,
+                  "item_takes": 27, "items_poll_gap_max_s": 1.2}},
+    {"skill": 12, "frags_for": 54, "frags_against": 49, "win": true, "mvd": "...",
+     "measured": { }},
+    {"skill": 14, "frags_for": 42, "frags_against": 50, "win": false, "mvd": "...",
+     "measured": { }}
   ],
   "reached": 12,
-  "skill_verified_by": "server-log addbot sequence",
-  "verdict": "COMPLETE"
+  "skill_verified_by": "client console skill echo (KTX addbot)",
+  "verdict": "OK",
+  "measurements": {"shots_fired": 1206, "teamkills": 24, "kills_total": 135,
+                   "still_s_per_bot_max": 18.4, "item_pickups": 81},
+  "sampling": {"still_interval_s": 1.0, "still_gap_max_s": 1.8,
+               "items_poll_s": 1.0, "items_poll_gap_max_s": 1.2},
+  "thresholds": {"teamkill_share_max": 0.2, "still_s_per_bot_max": 75.0,
+                 "item_pickups_min": 1, "still_sample_interval_s": 1.0,
+                 "still_sample_gap_max_s": 3.0, "items_poll_s": 1.0,
+                 "items_poll_gap_max_s": 3.0},
+  "dom": {"failed_gates": [], "missing": [], "labels": ["item-pickups-proxy"],
+          "reason": "spelad stege; alla fyra fält mätta och gröna"}
 }
 ```
-- Ladder stops at the first loss; `reached` = highest beaten skill, 0 on immediate
-  loss. Rungs are 10,12,14,16,18,20.
-- The ladder LOGIC is proven by fixtures (immediate loss, full climb, abort, draw);
-  a live run is `COMPLETE` whenever the observed ladder obeys the rules, regardless
-  of sporting outcome.
+- Ladder stops at the first loss or draw; `reached` = **highest won** skill, 0 when
+  nothing was won. A draw after a won rung N reaches N. Rungs are 10,12,14,16,18,20.
+  The validator recomputes `reached` from the rungs and fells a mismatch.
+- `verdict` is one of five: `VINST` (won level 20), `OK` (played and lost, all four
+  fields measured and green), `FAIL` (a **measured** gate fell — beats every other
+  value, draw included), `OMÄTT` (nothing fell but a field is unavailable; never
+  green, never OK), `OAVGJORD` (draw with all four measured and green; carries
+  `"draw_semantik": "ägarbeslut saknas"`). A `FAIL` carries `cross_alarm`: the
+  nearest preceding T1/T3 `run_id` of the same commit, or the literal
+  `"no matching T1/T3 run found"` — a documented heuristic, never a proven link.
+- The four gates, judged only on measured fields: (a) `shots_fired == 0`,
+  (b) `teamkills / max(1, kills_total) > 0.20`, (c) `still_s_per_bot_max > 75.0`,
+  (d) `item_pickups == 0` over the whole ladder. The thresholds are calibrated
+  against the existing corpus, copied into the envelope, and pinned: a run that
+  restates its own gate is refused.
+- Every unmeasured field is named in `dom.missing` **and** in
+  `capabilities.unavailable` (`t4:shots_fired`, `t4:teamkills`, `t4:still_s`,
+  `t4:item_chase`). It is never a numeric zero. `item_pickups` is a proxy — the
+  world item channel says an item was taken, not by whom — so a judged (d) outcome
+  always carries the `item-pickups-proxy` label.
+- `measured` per rung is the ladder's audit trail: when every rung carries it, the
+  validator refolds it and refuses `measurements`/`sampling` that disagree.
 - Draw rule: a draw does not advance the ladder and stops it (recorded as
-  `"win": false, "draw": true`).
+  `"win": false, "draw": true`). What a draw *should* mean for the ladder is an
+  open owner question, flagged as `OAVGJORD` until it is answered.
+- **Legacy:** envelopes written before the five-value verdict carry no
+  `t4_schema` and `"verdict": "COMPLETE"`. They are accepted only if their
+  filename and sha256 are in `schema/legacy-t4-inventering.json` (27 envelopes,
+  fail-closed, the inventory itself sha-pinned in `checks.py`). Any other
+  `COMPLETE` is refused whatever its date, and the dashboard marks the
+  grandfathered ones `legacy` — none of them was judged on the four gates.
 - Every played rung carries the same `scoreboard` card as T3: the match as the
   KTX scoreboard saw it, with a POV link per player. Null when no analyzer or no
   demoinfo block was available for that match.

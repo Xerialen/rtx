@@ -1,10 +1,10 @@
 {
  "schema": "rtx-testflow/1",
- "run_id": "t4-20260727T220000Z-11111111",
+ "run_id": "t4-20260728T140000Z-11111111",
  "tier": "T4",
  "status": "complete",
- "started_utc": "2026-07-27T22:00:00Z",
- "ended_utc": "2026-07-27T22:05:00Z",
+ "started_utc": "2026-07-28T14:00:00Z",
+ "ended_utc": "2026-07-28T14:05:00Z",
  "map": "dm3",
  "build": {
   "branch": "testsuite",
@@ -65,9 +65,7 @@
    "failed_gates": [],
    "missing": [],
    "reason": "spelad stege; alla fyra fält mätta och gröna",
-   "labels": [
-    "item-pickups-proxy"
-   ]
+   "labels": []
   }
  }
 }

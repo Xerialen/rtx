@@ -1,10 +1,10 @@
 {
  "schema": "rtx-testflow/1",
- "run_id": "t4-20260727T220000Z-11111111",
+ "run_id": "t4-20260728T090000Z-11111111",
  "tier": "T4",
  "status": "complete",
- "started_utc": "2026-07-27T22:00:00Z",
- "ended_utc": "2026-07-27T22:05:00Z",
+ "started_utc": "2026-07-28T09:00:00Z",
+ "ended_utc": "2026-07-28T09:05:00Z",
  "map": "dm3",
  "build": {
   "branch": "testsuite",
@@ -25,32 +25,32 @@
     "win": false,
     "mvd": "demos/10.mvd",
     "measured": {
-     "shots_fired": 402,
-     "teamkills": 8,
-     "kills": 45,
-     "still_s_per_bot": 18.4,
-     "still_gap_max_s": 1.8,
-     "item_takes": 27,
-     "items_poll_gap_max_s": 1.2
+     "shots_fired": null,
+     "teamkills": null,
+     "kills": null,
+     "still_s_per_bot": null,
+     "still_gap_max_s": null,
+     "item_takes": null,
+     "items_poll_gap_max_s": null
     }
    }
   ],
   "skill_verified_by": "client console skill echo (KTX addbot)",
   "t4_schema": 2,
   "reached": 0,
-  "verdict": "OK",
+  "verdict": "OMÄTT",
   "measurements": {
-   "shots_fired": 402,
-   "teamkills": 8,
-   "kills_total": 45,
-   "still_s_per_bot_max": 18.4,
-   "item_pickups": 27
+   "shots_fired": null,
+   "teamkills": null,
+   "kills_total": null,
+   "still_s_per_bot_max": null,
+   "item_pickups": null
   },
   "sampling": {
    "still_interval_s": 1.0,
-   "still_gap_max_s": 1.8,
+   "still_gap_max_s": null,
    "items_poll_s": 1.0,
-   "items_poll_gap_max_s": 1.2
+   "items_poll_gap_max_s": null
   },
   "thresholds": {
    "teamkill_share_max": 0.2,
@@ -63,11 +63,24 @@
   },
   "dom": {
    "failed_gates": [],
-   "missing": [],
-   "reason": "spelad stege; alla fyra fält mätta och gröna",
-   "labels": [
-    "item-pickups-proxy"
-   ]
+   "missing": [
+    "t4:shots_fired",
+    "t4:teamkills",
+    "t4:still_s",
+    "t4:item_chase"
+   ],
+   "reason": "omätta fält: t4:shots_fired, t4:teamkills, t4:still_s, t4:item_chase",
+   "labels": []
   }
+ },
+ "capabilities": {
+  "telemetry": true,
+  "unavailable": [
+   "t4:shots_fired",
+   "t4:teamkills",
+   "t4:still_s",
+   "t4:item_chase"
+  ],
+  "note": "no analyzer and no readable MVD for this ladder, and the side channel never opened: the four T4 fields have no source"
  }
 }
