@@ -20,11 +20,28 @@ Skriver i arbetstradet under korningen och lagger tillbaka originalet i ett
 `finally`. Kor det inte mot ett trad du har ocommittade andringar i.
 """
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 FIL = Path(__file__).resolve().parent / "fixklass_c.py"
+
+#: Kanonkatalogen. Mutationen "bytecode-sparr slopad" tar bort skyddet, och
+#: da skriver sjalvtestets `ladda_kanon()` en `__pycache__/` HAR. Provet
+#: aterstaller `fixklass_c.py` i sitt `finally` men stadade forr aldrig upp
+#: efter sig — sa villkor 1 (kanonfilerna ororda) brots av projektets eget
+#: mutationsprov, och tillstandet lamnades kvar for nasta person.
+KANON_DIR = Path(__file__).resolve().parents[2] / "reference" / "ra-room"
+
+
+def stada_kanon():
+    """Tar bort en __pycache__ som en mutation kan ha lamnat i kanonkatalogen."""
+    pc = KANON_DIR / "__pycache__"
+    if pc.is_dir():
+        shutil.rmtree(pc)
+        return True
+    return False
 
 MUTATIONER = [
     # --- matchregelns fem kriterier ---
@@ -67,11 +84,36 @@ MUTATIONER = [
 
     # --- PlanTick: saknad strom far aldrig bli 0 ---
     ("saknad PlanTick blir 0 i stallet for oattesterad",
-     '        return {"attesterad": False, "planerade": None, "oplanerade": None,\n'
-     '                "status": "oattesterad", "seq_luckor": None}',
-     '        return {"attesterad": True, "planerade": 0, "oplanerade": 0,\n'
-     '                "status": "attesterad", "seq_luckor": 0}',
+     '                "status": "oattesterad", "n_teleportval": None,',
+     '                "status": "attesterad", "n_teleportval": 0,',
      "NK-F_plantick_saknas"),
+
+    # --- QA:s inverteringsprov: parsern far inte lasa fel niva ---
+    ("PlanTick laser TOPPNIVANS kind i stallet for ev.kind",
+     '        if ev.get("kind") == TELEPORT_KIND and isinstance(ev.get("t"), (int, float))',
+     '        if True and isinstance(ev.get("t"), (int, float))',
+     "NK-G_plantick_ratt_niva"),
+    ("handelsefiltret slopat (raknar _capture-rader som PlanTick)",
+     '        if r.get("kind") != PLANTICK_KIND:', "        if False:",
+     "NK-G_plantick_ratt_niva"),
+    ("schemabrott (PlanTick utan ev) hoppas over tyst",
+     '        if not isinstance(ev, dict):', "        if False:",
+     "NK-L_plantick_utan_ev"),
+    ("seq lases pa fel niva (luckorna blir tysta)",
+     '        s = ev.get("seq")', '        s = None',
+     "NK-G2_seq_luckor"),
+    ("fordelningen raknar RADER i stallet for BAND",
+     '        n = sum(1 for tt in teleport_t if lo <= tt <= hi)',
+     '        n = len(teleport_t)',
+     "NK-M_utanfor_fonster"),
+    ("utan bandfonster svaras 0 planerade",
+     '    if not bandfonster:', "    if False:",
+     "NK-N_utan_bandfonster"),
+
+    # --- V5: toleransfallens marginal ---
+    ("vinkelratheten slopad (axelriktad forskjutning)",
+     "    pv = (v[1], -v[0], 0.0)", "    pv = (0.0, 1.0, 0.0)",
+     "marginal_iii"),
 
     # --- at_topp-kravet ---
     ("at_topp-kravet slopat",
@@ -114,6 +156,7 @@ def kor_sjalvtest():
 
 
 def main():
+    stada_kanon()
     rc, fallna, krasch, r = kor_sjalvtest()
     if rc != 0 or fallna:
         print("BASLINJEN AR INTE GRON — mutationsprov meningslost")
@@ -136,6 +179,9 @@ def main():
             _, f, krasch, rr = kor_sjalvtest()
         finally:
             FIL.write_text(orig, encoding="utf-8")
+            # Villkor 1 galler aven under provet: en mutation som slar av
+            # bytecode-sparren far inte lamna kvar en smutsad kanonkatalog.
+            stada_kanon()
 
         if krasch:
             print("KRASCH   %-45s (raknas som ofangad)" % namn)
@@ -153,8 +199,12 @@ def main():
             print("FEL VAKT %-45s vantade %s, foll %s" % (namn, vaktare, sorted(f)))
             daliga += 1
 
+    if stada_kanon():
+        print("(stadade bort en __pycache__ i kanonkatalogen)")
+    kvar = (KANON_DIR / "__pycache__").exists()
+    print("kanonkatalogen ren efter provet: %s" % ("NEJ" if kvar else "ja"))
     print("\n%d mutationer, %d utan ratt vaktare" % (len(MUTATIONER), daliga))
-    return 1 if daliga else 0
+    return 1 if (daliga or kvar) else 0
 
 
 if __name__ == "__main__":

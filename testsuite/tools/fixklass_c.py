@@ -350,7 +350,13 @@ def matcha_hopp(a, b) -> dict:
     start_ok = start_dist <= TOL_START      # 1. a vid teleportmunnen
     land_ok = land_dist <= TOL_LAND         # 2. b vid landningen
     steg_ok = STEP_LO <= steg <= STEP_HI    # 3. steglängd 776 ± 10
-    riktning_ok = start_ok and land_ok      # 4. ordnat mun → landning
+    # Kriterium 4 (riktning) ar STRUKTURELLT uppfyllt: `a` mats mot munnen
+    # och `b` mot landningen, aldrig tvartom. Prototypen bar har ett falt
+    # `riktning_ok = start_ok and land_ok` — en tautologisk omskrivning av
+    # kriterium 1 och 2 som utgav sig for att rapportera kriterium 4. QA
+    # muterade det: hardsatt True fallde inget test, struket ur geometri_ok
+    # fallde inget test. Ett dekorativt falt ar samma grona lampa som en dod
+    # term, sa det ar borta. Riktningen bevakas av `ix_omvand`.
     return {
         "start_dist_u": round(start_dist, 3),
         "start_ok": start_ok,
@@ -358,8 +364,8 @@ def matcha_hopp(a, b) -> dict:
         "land_ok": land_ok,
         "steg_u": round(steg, 3),
         "steg_ok": steg_ok,
-        "riktning_ok": riktning_ok,
-        "geometri_ok": start_ok and land_ok and steg_ok and riktning_ok,
+        "riktning_struktur": "ordnat par: a mot munnen, b mot landningen",
+        "geometri_ok": start_ok and land_ok and steg_ok,
         "a": a,
         "b": b,
     }
@@ -369,31 +375,104 @@ def matcha_hopp(a, b) -> dict:
 # PlanTick — planerade/oplanerade teleportpassager (villkor 4)
 # ---------------------------------------------------------------------------
 
-TELEPORT_KIND = "Teleport"  # LinkKind:s Debug-namn
+TELEPORT_KIND = "Teleport"          # LinkKind:s Debug-namn, i ev.kind
+PLANTICK_KIND = "PlanTick"          # radens TOPPNIVA-kind: hondelsetypen
+
+#: Toppnivans `kind` ar HANDELSETYPEN (`_capture_start`, `PlanTick`,
+#: `_capture_slut`) — aldrig ett LinkKind. Lankens kind och raknaren bor i
+#: `ev`. Att lasa toppnivan ger darfor alltid 0 teleportval, vilket lases
+#: som «planeraren valde aldrig teleportlanken» — exakt den tolkning Sols
+#: rev2 faller. Ett falskt 0 ar varre an ett saknat tal.
+EV_NYCKEL = "ev"
 
 
-def plantick_fordelning(plantick_rader: Optional[list]) -> dict:
-    """Delar teleportpassagerna i planerade/oplanerade.
+def _plantick_handelser(rader):
+    """Plockar ut PlanTick-handelserna och returnerar deras `ev`-objekt.
 
-    Saknas strömmen är svaret `oattesterad` — aldrig 0, aldrig en gissning.
-    `docs/plan-telemetry.md`: en saknad ström får inte läsas som frånvaro av
-    planerarval, och ett valt ben får aldrig härledas ur positioner.
+    Vagrar hellre an gissar: en rad som utger sig for att vara en PlanTick
+    men saknar `ev` ar ett schemabrott, inte en rad att hoppa over tyst.
+    """
+    ut = []
+    for r in rader:
+        if r.get("kind") != PLANTICK_KIND:
+            continue  # _capture_start / _capture_slut
+        ev = r.get(EV_NYCKEL)
+        if not isinstance(ev, dict):
+            raise Cfel(
+                "PlanTick-rad utan `%s`-objekt — okant schema, och att lasa "
+                "toppnivans `kind` i stallet ger tyst 0 teleportval" % EV_NYCKEL
+            )
+        ut.append(ev)
+    return ut
+
+
+def seq_luckor(handelser) -> dict:
+    """Raknar tappade rader per bot. `seq` ar per-bot monoton."""
+    per_bot = {}
+    for ev in handelser:
+        s = ev.get("seq")
+        if isinstance(s, int):
+            per_bot.setdefault(ev.get("bot"), []).append(s)
+    n_luckor = 0
+    tappade = 0
+    for seqs in per_bot.values():
+        seqs.sort()
+        for x, y in zip(seqs, seqs[1:]):
+            if y - x > 1:
+                n_luckor += 1
+                tappade += y - x - 1
+    return {"n_luckor": n_luckor, "tappade_rader": tappade}
+
+
+def plantick_fordelning(plantick_rader, bandfonster=None) -> dict:
+    """Delar TELEPORTPASSAGERNA i planerade/oplanerade — per BAND, inte per rad.
+
+    `bandfonster` ar [(namn, t_lo, t_hi), ...] i simtid. Ett band raknas som
+    PLANERAT om planeraren valde teleportlanken (`ev.kind == "Teleport"`)
+    nagon gang inom bandets fonster, annars OPLANERAT. Fordelningen ar over
+    de N banden — antalet rader i strommen ar inte en fordelning.
+
+    Saknas strommen ar svaret `oattesterad` — aldrig 0, aldrig en gissning.
+    `docs/plan-telemetry.md`: en saknad strom far inte lasas som franvaro av
+    planerarval, och ett valt ben far aldrig harledas ur positioner.
     """
     if plantick_rader is None:
         return {"attesterad": False, "planerade": None, "oplanerade": None,
-                "status": "oattesterad", "seq_luckor": None}
-    planerade = sum(1 for r in plantick_rader if r.get("kind") == TELEPORT_KIND)
-    oplanerade = len(plantick_rader) - planerade
-    seqs = sorted(r["seq"] for r in plantick_rader if isinstance(r.get("seq"), int))
-    luckor = sum(
-        1 for x, y in zip(seqs, seqs[1:]) if y - x > 1
-    ) if len(seqs) > 1 else 0
+                "status": "oattesterad", "n_teleportval": None,
+                "seq_luckor": None, "tappade_rader": None, "per_band": None}
+
+    handelser = _plantick_handelser(plantick_rader)
+    teleport_t = [
+        ev["t"] for ev in handelser
+        if ev.get("kind") == TELEPORT_KIND and isinstance(ev.get("t"), (int, float))
+    ]
+    luckor = seq_luckor(handelser)
+
+    if not bandfonster:
+        # Utan bandfonster finns ingen fordelning att gora. Att da svara
+        # "0 planerade" vore att pasta nagot vi inte matt.
+        return {"attesterad": True, "planerade": None, "oplanerade": None,
+                "status": "utan_bandfonster", "n_teleportval": len(teleport_t),
+                "seq_luckor": luckor["n_luckor"],
+                "tappade_rader": luckor["tappade_rader"], "per_band": None}
+
+    per_band = []
+    planerade = 0
+    for namn, lo, hi in bandfonster:
+        n = sum(1 for tt in teleport_t if lo <= tt <= hi)
+        per_band.append({"band": namn, "t_lo": round(lo, 2), "t_hi": round(hi, 2),
+                         "teleportval": n, "planerad": bool(n)})
+        if n:
+            planerade += 1
     return {
         "attesterad": True,
         "planerade": planerade,
-        "oplanerade": oplanerade,
+        "oplanerade": len(bandfonster) - planerade,
         "status": "attesterad",
-        "seq_luckor": luckor,
+        "n_teleportval": len(teleport_t),
+        "seq_luckor": luckor["n_luckor"],
+        "tappade_rader": luckor["tappade_rader"],
+        "per_band": per_band,
     }
 
 
@@ -423,14 +502,18 @@ def klassificera_band(
             "skal": dom["skal"],
             "identitet": dom,
             "via_teleport": False,
+            "t_fonster": None,
         }
 
     if not ticks:
         return {
             "path": band["path"], "label": band["label"], "klass": "miss",
             "skal": "bandet har inga ticks", "identitet": dom, "via_teleport": False,
+            "t_fonster": None,
         }
 
+    tider = [tv[0] for tv in ticks if isinstance(tv[0], (int, float))]
+    t_fonster = (min(tider), max(tider)) if tider else None
     framme = any(kanon.at_topp(o) for _, o in ticks)
     kandidater = hitta_diskontinuiteter(ticks, trosk=trosk)
 
@@ -445,6 +528,7 @@ def klassificera_band(
             "path": band["path"], "label": band["label"], "klass": klass, "skal": skal,
             "identitet": dom, "max_steg_u": round(steg, 3), "framme": framme,
             "n_kandidater": 0, "kandidater": [], "via_teleport": False,
+            "t_fonster": t_fonster,
         }
 
     # Diskontinuitet finns: matchregeln avgör om den är kartteleporten.
@@ -473,6 +557,7 @@ def klassificera_band(
         "path": band["path"], "label": band["label"], "klass": klass, "skal": skal,
         "identitet": dom, "framme": framme, "n_kandidater": len(kandidater),
         "kandidater": evald, "via_teleport": klass == "framme_via_teleport",
+        "t_fonster": t_fonster,
     }
 
 
@@ -521,12 +606,17 @@ def skriv_text(rap: dict) -> str:
     p = rap["teleportpassager"]
     if p["status"] == "oattesterad":
         fordelning = "teleportpassager: OATTESTERAD (ingen PlanTick-ström)"
+    elif p["status"] == "utan_bandfonster":
+        fordelning = ("teleportpassager: EJ FÖRDELAD (inga bandfönster att "
+                      "joina mot; %d teleportval i strömmen)" % p["n_teleportval"])
     else:
         fordelning = "teleportpassager: %d planerade / %d oplanerade" % (
             p["planerade"], p["oplanerade"]
         )
-        if p.get("seq_luckor"):
-            fordelning += "  (OBS %d seq-luckor = tappade rader)" % p["seq_luckor"]
+    if p.get("seq_luckor"):
+        fordelning += "\n  OBS: %d seq-luckor = %d tappade rader — strömmen är ofullständig" % (
+            p["seq_luckor"], p["tappade_rader"]
+        )
     a = rap["armdom"]
     return "\n".join([
         rap["rubrik"],
@@ -549,7 +639,12 @@ def skriv_text(rap: dict) -> str:
 # Självtest (villkor 5) — (i)–(vii) + de två artefakt-negativkontrollerna
 # ---------------------------------------------------------------------------
 
-SYNT_STAMPEL = "ac0f7386edb6074a4367f56a706f30dccdb1e912b1a56ef3eea7190248e3a1af"
+#: Uppenbart syntetisk stampel for sjalvtestet. Far ALDRIG vara en riktig
+#: armidentitet: en grep efter ARM-R:s identitet ska inte ge traff inne i
+#: instrumentet — det ar forvaxlingsbart med just den registerlista villkor 5
+#: forbjuder, och en riktig identitet har blir inaktuell-men-gron om armen
+#: nagonsin pinnas om. Vardet ar godtyckligt; sjalvtestet beror inte pa det.
+SYNT_STAMPEL = "deadbeef" * 8  # 64 hex, uppenbart pahittad
 
 
 def _band(tmp: Path, namn: str, punkter, stampel: Optional[str]) -> Path:
@@ -576,6 +671,24 @@ def _rakt_till_toppen(start, slut, n=12):
     return ut
 
 
+def _vinkelratt(mag: float) -> tuple:
+    """En forskjutning med langden `mag` VINKELRATT mot hoppriktningen.
+
+    Poangen: da ar steglangden invariant sa nar som pa andra ordningen
+    (sqrt(|v|^2 + mag^2)), och toleransfallet provar sitt eget kriterium i
+    stallet for att fallas av steg-kriteriet. QA:s anmarkning B2: de forra
+    forskjutningarna var AXELRIKTADE, inte vinkelrata — (iii) lag 3,4 u fran
+    steg-intervallets ovre grans och hade tyst borjat prova fel kriterium om
+    STEP_TOL nagonsin snavades at.
+
+    Harledd ur konstanterna, aldrig avskriven som siffror.
+    """
+    v = tuple(b - a for a, b in zip(CELL_START, CELL_LAND))
+    pv = (v[1], -v[0], 0.0)                       # v x (0,0,1): vinkelrat mot v
+    n = math.sqrt(sum(x * x for x in pv))
+    return tuple(x / n * mag for x in pv)
+
+
 def _teleportband(start_off=(0, 0, 0), land_off=(0, 0, 0), stampel=SYNT_STAMPEL, namn="b.jsonl", tmp=None):
     """Band som går fram till teleportmunnen, hoppar, och når toppen."""
     a = tuple(c + d for c, d in zip(CELL_START, start_off))
@@ -591,6 +704,20 @@ def sjalvtest(verbose: bool = False) -> dict:
     import tempfile
 
     fall = []
+
+    def utfall(f):
+        """Kor en kontroll och gor ett undantag till ett FALLET FALL.
+
+        Ett oväntat undantag i ett fall avbrot forr hela sviten, sa
+        mutationsprovet sag "ingen test foll" nar koden i sjalva verket
+        kraschade. En krasch ar ett utfall, inte en avbruten matning.
+        """
+        try:
+            return f()
+        except Cfel as exc:
+            return "VAGRAD"
+        except Exception as exc:  # noqa: BLE001 — avsiktligt brett
+            return "KRASCH:%s" % type(exc).__name__
 
     def kolla(namn, fick, vantat):
         ok = fick == vantat
@@ -623,12 +750,12 @@ def sjalvtest(verbose: bool = False) -> dict:
         # Forskjutningen ar VINKELRATT mot hoppriktningen sa att steglangden
         # stannar inom 776+-10; annars hade steg-kriteriet fallt bandet och
         # fallet hade inte provat kriterium 1 alls.
-        p = _teleportband(start_off=(0, 40, 0), tmp=tmp, namn="ii.jsonl")
+        p = _teleportband(start_off=_vinkelratt(40.0), tmp=tmp, namn="ii.jsonl")
         kolla("ii_start_40u", klass(p), "okand_diskontinuitet")
 
         # (iii) landning 35 u fran 1330 -> FALLS. Vinkelratt, av samma skal
         # som (ii): kriterium 2 ska falla bandet ensamt.
-        p = _teleportband(land_off=(0, 35, 0), tmp=tmp, namn="iii.jsonl")
+        p = _teleportband(land_off=_vinkelratt(35.0), tmp=tmp, namn="iii.jsonl")
         kolla("iii_landning_35u", klass(p), "okand_diskontinuitet")
 
         # (iv) ratt hopp UTAN grafstampel -> ogiltig (identitetsledet saknas)
@@ -653,6 +780,18 @@ def sjalvtest(verbose: bool = False) -> dict:
         # bryter start eller landning samtidigt.
         p = _teleportband(start_off=(-30, 0, 0), tmp=tmp, namn="viii.jsonl")
         kolla("viii_steg_utanfor", klass(p), "okand_diskontinuitet")
+
+        # Marginalen ar en assertion, inte en forhoppning: bryts den provar
+        # toleransfallen fel kriterium igen, och mutationsprovet skulle inte
+        # marka det (dess mutation VIDGAR toleransen).
+        for _mag, _namn, _vem in ((40.0, "ii", "start"), (35.0, "iii", "land")):
+            _d = _vinkelratt(_mag)
+            if _vem == "start":
+                _a = tuple(c + o for c, o in zip(CELL_START, _d)); _b = CELL_LAND
+            else:
+                _a = CELL_START; _b = tuple(c + o for c, o in zip(CELL_LAND, _d))
+            _steg = dist3(_a, _b)   # DET VERKLIGA bandets steg
+            kolla("marginal_%s" % _namn, [round(STEP_HI - _steg, 1) >= 5.0], [True])
 
         # (ix) OMVANT band: munnen och landningen byter plats i tiden.
         # Bevakar riktningskriteriet; faller den ordnade matchningen bort
@@ -754,11 +893,59 @@ def sjalvtest(verbose: bool = False) -> dict:
         finally:
             _SJALVTEST_GRON = _sparat
 
-        # NK-F: PlanTick saknas => oattesterad, aldrig 0
-        kolla("NK-F_plantick_saknas", plantick_fordelning(None)["status"], "oattesterad")
-        kolla("NK-G_plantick_finns", plantick_fordelning(
-            [{"kind": "Teleport", "seq": 1}, {"kind": "Walk", "seq": 2}]
-        )["planerade"], 1)
+        # --- PlanTick: riggens VERKLIGA radform ---
+        #
+        # Den forra fixturen har var en pahittad platt form
+        # ({"kind":"Teleport","seq":1}) som inte finns i nagon riggstrom. Den
+        # last fast en parser som laser toppnivans `kind` — dar bara
+        # handelsetypen bor — och AVVISADE rattningen. En fixtur byggd pa ett
+        # uppdiktat schema gor buggen barande; grinden var inverterad.
+        # Formen nedan ar tagen ur riggblock-plantick-bunten.
+        def _rad(kind, seq, tid, bot=1):
+            return {"kind": "PlanTick", "wall": 1787546217.6 + tid,
+                    "ev": {"schema": "qw-nav-graph/1", "bot": bot, "t": tid,
+                           "seq": seq, "kind": kind, "link": 4294967295}}
+
+        strom = (
+            [{"kind": "_capture_start", "wall": 1787546217.6, "port": 27970}]
+            + [_rad("Walk", 100, 10.0), _rad(TELEPORT_KIND, 101, 10.5),
+               _rad("JumpGap", 102, 11.0),          # band A: har teleportval
+               _rad("Walk", 103, 20.0), _rad("Step", 105, 20.5)]  # band B: inget, + lucka
+            + [{"kind": "_capture_slut", "wall": 1787546611.5, "n_plan_events": 5}]
+        )
+        fonster = [("A", 9.0, 12.0), ("B", 19.0, 22.0)]
+
+        kolla("NK-F_plantick_saknas", utfall(lambda: plantick_fordelning(None)["status"]), "oattesterad")
+
+        f = lambda: plantick_fordelning(strom, fonster)  # noqa: E731
+        # NK-G: ratt niva, ratt join. En parser som laser toppnivans `kind`
+        # far HAR 0 planerade, sa det har fallet faller den.
+        kolla("NK-G_plantick_ratt_niva",
+              utfall(lambda: [f()["planerade"], f()["oplanerade"]]), [1, 1])
+        kolla("NK-G2_seq_luckor",
+              utfall(lambda: [f()["seq_luckor"], f()["tappade_rader"]]), [1, 1])
+
+        # NK-K: LOCKBETE pa toppnivan. Toppnivans kind sager "Teleport" men
+        # lanken ar en Walk. En parser som laser fel niva raknar den som
+        # planerad; ratt parser ser att handelsetypen inte ar PlanTick.
+        lockbete = [{"kind": TELEPORT_KIND, "wall": 0.0,
+                     "ev": {"bot": 1, "t": 10.5, "seq": 200, "kind": "Walk"}}]
+        kolla("NK-K_lockbete_toppniva", utfall(
+            lambda: plantick_fordelning(lockbete, [("A", 9.0, 12.0)])["planerade"]), 0)
+
+        # NK-L: PlanTick-rad UTAN ev => schemabrott, inte tyst 0.
+        kolla("NK-L_plantick_utan_ev", utfall(
+            lambda: plantick_fordelning([{"kind": "PlanTick", "wall": 0.0}], fonster)
+            and "accepterad"), "VAGRAD")
+
+        # NK-M: teleportval UTANFOR bandets fonster raknas inte till bandet.
+        kolla("NK-M_utanfor_fonster", utfall(
+            lambda: plantick_fordelning([_rad(TELEPORT_KIND, 300, 99.0)],
+                                        [("A", 9.0, 12.0)])["planerade"]), 0)
+
+        # NK-N: strom utan bandfonster far INTE svara "0 planerade".
+        kolla("NK-N_utan_bandfonster",
+              utfall(lambda: plantick_fordelning(strom, [])["planerade"]), None)
 
     ok = all(f["ok"] for f in fall)
     return {"ok": ok, "n": len(fall), "fall": fall}
@@ -800,7 +987,16 @@ def klassificera_korpus(
     domar = [
         klassificera_band(p, ident, levande_graf, kanon) for p in band_vagar
     ]
-    return rapportera(artefakt.get("arm", "?"), domar, plantick_fordelning(plantick_rader), artefakt)
+    # Fordelningen joinas mot bandens simtidsfonster. Band utan fonster
+    # (t.ex. tomma) kan inte joinas och far inte tyst bli "oplanerade".
+    bandfonster = [
+        (Path(d["path"]).name, d["t_fonster"][0], d["t_fonster"][1])
+        for d in domar if d.get("t_fonster")
+    ]
+    return rapportera(
+        artefakt.get("arm", "?"), domar,
+        plantick_fordelning(plantick_rader, bandfonster), artefakt,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -809,7 +1005,12 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sjalvtest", action="store_true", help="kör NK-sviten och stanna")
     ap.add_argument("--proveniens", help="förseglad per-arm proveniensartefakt")
-    ap.add_argument("--proveniens-sha256", help="pinnad sha256 för artefakten")
+    ap.add_argument(
+        "--proveniens-sha256",
+        help="pinnad sha256 för artefakten (OBLIGATORISK: sidofilen är "
+             "självförseglande, den externa pinnen är det enda som fångar "
+             "ett avsiktligt byte)",
+    )
     ap.add_argument("--levande-graf", help="graph_content_hash ur den levande apply-/grafavläsningen")
     ap.add_argument("--plantick", help="JSONL med PlanTick-rader; utelämnas => oattesterad")
     ap.add_argument("--kanon", default=str(KANON_STANDARD))
@@ -826,11 +1027,16 @@ def main(argv=None) -> int:
     try:
         if not args.band:
             raise Cfel("inga band angivna")
-        for flagga, varde in (("--proveniens", args.proveniens), ("--levande-graf", args.levande_graf)):
+        for flagga, varde in (("--proveniens", args.proveniens),
+                              ("--proveniens-sha256", args.proveniens_sha256),
+                              ("--levande-graf", args.levande_graf)):
             if not varde:
                 raise Cfel(
                     "%s fattas. Identitetsdomen har tre led och kan inte "
-                    "avges med två." % flagga
+                    "avges med tva, och sidofilen ar sjalvforseglande — den "
+                    "som andrar artefakten kan skriva om sigillet, sa den "
+                    "externa pinnen ar det enda som fangar ett avsiktligt "
+                    "byte." % flagga
                 )
         plantick = None
         if args.plantick:
