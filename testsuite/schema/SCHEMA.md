@@ -337,7 +337,8 @@ stops before T1 when T0 import is missing or FAIL.
      "scoreboard": { },
      "measured": {"shots_fired": 402, "teamkills": 8, "kills": 45,
                   "still_s_per_bot": 18.4, "still_gap_max_s": 1.8,
-                  "item_takes": 27, "items_poll_gap_max_s": 1.2}},
+                  "item_takes": 27, "items_poll_gap_max_s": 1.2,
+                  "items_tracked": 42}},
     {"skill": 12, "frags_for": 54, "frags_against": 49, "win": true, "mvd": "...",
      "measured": { }},
     {"skill": 14, "frags_for": 42, "frags_against": 50, "win": false, "mvd": "...",
@@ -373,11 +374,23 @@ stops before T1 when T0 import is missing or FAIL.
   (d) `item_pickups == 0` over the whole ladder. The thresholds are calibrated
   against the existing corpus, copied into the envelope, and pinned: a run that
   restates its own gate is refused.
+- `teamkills` comes off the match card as `kills - frags - suicides` for team
+  `brch`, and is **unavailable** — never a number — when any component is
+  missing, non-numeric or negative, or when the derived count exceeds the
+  team's own kills. Five real cards in the corpus derive more teamkills than
+  kills (`frags` goes negative), which would put gate (b) above 1.0 on an
+  ordinary match. When a rung carries its card, the validator recounts the pair
+  off it and refuses a rung that reports something else.
 - Every unmeasured field is named in `dom.missing` **and** in
   `capabilities.unavailable` (`t4:shots_fired`, `t4:teamkills`, `t4:still_s`,
   `t4:item_chase`). It is never a numeric zero. `item_pickups` is a proxy — the
   world item channel says an item was taken, not by whom — so a judged (d) outcome
   always carries the `item-pickups-proxy` label.
+- `measured.items_tracked` is how many distinct items the world channel could
+  identify at all. No gate reads it: it is the receipt that says whether gate
+  (d) is measuring the wide channel it was calibrated on or has quietly
+  narrowed to the two powerups (46 of 51 ten-minute T2 runs saw zero quad+pent
+  takes, so a narrow channel would make `item_pickups == 0` the normal reading).
 - `measured` per rung is the ladder's audit trail: when every rung carries it, the
   validator refolds it and refuses `measurements`/`sampling` that disagree.
 - Draw rule: a draw does not advance the ladder and stops it (recorded as

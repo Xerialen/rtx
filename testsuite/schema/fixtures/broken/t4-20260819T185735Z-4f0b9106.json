@@ -1,0 +1,34 @@
+{
+ "build": {
+  "branch": "detached",
+  "commit": "4f0b910613c27480ea36c7755c011ab9feba52c0",
+  "digest_md5": "d1cde0e3",
+  "dirty": false
+ },
+ "config_digest": "sha256:db82cd68d6bf18e021cf21cb70326422ca74350f841de110bc7e7e5306968173",
+ "ended_utc": "2026-08-19T19:06:09Z",
+ "map": "dm3",
+ "payload": {
+  "duration_s_per_match": 300,
+  "ladder": [
+   {
+    "frags_against": 39,
+    "frags_for": 11,
+    "mvd": "team_frog[dm3]20260819-1900.mvd",
+    "scoreboard": null,
+    "skill": 10,
+    "win": false
+   }
+  ],
+  "reached": 0,
+  "skill_verified_by": "client console skill echo (KTX addbot)",
+  "verdict": "COMPLETE"
+ },
+ "provenance": "measured",
+ "run_id": "t4-20260819T185735Z-4f0b9106",
+ "runner_version": "0.1.0",
+ "schema": "rtx-testflow/1",
+ "started_utc": "2026-08-19T18:57:35Z",
+ "status": "complete",
+ "tier": "T4"
+}

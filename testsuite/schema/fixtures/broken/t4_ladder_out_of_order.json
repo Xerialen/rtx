@@ -1,10 +1,10 @@
 {
  "schema": "rtx-testflow/1",
- "run_id": "t4-20260728T133000Z-11111111",
+ "run_id": "t4-20260728T144500Z-11111111",
  "tier": "T4",
  "status": "complete",
- "started_utc": "2026-07-28T13:30:00Z",
- "ended_utc": "2026-07-28T13:35:00Z",
+ "started_utc": "2026-07-28T14:45:00Z",
+ "ended_utc": "2026-07-28T14:50:00Z",
  "map": "dm3",
  "build": {
   "branch": "testsuite",
@@ -26,7 +26,24 @@
     "mvd": "demos/10.mvd",
     "measured": {
      "shots_fired": 402,
-     "teamkills": 10,
+     "teamkills": 8,
+     "kills": 45,
+     "still_s_per_bot": 18.4,
+     "still_gap_max_s": 1.8,
+     "item_takes": 27,
+     "items_poll_gap_max_s": 1.2,
+     "items_tracked": 42
+    }
+   },
+   {
+    "skill": 14,
+    "frags_for": 60,
+    "frags_against": 40,
+    "win": true,
+    "mvd": "demos/14.mvd",
+    "measured": {
+     "shots_fired": 402,
+     "teamkills": 8,
      "kills": 45,
      "still_s_per_bot": 18.4,
      "still_gap_max_s": 1.8,
@@ -38,14 +55,14 @@
   ],
   "skill_verified_by": "client console skill echo (KTX addbot)",
   "t4_schema": 2,
-  "reached": 10,
-  "verdict": "FAIL",
+  "reached": 14,
+  "verdict": "OK",
   "measurements": {
-   "shots_fired": 402,
-   "teamkills": 10,
-   "kills_total": 45,
+   "shots_fired": 804,
+   "teamkills": 16,
+   "kills_total": 90,
    "still_s_per_bot_max": 18.4,
-   "item_pickups": 27
+   "item_pickups": 54
   },
   "sampling": {
    "still_interval_s": 1.0,
@@ -63,15 +80,12 @@
    "items_poll_gap_max_s": 3.0
   },
   "dom": {
-   "failed_gates": [
-    "b:teamkill_share"
-   ],
+   "failed_gates": [],
    "missing": [],
-   "reason": "fällda mätta grindar: b:teamkill_share",
+   "reason": "spelad stege; alla fyra fält mätta och gröna",
    "labels": [
     "item-pickups-proxy"
    ]
-  },
-  "cross_alarm": "no matching T1/T3 run found"
+  }
  }
 }

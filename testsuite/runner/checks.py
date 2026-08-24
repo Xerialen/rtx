@@ -1034,6 +1034,23 @@ def _t4_ladder(data: dict[str, Any], path: str) -> int:
             for field in t4_dom.RUNG_MEASURED_FIELDS:
                 if measured[field] is not None:
                     _num(measured[field], f"{item_path}.measured.{field}", 0)
+            # The teamkill pair is the one measurement whose source travels in
+            # the envelope beside it, so it is recounted rather than believed.
+            # Five real cards in the corpus derive a teamkill count larger than
+            # the team's own kills; a rung that reports a number off such a card
+            # is reporting something the card cannot say.
+            if item.get("scoreboard") is not None:
+                recount = t4_dom.teamkills_from_card(
+                    item["scoreboard"], t4_dom.BRANCH_TEAM
+                )
+                if (measured["teamkills"], measured["kills"]) != recount:
+                    _fail(
+                        f"{item_path}.measured.teamkills",
+                        f"expected {recount} from this rung's own match card"
+                        f" (kills - frags - suicides for team"
+                        f" {t4_dom.BRANCH_TEAM!r}, unavailable unless"
+                        f" 0 <= derived <= kills and no component is negative)",
+                    )
         if index >= len(expected_skills) or item["skill"] != expected_skills[index]:
             _fail(f"{item_path}.skill", "ladder must use 10,12,14,16,18,20")
         if stopped:
@@ -1221,6 +1238,15 @@ def _t4_v2(data: dict[str, Any], path: str, capabilities: dict[str, Any] | None)
             f"{path}.verdict",
             f"expected {recomputed['verdict']}: {recomputed['reason']}",
         )
+    # Bokfört som oåtkomligt, inte som en levande grind (QA:s mutation Q-M8,
+    # 2026-08-24): VINST kan bara komma ur `adjudicate` när `won_top` är sant,
+    # och `won_top` kräver att sista benet är en vinst på skill 20 — varpå
+    # `reached_from_ladder` måste ge 20, eftersom ordningsgrinden ovan redan
+    # har avvisat varje stege med en högre eller okänd nivå. Dubbelvakten kan
+    # alltså inte falla så länge ordningsgrinden lever, och det är just därför
+    # den står kvar: tar någon bort ordningsgrinden är det här den andra
+    # spärren. Att den överlevde en mutation är väntat och bokfört, inte ett
+    # hål — men den räknas inte som bevisad av något test.
     if verdict == "VINST" and not (reached == 20 and outcome["won_top"]):
         _fail(f"{path}.verdict", "VINST requires reached 20 and a win on level 20")
     # Whatever could not be measured has to be declared where every other tier

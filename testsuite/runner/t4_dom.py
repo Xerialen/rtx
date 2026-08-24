@@ -53,6 +53,11 @@ CAP_MEASUREMENT = {
 #: reported (d) outcome has to say so.
 LABEL_ITEM_PROXY = "item-pickups-proxy"
 
+#: Our side's team name on the scoreboard card. Lives here rather than only in
+#: `t4.py` because the validator recounts the teamkill derivation off the card
+#: and has to look at the same row the runner did.
+BRANCH_TEAM = "brch"
+
 #: What a FAIL writes when no T1/T3 run of the same commit precedes it (§6).
 NO_CROSS_ALARM = "no matching T1/T3 run found"
 
@@ -82,8 +87,19 @@ TEAMKILL_SHARE_MAX = 0.20
 STILL_S_PER_BOT_MAX = 75.0
 
 #: (d) item_pickups over the whole ladder. Zero fells. The lowest world-level
-#: total on a real card is 5 takes per 300 s match, so zero across up to six
-#: matches is far outside anything observed.
+#: total on a real match card is **4** takes per 300 s match (12 cards carry
+#: the item columns; the range is 4 to 29), so zero across up to six matches is
+#: far outside anything observed.
+#:
+#: The T2 corpus says something that looks like the opposite and is not: 46 of
+#: 51 ten-minute T2 runs recorded quad+pent takes of zero. That channel watches
+#: exactly two slow, contested powerups, and zero is its ordinary reading. This
+#: gate is on the wide world channel — every item the reply identifies, over up
+#: to six matches — and the two are not the same measurement. That distinction
+#: is the whole basis for the threshold, so the runner records
+#: `measured.items_tracked` (how many distinct items the channel could see at
+#: all): if a live ladder comes back tracking two, this gate is measuring the
+#: T2 quantity and the threshold has to be revisited before it fells anything.
 ITEM_PICKUPS_MIN = 1
 
 #: (§3) The live side channel is sampled at this period, and a gap wider than
@@ -111,19 +127,51 @@ def thresholds() -> dict[str, Any]:
 
 
 def _number(value: Any) -> float | None:
+    """A finite number, or None.
+
+    NaN and the infinities are rejected on purpose: `json.loads` accepts the
+    literals `NaN`/`Infinity`, and NaN compares False against every bound, so
+    a hand-written envelope carrying one would walk past every range check in
+    this module and then blow up in `int()` with a ValueError the validator
+    does not catch. An unrepresentable measurement is an absent one.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value)
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
 
 
 def teamkills_from_card(card: Any, team: str) -> tuple[int | None, int | None]:
     """`(teamkills, kills)` for one team row, or `(None, None)`.
 
     The only place a teamkill-like number can be derived is the qw-analyze
-    match card: `kills - frags - suicides` (§3). A missing card, a missing
-    field, a non-numeric field or a negative component is *unavailable*, never
-    a numeric zero — a zero here would say "they never shot each other", which
-    is precisely what was not observed.
+    match card: `kills - frags - suicides` (§3). Everything else about this
+    function is the fail-closed ruling Fable made on 2026-08-24 after QA
+    finding A1, and it is the spec's own sentence taken literally: a missing
+    card, a missing field, a non-numeric field, **any** negative component, or
+    a derived count larger than the team's own kills makes `t4:teamkills`
+    unavailable. Never a numeric zero — a zero here would claim they never
+    shot each other, which is precisely what was not observed.
+
+    The corpus is why. Five real team rows carry `frags < 0`
+    (`t3-20260728T170516Z-764bc135`, team `brch`: `kills=6, frags=-5,
+    suicides=0`). The formula turns that into 11 teamkills on 6 kills — a
+    share of 1.83, and gate (b) fells a match on a number that cannot mean
+    what it says. A teamkill count above the team's own kill count is not a
+    teamkill count.
+
+    **Bokfört: the size guard is subsumed and cannot be pinned by a test.**
+    `derived > kills` means `-frags - suicides > 0`, which with non-negative
+    frags and suicides is arithmetically impossible — so every row the size
+    guard would catch, the sign guard catches too. A mutation that removes the
+    size guard alone therefore survives the suite, and it is listed as such in
+    the receipt rather than dressed up with a test that proves nothing. It
+    stays because the ruling names both conditions and because it is the
+    second lock if the sign guard is ever relaxed; it is not evidence of
+    anything on its own. The pair as a whole IS pinned, by the real corpus row
+    and by an envelope fixture whose card the validator recounts.
     """
     if not isinstance(card, dict):
         return None, None
@@ -145,12 +193,10 @@ def teamkills_from_card(card: Any, team: str) -> tuple[int | None, int | None]:
     suicides = _number(row.get("suicides"))
     if kills is None or frags is None or suicides is None:
         return None, None
-    if kills < 0 or suicides < 0:
-        return None, None
     derived = kills - frags - suicides
-    if derived < 0:
-        # A negative teamkill count is a card that does not mean what the
-        # formula assumes. Refuse it rather than clamp it to zero.
+    if derived < 0 or derived > kills:
+        return None, None
+    if kills < 0 or frags < 0 or suicides < 0:
         return None, None
     return int(derived), int(kills)
 
@@ -159,18 +205,27 @@ def reached_from_ladder(ladder: Any) -> int:
     """The highest *won* skill; 0 when nothing was won (§2).
 
     A loss on the first rung is 0. A draw after a won rung N is N, because the
-    draw rung was not won. This is the same meaning the runner has always had,
-    written down once so the validator can recompute it instead of trusting it.
+    draw rung was not won.
+
+    `max`, not "the last one that won". On a ladder that runs 10,12,14,16,18,20
+    the two are the same number, and QA's mutation Q-M11 survived the whole
+    suite for exactly that reason — the difference was invisible because the
+    rung-order gate hid it. The spec says *highest won*, so that is what this
+    computes, and a unit check feeds it an out-of-order ladder to keep the two
+    readings apart even though the validator's own order gate would refuse
+    such a ladder.
     """
-    reached = 0
     if not isinstance(ladder, list):
-        return reached
-    for rung in ladder:
-        if isinstance(rung, dict) and rung.get("win") is True:
-            skill = rung.get("skill")
-            if isinstance(skill, int) and not isinstance(skill, bool):
-                reached = skill
-    return reached
+        return 0
+    won = [
+        rung["skill"]
+        for rung in ladder
+        if isinstance(rung, dict)
+        and rung.get("win") is True
+        and isinstance(rung.get("skill"), int)
+        and not isinstance(rung.get("skill"), bool)
+    ]
+    return max(won) if won else 0
 
 
 def ladder_outcome(ladder: Any, top_skill: int = 20) -> dict[str, Any]:
@@ -194,6 +249,13 @@ RUNG_MEASURED_FIELDS = (
     "still_gap_max_s",
     "item_takes",
     "items_poll_gap_max_s",
+    # How many distinct items the world channel could identify at all. No gate
+    # reads it; it is the receipt that decides whether gate (d) means anything.
+    # 46 of 51 ten-minute T2 runs recorded zero quad+pent takes, so a channel
+    # that only ever sees those two powerups would make `item_pickups == 0`
+    # the normal reading rather than the alarm. The first live run has to show
+    # this number before (d) can be trusted in anger.
+    "items_tracked",
 )
 
 

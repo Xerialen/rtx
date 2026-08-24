@@ -31,7 +31,8 @@
      "still_s_per_bot": null,
      "still_gap_max_s": null,
      "item_takes": null,
-     "items_poll_gap_max_s": null
+     "items_poll_gap_max_s": null,
+     "items_tracked": null
     }
    },
    {
@@ -47,7 +48,8 @@
      "still_s_per_bot": null,
      "still_gap_max_s": null,
      "item_takes": null,
-     "items_poll_gap_max_s": null
+     "items_poll_gap_max_s": null,
+     "items_tracked": null
     }
    },
    {
@@ -63,7 +65,8 @@
      "still_s_per_bot": null,
      "still_gap_max_s": null,
      "item_takes": null,
-     "items_poll_gap_max_s": null
+     "items_poll_gap_max_s": null,
+     "items_tracked": null
     }
    }
   ],

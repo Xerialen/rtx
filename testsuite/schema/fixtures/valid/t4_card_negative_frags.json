@@ -1,10 +1,10 @@
 {
  "schema": "rtx-testflow/1",
- "run_id": "t4-20260727T210000Z-11111111",
+ "run_id": "t4-20260728T134500Z-11111111",
  "tier": "T4",
  "status": "complete",
- "started_utc": "2026-07-27T21:00:00Z",
- "ended_utc": "2026-07-27T21:05:00Z",
+ "started_utc": "2026-07-28T13:45:00Z",
+ "ended_utc": "2026-07-28T13:50:00Z",
  "map": "dm3",
  "build": {
   "branch": "testsuite",
@@ -20,18 +20,17 @@
   "ladder": [
    {
     "skill": 10,
-    "frags_for": 50,
-    "frags_against": 50,
+    "frags_for": 38,
+    "frags_against": 52,
     "win": false,
-    "draw": true,
     "mvd": "demos/10.mvd",
     "scoreboard": {
      "teams": [
       {
        "name": "brch",
-       "frags": 34,
-       "kills": 45,
-       "suicides": 3
+       "frags": -5,
+       "kills": 6,
+       "suicides": 0
       },
       {
        "name": "ref",
@@ -76,8 +75,8 @@
     },
     "measured": {
      "shots_fired": 402,
-     "teamkills": 8,
-     "kills": 45,
+     "teamkills": null,
+     "kills": null,
      "still_s_per_bot": 18.4,
      "still_gap_max_s": 1.8,
      "item_takes": 27,
@@ -89,11 +88,11 @@
   "skill_verified_by": "client console skill echo (KTX addbot)",
   "t4_schema": 2,
   "reached": 0,
-  "verdict": "OAVGJORD",
+  "verdict": "OMÄTT",
   "measurements": {
    "shots_fired": 402,
-   "teamkills": 8,
-   "kills_total": 45,
+   "teamkills": null,
+   "kills_total": null,
    "still_s_per_bot_max": 18.4,
    "item_pickups": 27
   },
@@ -114,12 +113,20 @@
   },
   "dom": {
    "failed_gates": [],
-   "missing": [],
-   "reason": "stegen slutade oavgjort; alla fyra fält mätta och gröna",
+   "missing": [
+    "t4:teamkills"
+   ],
+   "reason": "omätta fält: t4:teamkills",
    "labels": [
     "item-pickups-proxy"
    ]
-  },
-  "draw_semantik": "ägarbeslut saknas"
+  }
+ },
+ "capabilities": {
+  "telemetry": true,
+  "unavailable": [
+   "t4:teamkills"
+  ],
+  "note": "the match card derives 11 teamkills on 6 kills (frags -5): a teamkill count above the team's own kills is not a teamkill count"
  }
 }

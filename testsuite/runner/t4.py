@@ -44,7 +44,9 @@ from .t3 import (
 )
 
 FROG_TEAM = "frog"
-BRANCH_TEAM = "brch"
+#: Our side's row on the match card. The validator recounts the teamkill
+#: derivation off the same row, so the name lives in `t4_dom`.
+BRANCH_TEAM = t4_dom.BRANCH_TEAM
 SEATS = 4
 # KTX echoes e.g. `skill &cf0010&r` to the seating client: colour code &cf00
 # followed by the skill digits, closed by &r.
@@ -284,6 +286,17 @@ class _ItemWatch:
         if self.polls < 2 or self.gap_max_seen is None:
             return False
         return self.gap_max_seen <= self.gap_max_s
+
+    def tracked(self) -> int:
+        """How many distinct items the channel could identify at all.
+
+        No gate reads this. It decides whether gate (d) means anything: 46 of
+        51 ten-minute T2 runs recorded zero quad+pent takes, so a channel that
+        only ever sees those two powerups would make `item_pickups == 0` the
+        normal reading instead of the alarm. The number rides along in the
+        envelope so the first live ladder settles the question.
+        """
+        return len(self._state)
 
 
 def _full_view(analyzer_path: Path, mvd_path: Path) -> dict[str, Any] | None:
@@ -565,6 +578,7 @@ def _play_rung(
                 if item_watch.gap_max_seen is not None
                 else None
             ),
+            "items_tracked": item_watch.tracked() or None,
         },
     }
     if frags_for == frags_against:

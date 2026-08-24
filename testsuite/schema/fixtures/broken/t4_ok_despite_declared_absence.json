@@ -31,7 +31,8 @@
      "still_s_per_bot": 18.4,
      "still_gap_max_s": 1.8,
      "item_takes": null,
-     "items_poll_gap_max_s": null
+     "items_poll_gap_max_s": null,
+     "items_tracked": 42
     }
    }
   ],

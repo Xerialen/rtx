@@ -246,6 +246,20 @@ def _t4_units() -> list[str]:
         20,
     )
     check("nk20.empty", t4_dom.reached_from_ladder([]), 0)
+    # A2 / QA Q-M11. "Highest won" and "last won" are the same number on a
+    # ladder the order gate has approved, which is why the mutation from one
+    # to the other survived the whole suite. Feed it a ladder the order gate
+    # would refuse and the two readings separate: highest is 20, last is 14.
+    check(
+        "a2.highest_not_last",
+        t4_dom.reached_from_ladder(ladder((10, "win"), (20, "win"), (14, "win"))),
+        20,
+    )
+    check(
+        "a2.highest_not_last_with_a_loss",
+        t4_dom.reached_from_ladder(ladder((18, "win"), (12, "win"), (16, "loss"))),
+        18,
+    )
 
     # NK 15. The teamkill card: a missing field, a non-numeric field or a
     # negative component is unavailable, never a numeric zero.
@@ -283,6 +297,54 @@ def _t4_units() -> list[str]:
         (None, None),
     )
     check("nk15.no_card", t4_dom.teamkills_from_card(None, "brch"), (None, None))
+    # A1 (Fables facitbeslut 2026-08-24, ur QA-domen). The real corpus row:
+    # frags is negative, the formula derives 11 teamkills on 6 kills, and a
+    # teamkill count above the team's own kills is not a teamkill count.
+    check(
+        "a1.real_row_derives_more_than_kills",
+        t4_dom.teamkills_from_card(card(kills=6, frags=-5, suicides=0), "brch"),
+        (None, None),
+    )
+    check(
+        "a1.second_real_row",
+        t4_dom.teamkills_from_card(card(kills=7, frags=-5, suicides=0), "brch"),
+        (None, None),
+    )
+    # The size guard alone would let this one through — the negative frags are
+    # cancelled by the suicides, so the derived count lands back in range. It
+    # is still a card that does not mean what the formula assumes, and the
+    # sign guard is what catches it. One check per guard, so neither is
+    # decoration.
+    check(
+        "a1.negative_frags_cancelled_out",
+        t4_dom.teamkills_from_card(card(kills=6, frags=-5, suicides=11), "brch"),
+        (None, None),
+    )
+    # The seam of the size guard: derived == kills is still a card, one more
+    # is not.
+    # json.loads accepts the NaN literal, and NaN walks past every range
+    # check by comparing False to all of them. An unrepresentable component is
+    # an absent one, not a measurement.
+    check(
+        "a1.not_a_number",
+        t4_dom.teamkills_from_card(
+            card(kills=45, frags=float("nan"), suicides=3), "brch"
+        ),
+        (None, None),
+    )
+    check(
+        "a1.infinite",
+        t4_dom.teamkills_from_card(
+            card(kills=float("inf"), frags=34, suicides=3), "brch"
+        ),
+        (None, None),
+    )
+    check("a1.nan_measurement", t4_dom.missing_fields({**green, "shots_fired": float("nan")}), [t4_dom.CAP_SHOTS])
+    check(
+        "a1.derived_equals_kills",
+        t4_dom.teamkills_from_card(card(kills=5, frags=0, suicides=0), "brch"),
+        (5, 5),
+    )
     check(
         "nk15.wrong_team",
         t4_dom.teamkills_from_card(card(kills=45, frags=34, suicides=3), "nope"),
@@ -414,6 +476,21 @@ def _t4_units() -> list[str]:
     blind.observe([{"classname": "x"}], 1.0)
     check("nk9.blind.misses", blind.misses, 2)
     check("nk9.blind.measured", blind.measured(), False)
+
+    # How wide the world channel actually was. Gate (d) means nothing if the
+    # reply only ever carries quad and pent — 46 of 51 ten-minute T2 runs saw
+    # zero takes on that pair — so the count rides along as evidence.
+    wide = t4_mod._ItemWatch()
+    wide.observe(
+        [
+            item(True, "item_artifact_super_damage"),
+            item(True, "item_armor2"),
+            {"classname": "item_health", "available": True, "origin": [1, 2, 3]},
+        ],
+        0.0,
+    )
+    check("d.channel_width", wide.tracked(), 3)
+    check("d.narrow_channel", seeded.tracked(), 1)
 
     # The ladder fold: a field is the ladder's only when every rung has it.
     rungs = [
