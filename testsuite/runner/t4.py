@@ -19,6 +19,7 @@ verification recorded in `skill_verified_by`.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -47,6 +48,7 @@ from .t3 import (
     _movement_check,
     _read_demoinfo,
     _read_demoinfo_document,
+    newest_demoinfo,
     _udp_serverinfo,
     _wait_serverinfo,
 )
@@ -365,6 +367,37 @@ def _rung_shots(
     return combat_lock_mod.team_shots(document, BRANCH_TEAM)
 
 
+def archive_card(
+    demo_dir: Path | None, started_wallclock: float, demos_dir: Path
+) -> dict[str, Any] | None:
+    """Copy this match's KTX card beside the envelope and pin its sha256.
+
+    A number read out of the card is only auditable if the card is still there
+    to be read (Sol, 2026-08-24). The runner therefore archives it into the
+    same `evidence/demos/` the MVDs go to and records the relative path plus
+    the digest of the bytes it wrote — the validator resolves exactly that path
+    and recounts the number out of exactly those bytes.
+
+    The source file is chosen by the same function that produced the numbers,
+    so the provenance can never point at a different card than the reading.
+    """
+    source = newest_demoinfo(demo_dir, started_wallclock)
+    if source is None:
+        return None
+    try:
+        raw = source.read_bytes()
+        demos_dir.mkdir(parents=True, exist_ok=True)
+        target = demos_dir / source.name
+        target.write_bytes(raw)
+    except OSError as exc:
+        print(f"KTX card not archived: {exc}", flush=True)
+        return None
+    return {
+        "path": f"{demos_dir.name}/{source.name}",
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
 def cross_alarm(evidence_dir: Path, commit: str, started_utc: str) -> str:
     """The T1/T3 run that should have caught this, best effort (§6).
 
@@ -487,6 +520,7 @@ def _play_rung(
     demo_dir: Path | None,
     seater: _Seater,
     map_name: str,
+    demos_dir: Path,
 ) -> dict[str, Any]:
     t4 = config["t4"]
     duration = t4["duration_s"]
@@ -604,6 +638,30 @@ def _play_rung(
     shots, shots_source = t4_dom.pick_shots(
         _rung_shots(config, demo_dir, mvd), demoinfo_document, BRANCH_TEAM
     )
+    # The card the two KTX readings came from, archived beside the envelope and
+    # pinned by digest. Only written when a reading actually came from it.
+    card = None
+    if t4_dom.SOURCE_KTX_CARD in (shots_source, teamkills_source):
+        card = archive_card(demo_dir, started_wallclock, demos_dir)
+        if card is None:
+            print(
+                "KTX card could not be archived; dropping the readings taken "
+                "from it rather than reporting numbers with no provenance",
+                flush=True,
+            )
+        reading = t4_dom.drop_unprovenanced(
+            {
+                "shots": shots,
+                "shots_source": shots_source,
+                "teamkills": teamkills,
+                "kills": kills,
+                "teamkills_source": teamkills_source,
+            },
+            card,
+        )
+        shots, shots_source = reading["shots"], reading["shots_source"]
+        teamkills, kills = reading["teamkills"], reading["kills"]
+        teamkills_source = reading["teamkills_source"]
     rung = {
         "skill": skill,
         "frags_for": frags_for,
@@ -615,6 +673,7 @@ def _play_rung(
         # match it came from. A ladder number nobody can trace back to a rung
         # is a number nobody can check.
         "sources": {"shots_fired": shots_source, "teamkills": teamkills_source},
+        **({"card": card} if card is not None else {}),
         "measured": {
             "shots_fired": shots,
             "teamkills": teamkills,
@@ -650,6 +709,7 @@ def run(config: dict[str, Any]) -> Path:
     evidence_dir.mkdir(parents=True, exist_ok=True)
     demo_dir_value = t4.get("demoinfo_dir", "")
     demo_dir = config_path(config, demo_dir_value) if demo_dir_value else None
+    demos_dir = config_path(config, config["paths"]["demos_dir"])
     with RigLock(port), RigLifecycle(t4):
         serverinfo = _preflight(config, host, port)
         map_name = serverinfo.get("map", "unknown")
@@ -694,6 +754,7 @@ def run(config: dict[str, Any]) -> Path:
                                 demo_dir,
                                 seater,
                                 map_name,
+                                demos_dir,
                             )
                             break
                         except GateError as gate:

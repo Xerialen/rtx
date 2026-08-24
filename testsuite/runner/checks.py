@@ -1004,7 +1004,98 @@ def _t4_legacy_grandfathered(path: str) -> None:
         )
 
 
-def _t4_ladder(data: dict[str, Any], path: str) -> int:
+def _t4_ktx_card(
+    item: dict[str, Any],
+    item_path: str,
+    measured: dict[str, Any],
+    sources: dict[str, Any],
+    schema: int,
+) -> None:
+    """A KTX-sourced number has to come with the card, and the card has to say it.
+
+    Sol's blocker, 2026-08-24: a measurement named `ktx/demoinfo` was auditable
+    only in the sense that it was well-formed. The card does not travel inside
+    the envelope the way the qw-analyze card does, so nothing could be
+    recounted — and "measured" has to mean checkable, not merely declared.
+
+    From contract 3 the rung names the archived card by path and sha256. This
+    resolves it beside the envelope, hashes the bytes, and recounts shots and
+    teamkills out of them. Every failure is a refusal, never a shrug: a card
+    that cannot be found, cannot be hashed to the pinned digest, cannot be
+    parsed, or does not produce the number the rung reports, all fell the
+    envelope. The number and its provenance stand or fall together.
+    """
+    ktx_fields = [
+        field
+        for field in ("shots_fired", "teamkills")
+        if sources.get(field) == t4_dom.SOURCE_KTX_CARD
+    ]
+    if "card" not in item:
+        if ktx_fields and schema >= t4_dom.T4_SCHEMA_CARD_REQUIRED:
+            _fail(
+                f"{item_path}.card",
+                f"{', '.join(ktx_fields)} came from {t4_dom.SOURCE_KTX_CARD!r},"
+                " so the card has to travel with the envelope: name it by path"
+                " and sha256",
+            )
+        return
+    card = _fields(item["card"], f"{item_path}.card", {"path", "sha256"})
+    digest = _str(card["sha256"], f"{item_path}.card.sha256")
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        _fail(f"{item_path}.card.sha256", "expected 64 lowercase hex characters")
+    relative = t4_dom.safe_relative_card_path(card["path"])
+    if relative is None:
+        _fail(
+            f"{item_path}.card.path",
+            "expected a plain relative path under the envelope's own directory"
+            " (no absolute path, no '..', no backslash)",
+        )
+    if not ktx_fields:
+        _fail(
+            f"{item_path}.card",
+            "carries a KTX card that no measurement names as its source",
+        )
+    # `<envelope>.payload.ladder[n]` -> the envelope's own path -> its directory.
+    source_file = _source_file(item_path.split(".payload", 1)[0])
+    resolved = (Path(source_file).parent / relative).resolve()
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        _fail(
+            f"{item_path}.card.path",
+            f"the archived card is not there to recount: {exc}",
+        )
+    recount = t4_dom.recount_card(raw, t4_dom.BRANCH_TEAM)
+    if recount["sha256"] != digest:
+        _fail(
+            f"{item_path}.card.sha256",
+            f"{relative} hashes to {recount['sha256']}, not the pinned {digest}",
+        )
+    if not recount["readable"]:
+        _fail(f"{item_path}.card.path", f"{relative} is not a readable KTX card")
+    for field, value in (
+        ("shots_fired", recount["shots"]),
+        ("teamkills", recount["teamkills"]),
+    ):
+        if sources.get(field) != t4_dom.SOURCE_KTX_CARD:
+            continue
+        if measured.get(field) != value:
+            _fail(
+                f"{item_path}.measured.{field}",
+                f"expected {value} from {relative} for team"
+                f" {t4_dom.BRANCH_TEAM!r}, not {measured.get(field)!r}",
+            )
+    if sources.get("teamkills") == t4_dom.SOURCE_KTX_CARD and (
+        measured.get("kills") != recount["kills"]
+    ):
+        _fail(
+            f"{item_path}.measured.kills",
+            f"expected {recount['kills']} from {relative} for team"
+            f" {t4_dom.BRANCH_TEAM!r}, not {measured.get('kills')!r}",
+        )
+
+
+def _t4_ladder(data: dict[str, Any], path: str, schema: int = 0) -> int:
     """The rungs, and the highest *won* skill they add up to.
 
     Shared by both vocabularies: the ladder's own rules (the fixed skills, the
@@ -1019,12 +1110,17 @@ def _t4_ladder(data: dict[str, Any], path: str) -> int:
     stopped = False
     for index, value in enumerate(ladder):
         item_path = f"{path}.ladder[{index}]"
-        item = _fields(
-            value,
-            item_path,
-            {"skill", "frags_for", "frags_against", "win", "mvd"},
-            {"draw", "scoreboard", "measured", "sources"},
-        )
+        # From contract 3 a rung has to say where its numbers came from.
+        # Optionality was the hole: a closed vocabulary only helps when the
+        # field is actually there (Sol, 2026-08-24).
+        binds_sources = schema >= t4_dom.T4_SCHEMA_CARD_REQUIRED
+        required_rung = {"skill", "frags_for", "frags_against", "win", "mvd"}
+        optional_rung = {"draw", "scoreboard", "measured", "card"}
+        if binds_sources:
+            required_rung = required_rung | {"sources"}
+        else:
+            optional_rung = optional_rung | {"sources"}
+        item = _fields(value, item_path, required_rung, optional_rung)
         if "measured" in item:
             measured = _fields(
                 item["measured"],
@@ -1104,6 +1200,7 @@ def _t4_ladder(data: dict[str, Any], path: str) -> int:
                     "names the match card as the source, but this rung's card"
                     " derives nothing",
                 )
+            _t4_ktx_card(item, item_path, measured, sources, schema)
         if index >= len(expected_skills) or item["skill"] != expected_skills[index]:
             _fail(f"{item_path}.skill", "ladder must use 10,12,14,16,18,20")
         if stopped:
@@ -1227,9 +1324,14 @@ def _t4_sampling(value: Any, path: str, measurements: dict[str, Any]) -> None:
 
 
 def _t4_v2(data: dict[str, Any], path: str, capabilities: dict[str, Any] | None) -> None:
-    if data["t4_schema"] != t4_dom.T4_SCHEMA:
-        _fail(f"{path}.t4_schema", f"expected {t4_dom.T4_SCHEMA}")
-    reached = _t4_ladder(data, path)
+    schema = data["t4_schema"]
+    if schema not in t4_dom.SUPPORTED_T4_SCHEMAS:
+        _fail(
+            f"{path}.t4_schema",
+            "expected one of "
+            + ", ".join(str(value) for value in t4_dom.SUPPORTED_T4_SCHEMAS),
+        )
+    reached = _t4_ladder(data, path, schema=data["t4_schema"])
     limits = _dict(data["thresholds"], f"{path}.thresholds")
     canonical = t4_dom.thresholds()
     if limits != canonical:

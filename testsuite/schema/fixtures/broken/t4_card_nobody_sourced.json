@@ -78,7 +78,7 @@
      "teamkills": 8,
      "kills": 45,
      "still_s_per_bot": 18.4,
-     "still_gap_max_s": 4.2,
+     "still_gap_max_s": 1.8,
      "item_takes": 27,
      "items_poll_gap_max_s": 1.2,
      "items_tracked": 42
@@ -86,6 +86,10 @@
     "sources": {
      "shots_fired": "mvd/ammo",
      "teamkills": "qw-analyze/card"
+    },
+    "card": {
+     "path": "demos/4on4_frog[dm3]20260824-1642.txt",
+     "sha256": "b54bdbf1a0a5acbd167aaf5abbe00fd5436f069ae5bde4f5f79a42ad7ed9513c"
     }
    }
   ],
@@ -102,7 +106,7 @@
   },
   "sampling": {
    "still_interval_s": 1.0,
-   "still_gap_max_s": 4.2,
+   "still_gap_max_s": 1.8,
    "items_poll_s": 1.0,
    "items_poll_gap_max_s": 1.2
   },

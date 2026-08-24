@@ -1,0 +1,94 @@
+{
+ "schema": "rtx-testflow/1",
+ "run_id": "t4-20260824T214502Z-20f9498a",
+ "tier": "T4",
+ "status": "complete",
+ "started_utc": "2026-08-24T21:45:02Z",
+ "ended_utc": "2026-08-24T21:45:02Z",
+ "map": "dm3",
+ "build": {
+  "branch": "detached",
+  "commit": "20f9498a3388342378818407c700faa6b458ba6a",
+  "digest_md5": "b60b8ffb",
+  "dirty": false
+ },
+ "config_digest": "sha256:821233049862ebbd4dcf37dfdd82254612c9f2b34fbf2c8e3f7724e95344d4dd",
+ "runner_version": "0.1.0",
+ "provenance": "derived",
+ "capabilities": {
+  "telemetry": true,
+  "unavailable": [
+   "t4:still_s"
+  ],
+  "note": "t4:still_s is unavailable, not 0.0: the side channel was sampled at 1.0 s while it only accumulated stretches shorter than 0.6 s, so the instrument measured nothing at all. The original envelope reported the best possible value where the truth was unknown."
+ },
+ "payload": {
+  "t4_schema": 2,
+  "duration_s_per_match": 300,
+  "ladder": [
+   {
+    "skill": 10,
+    "frags_for": -10,
+    "frags_against": 81,
+    "win": false,
+    "mvd": "4on4_frog[dm3]20260824-1642.mvd",
+    "scoreboard": null,
+    "sources": {
+     "shots_fired": "ktx/demoinfo",
+     "teamkills": "ktx/demoinfo"
+    },
+    "measured": {
+     "shots_fired": 0,
+     "teamkills": 10,
+     "kills": 1,
+     "still_s_per_bot": null,
+     "still_gap_max_s": 1.04,
+     "item_takes": 211,
+     "items_poll_gap_max_s": 1.04,
+     "items_tracked": 51,
+     "demo_flush_s": null
+    }
+   }
+  ],
+  "reached": 0,
+  "skill_verified_by": "client console skill echo (KTX addbot)",
+  "verdict": "FAIL",
+  "measurements": {
+   "shots_fired": 0,
+   "teamkills": 10,
+   "kills_total": 1,
+   "still_s_per_bot_max": null,
+   "item_pickups": 211
+  },
+  "sampling": {
+   "still_interval_s": 1.0,
+   "still_gap_max_s": 1.04,
+   "items_poll_s": 1.0,
+   "items_poll_gap_max_s": 1.04
+  },
+  "thresholds": {
+   "teamkill_share_max": 0.2,
+   "still_s_per_bot_max": 75.0,
+   "item_pickups_min": 1,
+   "still_sample_interval_s": 1.0,
+   "still_sample_gap_max_s": 3.0,
+   "items_poll_s": 1.0,
+   "items_poll_gap_max_s": 3.0
+  },
+  "dom": {
+   "failed_gates": [
+    "a:shots_fired",
+    "b:teamkill_share"
+   ],
+   "missing": [
+    "t4:still_s"
+   ],
+   "reason": "fällda mätta grindar: a:shots_fired, b:teamkill_share — omdömning offline av t4-20260824T164200Z-20f9498a (match 2026-08-24T16:42:00Z-16:47:54Z) ur 4on4_frog[dm3]20260824-1642.txt sha256 b54bdbf1a0a5acbd167aaf5abbe00fd5436f069ae5bde4f5f79a42ad7ed9513c. Inga nya mätningar.",
+   "labels": [
+    "item-pickups-proxy",
+    "readjudicated-from:t4-20260824T164200Z-20f9498a"
+   ]
+  },
+  "cross_alarm": "t3-20260824T163514Z-20f9498a"
+ }
+}

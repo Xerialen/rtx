@@ -689,6 +689,89 @@ def _t4_units() -> list[str]:
         (None, None),
     )
 
+    # --- Rond 3, Sol 2026-08-24 ------------------------------------------
+    # A KTX-sourced number has to be recountable out of the archived bytes,
+    # and the path an envelope may name has to be a path it cannot abuse.
+    card_bytes = (
+        card_path.parent.parent / "valid" / "demos"
+        / "4on4_frog[dm3]20260824-1642.txt"
+    ).read_bytes()
+    recount = t4_dom.recount_card(card_bytes, t4_dom.BRANCH_TEAM)
+    check(
+        "card.sha256",
+        recount["sha256"],
+        "b54bdbf1a0a5acbd167aaf5abbe00fd5436f069ae5bde4f5f79a42ad7ed9513c",
+    )
+    check("card.recount_shots", recount["shots"], 0)
+    check("card.recount_teamkills", recount["teamkills"], 10)
+    check("card.recount_kills", recount["kills"], 1)
+    check("card.readable", recount["readable"], True)
+    # One byte different is a different card, and it says so before it says
+    # anything else.
+    tampered = t4_dom.recount_card(card_bytes + b"\n", t4_dom.BRANCH_TEAM)
+    check("card.one_byte_changes_the_digest", tampered["sha256"] != recount["sha256"], True)
+    unreadable = t4_dom.recount_card(b"not a card at all", t4_dom.BRANCH_TEAM)
+    check("card.unreadable", unreadable["readable"], False)
+    check("card.unreadable_counts", unreadable["teamkills"], None)
+    # The path guard. The validator opens whatever the envelope names, so an
+    # envelope must not be able to steer it out of its own directory.
+    check("card.path_ok", t4_dom.safe_relative_card_path("demos/x.txt"), "demos/x.txt")
+    for bad in (
+        "/etc/passwd",
+        "../cards/x.txt",
+        "demos/../../etc/passwd",
+        "demos\\x.txt",
+        "C:/x.txt",
+        "",
+        "   ",
+        " demos/x.txt",
+        "demos//x.txt",
+        "./x.txt",
+        None,
+        17,
+    ):
+        check(f"card.path_refused[{bad!r}]", t4_dom.safe_relative_card_path(bad), None)
+    # The runner must not write a KTX number whose card it could not archive.
+    reading = {
+        "shots": 0,
+        "shots_source": t4_dom.SOURCE_KTX_CARD,
+        "teamkills": 10,
+        "kills": 1,
+        "teamkills_source": t4_dom.SOURCE_KTX_CARD,
+    }
+    kept = t4_dom.drop_unprovenanced(reading, {"path": "demos/x", "sha256": "a" * 64})
+    check("archive.card_kept", kept, reading)
+    dropped = t4_dom.drop_unprovenanced(reading, None)
+    check(
+        "archive.no_card_no_number",
+        dropped,
+        {
+            "shots": None,
+            "shots_source": None,
+            "teamkills": None,
+            "kills": None,
+            "teamkills_source": None,
+        },
+    )
+    # A reading from the MVD is untouched: its provenance is not the card.
+    mvd_reading = {
+        "shots": 402,
+        "shots_source": t4_dom.SOURCE_MVD_AMMO,
+        "teamkills": 8,
+        "kills": 45,
+        "teamkills_source": t4_dom.SOURCE_QW_CARD,
+    }
+    check("archive.other_sources_survive", t4_dom.drop_unprovenanced(mvd_reading, None), mvd_reading)
+
+    # The contract version is the compatibility mechanism, not optionality.
+    check("card.contract_bumped", t4_dom.T4_SCHEMA, 3)
+    check("card.old_contract_still_supported", 2 in t4_dom.SUPPORTED_T4_SCHEMAS, True)
+    check(
+        "card.required_from",
+        t4_dom.T4_SCHEMA_CARD_REQUIRED <= t4_dom.T4_SCHEMA,
+        True,
+    )
+
     # Punkt 3: the stillness instrument. A bot that never moved, sampled at the
     # spec's own 1.0 s, over a whole 300 s match.
     class FakeControl:

@@ -24,9 +24,26 @@ rule the bench already lives by (`docs/SPEC-telemetry-availability.md`).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
-T4_SCHEMA = 2
+#: The measurement contract a new run writes.
+#:
+#: 2 -> the five-value verdict, per-rung `measured`, optional `sources`.
+#: 3 -> `sources` is mandatory, and a measurement taken from KTX's own card
+#:      must name that card by path and sha256 so the validator can resolve it
+#:      and recount the number out of the bytes (Sol, 2026-08-24: a claim of
+#:      "measured" has to be auditable, not merely well-formed).
+#:
+#: The bump is the backwards-compatibility mechanism. Envelopes written under
+#: 2 keep being judged by 2's rules forever — the evening of 2026-08-24 stays
+#: valid, original and replacement both — and nothing is kept lenient for new
+#: runs in order to spare old ones.
+T4_SCHEMA = 3
+SUPPORTED_T4_SCHEMAS = (2, 3)
+#: From this contract version on, a KTX-sourced number must carry its card.
+T4_SCHEMA_CARD_REQUIRED = 3
 
 VERDICTS = ("VINST", "OK", "FAIL", "OMÄTT", "OAVGJORD")
 #: The verdicts a reader may treat as "the tier is green".
@@ -359,6 +376,76 @@ def ktx_teamkills(document: Any, team: str) -> tuple[int | None, int | None]:
         teamkills += row_tk
         kills += row_kills
     return teamkills, kills
+
+
+def safe_relative_card_path(value: Any) -> str | None:
+    """A card path an envelope may name, or None if it may not name it.
+
+    The validator opens whatever this points at, so an envelope must not be
+    able to steer it: no absolute paths, no drive letters, no `..`, no
+    backslashes, nothing empty. The card is archived beside the envelope, so a
+    plain relative path under the envelope's own directory is all that is ever
+    needed.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    if value != value.strip():
+        return None
+    if "\\" in value or "\x00" in value:
+        return None
+    if value.startswith("/") or (len(value) > 1 and value[1] == ":"):
+        return None
+    parts = value.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return None
+    return value
+
+
+def recount_card(raw: bytes, team: str) -> dict[str, Any]:
+    """Everything a KTX card can say about one team, straight from its bytes.
+
+    Takes bytes rather than a parsed document on purpose: the sha256 the
+    envelope pins is a hash of bytes, so the recount and the hash have to be
+    about the same object. A card that will not parse is not a card.
+    """
+    digest = hashlib.sha256(raw).hexdigest()
+    try:
+        document = json.loads(raw.decode("utf-8", errors="replace"))
+    except ValueError:
+        return {"sha256": digest, "readable": False, "shots": None, "teamkills": None,
+                "kills": None}
+    teamkills, kills = ktx_teamkills(document, team)
+    return {
+        "sha256": digest,
+        "readable": isinstance(document, dict),
+        "shots": ktx_shots(document, team),
+        "teamkills": teamkills,
+        "kills": kills,
+    }
+
+
+def drop_unprovenanced(
+    reading: dict[str, Any], card: Any
+) -> dict[str, Any]:
+    """Blank every KTX-sourced number when the card could not be archived.
+
+    A number whose card is not beside the envelope cannot be recounted, and
+    from contract 3 the validator refuses it. The runner must not write it
+    either: unavailable beats a figure nobody can check. Same rule as
+    everywhere else in this module, applied to provenance rather than to the
+    measurement itself.
+    """
+    out = dict(reading)
+    if card is not None:
+        return out
+    if out.get("shots_source") == SOURCE_KTX_CARD:
+        out["shots"] = None
+        out["shots_source"] = None
+    if out.get("teamkills_source") == SOURCE_KTX_CARD:
+        out["teamkills"] = None
+        out["kills"] = None
+        out["teamkills_source"] = None
+    return out
 
 
 def pick_teamkills(

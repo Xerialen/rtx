@@ -24,6 +24,55 @@
     "frags_against": 52,
     "win": false,
     "mvd": "demos/10.mvd",
+    "scoreboard": {
+     "teams": [
+      {
+       "name": "brch",
+       "frags": 37,
+       "kills": 45,
+       "suicides": 0
+      },
+      {
+       "name": "ref",
+       "frags": 37
+      }
+     ],
+     "players": [
+      {
+       "name": "bot.brch1",
+       "team": "brch",
+       "frags": 12,
+       "deaths": 9,
+       "kills": 12,
+       "tk": 0,
+       "dmg_given": 3120,
+       "dmg_taken": 2890,
+       "speed_max": 512.4,
+       "speed_avg": 246.1,
+       "spree_max": 3,
+       "link": "/demo-player/?demoUrl=%2Fdemos%2Fm.mvd&map=dm3&duration=300&from=0.0&track=1"
+      },
+      {
+       "name": "bot.ref1",
+       "team": "ref",
+       "frags": 11,
+       "deaths": 10,
+       "kills": 11,
+       "tk": 1,
+       "dmg_given": 2980,
+       "dmg_taken": 3010,
+       "speed_max": 498.2,
+       "speed_avg": 241.7,
+       "spree_max": 2,
+       "link": null
+      }
+     ],
+     "map": "The Abandoned Base",
+     "duration_s": 300,
+     "demo": "m.mvd",
+     "source": "qw-analyze/demoinfo",
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Fm.mvd&map=dm3&duration=300&from=0.0"
+    },
     "measured": {
      "shots_fired": 402,
      "teamkills": 8,
@@ -36,7 +85,7 @@
     },
     "sources": {
      "shots_fired": "mvd/ammo",
-     "teamkills": "ktx/demoinfo"
+     "teamkills": "qw-analyze/card"
     }
    }
   ],

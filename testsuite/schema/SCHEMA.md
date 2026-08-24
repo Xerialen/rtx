@@ -374,6 +374,21 @@ stops before T1 when T0 import is missing or FAIL.
   (d) `item_pickups == 0` over the whole ladder. The thresholds are calibrated
   against the existing corpus, copied into the envelope, and pinned: a run that
   restates its own gate is refused.
+- **`t4_schema` is the measurement contract, and the bump is the compatibility
+  mechanism.** `2` is the five-value verdict with optional `sources`; `3` makes
+  `sources` mandatory and binds every KTX-sourced number to its card. Envelopes
+  written under 2 keep being judged by 2's rules — nothing is kept lenient for
+  new runs in order to spare old ones.
+- **From contract 3, a KTX-sourced number carries its card.** The rung's `card`
+  block is `{"path": "demos/<file>", "sha256": "<64 hex>"}`, the path is
+  relative to the envelope's own directory and may not leave it (no absolute
+  path, no `..`, no backslash). The validator resolves it, hashes the bytes
+  against the pin, and **recounts `shots_fired`/`teamkills`/`kills` out of those
+  bytes**; a card that cannot be found, does not hash, does not parse, or does
+  not produce the reported number fells the envelope. A rung that carries a card
+  no measurement sourced is refused too. The runner archives the card into
+  `evidence/demos/` itself, and drops any KTX reading it could not archive
+  rather than reporting a number with no provenance.
 - **Two sources, in order (addendum to v6 §3, 2026-08-24).** `shots_fired` and
   `teamkills` come first from the MVD (the ammo signal and the qw-analyze card)
   and, when the MVD is missing or empty, from **KTX's own demoinfo card** — the

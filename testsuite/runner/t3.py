@@ -452,6 +452,29 @@ def _combat_lock(
     }
 
 
+def newest_demoinfo(demo_dir: Path | None, started_wallclock: float) -> Path | None:
+    """The KTX card file this match just produced, or None.
+
+    Public because T4 needs the *path* as well as the contents: a measurement
+    read out of this card is only checkable if the card it came from is
+    archived beside the envelope and named there (Sol, 2026-08-24). One
+    chooser, so the number and its provenance can never point at two files.
+    """
+    if demo_dir is None:
+        return None
+    try:
+        candidates = [
+            path
+            for path in demo_dir.glob("*.txt")
+            if path.stat().st_mtime >= started_wallclock - 5
+        ]
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
 def _read_demoinfo_document(
     demo_dir: Path | None, started_wallclock: float
 ) -> dict[str, Any] | None:
@@ -463,16 +486,9 @@ def _read_demoinfo_document(
     when the MVD is missing or empty (spec addendum to v6 §3). Both callers
     must see the same file, so the choosing happens once, here.
     """
-    if demo_dir is None:
+    newest = newest_demoinfo(demo_dir, started_wallclock)
+    if newest is None:
         return None
-    candidates = [
-        path
-        for path in demo_dir.glob("*.txt")
-        if path.stat().st_mtime >= started_wallclock - 5
-    ]
-    if not candidates:
-        return None
-    newest = max(candidates, key=lambda path: path.stat().st_mtime)
     import json
 
     try:
