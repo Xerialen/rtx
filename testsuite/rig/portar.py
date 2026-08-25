@@ -22,17 +22,26 @@ RUBRIK = ["port", "klass", "roll", "grupp", "ägare / belägg"]
 
 #: Slutna ordförråd. En fri sträng hade låtit den som skriver tabellen
 #: uppfinna en klass som ingen grind känner igen.
-KLASSER = frozenset({"forbjuden", "orord", "deploy", "lab", "ra-kontroll"})
+KLASSER = frozenset(
+    {"forbjuden", "orord", "deploy", "lab", "ra-kontroll", "testsvit", "rigg"}
+)
 ROLLER = frozenset({"spel", "ctl", "qtv"})
 
 #: Vad ett skript får göra med en port av varje klass. Mappningen står i
 #: kod och inte i tabellen, så att tabellen inte kan säga emot sig själv.
+#:
+#: `egen` betyder «tillåten bara för den som porten tillhör» — testsvitens
+#: runner för `testsvit`, den namngivna riggens egna skript för `rigg`. Den
+#: som inte säger vem den är får nej. Det är därför `egen` inte är en
+#: mildare `tillat` utan en strängare `order`: förvalet är vägran.
 ATKOMST = {
     "forbjuden": "neka",
     "orord": "neka",
     "deploy": "neka",
     "lab": "tillat",
     "ra-kontroll": "order",
+    "testsvit": "egen",
+    "rigg": "egen",
 }
 assert set(ATKOMST) == set(KLASSER)
 
@@ -135,12 +144,26 @@ def trior(tabell: dict[int, Rad], klass: str = "lab") -> dict[str, dict[str, int
     return {g: v for g, v in per_grupp.items() if set(v) == ROLLER}
 
 
-def krav_tillaten(tabell: dict[int, Rad], port: int, vad: str) -> Rad:
+def krav_tillaten(
+    tabell: dict[int, Rad], port: int, vad: str, *, som: str | None = None
+) -> Rad:
     """Vägrar om porten inte får resas. Okänd port vägras också.
 
     En port som inte står i tabellen är inte "ledig" — den är oredovisad.
     Det är precis så de pid-ägda qtv-portarna kunde se lediga ut för varje
     säte som läste portläget utan rot: porten syntes, ägaren inte.
+
+    `som` är den `grupp` anroparen påstår sig vara. Den behövs bara för
+    klasser med åtkomsten `egen` (`testsvit`, `rigg`), och måste då stämma
+    **exakt** med radens `grupp`.
+
+    Exakt, inte prefix. Ett prefixmatchande `som` hade låtit en rigg som
+    heter `navdok` ta `navdok-1`:s portar, och den sortens nästan-träff är
+    hur fel rigg reses på rätt portar. Att kräva exakt gruppnamn betyder
+    dessutom att anroparen måste ha läst radens `grupp` i valvet — vilket
+    är själva beteendet tabellen finns för.
+
+    Förvalet `None` betyder «jag säger inte vem jag är» och ger nej.
     """
     rad = tabell.get(port)
     if rad is None:
@@ -150,6 +173,15 @@ def krav_tillaten(tabell: dict[int, Rad], port: int, vad: str) -> Rad:
         )
     if rad.atkomst == "tillat":
         return rad
+    if rad.atkomst == "egen":
+        if som is not None and som == rad.grupp:
+            return rad
+        raise Portfel(
+            "port %d (%s) är %s och tillhör %r — bara den ägarens egna skript "
+            "får resa den, och bara genom att uppge sin grupp (som=%r). "
+            "Anroparen uppgav %r. Belägg: %s"
+            % (port, vad, rad.klass, rad.grupp, rad.grupp, som, rad.belagg)
+        )
     if rad.atkomst == "order":
         raise Portfel(
             "port %d (%s) är %s och rörs endast på uttrycklig order: %s"
@@ -170,6 +202,11 @@ def main(argv: list[str] | None = None) -> int:
         help="skriv ut SPEL/CTL/QTV för en lab-grupp, för `eval` i ett skript",
     )
     ap.add_argument("--port", type=int, action="append", help="pröva en port; kan upprepas")
+    ap.add_argument(
+        "--som",
+        help="grupp anroparen är, för klasser med åtkomsten `egen` "
+        "(`testsvit`, `rigg`). Utelämnad = vägran, aldrig en gissning",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -196,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     rc = 0
     for port in args.port or []:
         try:
-            rad = krav_tillaten(tabell, port, "prövad")
+            rad = krav_tillaten(tabell, port, "prövad", som=args.som)
         except Portfel as exc:
             print("NEKAD %d: %s" % (port, exc))
             rc = 2
