@@ -21,6 +21,16 @@ jobs:
         run: cargo test --locked
       - name: Test (network client)
         run: cargo test --locked -p rtx-game --features netclient
+      # The root manifest's `default-members` deliberately leaves rtx-mcp, rtx-nav-view and
+      # rtx-client out, to keep the rmcp/tokio and wgpu/winit trees off the default build — so the
+      # two lines above compile 7 of the 10 crates and neither `cargo test --locked` nor the release
+      # builds below ever look at the other three. A field added to a shared rtx-ctlproto type can
+      # therefore sit broken in rtx-mcp with every check green; that is not hypothetical, it is what
+      # StatusResp's recost fields did until T0 tripped over it. `--all-targets` is the load-bearing
+      # half: the gap was in a test fixture, which a plain `cargo check --workspace` would still miss.
+      # `check`, not `build`: no linking, no new test surface, and it catches exactly this class.
+      - name: Check (whole workspace, all targets)
+        run: cargo check --workspace --all-targets --locked
 
   build:
     name: build (${{ matrix.target }})
