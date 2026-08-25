@@ -31,7 +31,7 @@ use rtx_proto::svc::{ClientData, PlayerInfo, SvcEvent, TempEntity, TempEntityKin
 
 use crate::bot::model::PickupKind;
 use crate::client::movement::AIR_TIME;
-use crate::defs::{Bits, DeadFlag, Effects, Flags, Items, MoveType, Solid, Weapon, VEC_VIEW_OFS};
+use crate::defs::{Bits, DeadFlag, Effects, Flags, Items, MoveType, Solid, TakeDamage, Weapon, VEC_VIEW_OFS};
 use crate::items::{ARMOR_GREEN, ARMOR_RED, ARMOR_YELLOW};
 // The rules a projectile obeys are the server's, and these are the server's own names for them —
 // imported rather than restated, so "the same speed the server fires at" is a fact the compiler
@@ -788,6 +788,22 @@ impl Mirror {
         ent.classname = Some("player".into());
         ent.netname = info.get("name").map(Box::from);
         ent.mode_p.team = team_id(info.get("team").unwrap_or(""));
+        // A mirrored player is a body that can be shot — and nothing on the wire ever says so.
+        // `takedamage` isn't a networked field, so it stayed at the default `No`, and the mode's
+        // `takedamage != No` filter read every stranger as unhittable: `nearest_enemy` returned
+        // `None`, no bot ever got a `Fight` intent, and no client bot fired a shot all night.
+        // Measured before this line existed: `af::ENEMY` set in 0 of 96 audit frames.
+        //
+        // `Aim` rather than `Yes` because that is the server's own value for a spawned player
+        // (`PutClientInServer`), so this mirrors the state instead of inventing a permissive one.
+        //
+        // Placement carries as much weight as the value. This sits *after* the `*spectator` gate
+        // above, which returns — so a spectator can never reach it. Accepted residual: someone the
+        // server has made untouchable at intermission or by lag-invincibility still reads as
+        // hittable here, because nothing on the wire carries that. The cost is cosmetic, bots
+        // aiming at someone who cannot be hurt. Death is unaffected — `is_alive()` gates it
+        // separately, on health and `deadflag`.
+        ent.v.takedamage = TakeDamage::Aim;
     }
 
     /// This bot's body and where it looks from, for "would anyone have seen it".
@@ -2275,6 +2291,53 @@ mod tests {
             },
         );
         assert!(!g.entities[slot_to_ent(4)].is_player());
+    }
+
+    /// The mode picks enemies with `takedamage != No`, so a mirrored player who never gets the
+    /// field is invisible to it however alive and hostile they are. This is the whole of the
+    /// pacifist bug, in one assertion.
+    #[test]
+    fn a_mirrored_player_is_something_the_mode_can_shoot_at() {
+        let mut g = game();
+        let mut m = Solo::at(0);
+
+        m.apply(
+            &mut g,
+            &SvcEvent::UpdateUserinfo {
+                player: 4,
+                userid: 4,
+                userinfo: "\\name\\rival\\team\\red".to_string(),
+            },
+        );
+
+        let ent = &g.entities[slot_to_ent(4)];
+        assert!(ent.is_player());
+        assert_ne!(
+            ent.v.takedamage,
+            TakeDamage::No,
+            "mode/team.rs:731 filters on this and would drop the player"
+        );
+    }
+
+    /// The spectator gate returns before the body is written, so a watcher cannot pick up
+    /// `takedamage` on the way past. Placement, asserted — the value is only half the fix.
+    #[test]
+    fn a_spectator_never_becomes_a_target() {
+        let mut g = game();
+        let mut m = Solo::at(0);
+
+        m.apply(
+            &mut g,
+            &SvcEvent::UpdateUserinfo {
+                player: 4,
+                userid: 4,
+                userinfo: "\\name\\watcher\\*spectator\\1".to_string(),
+            },
+        );
+
+        let ent = &g.entities[slot_to_ent(4)];
+        assert!(!ent.is_player());
+        assert_eq!(ent.v.takedamage, TakeDamage::No);
     }
 
     /// Teams are names on the wire and numbers in the game. Any stable mapping does, provided every
