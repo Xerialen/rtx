@@ -2,3 +2,10 @@ config.toml
 config-*.toml
 evidence/
 __pycache__/
+# Tillstandsmarkor for rig/mutationsprov.py medan en fil ar muterad. Finns
+# bara mellan mutation och aterstallning — ligger den kvar ar det beviset pa
+# ett avbrott, och provet vagrar starta tills nagon rojt bade filen och
+# markoren. Syskonet tools/mutationsprov_dom.PAGAR har en egen .gitignore i
+# sin katalog; raden nedan star har i stallet for i en ny rig/.gitignore,
+# eftersom agarregeln inte tillater nya filer i den har andringen.
+rig/mutationsprov.PAGAR

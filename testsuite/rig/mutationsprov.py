@@ -14,6 +14,17 @@ ett tidigare steg redan garanterade dess villkor.
 
 Skriver i arbetstradet under korningen och lagger tillbaka originalet i
 ett `finally`. Kor det inte mot ett trad du har ocommittade andringar i.
+
+**Avbrott ar farligt och darfor bevakat.** Ett `finally` overlever inte
+SIGKILL, och en avbruten korning lamnar da en AVVAPNAD grind (`if False:`)
+kvar i arbetstradet — den ser ut som kod, och den foljer med in i en commit
+om ingen tittar. Det hande i riggens eget prov 2026-08-25: ett bakgrundsjobb
+stoppades och `portar.py` bar `if klass not in KLASSER:` -> `if False:`.
+Darfor: en pagaende korning skriver `PAGAR`-filen bredvid sig med filen den
+just nu har muterat, och nasta korning VAGRAR starta sa lange den ligger
+kvar. Ligger den dar: stall tillbaka den namngivna filen
+(`git checkout -- <fil>`) och ta bort `PAGAR`. Samma vakt, samma ordning och
+samma konvention som `testsuite/tools/mutationsprov_dom.py`.
 """
 import re
 import subprocess
@@ -21,6 +32,11 @@ import sys
 from pathlib import Path
 
 RIG = Path(__file__).resolve().parent
+
+#: Skrivs medan en fil ar muterad, tas bort nar den ar tillbakalagd. En
+#: kvarlamnad fil ar beviset pa att arbetstradet INTE ar rort tillbaka.
+#: Ignorerad via `testsuite/.gitignore` — den far aldrig committas.
+PAGAR = RIG / "mutationsprov.PAGAR"
 
 #: Ankare som anvands av flera mutationer. De star som konstanter for att en
 #: felskriven kopia av en lang rad annars blir en tyst `HOPPAR` i stallet for
@@ -120,6 +136,15 @@ def kor_tester():
 
 
 def main():
+    if PAGAR.exists():
+        # Texten sager INNEHALLA dar tools-varianten sager "kan bara" — det
+        # ar QA:s avvikelse A6 (2026-08-25), ett tappat "bära" som en
+        # operator laser under tidspress. Den kopieras inte hit.
+        print("VAGRAR STARTA — en tidigare korning avbrots och arbetstradet")
+        print("kan innehalla en avvapnad grind. Aterstall filen nedan och")
+        print("ta bort %s:" % PAGAR)
+        print(PAGAR.read_text(encoding="utf-8").strip())
+        return 2
     rc, fallna = kor_tester()
     if rc != 0:
         print("BASLINJEN AR INTE GRON — mutationsprov meningslost")
@@ -146,11 +171,19 @@ def main():
         muterad = orig
         for g, n in par:
             muterad = muterad.replace(g, n)
+        # PAGAR skrivs FORE mutationen och tas bort EFTER aterstallningen, sa
+        # fonstret dar tradet ar muterat utan markor ar tomt. Ett avbrott kan
+        # da bara ge falsklarm, aldrig tyst skada.
+        PAGAR.write_text(
+            "muterad fil: %s\nankare: %s\n" % (p, etikett),
+            encoding="utf-8",
+        )
         p.write_text(muterad, encoding="utf-8")
         try:
             _, f = kor_tester()
         finally:
             p.write_text(orig, encoding="utf-8")
+            PAGAR.unlink(missing_ok=True)
 
         if not f:
             print("OFANGAD  %-12s %-45s  INGEN test foll" % (fil, etikett))

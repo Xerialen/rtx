@@ -207,10 +207,20 @@ def failed_gates(measured: Any, limits: Any = None) -> list[str]:
     The ratio is recomputed from the whole counters rather than read off the
     envelope's rounded `team_share`, so the seam is on the real number.
 
-    The comparison is a float division against the literal, not a cross
-    multiplication: `0.20 * 1000` is `200.00000000000003` in double precision
-    and would make the seam a hair kinder than the one written in the spec,
-    while `200 / 1000` is exactly the double the literal `0.20` names.
+    The comparison is a float division against the literal — `(team + own) /
+    total > ceiling` — because that is the ratio the spec names, read straight
+    off the whole counters. It is *not* a guard against a cross multiplication
+    that would land elsewhere: at the seam the two forms agree. `0.20 * 1000`
+    is exactly `200.0`, and across every total in 1..200000 that can express
+    exactly 20 % there is no case where `t > 0.20 * N` differs from
+    `t / N > 0.20`.
+
+    An earlier revision of this docstring claimed `0.20 * 1000` rounds to
+    `200.00000000000003` and that the cross multiplication would therefore be
+    "a hair kinder". That was false; QA disproved it exhaustively on
+    2026-08-25 (deviation A1) and the motivation is corrected here. No number
+    and no comparison changed — the seam has always been strict `>`, so an
+    exact 20 % passes.
     """
     block = measured if isinstance(measured, dict) else {}
     limits = limits if isinstance(limits, dict) else thresholds()
