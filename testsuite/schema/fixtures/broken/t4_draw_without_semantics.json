@@ -93,7 +93,7 @@
   "skill_verified_by": "client console skill echo (KTX addbot)",
   "t4_schema": 3,
   "reached": 0,
-  "verdict": "OAVGJORD",
+  "verdict": "OK",
   "measurements": {
    "shots_fired": 402,
    "teamkills": 8,
@@ -119,7 +119,7 @@
   "dom": {
    "failed_gates": [],
    "missing": [],
-   "reason": "stegen slutade oavgjort; alla fyra fält mätta och gröna",
+   "reason": "spelad stege som slutade oavgjort; alla fyra fält mätta och gröna",
    "labels": [
     "item-pickups-proxy"
    ]

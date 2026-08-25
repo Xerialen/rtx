@@ -10,6 +10,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from . import t4_dom
+from . import team_damage
 from .scenario import ScenarioError, validate_scenario
 
 
@@ -840,20 +841,32 @@ def _t2(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
 
 
 def _t3(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
-    data = _fields(
-        payload,
-        path,
-        {
-            "duration_s",
-            "sides",
-            "result",
-            "readiness",
-            "scoreboard",
-            "combat_lock",
-            "replicate_of",
-            "verdict",
-        },
-    )
+    """T3 in two contracts: with the K2 team-damage gate, and from before it.
+
+    `t3_schema: 1` is the live contract and brings `team_damage` with it (v7
+    §B.1). An envelope without the marker is from before the gate and is judged
+    exactly as it was, so no archived T3 evidence changes verdict.
+
+    **Bokfört, ej stängd:** a *new* run that omits both fields still validates
+    as pre-K2. T4 closed the same hole with a sha-pinned inventory of the 27
+    envelopes that existed at the change; T3 has some hundred and the order did
+    not ask for one. `t3.py` always writes both, so only a hand-written envelope
+    can take the gap — it is written down rather than dressed up.
+    """
+    live = isinstance(payload, dict) and "t3_schema" in payload
+    required = {
+        "duration_s",
+        "sides",
+        "result",
+        "readiness",
+        "scoreboard",
+        "combat_lock",
+        "replicate_of",
+        "verdict",
+    }
+    if live:
+        required = required | {"t3_schema", "team_damage"}
+    data = _fields(payload, path, required)
     _int(data["duration_s"], f"{path}.duration_s", 1)
     sides = _list(data["sides"], f"{path}.sides")
     if len(sides) != 2:
@@ -913,9 +926,11 @@ def _t3(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
         _str(data["replicate_of"], f"{path}.replicate_of")
     if data["verdict"] != "PIPELINE-OK":
         _fail(f"{path}.verdict", "single-match T3 must be 'PIPELINE-OK'")
+    if live:
+        _t3_team_damage(data, path, capabilities)
 
 
-#: The inventory of every T4 envelope that existed when the five-value verdict
+#: The inventory of every T4 envelope that existed when the new verdict
 #: was introduced, and the sha256 of that inventory. The file is pinned here
 #: rather than merely read: an inventory anybody can extend is not a closed
 #: list, and `COMPLETE` is only still accepted because the list is closed.
@@ -1004,6 +1019,205 @@ def _t4_legacy_grandfathered(path: str) -> None:
         )
 
 
+def _archived_card(
+    card_value: Any, card_path: str, any_path_in_envelope: str
+) -> tuple[bytes, str, str]:
+    """`(bytes, relative path, pinned digest)` for a card an envelope names.
+
+    Shared by T4's per-rung KTX card and T3's K2 card, because "the card
+    travels with the envelope and the validator reads exactly those bytes" has
+    to mean the same thing in both tiers. Every failure is a refusal, never a
+    shrug: a card that cannot be found, cannot be resolved inside the envelope's
+    own directory, or cannot be read fells the envelope. Whether the bytes then
+    *say* what the envelope claims is the caller's business.
+    """
+    card = _fields(card_value, card_path, {"path", "sha256"})
+    digest = _str(card["sha256"], f"{card_path}.sha256")
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        _fail(f"{card_path}.sha256", "expected 64 lowercase hex characters")
+    relative = t4_dom.safe_relative_card_path(card["path"])
+    if relative is None:
+        _fail(
+            f"{card_path}.path",
+            "expected a plain relative path under the envelope's own directory"
+            " (no absolute path, no '..', no backslash)",
+        )
+    # `<envelope>.payload...` -> the envelope's own path -> its directory.
+    source_file = _source_file(any_path_in_envelope.split(".payload", 1)[0])
+    resolved = t4_dom.contained_card_path(Path(source_file).parent, relative)
+    if resolved is None:
+        _fail(
+            f"{card_path}.path",
+            f"{relative} resolves outside the envelope's own directory, so the"
+            " evidence bundle does not contain the card it names",
+        )
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        _fail(
+            f"{card_path}.path",
+            f"the archived card is not there to recount: {exc}",
+        )
+    return raw, relative, digest
+
+
+def _t3_team_damage(
+    data: dict[str, Any], path: str, capabilities: dict[str, Any] | None
+) -> None:
+    """K2: the team-damage gate, recounted out of the card it names (v7 §B).
+
+    The envelope declares the quota; this recomputes it from the archived KTX
+    card's bytes and refuses any envelope whose own numbers say something else.
+    Same principle as the T4 dom: a run cannot grade itself, and a measurement
+    that nobody can recount is not a measurement.
+    """
+    schema = data["t3_schema"]
+    if schema not in team_damage.SUPPORTED_T3_SCHEMAS:
+        _fail(
+            f"{path}.t3_schema",
+            "expected one of "
+            + ", ".join(str(value) for value in team_damage.SUPPORTED_T3_SCHEMAS),
+        )
+    block_path = f"{path}.team_damage"
+    block = _fields(
+        data["team_damage"],
+        block_path,
+        {
+            "source",
+            "card",
+            "team",
+            "measured",
+            "components",
+            "thresholds",
+            "verdict",
+            "failed_gates",
+            "reason",
+        },
+    )
+    limits = _dict(block["thresholds"], f"{block_path}.thresholds")
+    canonical = team_damage.thresholds()
+    if limits != canonical:
+        _fail(
+            f"{block_path}.thresholds",
+            "a run cannot restate its own gate: expected the owner's constant"
+            f" {canonical}",
+        )
+    team = _str(block["team"], f"{block_path}.team")
+    measured = _fields(
+        block["measured"],
+        f"{block_path}.measured",
+        {"given_enemy", "given_team", "given_self", "total_given", "team_share"},
+    )
+    components = _fields(
+        block["components"],
+        f"{block_path}.components",
+        {"team_weapon_damage", "team_telefrag_damage", "self_damage"},
+    )
+    for name, values in (("measured", measured), ("components", components)):
+        for field, value in values.items():
+            if value is not None:
+                _num(value, f"{block_path}.{name}.{field}", 0)
+    verdict = _str(block["verdict"], f"{block_path}.verdict")
+    if verdict not in team_damage.VERDICTS:
+        _fail(
+            f"{block_path}.verdict",
+            f"expected one of {', '.join(team_damage.VERDICTS)}",
+        )
+    for index, entry in enumerate(
+        _list(block["failed_gates"], f"{block_path}.failed_gates")
+    ):
+        _str(entry, f"{block_path}.failed_gates[{index}]")
+    if not _str(block["reason"], f"{block_path}.reason").strip():
+        _fail(f"{block_path}.reason", "a verdict has to say what produced it")
+
+    if block["card"] is None:
+        # No card, no recount, no number. The block may only report an absence,
+        # and the absence has to be an absence everywhere — a null quota beside
+        # a stated component would be a number nobody can check.
+        if block["source"] is not None:
+            _fail(
+                f"{block_path}.source",
+                "names a source for a reading that has no card behind it",
+            )
+        stated = [
+            f"{name}.{field}"
+            for name, values in (("measured", measured), ("components", components))
+            for field, value in values.items()
+            if value is not None
+        ]
+        if stated:
+            _fail(
+                f"{block_path}.measured",
+                "without an archived card nothing can be recounted, so"
+                f" {', '.join(sorted(stated))} cannot be reported",
+            )
+        recounted = team_damage.measure(None, team)
+        expected_verdict = "OMÄTT"
+    else:
+        if block["source"] != t4_dom.SOURCE_KTX_CARD:
+            _fail(
+                f"{block_path}.source",
+                f"the K2 quota is the server's own count: expected"
+                f" {t4_dom.SOURCE_KTX_CARD!r}",
+            )
+        raw, relative, digest = _archived_card(
+            block["card"], f"{block_path}.card", path
+        )
+        recount = team_damage.recount_card(raw, team)
+        if recount["sha256"] != digest:
+            _fail(
+                f"{block_path}.card.sha256",
+                f"{relative} hashes to {recount['sha256']}, not the pinned"
+                f" {digest}",
+            )
+        if not recount["readable"]:
+            _fail(
+                f"{block_path}.card.path", f"{relative} is not a readable KTX card"
+            )
+        recounted = {
+            "measured": recount["measured"],
+            "components": recount["components"],
+        }
+        expected_verdict = team_damage.adjudicate(recount["measured"], limits)[
+            "verdict"
+        ]
+    if measured != recounted["measured"]:
+        _fail(
+            f"{block_path}.measured",
+            f"expected {recounted['measured']} from the card this block names"
+            f" for team {team!r}",
+        )
+    if components != recounted["components"]:
+        _fail(
+            f"{block_path}.components",
+            f"expected {recounted['components']} from the card this block names"
+            f" for team {team!r}",
+        )
+    expected_gates = team_damage.failed_gates(recounted["measured"], limits)
+    if list(block["failed_gates"]) != expected_gates:
+        _fail(
+            f"{block_path}.failed_gates",
+            f"expected {expected_gates} from the recounted numbers",
+        )
+    if verdict != expected_verdict:
+        _fail(
+            f"{block_path}.verdict",
+            f"expected {expected_verdict} from the recounted numbers",
+        )
+    # An absence declares itself where every other tier declares it, or it is
+    # silent again — and a measured quota must not claim to be missing.
+    declared = set()
+    if capabilities is not None:
+        declared = set(capabilities["unavailable"]) & {team_damage.CAP_TEAM_DAMAGE}
+    wanted = {team_damage.CAP_TEAM_DAMAGE} if verdict == "OMÄTT" else set()
+    if declared != wanted:
+        _fail(
+            f"{block_path}.verdict",
+            "capabilities.unavailable must name exactly"
+            f" {sorted(wanted)} for this K2 block, not {sorted(declared)}",
+        )
+
+
 def _t4_ktx_card(
     item: dict[str, Any],
     item_path: str,
@@ -1039,12 +1253,14 @@ def _t4_ktx_card(
                 " and sha256",
             )
         return
+    # The shape and the digest are checked before the "nobody sourced it" gate,
+    # so a malformed card block is refused for being malformed rather than for
+    # being unclaimed — the order the pinned fixtures were written against.
     card = _fields(item["card"], f"{item_path}.card", {"path", "sha256"})
     digest = _str(card["sha256"], f"{item_path}.card.sha256")
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
         _fail(f"{item_path}.card.sha256", "expected 64 lowercase hex characters")
-    relative = t4_dom.safe_relative_card_path(card["path"])
-    if relative is None:
+    if t4_dom.safe_relative_card_path(card["path"]) is None:
         _fail(
             f"{item_path}.card.path",
             "expected a plain relative path under the envelope's own directory"
@@ -1055,22 +1271,9 @@ def _t4_ktx_card(
             f"{item_path}.card",
             "carries a KTX card that no measurement names as its source",
         )
-    # `<envelope>.payload.ladder[n]` -> the envelope's own path -> its directory.
-    source_file = _source_file(item_path.split(".payload", 1)[0])
-    resolved = t4_dom.contained_card_path(Path(source_file).parent, relative)
-    if resolved is None:
-        _fail(
-            f"{item_path}.card.path",
-            f"{relative} resolves outside the envelope's own directory, so the"
-            " evidence bundle does not contain the card it names",
-        )
-    try:
-        raw = resolved.read_bytes()
-    except OSError as exc:
-        _fail(
-            f"{item_path}.card.path",
-            f"the archived card is not there to recount: {exc}",
-        )
+    raw, relative, digest = _archived_card(
+        item["card"], f"{item_path}.card", item_path
+    )
     recount = t4_dom.recount_card(raw, t4_dom.BRANCH_TEAM)
     if recount["sha256"] != digest:
         _fail(
@@ -1367,6 +1570,16 @@ def _t4_v2(data: dict[str, Any], path: str, capabilities: dict[str, Any] | None)
                 f"expected {receipt} from the rungs' own measured blocks",
             )
     verdict = _str(data["verdict"], f"{path}.verdict")
+    if verdict == t4_dom.RETIRED_VERDICT:
+        # Named on its own so a stale runner is told which decision retired the
+        # word rather than merely that it is not in the list.
+        _fail(
+            f"{path}.verdict",
+            f"{t4_dom.RETIRED_VERDICT} utgick med ägarbeslutet 2026-08-25:"
+            " vid oavgjort spelas inte nästa runda, och stegen döms enligt"
+            " vanliga regler — ett oavgjort med alla fyra fält mätta och gröna"
+            " är OK",
+        )
     if verdict not in t4_dom.VERDICTS:
         _fail(
             f"{path}.verdict",
@@ -1439,17 +1652,30 @@ def _t4_v2(data: dict[str, Any], path: str, capabilities: dict[str, Any] | None)
             )
     elif alarm is not None:
         _fail(f"{path}.cross_alarm", "only a FAIL raises the cross alarm")
+    # The draw semantics hangs on the ladder, not on the verdict (v7 §A.1). A
+    # drawn ladder that also fell a gate is a FAIL, and under v6 it recorded the
+    # draw nowhere but in the rung flag; the question "what did the ladder do at
+    # the draw?" has the same answer whatever the verdict became.
     semantics = data.get("draw_semantik")
-    if verdict == "OAVGJORD":
+    if outcome["drew"] is True:
+        if semantics is None:
+            _fail(
+                f"{path}.draw_semantik",
+                "a ladder that ended in a draw has to say what it did about it:"
+                f" {t4_dom.DRAW_SEMANTICS!r}",
+            )
         if semantics != t4_dom.DRAW_SEMANTICS:
             _fail(
                 f"{path}.draw_semantik",
-                f"an OAVGJORD envelope carries {t4_dom.DRAW_SEMANTICS!r}: the"
-                " draw semantics is an open owner question, not a decision"
-                " this run made",
+                f"expected {t4_dom.DRAW_SEMANTICS!r}, not {semantics!r} — the"
+                " owner decided on 2026-08-25 that no further rung is played",
             )
     elif semantics is not None:
-        _fail(f"{path}.draw_semantik", "only OAVGJORD carries the draw question")
+        _fail(
+            f"{path}.draw_semantik",
+            "only a ladder whose last rung was a draw carries the draw"
+            " semantics",
+        )
 
 
 def _t4(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:

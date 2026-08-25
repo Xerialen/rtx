@@ -1,0 +1,240 @@
+{
+ "schema": "rtx-testflow/1",
+ "run_id": "t3-20260825T120000Z-11111111",
+ "tier": "T3",
+ "status": "complete",
+ "started_utc": "2026-07-27T15:20:00Z",
+ "ended_utc": "2026-07-27T15:20:00Z",
+ "map": "dm3",
+ "build": {
+  "branch": "k2-t3",
+  "commit": "1212121212121212121212121212121212121212",
+  "digest_md5": "12341234",
+  "dirty": false
+ },
+ "config_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+ "runner_version": "0.1.0",
+ "provenance": "synthetic",
+ "payload": {
+  "duration_s": 300,
+  "sides": [
+   {
+    "side": "branch",
+    "build": {
+     "branch": "testsuite",
+     "commit": "1111111111111111111111111111111111111111",
+     "digest_md5": "aaaaaaaa",
+     "dirty": false
+    },
+    "frags": 87,
+    "stats": {},
+    "cells": []
+   },
+   {
+    "side": "reference",
+    "build": {
+     "branch": "main",
+     "commit": "2222222222222222222222222222222222222222",
+     "digest_md5": "bbbbbbbb",
+     "dirty": false
+    },
+    "frags": 74,
+    "stats": {},
+    "cells": []
+   }
+  ],
+  "result": {
+   "diff": 13,
+   "winner": "branch",
+   "oracle": "ktx-scoreboard",
+   "mvd": "demos/example.mvd"
+  },
+  "readiness": {
+   "seats_ok": 8,
+   "gate": "heartbeat+movement",
+   "passed": true
+  },
+  "combat_lock": null,
+  "replicate_of": null,
+  "verdict": "PIPELINE-OK",
+  "scoreboard": {
+   "teams": [
+    {
+     "name": "brch",
+     "frags": 42,
+     "efficiency": 55,
+     "kills": 42,
+     "spawn_frags": 0,
+     "deaths": 34,
+     "suicides": 0,
+     "tk": 0,
+     "dmg_given": 9104,
+     "dmg_taken": 6189,
+     "dmg_enemy_weapons": 0,
+     "taken_to_die": 182,
+     "ga": 9,
+     "ya": 18,
+     "ra": 11,
+     "mh": 14,
+     "quad": 0,
+     "pent": 0,
+     "ring": 0,
+     "sg_acc": 27,
+     "lg_acc": 31,
+     "rl_direct": 41,
+     "lg_taken": 0,
+     "lg_kills": 0,
+     "lg_dropped": 0,
+     "rl_taken": 0,
+     "rl_kills": 0,
+     "rl_dropped": 0
+    },
+    {
+     "name": "ref",
+     "frags": 37,
+     "efficiency": 45,
+     "kills": 37,
+     "spawn_frags": 0,
+     "deaths": 44,
+     "suicides": 0,
+     "tk": 0,
+     "dmg_given": 6189,
+     "dmg_taken": 9104,
+     "dmg_enemy_weapons": 0,
+     "taken_to_die": 206,
+     "ga": 14,
+     "ya": 9,
+     "ra": 8,
+     "mh": 7,
+     "quad": 0,
+     "pent": 0,
+     "ring": 0,
+     "sg_acc": 19,
+     "lg_acc": 24,
+     "rl_direct": 28,
+     "lg_taken": 0,
+     "lg_kills": 0,
+     "lg_dropped": 0,
+     "rl_taken": 0,
+     "rl_kills": 0,
+     "rl_dropped": 0
+    }
+   ],
+   "players": [
+    {
+     "name": "bot.brch1",
+     "team": "brch",
+     "ping": 12,
+     "top_color": 4,
+     "bottom_color": 4,
+     "speed_max": 512.4,
+     "speed_avg": 246.1,
+     "spree_max": 3,
+     "link": "/demo-player/?demoUrl=%2Fdemos%2Fm.mvd&map=dm3&duration=300&from=0&track=1",
+     "frags": 12,
+     "efficiency": 57,
+     "kills": 12,
+     "spawn_frags": 0,
+     "deaths": 9,
+     "suicides": 0,
+     "tk": 0,
+     "dmg_given": 3120,
+     "dmg_taken": 2890,
+     "dmg_enemy_weapons": 410,
+     "taken_to_die": 321,
+     "ga": 3,
+     "ya": 6,
+     "ra": 4,
+     "mh": 5,
+     "quad": 1,
+     "pent": 0,
+     "ring": 1,
+     "sg_acc": 28,
+     "lg_acc": 34,
+     "rl_direct": 17,
+     "lg_taken": 4,
+     "lg_kills": 6,
+     "lg_dropped": 2,
+     "rl_taken": 9,
+     "rl_kills": 8,
+     "rl_dropped": 3
+    },
+    {
+     "name": "bot.ref1",
+     "team": "ref",
+     "ping": 13,
+     "top_color": 13,
+     "bottom_color": 13,
+     "speed_max": 498.2,
+     "speed_avg": 241.7,
+     "spree_max": 2,
+     "link": null,
+     "frags": 11,
+     "efficiency": 52,
+     "kills": 11,
+     "spawn_frags": 0,
+     "deaths": 10,
+     "suicides": 1,
+     "tk": 1,
+     "dmg_given": 2980,
+     "dmg_taken": 3010,
+     "dmg_enemy_weapons": 390,
+     "taken_to_die": 301,
+     "ga": 2,
+     "ya": 5,
+     "ra": 3,
+     "mh": 4,
+     "quad": 0,
+     "pent": 1,
+     "ring": 0,
+     "sg_acc": 22,
+     "lg_acc": null,
+     "rl_direct": 11,
+     "lg_taken": 3,
+     "lg_kills": 4,
+     "lg_dropped": 1,
+     "rl_taken": 8,
+     "rl_kills": 6,
+     "rl_dropped": 2
+    }
+   ],
+   "map": "The Abandoned Base",
+   "duration_s": 300,
+   "demo": "m.mvd",
+   "source": "qw-analyze/demoinfo",
+   "link": "/demo-player/?demoUrl=%2Fdemos%2Fm.mvd&map=dm3&duration=300&from=0.0",
+   "mode": "team",
+   "hostname": "T3 rtx branch vs reference (dm3)",
+   "date": "2026-07-27 22:42:11 +0000"
+  },
+  "t3_schema": 1,
+  "team_damage": {
+   "source": "ktx/demoinfo",
+   "card": {
+    "path": "demos/k2.txt",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+   },
+   "team": "brch",
+   "measured": {
+    "given_enemy": 700,
+    "given_team": 200,
+    "given_self": 150,
+    "total_given": 1050,
+    "team_share": 0.333333
+   },
+   "components": {
+    "team_weapon_damage": 120,
+    "team_telefrag_damage": 80,
+    "self_damage": 150
+   },
+   "thresholds": {
+    "team_damage_share_max": 0.2
+   },
+   "verdict": "FAIL",
+   "failed_gates": [
+    "k2:team_damage_share"
+   ],
+   "reason": "lagskada 0.333333 av all utdelad skada överstiger taket 0.2"
+  }
+ }
+}

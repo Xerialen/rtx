@@ -56,7 +56,7 @@
   ],
   "reached": 10,
   "skill_verified_by": "server-log addbot sequence",
-  "verdict": "OAVGJORD",
+  "verdict": "OK",
   "t4_schema": 2,
   "measurements": {
    "shots_fired": 804,
@@ -83,11 +83,11 @@
   "dom": {
    "failed_gates": [],
    "missing": [],
-   "reason": "stegen slutade oavgjort; alla fyra fält mätta och gröna",
+   "reason": "spelad stege som slutade oavgjort; alla fyra fält mätta och gröna",
    "labels": [
     "item-pickups-proxy"
    ]
   },
-  "draw_semantik": "ägarbeslut saknas"
+  "draw_semantik": "stanna, ägarbeslut 2026-08-25"
  }
 }

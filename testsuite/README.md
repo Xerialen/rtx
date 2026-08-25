@@ -419,14 +419,17 @@ server-side frogbots on the `[t4].frogbot_server` KTX instance: one 4on4
 match per rung with the same branch build T3 uses, advancing on a win and
 stopping at the first loss or draw.
 
-The verdict is one of five (`VINST`, `OK`, `FAIL`, `OMÄTT`, `OAVGJORD`) and it
-is about behaviour, not about how far the ladder climbed: the run measures
-whether our bots shot at the enemy, chased items, did not shoot each other and
-did not stand still, and fells the ladder on the ones it could measure. A field
-it could not measure makes the run `OMÄTT` — never a silent pass. `schema/SCHEMA.md`
-has the payload and the calibrated thresholds; envelopes written before the
-five-value verdict are grandfathered by name and sha in
-`schema/legacy-t4-inventering.json`.
+The verdict is one of four (`VINST`, `OK`, `FAIL`, `OMÄTT`) and it is about
+behaviour, not about how far the ladder climbed: the run measures whether our
+bots shot at the enemy, chased items, did not shoot each other and did not
+stand still, and fells the ladder on the ones it could measure. A field it
+could not measure makes the run `OMÄTT` — never a silent pass. A drawn ladder
+stops there and no further rung is played (owner decision 2026-08-25); it is
+then judged by the ordinary rules, so a clean draw is `OK`, and the envelope
+records the draw in `draw_semantik` and in the rung's own `draw` flag. The
+retired fifth verdict `OAVGJORD` is refused. `schema/SCHEMA.md` has the payload
+and the calibrated thresholds; envelopes written before the new vocabulary are
+grandfathered by name and sha in `schema/legacy-t4-inventering.json`.
 
 Rig preparation is the T3 recipe plus frogbots: `k_fb_enabled 1` and the KTX
 `bots/` data directory present in the private gamedir. Frogbots cannot be
@@ -468,6 +471,18 @@ against the configured match server, and writes one `PIPELINE-OK` envelope
 with per-side movement statistics and the final score. A branch quality
 verdict is never taken from a single match; that belongs to a `T3-agg`
 aggregate over two or more replicates with side alternation.
+
+The envelope also carries **K2, the team-damage gate** (owner decision
+2026-08-25): team damage over all damage dealt, ceiling 20 %, on the full
+envelope — teammate damage *plus* self damage in the numerator, which is the
+strictest of the three readings and so contains all of them. The three
+components (weapon damage on a teammate, telefrag damage on a teammate, self
+damage) are always reported separately and are never themselves a gate. The
+source is KTX's own card, which counts damage the server actually applied; the
+analyzer's stream view reconstructs nominal damage and is not a source here.
+The card is archived beside the envelope and pinned by sha256, and the
+validator recounts the quota out of those bytes. Anything unreadable makes the
+block `OMÄTT` with `t3:team_damage` declared unavailable — never a zero.
 
 The runner does not manage the server. The operator prepares a dedicated
 mvdsv+KTX instance — never a shared lab server, since the runner refuses to
