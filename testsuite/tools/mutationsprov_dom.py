@@ -143,8 +143,14 @@ def kor() -> tuple[int, str]:
 
 def main() -> int:
     if PAGAR.exists():
-        print("VAGRAR STARTA — en tidigare korning avbrots och tradet kan bara")
-        print("en avvapnad grind. Aterstall filen nedan och ta bort %s:" % PAGAR)
+        # QA:s avvikelse A6 (2026-08-25, atgardspunkt B5): texten lod
+        # "tradet kan bara / en avvapnad grind" — ett tappat "bära" som gor
+        # meningen obegriplig for en operator under tidspress. Rattad till
+        # samma lydelse som `rig/mutationsprov.py`, dar inget diakritiskt
+        # tecken kan falla bort. Ingen logik rord.
+        print("VAGRAR STARTA — en tidigare korning avbrots och arbetstradet")
+        print("kan innehalla en avvapnad grind. Aterstall filen nedan och")
+        print("ta bort %s:" % PAGAR)
         print(PAGAR.read_text(encoding="utf-8").strip())
         return 2
     rc, _ = kor()

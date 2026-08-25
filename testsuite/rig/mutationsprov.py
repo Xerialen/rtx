@@ -47,6 +47,21 @@ UTAN_TESTSVIT = '{"forbjuden", "orord", "deploy", "lab", "ra-kontroll", "rigg"}'
 UTAN_RIGG = '{"forbjuden", "orord", "deploy", "lab", "ra-kontroll", "testsvit"}'
 SOM_JAMFORELSEN = 'if som is not None and som == rad.grupp:'
 
+#: Vaktarnamn som INTE ar tester. `test_rig` ar `unittest.loader._FailedTest`
+#: — den uppstar nar `portar.py` inte gar att IMPORTERA. Under M36/M37 (som
+#: stader bort en klass ur BADE `KLASSER` och `ATKOMST`) far modulens egen
+#: `assert set(ATKOMST) == set(KLASSER)` pa portar.py:46 importen att smalla,
+#: sviten kor da 1 test i stallet for 81, och det som faller ar modulen som
+#: vaktar sig sjalv — inte testsviten. De tva raknas darfor separat i
+#: slutraden: talet "N/N" far inte lasas som "N bevakade av tester".
+#: (QA:s avvikelse A-4, 2026-08-25.)
+#:
+#: De kan inte ges riktiga testvaktare utan att bryta agarregeln om nya
+#: filer: varje test i `test_rig.py` ligger i den modul som inte gar att
+#: importera under mutationen, sa ett fangande test maste bo i en NY
+#: testmodul. Darfor markning i stallet for omskrivning.
+IMPORTVAKTARE = {"test_rig"}
+
 MUTATIONER = [
     ("portar.py", 'if klass not in KLASSER:', 'if False:', "test_neg_okand_klass"),
     ("portar.py", 'if roll not in ROLLER:', 'if False:', "test_neg_okand_roll"),
@@ -94,6 +109,11 @@ MUTATIONER = [
     # upptacka samma lucka en tredje gang.
     #
     # ALLA_KLASSER ar ankaret for `KLASSER`-frozensetet i portar.py.
+    #
+    # M36/M37: vaktaren `test_rig` ar INTE ett test utan
+    # `unittest.loader._FailedTest` — se `IMPORTVAKTARE` ovan. Dessa tva
+    # bevakas av portar.py:46:s egen importassertion, och skrivs ut och raknas
+    # som just det.
     ("portar.py", ALLA_KLASSER, UTAN_TESTSVIT, "test_rig"),
     ("portar.py", ALLA_KLASSER, UTAN_RIGG, "test_rig"),
     ("portar.py", '"rigg": "egen",', '"rigg": "tillat",', "test_rigg_kraver_att_anroparen_uppger_sin_grupp"),
@@ -135,11 +155,45 @@ def kor_tester():
     return r.returncode, fallna
 
 
+def _vaktartext(vaktare):
+    """Vad som SKRIVS UT om en vaktare. Rors inte av domslogiken.
+
+    Domen ar och forblir `vaktare in fallna` pa det ra namnet; det har ar
+    enbart etiketten i utdatan. En vaktare i `IMPORTVAKTARE` skrivs ut som
+    vad den ar — en importassertion — sa att raden inte kan citeras som att
+    ett test bevakade mutationen.
+    """
+    if vaktare in IMPORTVAKTARE:
+        return "importassertion portar.py:46 (EJ test; unittest sager %s)" % vaktare
+    return vaktare
+
+
+def _fordelning():
+    """Slutradens arliga fordelning, raknad ur MUTATIONER — inte hardkodad.
+
+    Beskriver de DEKLARERADE vaktarna, sa raden ar sann aven nar nagon
+    mutation gick utan ratt vaktare (det talet star pa raden ovanfor).
+    """
+    imp = sum(1 for m in MUTATIONER if m[3] in IMPORTVAKTARE)
+    test = len(MUTATIONER) - imp
+    return (
+        "deklarerade vaktare: %d namngivna tester + %d importassertion"
+        " (M36/M37, portar.py:46).\n"
+        "Under de tva gar modulen inte att importera, sa hela sviten kokar ihop"
+        " till ETT\nfelrapporterande test — det ar modulen som vaktar sig sjalv,"
+        " inte testsviten.\n"
+        "Citera darfor \"%d/%d\" bara med den fordelningen: mot testsviten ar"
+        " den arliga\nsiffran %d av %d."
+        % (test, imp, len(MUTATIONER), len(MUTATIONER), test, len(MUTATIONER))
+    )
+
+
 def main():
     if PAGAR.exists():
-        # Texten sager INNEHALLA dar tools-varianten sager "kan bara" — det
-        # ar QA:s avvikelse A6 (2026-08-25), ett tappat "bära" som en
-        # operator laser under tidspress. Den kopieras inte hit.
+        # Texten sager INNEHALLA i stallet for "bara". Tools-varianten bar
+        # QA:s avvikelse A6 (2026-08-25) — ett tappat "bära" som en operator
+        # laser fel under tidspress. Den kopierades aldrig hit, och sedan
+        # QA:s atgardspunkt B5 sager tools-varianten samma sak som denna.
         print("VAGRAR STARTA — en tidigare korning avbrots och arbetstradet")
         print("kan innehalla en avvapnad grind. Aterstall filen nedan och")
         print("ta bort %s:" % PAGAR)
@@ -191,13 +245,15 @@ def main():
         elif vaktare in f:
             extra = sorted(f - {vaktare})
             print("FALLD    %-12s %-45s  av %s%s"
-                  % (fil, etikett, vaktare, (" (+%d till)" % len(extra)) if extra else ""))
+                  % (fil, etikett, _vaktartext(vaktare),
+                     (" (+%d till)" % len(extra)) if extra else ""))
         else:
             print("FEL VAKT %-12s %-45s  vantade %s, foll %s"
                   % (fil, etikett, vaktare, sorted(f)))
             dåliga += 1
 
     print("\n%d mutationer, %d utan ratt vaktare" % (len(MUTATIONER), dåliga))
+    print(_fordelning())
     return 1 if dåliga else 0
 
 
