@@ -861,27 +861,71 @@ def t3_level(
         sides={"branch": branch_stats, "main": reference_stats},
         result=result,
         scoreboard=normalize_scoreboard(payload.get("scoreboard")),
+        teamDamage=normalize_team_damage(payload.get("team_damage")),
         snapshotIds=snapshot_ids,
     )
     return item, snapshots
 
 
-#: T4:s femvardesvokabular (SPEC T4-domen v6 §2), plus den pensionerade
+#: K2:s visningsklasser (v7 §B). `OMÄTT` ar aldrig gron — samma regel som T4:s,
+#: och av samma skal: en omatt kvot far inte lasa som en godkand.
+K2_VERDICT_CLASS = {"OK": "pass", "FAIL": "fail", "OMÄTT": "unmeasured"}
+
+
+def normalize_team_damage(block: Any) -> dict[str, Any] | None:
+    """K2-blocket som sidan visar det, eller None for kuvert fore grinden.
+
+    Delkomponenterna foljer alltid med, aven nar de ar `null`: agarens beslut
+    2026-08-25 sager att de ALLTID redovisas separat, och en rad som forsvinner
+    nar den ar omatt redovisar ingenting.
+    """
+    if not isinstance(block, dict):
+        return None
+    measured = block.get("measured") if isinstance(block.get("measured"), dict) else {}
+    components = (
+        block.get("components") if isinstance(block.get("components"), dict) else {}
+    )
+    limits = (
+        block.get("thresholds") if isinstance(block.get("thresholds"), dict) else {}
+    )
+    verdict = text(block.get("verdict"), "") or None
+    return {
+        "verdict": verdict,
+        "verdictClass": K2_VERDICT_CLASS.get(verdict, "not-run"),
+        "team": text(block.get("team"), "") or None,
+        "share": number(measured.get("team_share")),
+        "shareMax": number(limits.get("team_damage_share_max")),
+        "givenEnemy": number(measured.get("given_enemy")),
+        "givenTeam": number(measured.get("given_team")),
+        "givenSelf": number(measured.get("given_self")),
+        "totalGiven": number(measured.get("total_given")),
+        "teamWeaponDamage": number(components.get("team_weapon_damage")),
+        "teamTelefragDamage": number(components.get("team_telefrag_damage")),
+        "selfDamage": number(components.get("self_damage")),
+        "reason": text(block.get("reason"), "") or None,
+    }
+
+
+#: T4:s fyrvardesvokabular (SPEC T4-domen v7 §A.1), plus den pensionerade
 #: literalen. `COMPLETE` lever kvar ENBART for de inventerade kuvert som fanns
 #: fore bytet, och da med etiketten `legacy` — sidan far inte visa ett gammalt
 #: kuvert som om det domts pa de nya grindarna.
-T4_VERDICTS = ("VINST", "OK", "FAIL", "OMÄTT", "OAVGJORD")
+#:
+#: `OAVGJORD` utgick med agarbeslutet 2026-08-25: vid oavgjort spelas inte
+#: nasta runda, och stegen doms enligt vanliga regler. Ett oavgjort syns
+#: fortfarande — benraden bar `draw` och domraden skriver ut draw-semantiken —
+#: men det ar inte langre ett eget verdict.
+T4_VERDICTS = ("VINST", "OK", "FAIL", "OMÄTT")
 T4_LEGACY_VERDICT = "COMPLETE"
-#: Visningsklass per verdict. OMÄTT och OAVGJORD ar egna, ICKE-grona klasser:
-#: ett omatt kuvert far aldrig hamna i en gron kolumn, och ett oavgjort ar inte
-#: ett godkant resultat. Kartan speglar `verdictClass` i template.html.
+#: Visningsklass per verdict. OMÄTT ar en egen, ICKE-gron klass: ett omatt
+#: kuvert far aldrig hamna i en gron kolumn. Kartan speglar `verdictClass` i
+#: template.html.
 T4_VERDICT_CLASS = {
     "VINST": "pass",
     "OK": "pass",
     T4_LEGACY_VERDICT: "pass",
     "FAIL": "fail",
     "OMÄTT": "unmeasured",
-    "OAVGJORD": "draw",
 }
 
 
@@ -928,15 +972,18 @@ def t4_level(envelope: dict[str, Any]) -> dict[str, Any]:
         key = "omätt: " + (", ".join(missing) or "saknade fält ej namngivna")
     elif verdict == "FAIL":
         key = "fälld: " + (", ".join(failed) or "grind ej namngiven")
-    elif verdict == "OAVGJORD":
-        key = f"oavgjort på skill {reached if reached is not None else '–'} — draw-semantik: ägarbeslut saknas"
     else:
         key = f"nådde skill {reached if reached is not None else '–'}"
+        # Ett oavgjort ar inte langre ett eget verdict, men det far inte
+        # forsvinna: en stege som slutade lika lasar annars som en vanlig
+        # forlorad stege, och `reached` raknar inte draw-benet.
+        if text(payload.get("draw_semantik"), ""):
+            key += " · sista benet oavgjort, stegen stannade"
     item.update(
         verdict=verdict,
         verdictClass=T4_VERDICT_CLASS.get(verdict, "not-run"),
         legacy=legacy,
-        key=key + (" · legacy-kuvert, dömt före femvärdesdomen" if legacy else ""),
+        key=key + (" · legacy-kuvert, dömt före beteendedomen" if legacy else ""),
         reached=reached,
         rungs=rungs,
         dom={
@@ -1279,8 +1326,16 @@ def selftest() -> None:
         assert '"verdict":"MÄTT"' in html
         assert '"verdict":"PIPELINE-OK"' in html
         assert '"kind":"aggregate"' in html
-        # T4:s femvärdesdom, alla fem på sidan samtidigt (SPEC v6 §2), plus den
-        # pensionerade literalen som bara de inventerade kuverten bär.
+        # NK 22: det pensionerade verdiktet finns varken i vokabulären, i
+        # klasskartan eller på sidan. Står FÖRE loopen nedan med flit —
+        # mutationsprovet visade att loopen annars faller först och den här
+        # kontrollen aldrig hinner göra sitt jobb (en grind som inte kan falla
+        # är en grön lampa).
+        assert "OAVGJORD" not in T4_VERDICTS
+        assert "OAVGJORD" not in T4_VERDICT_CLASS
+        assert '"OAVGJORD"' not in html
+        # T4:s fyrvärdesdom, alla fyra på sidan samtidigt (SPEC v7 §A.1), plus
+        # den pensionerade literalen som bara de inventerade kuverten bär.
         for verdict in T4_VERDICTS:
             assert f'"verdict":"{verdict}"' in html, verdict
         assert '"verdict":"COMPLETE"' in html
@@ -1296,12 +1351,11 @@ def selftest() -> None:
         assert "http://" not in html
         assert "https://" not in html
         assert len(runs) >= 5
-        # --- T4:s femvärdesdom (SPEC v6 §2, §5) ---------------------------
+        # --- T4:s fyrvärdesdom (SPEC v7 §A.1, §A.3) -----------------------
         # Vilka verdikt som får se gröna ut avgörs på två ställen — här och i
         # template.html:s VERDICT_CLASS — och de måste vara samma karta. En
         # framtida redigering som gör OMÄTT grönt fastnar på raderna nedan.
         assert T4_VERDICT_CLASS["OMÄTT"] != "pass"
-        assert T4_VERDICT_CLASS["OAVGJORD"] != "pass"
         for verdict, klass in T4_VERDICT_CLASS.items():
             assert f'"{verdict}": "{klass}"' in html, verdict
 
@@ -1320,7 +1374,7 @@ def selftest() -> None:
         assert level["dom"]["labels"] == []
         for run in runs:
             t4 = run["levels"]["t4"]
-            if t4.get("verdict") in {"OMÄTT", "OAVGJORD"}:
+            if t4.get("verdict") == "OMÄTT":
                 assert t4["verdictClass"] != "pass", run["branch"]
 
         # NK 3/6: en fälld mätt grind är FAIL, och FAIL bär korslarmet.
@@ -1329,13 +1383,35 @@ def selftest() -> None:
         assert silent["dom"]["failedGates"] == ["a:shots_fired"]
         assert silent["dom"]["crossAlarm"] == "no matching T1/T3 run found"
 
-        # NK 4: draw med allt mätt och grönt är OAVGJORD, och sidan säger rakt
-        # ut att draw-semantiken är en öppen ägarfråga.
+        # NK 4 (v7): draw med allt mätt och grönt är OK — men det får inte
+        # försvinna ur enradaren, för `reached` räknar inte draw-benet och en
+        # oavgjord stege skulle annars läsa som en vanlig förlorad.
         drew = next(run for run in runs if run["branch"] == "draw-t4")["levels"]["t4"]
-        assert drew["verdict"] == "OAVGJORD" and drew["verdictClass"] == "draw"
-        assert drew["dom"]["drawSemantics"] == "ägarbeslut saknas"
-        assert "ägarbeslut saknas" in drew["key"]
+        assert drew["verdict"] == "OK" and drew["verdictClass"] == "pass"
+        assert drew["dom"]["drawSemantics"] == "stanna, ägarbeslut 2026-08-25"
+        assert "sista benet oavgjort" in drew["key"]
         assert drew["dom"]["labels"] == ["item-pickups-proxy"]
+        assert any(rung["state"] == "draw" for rung in drew["rungs"])
+
+        # K2 (v7 §B): lagskadegrinden syns på T3-panelen, den är INTE grön när
+        # den fallit, och de tre delkomponenterna redovisas alltid separat —
+        # ägarens uttryckliga krav 2026-08-25.
+        k2 = next(run for run in runs if run["branch"] == "k2-t3")["levels"]["t3"]
+        assert k2["teamDamage"]["verdict"] == "FAIL"
+        assert k2["teamDamage"]["verdictClass"] == "fail"
+        assert K2_VERDICT_CLASS["OMÄTT"] != "pass"
+        assert k2["teamDamage"]["share"] == 0.333333
+        assert k2["teamDamage"]["shareMax"] == 0.2
+        assert k2["teamDamage"]["teamWeaponDamage"] == 120
+        assert k2["teamDamage"]["teamTelefragDamage"] == 80
+        assert k2["teamDamage"]["selfDamage"] == 150
+        assert '"teamDamage"' in html
+        assert "Lagskada (K2)" in html
+        # Kuvert från före grinden bär inget block, och sidan hittar inte på ett.
+        golden_t3 = next(
+            run for run in runs if run["branch"] == "golden-complete"
+        )["levels"]["t3"]
+        assert golden_t3["teamDamage"] is None
 
         # NK 10: ett verkligt kuvert från inventeringen visas, men märkt — det
         # dömdes aldrig på de fyra grindarna.

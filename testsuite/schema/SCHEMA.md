@@ -313,6 +313,18 @@ stops before T1 when T0 import is missing or FAIL.
     "source": "qw-analyze/demoinfo", "link": "/demo-player/?..."
   },
   "combat_lock": null,
+  "team_damage": {
+    "source": "ktx/demoinfo",
+    "card": {"path": "demos/....txt", "sha256": "..."},
+    "team": "brch",
+    "measured": {"given_enemy": 6846, "given_team": 954, "given_self": 311,
+                 "total_given": 8111, "team_share": 0.155961},
+    "components": {"team_weapon_damage": 254, "team_telefrag_damage": 700,
+                   "self_damage": 311},
+    "thresholds": {"team_damage_share_max": 0.2},
+    "verdict": "OK", "failed_gates": [], "reason": "..."
+  },
+  "t3_schema": 1,
   "replicate_of": null,
   "verdict": "PIPELINE-OK"
 }
@@ -325,6 +337,38 @@ stops before T1 when T0 import is missing or FAIL.
   (`"tier": "T3-agg"`) over ≥2 replicates with side/spawn alternation.
 - `combat_lock`: null until the MVD analysis ran; then
   `{"s_per_bot": {"branch": 51.8, "reference": 58.4}, "source": "qw-analyze", "version": "..."}`.
+- **`team_damage` is the K2 gate** (owner decision 2026-08-25, `SPEC — T4-domen
+  v7` §B): team damage over *all* damage dealt, ceiling **20 %**, on the **full
+  envelope** — teammate damage plus self damage in the numerator, which is the
+  strictest of the three readings and therefore contains all of them.
+
+  ```
+  team_share = (dmg.team + dmg.self) / (dmg.given + dmg.team + dmg.self)
+  ```
+
+  Summed over our team's rows on **KTX's own card**, which counts damage the
+  server actually *applied*. The analyzer's stream view reconstructs **nominal**
+  damage (854 where the server applied 250, because the victim did not have 854
+  left to lose) and is not a source for this gate. Seam: strictly greater fells.
+- **The three components are always reported separately** and are never
+  themselves a gate: `team_weapon_damage` (summed from the per-weapon
+  `damage.team` posts, *not* from the card's `dmg.team-weapons` field, which
+  misses shotgun hits), `team_telefrag_damage` (`dmg.team` minus the weapon
+  posts) and `self_damage`. They may be `null` while the headline is measured:
+  a card that expresses no per-weapon damage anywhere cannot say the weapon
+  share is zero.
+- The card travels with the envelope, named by path and sha256, and the
+  validator recounts the quota out of exactly those bytes. `verdict` is `OK`,
+  `FAIL` or `OMÄTT`. **`OMÄTT` — never a zero** — for a missing or unreadable or
+  wrong-hashed card, a missing/non-numeric/negative/fractional counter, no rows
+  for our team, or `total_given == 0` (an undefined quota, which hides nothing:
+  a zero denominator forces a zero numerator). An `OMÄTT` block names
+  `t3:team_damage` in `capabilities.unavailable`.
+- **`t3_schema` is the T3 measurement contract.** `1` brings the K2 gate. An
+  envelope without it is from before the gate and is judged exactly as it was,
+  so no archived T3 evidence changes verdict. *Bokfört, ej stängd:* a new run
+  that omits both fields still validates as pre-K2 — T3 has no closed legacy
+  inventory the way T4 does.
 
 ## T4 payload (frogbot ladder)
 
@@ -362,11 +406,12 @@ stops before T1 when T0 import is missing or FAIL.
 - Ladder stops at the first loss or draw; `reached` = **highest won** skill, 0 when
   nothing was won. A draw after a won rung N reaches N. Rungs are 10,12,14,16,18,20.
   The validator recomputes `reached` from the rungs and fells a mismatch.
-- `verdict` is one of five: `VINST` (won level 20), `OK` (played and lost, all four
-  fields measured and green), `FAIL` (a **measured** gate fell — beats every other
-  value, draw included), `OMÄTT` (nothing fell but a field is unavailable; never
-  green, never OK), `OAVGJORD` (draw with all four measured and green; carries
-  `"draw_semantik": "ägarbeslut saknas"`). A `FAIL` carries `cross_alarm`: the
+- `verdict` is one of four: `VINST` (won level 20), `OK` (played but did not win
+  the top rung, all four fields measured and green — **a ladder that ended in a
+  draw lands here**), `FAIL` (a **measured** gate fell — beats every other value,
+  draw included), `OMÄTT` (nothing fell but a field is unavailable; never green,
+  never OK). `OAVGJORD` was retired by the owner decision of 2026-08-25 and an
+  envelope carrying it is refused. A `FAIL` carries `cross_alarm`: the
   nearest preceding T1/T3 `run_id` of the same commit, or the literal
   `"no matching T1/T3 run found"` — a documented heuristic, never a proven link.
 - The four gates, judged only on measured fields: (a) `shots_fired == 0`,
@@ -375,7 +420,7 @@ stops before T1 when T0 import is missing or FAIL.
   against the existing corpus, copied into the envelope, and pinned: a run that
   restates its own gate is refused.
 - **`t4_schema` is the measurement contract, and the bump is the compatibility
-  mechanism.** `2` is the five-value verdict with optional `sources`; `3` makes
+  mechanism.** `2` is the per-rung `measured` block with optional `sources`; `3` makes
   `sources` mandatory and binds every KTX-sourced number to its card. Envelopes
   written under 2 keep being judged by 2's rules — nothing is kept lenient for
   new runs in order to spare old ones.
@@ -443,9 +488,12 @@ stops before T1 when T0 import is missing or FAIL.
 - `measured` per rung is the ladder's audit trail: when every rung carries it, the
   validator refolds it and refuses `measurements`/`sampling` that disagree.
 - Draw rule: a draw does not advance the ladder and stops it (recorded as
-  `"win": false, "draw": true`). What a draw *should* mean for the ladder is an
-  open owner question, flagged as `OAVGJORD` until it is answered.
-- **Legacy:** envelopes written before the five-value verdict carry no
+  `"win": false, "draw": true`). The owner decided on 2026-08-25 that no further
+  rung is played, so a ladder that ended in a draw carries
+  `"draw_semantik": "stanna, ägarbeslut 2026-08-25"` and is judged by the
+  ordinary rules. The field hangs on the **ladder**, not on the verdict: a drawn
+  ladder that also fell a gate is a `FAIL` and still carries it.
+- **Legacy:** envelopes written before the new verdict vocabulary carry no
   `t4_schema` and `"verdict": "COMPLETE"`. They are accepted only if their
   filename and sha256 are in `schema/legacy-t4-inventering.json` (27 envelopes,
   fail-closed, the inventory itself sha-pinned in `checks.py`). Any other

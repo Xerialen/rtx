@@ -1,7 +1,8 @@
-"""The T4 verdict: five values, four measured gates, one priority order.
+"""The T4 verdict: four values, four measured gates, one priority order.
 
-`SPEC — T4-domen v6` (owner definition 2026-08-24, Sol-approved). Every rule
-here is the spec's, and the spec wins over prose anywhere else.
+`SPEC — T4-domen v7` (owner decision 2026-08-25), a delta on v6 (owner
+definition 2026-08-24, Sol-approved). Every rule here is the spec's, and the
+spec wins over prose anywhere else.
 
 Why a module of its own: the runner produces the verdict and the validator has
 to be able to *disagree* with it. Both call the same pure functions on the same
@@ -9,15 +10,24 @@ numbers, so a hand-edited envelope whose verdict does not follow from its own
 measurements is caught by `checks.py` rather than believed. Nothing here
 imports anything but the standard library — the validator must stay offline.
 
-The vocabulary (§2):
+The vocabulary (v7 §A.1):
 
 * ``VINST``    — won against level 20, all four fields measured and green.
-* ``OK``       — a played ladder that lost somewhere, all four measured, green.
+* ``OK``       — a played ladder that did not win the top rung, all four
+                 measured and green. **A ladder that ended in a draw lands
+                 here**, per the owner's decision of 2026-08-25.
 * ``FAIL``     — some *measured* gate (a)-(d) fell. Beats every other value,
                  draw included.
 * ``OMÄTT``    — no measured gate fell, but at least one of the four fields is
                  unavailable. Never green, never OK.
-* ``OAVGJORD`` — the ladder ended in a draw with all four measured and green.
+
+``OAVGJORD`` is retired. It existed to flag one open owner question — what a
+draw should mean for the ladder — and the owner answered it: the ladder stops
+at a draw and no further rung is played, which is what the code already did,
+and the envelope is then judged by the ordinary rules. A verdict that means
+"nobody has decided yet" has nothing left to say once somebody has, so it is
+gone rather than kept as a synonym for OK. Envelopes still record *that* the
+ladder drew, in ``draw_semantik`` and in the rung's own ``draw`` flag.
 
 An unmeasured field is never a zero and never a pass: that is the one hard
 rule the bench already lives by (`docs/SPEC-telemetry-availability.md`).
@@ -30,7 +40,7 @@ from typing import Any
 
 #: The measurement contract a new run writes.
 #:
-#: 2 -> the five-value verdict, per-rung `measured`, optional `sources`.
+#: 2 -> the new verdict vocabulary, per-rung `measured`, optional `sources`.
 #: 3 -> `sources` is mandatory, and a measurement taken from KTX's own card
 #:      must name that card by path and sha256 so the validator can resolve it
 #:      and recount the number out of the bytes (Sol, 2026-08-24: a claim of
@@ -45,9 +55,22 @@ SUPPORTED_T4_SCHEMAS = (2, 3)
 #: From this contract version on, a KTX-sourced number must carry its card.
 T4_SCHEMA_CARD_REQUIRED = 3
 
-VERDICTS = ("VINST", "OK", "FAIL", "OMÄTT", "OAVGJORD")
+VERDICTS = ("VINST", "OK", "FAIL", "OMÄTT")
 #: The verdicts a reader may treat as "the tier is green".
 GREEN_VERDICTS = ("VINST", "OK")
+
+#: Retired by the owner decision of 2026-08-25 (v7 §A.1). Kept as a named
+#: literal so an envelope carrying it is refused with a message that says *why*
+#: rather than with a generic "not one of the four": a stale runner or a
+#: hand-edited envelope should be told which decision retired the word.
+#:
+#: Not a schema bump. `t4_schema` is the *measurement* contract, the vocabulary
+#: is not a measurement, and no real envelope anywhere in the tree or on the rig
+#: ever carried this value — only fixtures did (checked 2026-08-25, output in
+#: `WORK_LOGS/2026-08-25-korkvitto-k2-draw.md`). A new contract level would have
+#: preserved a retired word for zero rows of evidence, at the price of a
+#: schema-dependent `adjudicate` and two vocabularies to maintain forever.
+RETIRED_VERDICT = "OAVGJORD"
 
 #: Capability names, one per measurement path (§3). The envelope names the ones
 #: it could not measure in `capabilities.unavailable`, exactly like `t1:stall`.
@@ -78,9 +101,16 @@ BRANCH_TEAM = "brch"
 #: What a FAIL writes when no T1/T3 run of the same commit precedes it (§6).
 NO_CROSS_ALARM = "no matching T1/T3 run found"
 
-#: What an OAVGJORD envelope writes: the draw semantics (stop / replay /
-#: continue) is a flagged owner question, not something this code decided.
-DRAW_SEMANTICS = "ägarbeslut saknas"
+#: What a ladder that ended in a draw writes (v7 §A.1). The owner's words on
+#: 2026-08-25: "Vid oavgjort spelas inte nästa runda."
+#:
+#: The field hangs on the *ladder*, not on the verdict. Under v6 only an
+#: OAVGJORD envelope carried it, which meant a draw that also fell a gate
+#: recorded the draw nowhere but in the rung flag. The question "what did the
+#: ladder do at the draw?" has an answer the moment a draw happens, whatever
+#: the verdict turns out to be, so every drawn ladder answers it — FAIL and
+#: OMÄTT included.
+DRAW_SEMANTICS = "stanna, ägarbeslut 2026-08-25"
 
 # ---------------------------------------------------------------------------
 # Calibrated constants (§4). Every one of them was computed from the existing
@@ -701,11 +731,18 @@ def adjudicate(
     outcome: Any,
     limits: Any = None,
 ) -> dict[str, Any]:
-    """The whole verdict, in the spec's priority order (§5). First hit wins.
+    """The whole verdict, in the spec's priority order (v7 §A.3). First hit wins.
 
-    `outcome` is `ladder_outcome()`'s dict. The order is FAIL > OMÄTT >
-    OAVGJORD > VINST > OK, and it is not negotiable: a draw with a fallen
-    measured gate is a FAIL, and a run with an unavailable field is never OK.
+    `outcome` is `ladder_outcome()`'s dict. The order is FAIL > OMÄTT > VINST >
+    OK, and it is not negotiable: a draw with a fallen measured gate is a FAIL,
+    and a run with an unavailable field is never OK.
+
+    A draw no longer has a branch of its own. It falls through to OK, which is
+    where the owner's decision puts it: the ladder stopped, it did not beat
+    level 20, and `won_top` is false — so the ordinary rules already say OK
+    without a special case. The draw is still visible, in `draw_semantik`, in
+    the rung flag, and in `reached`, which counts only *won* rungs and so never
+    credits the drawn one.
     """
     outcome = outcome if isinstance(outcome, dict) else {}
     limits = limits if isinstance(limits, dict) else thresholds()
@@ -717,15 +754,16 @@ def adjudicate(
     elif missing:
         verdict = "OMÄTT"
         reason = "omätta fält: " + ", ".join(missing)
-    elif outcome.get("drew") is True:
-        verdict = "OAVGJORD"
-        reason = "stegen slutade oavgjort; alla fyra fält mätta och gröna"
     elif outcome.get("won_top") is True:
         verdict = "VINST"
         reason = "vann mot level 20; alla fyra fält mätta och gröna"
     else:
         verdict = "OK"
-        reason = "spelad stege; alla fyra fält mätta och gröna"
+        reason = (
+            "spelad stege som slutade oavgjort; alla fyra fält mätta och gröna"
+            if outcome.get("drew") is True
+            else "spelad stege; alla fyra fält mätta och gröna"
+        )
     return {
         "verdict": verdict,
         "failed_gates": failed,

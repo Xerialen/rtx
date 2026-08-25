@@ -19,6 +19,7 @@ from typing import Any
 
 from . import combat_lock as combat_lock_mod
 from . import evidence as evidence_mod
+from . import team_damage
 from .control import Control
 from .runlib import (
     RigLifecycle,
@@ -486,6 +487,43 @@ def match_demoinfo(demo_dir: Path | None, started_wallclock: float) -> Path | No
         return None
 
 
+def archive_card(
+    demo_dir: Path | None, started_wallclock: float, demos_dir: Path
+) -> dict[str, Any] | None:
+    """Copy this match's KTX card beside the envelope and pin its sha256.
+
+    A number read out of the card is only auditable if the card is still there
+    to be read (Sol, 2026-08-24). The runner therefore archives it into the
+    same `evidence/demos/` the MVDs go to and records the relative path plus
+    the digest of the bytes it wrote — the validator resolves exactly that path
+    and recounts the number out of exactly those bytes.
+
+    The source file is chosen by the same function that produced the numbers,
+    so the provenance can never point at a different card than the reading.
+
+    Lives beside `match_demoinfo` rather than in `t4.py` since 2026-08-25:
+    T3's K2 team-damage gate reads the same card and must archive it the same
+    way, and two copies of "how a card is archived" is how the two tiers would
+    start pinning different bytes. `t4.py` re-exports it, so its callers are
+    unchanged.
+    """
+    source = match_demoinfo(demo_dir, started_wallclock)
+    if source is None:
+        return None
+    try:
+        raw = source.read_bytes()
+        demos_dir.mkdir(parents=True, exist_ok=True)
+        target = demos_dir / source.name
+        target.write_bytes(raw)
+    except OSError as exc:
+        print(f"KTX card not archived: {exc}", flush=True)
+        return None
+    return {
+        "path": f"{demos_dir.name}/{source.name}",
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
 def _read_demoinfo_document(
     demo_dir: Path | None, started_wallclock: float
 ) -> dict[str, Any] | None:
@@ -544,6 +582,8 @@ def run(config: dict[str, Any]) -> Path:
     port_base = t3["control_port_base"]
     evidence_dir = config_path(config, config["paths"]["evidence_dir"])
     evidence_dir.mkdir(parents=True, exist_ok=True)
+    # Where K2's card is archived, beside the MVDs and beside the envelope.
+    demos_dir = config_path(config, config["paths"]["demos_dir"])
     with RigLock(port), RigLifecycle(t3):
         serverinfo = _preflight_serverinfo(config, host, port)
         map_name = serverinfo.get("map", "unknown")
@@ -624,7 +664,12 @@ def run(config: dict[str, Any]) -> Path:
                 wait_for_demo_flush(demo_dir, started_wallclock)
                 oracle = "control-status"
                 mvd = ""
-                demoinfo = _read_demoinfo(demo_dir, started_wallclock)
+                demoinfo_document = _read_demoinfo_document(
+                    demo_dir, started_wallclock
+                )
+                demoinfo = _read_demoinfo(
+                    demo_dir, started_wallclock, document=demoinfo_document
+                )
                 if demoinfo is not None:
                     frags_by_team, mvd = demoinfo
                     for side in sides:
@@ -641,12 +686,45 @@ def run(config: dict[str, Any]) -> Path:
                     duration,
                     config_path,
                 )
+                # K2 (v7 §B): the team-damage quota, off the server's own count.
+                # The card is archived beside the envelope first — a quota the
+                # validator cannot recount out of pinned bytes is unavailable,
+                # never a number, and `team_damage.block` drops the reading when
+                # the archiving failed.
+                k2_card = (
+                    archive_card(demo_dir, started_wallclock, demos_dir)
+                    if demoinfo_document is not None
+                    else None
+                )
+                if demoinfo_document is not None and k2_card is None:
+                    print(
+                        "KTX card could not be archived; K2 goes unavailable "
+                        "rather than reporting a quota with no provenance",
+                        flush=True,
+                    )
+                k2 = team_damage.block(
+                    demoinfo_document if k2_card is not None else None,
+                    k2_card,
+                    TEAM_BY_SIDE["branch"],
+                )
+                if k2["verdict"] == "OMÄTT":
+                    # The same declaration `t1:stall` makes: an absence is
+                    # named where every other tier names it, or it is silent.
+                    recorder.capabilities = {
+                        "telemetry": True,
+                        "unavailable": [team_damage.CAP_TEAM_DAMAGE],
+                        "note": (
+                            "K2 could not be measured: "
+                            + k2["reason"]
+                        ),
+                    }
                 payload_sides = [
                     side.payload_side(side_builds[side.side]) for side in sides
                 ]
                 frags = {item["side"]: item["frags"] for item in payload_sides}
                 diff = frags["branch"] - frags["reference"]
                 recorder.payload = {
+                    "t3_schema": team_damage.T3_SCHEMA,
                     "duration_s": duration,
                     "sides": payload_sides,
                     "result": {
@@ -662,6 +740,7 @@ def run(config: dict[str, Any]) -> Path:
                     "readiness": readiness,
                     "scoreboard": card,
                     "combat_lock": lock,
+                    "team_damage": k2,
                     "replicate_of": None,
                     "verdict": "PIPELINE-OK",
                 }

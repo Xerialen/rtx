@@ -123,11 +123,9 @@
   .verdict-chip.pass { color: var(--good); }
   .verdict-chip.fail { color: var(--bad); }
   .verdict-chip.partial { color: var(--warn); }
-  /* OMÄTT och OAVGJORD har egna klasser och ingen av dem är grön: ett omätt
-     kuvert får inte se ut som ett godkänt, och ett oavgjort är inte ett
-     resultat förrän ägaren sagt vad ett draw betyder. */
+  /* OMÄTT har en egen klass och den är inte grön: ett omätt kuvert får inte
+     se ut som ett godkänt. */
   .verdict-chip.unmeasured { color: var(--warn); border-style: dashed; }
-  .verdict-chip.draw { color: var(--ink-2); border-style: dashed; }
   .verdict-chip.not-run { color: var(--muted); }
   .step.active .verdict-chip { color: var(--halo); }
   .data-chip { color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
@@ -547,11 +545,10 @@ const TERM_TITLES = {
   "PASS": "alla trösklar klarade",
   "FAIL": "minst en tröskel missad",
   "PIPELINE-OK": "en singelmatch verifierar pipeline, inte grenkvalitet",
-  "COMPLETE": "pensionerat T4-verdikt: stegen kördes korrekt till första icke-vinst, men ingen av de fyra beteendegrindarna mättes — visas bara för de inventerade kuvert som fanns före femvärdesdomen",
+  "COMPLETE": "pensionerat T4-verdikt: stegen kördes korrekt till första icke-vinst, men ingen av de fyra beteendegrindarna mättes — visas bara för de inventerade kuvert som fanns före beteendedomen",
   "VINST": "vann mot level 20, och alla fyra beteendefält var mätta och gröna",
-  "OK": "spelad stege som förlorade någonstans, med alla fyra beteendefält mätta och gröna — OK utfärdas aldrig med förbehåll",
+  "OK": "spelad stege som inte vann mot level 20, med alla fyra beteendefält mätta och gröna — hit hör också en stege som slutade oavgjort (ägarbeslut 2026-08-25: vid oavgjort spelas inte nästa runda); OK utfärdas aldrig med förbehåll",
   "OMÄTT": "ingen mätt grind föll, men minst ett av de fyra fälten gick inte att mäta — räknas aldrig som grönt eller OK",
-  "OAVGJORD": "stegen slutade oavgjort med alla fyra fält mätta och gröna; vad ett draw ska betyda för stegen är en öppen ägarfråga",
   "FAILED": "körningen misslyckades; eventuell delpayload används inte",
   "ABORTED": "körningen avbröts; eventuell delpayload används inte",
   "OFULLSTÄNDIG": "envelopen saknar komplett användbar payload",
@@ -615,8 +612,9 @@ function evidenceLink(evidence, label) {
   return linkTag(evidence.link, label, evidenceTitle(evidence), "evidence-link");
 }
 
-// T4:s femvärdesdom (SPEC v6 §2). Kartan är den enda platsen som avgör om ett
-// verdict får se grönt ut, och OMÄTT/OAVGJORD står medvetet utanför "pass".
+// T4:s fyrvärdesdom (SPEC v7 §A.1). Kartan är den enda platsen som avgör om
+// ett verdict får se grönt ut, och OMÄTT står medvetet utanför "pass".
+// OAVGJORD utgick med ägarbeslutet 2026-08-25.
 // build_dashboard.py bär samma karta i T4_VERDICT_CLASS och skriver ut
 // verdictClass per T4-rad; ändras den ena måste den andra ändras med.
 const VERDICT_CLASS = {
@@ -624,7 +622,6 @@ const VERDICT_CLASS = {
   "VINST": "pass", "OK": "pass",
   "FAIL": "fail", "FAILED": "fail", "ABORTED": "fail",
   "OMÄTT": "unmeasured",
-  "OAVGJORD": "draw",
   "MÄTT": "partial", "FÖRSÖK": "partial"
 };
 
@@ -1275,10 +1272,33 @@ function renderT3() {
     '</div><div class="side-metrics">' +
     sideColumn(focusRun.branch, focus.sides.branch, compare ? ref.sides.branch : null) +
     sideColumn("main", focus.sides.main, compare ? ref.sides.main : null) + "</div>" +
+    teamDamageHtml(focus.teamDamage) +
     '<div class="callout" style="margin-top:12px"><strong>' + term("combat lock") +
     ".</strong> “kommer” betyder att " + term("MVD-demo") + " inte analyserats.</div>" +
     sourceNotes(focus) + mapHtml("t3", focus);
   document.getElementById("panel-t3").innerHTML = panelShell("t3", "Gren mot main", "4 mot 4 på DM3 · skott på · fem minuter", body);
+}
+
+// K2: lagskadegrinden (SPEC v7 §B, ägarbeslut 2026-08-25). Huvudtalet är
+// FULLKUVERTKVOTEN — lagskada inklusive självskada och telefragskada, delat med
+// all utdelad skada, räknat av servern (KTX) och inte ur demoströmmen.
+// De tre delkomponenterna står ALLTID under den, även när de är omätta: en rad
+// som försvinner när den saknas redovisar ingenting.
+function teamDamageHtml(k2) {
+  if (!k2) return "";
+  const pct = value => value == null ? "–" : (value * 100).toFixed(1).replace(".", ",") + " %";
+  const num = value => value == null ? "omätt" : fmt(value);
+  const rows = [
+    ["vapenskada på lagkamrat", k2.teamWeaponDamage],
+    ["telefragskada på lagkamrat", k2.teamTelefragDamage],
+    ["självskada", k2.selfDamage]
+  ].map(row => "<li>" + esc(row[0]) + ": <strong>" + esc(num(row[1])) + "</strong></li>").join("");
+  return '<div class="section-title">Lagskada (K2)</div>' +
+    '<div class="callout"><strong>' + verdictChip(k2.verdict) + " " +
+    esc(pct(k2.share)) + "</strong> av " + esc(num(k2.totalGiven)) +
+    " utdelade skadepoäng gick till det egna laget (tak " + esc(pct(k2.shareMax)) +
+    "). Källa: serverns egen räkning." +
+    "<ul style=\"margin:6px 0 0 18px\">" + rows + "</ul></div>";
 }
 
 function rungHtml(rung, reference) {

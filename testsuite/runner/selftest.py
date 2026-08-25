@@ -1,6 +1,7 @@
 """Offline schema conformance test over versioned fixtures."""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -106,6 +107,220 @@ def _t2_units() -> list[str]:
     return failures
 
 
+def _k2_units() -> list[str]:
+    """K2's own arithmetic, one check per negative control in SPEC v7 §B.6.
+
+    The fixtures prove what a written T3 envelope may look like. These prove the
+    rules underneath: the seam on both sides of 20 %, that an unreadable card
+    produces `None` and never a zero, that a zero denominator is an absence
+    rather than a perfect score, and that the per-weapon split is not believed
+    until the card has been shown to express it.
+
+    The first check is the load-bearing one: it feeds the module the exact
+    totals QA recounted out of the 54-5 match on 2026-08-25 and demands the
+    number QA published. The formula is pinned to a known answer, not merely to
+    itself.
+    """
+    from . import team_damage
+
+    failures: list[str] = []
+
+    def check(name: str, got: Any, want: Any) -> None:
+        if got != want:
+            failures.append(f"{name}: got {got!r}, want {want!r}")
+
+    def card(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        return {"version": 3, "teams": ["ref", "brch"], "players": rows}
+
+    def row(
+        team: str,
+        given: Any,
+        mate: Any,
+        own: Any,
+        weapons: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "name": f"{team}1",
+            "team": team,
+            "dmg": {"given": given, "team": mate, "self": own},
+            "weapons": weapons if weapons is not None else {},
+        }
+
+    # QA's own recount of the 54-5 match (`2026-08-25-qa-dom-validering.md` §2):
+    # 6046 + 800 to the enemy, 254 + 700 to teammates, 311 to themselves. The
+    # card's `dmg.given` already carries enemy weapon + enemy telefrag, and
+    # `dmg.team` the two teammate rows.
+    qa = team_damage.measure(card([row("brch", 6846, 954, 311)]))
+    check("k2.qa_total", qa["measured"]["total_given"], 8111)
+    check("k2.qa_share", qa["measured"]["team_share"], round(1265 / 8111, 6))
+    check("k2.qa_share_is_QA_15_6_percent", round(qa["measured"]["team_share"] * 100, 1), 15.6)
+    # And under the owner's raised ceiling that match passes: 15,6 % <= 20 %.
+    # The whole point of the 20 % figure is that the strictest reading of the
+    # only match anybody has recounted fits inside it.
+    check("k2.qa_passes_at_20", team_damage.adjudicate(qa["measured"])["verdict"], "OK")
+    # It would not have passed a 5 % gate, which is what the owner raised.
+    check(
+        "k2.qa_would_fell_at_5",
+        team_damage.adjudicate(
+            qa["measured"], {"team_damage_share_max": 0.05}
+        )["verdict"],
+        "FAIL",
+    )
+
+    # The seam, both sides. 200/1000 is exactly the double the literal 0.20
+    # names, so equal does not fell; one more point of self damage does.
+    at = team_damage.measure(card([row("brch", 800, 150, 50)]))
+    check("k2.seam_at_share", at["measured"]["team_share"], 0.2)
+    check("k2.seam_at", team_damage.adjudicate(at["measured"])["verdict"], "OK")
+    check("k2.seam_at_gates", team_damage.failed_gates(at["measured"]), [])
+    above = team_damage.measure(card([row("brch", 800, 150, 51)]))
+    check("k2.seam_above", team_damage.adjudicate(above["measured"])["verdict"], "FAIL")
+    check(
+        "k2.seam_above_gate_name",
+        team_damage.failed_gates(above["measured"]),
+        ["k2:team_damage_share"],
+    )
+    below = team_damage.measure(card([row("brch", 800, 149, 50)]))
+    check("k2.seam_below", team_damage.adjudicate(below["measured"])["verdict"], "OK")
+
+    # Unmeasurable is None, never zero — one malformed component at a time.
+    for label, bad in (
+        ("non_numeric", "many"),
+        ("negative", -1),
+        ("fractional", 1.5),
+        ("missing", None),
+    ):
+        broken = row("brch", 800, 150, 50)
+        if bad is None:
+            del broken["dmg"]["self"]
+        else:
+            broken["dmg"]["self"] = bad
+        reading = team_damage.measure(card([broken]))
+        check(f"k2.malformed.{label}.share", reading["measured"]["team_share"], None)
+        check(f"k2.malformed.{label}.total", reading["measured"]["total_given"], None)
+        check(
+            f"k2.malformed.{label}.verdict",
+            team_damage.adjudicate(reading["measured"])["verdict"],
+            "OMÄTT",
+        )
+    # A boolean is not a counter either: `True` would otherwise sum as 1.
+    lied = row("brch", 800, 150, True)
+    check(
+        "k2.malformed.boolean",
+        team_damage.measure(card([lied]))["measured"]["total_given"],
+        None,
+    )
+
+    # A team with no rows on the card is an absence, not a clean sheet.
+    check(
+        "k2.no_rows",
+        team_damage.measure(card([row("ref", 800, 0, 0)]))["measured"]["team_share"],
+        None,
+    )
+
+    # Zero denominator: the quota is undefined, so it is OMÄTT. It hides
+    # nothing — a zero total forces a zero numerator.
+    empty = team_damage.measure(card([row("brch", 0, 0, 0)]))
+    check("k2.zero_total", empty["measured"]["total_given"], 0)
+    check("k2.zero_share", empty["measured"]["team_share"], None)
+    check("k2.zero_verdict", team_damage.adjudicate(empty["measured"])["verdict"], "OMÄTT")
+    check("k2.zero_gates", team_damage.failed_gates(empty["measured"]), [])
+
+    # The component split, and its negative control. A card that expresses no
+    # per-weapon damage anywhere cannot say the weapon share is zero.
+    silent = team_damage.measure(card([row("brch", 800, 150, 50)]))
+    check("k2.components_silent_card", silent["components"]["team_weapon_damage"], None)
+    check("k2.components_silent_telefrag", silent["components"]["team_telefrag_damage"], None)
+    check("k2.components_self_always", silent["components"]["self_damage"], 50)
+    check("k2.expresses_silent", team_damage.expresses_weapon_damage(card([row("brch", 800, 150, 50)])), False)
+
+    spoken = card(
+        [
+            row("brch", 800, 150, 50, {"rl": {"damage": {"enemy": 700, "team": 90}}}),
+            row("ref", 100, 0, 0, {"rl": {"damage": {"enemy": 100, "team": 0}}}),
+        ]
+    )
+    split = team_damage.measure(spoken)
+    check("k2.expresses_spoken", team_damage.expresses_weapon_damage(spoken), True)
+    check("k2.components_weapon", split["components"]["team_weapon_damage"], 90)
+    check("k2.components_telefrag", split["components"]["team_telefrag_damage"], 60)
+    # A weapon our side never fired has no `damage` block, and that is a zero
+    # for that weapon once the card has been shown to express the block.
+    partial = card(
+        [
+            row("brch", 800, 150, 50, {"rl": {"damage": {"enemy": 700, "team": 90}}, "lg": {"deaths": 1}}),
+            row("ref", 100, 0, 0, {"rl": {"damage": {"enemy": 100, "team": 0}}}),
+        ]
+    )
+    check(
+        "k2.components_absent_weapon_block",
+        team_damage.measure(partial)["components"]["team_weapon_damage"],
+        90,
+    )
+    # An unreadable `damage` block is a card we do not understand, not a zero.
+    unreadable = card(
+        [
+            row("brch", 800, 150, 50, {"rl": {"damage": {"enemy": 700, "team": "lots"}}}),
+            row("ref", 100, 0, 0, {"rl": {"damage": {"enemy": 100, "team": 0}}}),
+        ]
+    )
+    check(
+        "k2.components_unreadable",
+        team_damage.measure(unreadable)["components"]["team_weapon_damage"],
+        None,
+    )
+    # Weapon posts above the card's own team total are internally inconsistent,
+    # so the difference is not reported as a telefrag count — but the headline,
+    # which reads `dmg.team` directly, stands.
+    inconsistent = card(
+        [
+            row("brch", 800, 150, 50, {"rl": {"damage": {"enemy": 700, "team": 400}}}),
+            row("ref", 100, 0, 0, {"rl": {"damage": {"enemy": 100, "team": 0}}}),
+        ]
+    )
+    reading = team_damage.measure(inconsistent)
+    check("k2.inconsistent_telefrag", reading["components"]["team_telefrag_damage"], None)
+    check("k2.inconsistent_headline", reading["measured"]["team_share"], 0.2)
+
+    # The two real archived cards, recounted out of their own bytes.
+    cards = Path(__file__).resolve().parent.parent / "schema" / "fixtures" / "cards"
+    t3_card = team_damage.recount_card(
+        (cards / "ktx-demoinfo-20260824-1635-t3.json").read_bytes()
+    )
+    check("k2.real_t3.total", t3_card["measured"]["total_given"], 2700)
+    check("k2.real_t3.share", t3_card["measured"]["team_share"], round(1000 / 2700, 6))
+    check("k2.real_t3.components", t3_card["components"]["team_weapon_damage"], None)
+    t4_card = team_damage.recount_card(
+        (cards / "ktx-demoinfo-20260824-1642.json").read_bytes()
+    )
+    check("k2.real_t4.total", t4_card["measured"]["total_given"], 1100)
+    check("k2.real_t4.share", t4_card["measured"]["team_share"], round(1000 / 1100, 6))
+    # This one DOES express weapon damage — on the frog rows — so brch's zero
+    # is a real reading and the whole 1000 is telefrag.
+    check("k2.real_t4.weapon", t4_card["components"]["team_weapon_damage"], 0)
+    check("k2.real_t4.telefrag", t4_card["components"]["team_telefrag_damage"], 1000)
+    check("k2.real_t4.sha", t4_card["sha256"], hashlib.sha256(
+        (cards / "ktx-demoinfo-20260824-1642.json").read_bytes()).hexdigest())
+
+    # A card that will not parse is not a card, and the digest still stands so
+    # the refusal can name the bytes it refused.
+    junk = team_damage.recount_card(b"{not json")
+    check("k2.unparseable.readable", junk["readable"], False)
+    check("k2.unparseable.share", junk["measured"]["team_share"], None)
+
+    # The gate constant is the owner's, and the block copies it verbatim so the
+    # validator can refuse a run that restated it.
+    check("k2.threshold", team_damage.TEAM_DAMAGE_SHARE_MAX, 0.20)
+    check("k2.thresholds_block", team_damage.thresholds(), {"team_damage_share_max": 0.20})
+    # Without an archived card the runner reports nothing at all, whatever the
+    # document said: a quota nobody can recount is unavailable.
+    unprovenanced = team_damage.block(card([row("brch", 800, 150, 50)]), None)
+    check("k2.unprovenanced.verdict", unprovenanced["verdict"], "OMÄTT")
+    check("k2.unprovenanced.share", unprovenanced["measured"]["team_share"], None)
+    check("k2.unprovenanced.source", unprovenanced["source"], None)
+    return failures
+
+
 def _t4_units() -> list[str]:
     """The T4 dom's own arithmetic, one check per negative control in SPEC v6 §7.
 
@@ -150,8 +365,28 @@ def _t4_units() -> list[str]:
 
     # NK 3 / NK 5.1: a draw with a fallen measured gate is a FAIL, not a draw.
     check("nk3.draw_with_gate", verdict({**green, "shots_fired": 0}, drew), "FAIL")
-    # NK 4: a draw with all four green is OAVGJORD.
-    check("nk4.clean_draw", verdict(green, drew), "OAVGJORD")
+    # NK 4 (v7 §A.4, owner decision 2026-08-25): a draw with all four green is
+    # judged by the ordinary rules, which makes it OK — not VINST, and no
+    # longer a verdict of its own. The draw is still recorded, in the reason and
+    # in `draw_semantik`.
+    check("nk4.clean_draw", verdict(green, drew), "OK")
+    check(
+        "nk4.reason_says_draw",
+        t4_dom.adjudicate(green, drew)["reason"],
+        "spelad stege som slutade oavgjort; alla fyra fält mätta och gröna",
+    )
+    # NK 22: the retired verdict is gone from the vocabulary, and named so a
+    # stale runner can be told which decision retired it.
+    check("nk22.retired_not_in_vocabulary", t4_dom.RETIRED_VERDICT in t4_dom.VERDICTS, False)
+    check("nk22.four_values", t4_dom.VERDICTS, ("VINST", "OK", "FAIL", "OMÄTT"))
+    # NK 17, draw arm: priority 2 beats priority 5, so a draw with an
+    # unavailable field is OMÄTT and never OK.
+    check(
+        "nk17.draw_unmeasured",
+        verdict({**green, "item_pickups": None}, drew),
+        "OMÄTT",
+    )
+    check("nk4.semantics_text", t4_dom.DRAW_SEMANTICS, "stanna, ägarbeslut 2026-08-25")
     # NK 11: the top rung with all four green is VINST; NK 5.5: a played and
     # lost ladder with all four green is OK.
     check("nk11.top_rung", verdict(green, climbed), "VINST")
@@ -1263,12 +1498,28 @@ def _t3_path_units() -> list[str]:
                 {
                     "demo": f"{match_stem}.mvd",
                     "map": "dm3",
+                    # The card also carries K2's damage counters, so the T3
+                    # path's own gate is exercised end to end rather than only
+                    # in units: 4x(100 team + 50 self) over 4x1000 dealt is
+                    # 600/4600 = 13,0 %, inside the owner's 20 % ceiling.
                     "players": [
-                        {"name": f"brch{n}", "team": "brch", "stats": {"frags": f}}
+                        {
+                            "name": f"brch{n}",
+                            "team": "brch",
+                            "stats": {"frags": f},
+                            "dmg": {"given": 1000, "team": 100, "self": 50},
+                            "weapons": {"rl": {"damage": {"enemy": 1000, "team": 100}}},
+                        }
                         for n, f in enumerate((14, 14, 13, 13), start=1)
                     ]
                     + [
-                        {"name": f"ref{n}", "team": "ref", "stats": {"frags": f}}
+                        {
+                            "name": f"ref{n}",
+                            "team": "ref",
+                            "stats": {"frags": f},
+                            "dmg": {"given": 100, "team": 0, "self": 0},
+                            "weapons": {"rl": {"damage": {"enemy": 100, "team": 0}}},
+                        }
                         for n, f in enumerate((2, 1, 1, 1), start=1)
                     ],
                 }
@@ -1343,6 +1594,25 @@ def _t3_path_units() -> list[str]:
         check("t3path.envelope_has_no_error", document.get("error"), None)
         payload = document.get("payload", {})
         check("t3path.verdict", payload.get("verdict"), "PIPELINE-OK")
+        # K2 travelled the whole path: the card was archived beside the
+        # envelope, the quota was computed from it, and the components are
+        # reported separately whether or not the gate had anything to say.
+        k2 = payload.get("team_damage", {})
+        check("t3path.k2_schema", payload.get("t3_schema"), 1)
+        check("t3path.k2_verdict", k2.get("verdict"), "OK")
+        check("t3path.k2_share", k2.get("measured", {}).get("team_share"), round(600 / 4600, 6))
+        check("t3path.k2_components", k2.get("components"), {
+            "team_weapon_damage": 400,
+            "team_telefrag_damage": 0,
+            "self_damage": 200,
+        })
+        check("t3path.k2_source", k2.get("source"), "ktx/demoinfo")
+        check(
+            "t3path.k2_card_archived",
+            (Path(path).parent / (k2.get("card") or {}).get("path", "nowhere")).exists(),
+            True,
+        )
+        check("t3path.k2_no_capability_declared", document.get("capabilities"), None)
         check("t3path.oracle", payload.get("result", {}).get("oracle"), "ktx-demoinfo")
         # The frags come out of the card the chooser picked, so this number is
         # also the proof that it picked the match's card and not the empty one.
@@ -1419,6 +1689,7 @@ def run(fixtures: str | Path) -> tuple[int, int]:
     if stale:
         failures.append(f"expected.json names missing fixtures: {sorted(stale)}")
     failures.extend(_t2_units())
+    failures.extend(_k2_units())
     failures.extend(_t4_units())
     failures.extend(_name_resolution_units())
     failures.extend(_demo_selector_units())
