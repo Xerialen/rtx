@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import tempfile
@@ -375,6 +376,60 @@ DEMO_FLUSH_TIMEOUT_S = 90.0
 #: The demo is considered written once its size has held still for this long.
 DEMO_FLUSH_STABLE_S = 3.0
 
+#: KTX and mvdsv name a recording after the minute it *started*, e.g.
+#: `4on4_brch_vs_ref[dm3]20260825-0703.mvd`. That stamp is the only fact on disk
+#: tying a file to a match rather than to a moment.
+_DEMO_NAME_STAMP = re.compile(r"\d{8}-\d{4}")
+
+#: How far *before* the match a recording's name stamp may sit and still be this
+#: match's demo. The stamp is truncated to the minute, so a recording that began
+#: at 07:03:59 is named `0703` — at most 59 s "early". Nothing smaller is enough
+#: and nothing larger is safe: two minutes of slack starts admitting the
+#: previous match's demo.
+DEMO_NAME_SLACK_S = 60.0
+
+
+def demo_stamp_epoch(path: "Path") -> float | None:
+    """Local epoch seconds of the `YYYYMMDD-HHMM` stamp in a demo's name."""
+    found = _DEMO_NAME_STAMP.findall(path.stem)
+    if not found:
+        return None
+    try:
+        return datetime.strptime(found[-1], "%Y%m%d-%H%M").timestamp()
+    except ValueError:
+        return None
+
+
+def select_match_demo(
+    candidates: "list[Path]",
+    since_wallclock: float,
+    slack_s: float = DEMO_NAME_SLACK_S,
+) -> "Path | None":
+    """The recording that belongs to *this match* — not merely the newest file.
+
+    KTX opens a fresh recording as soon as the match ends, so "the newest .mvd
+    in the directory" names the wrong file at exactly the moment a runner asks.
+    On 2026-08-25 the flush wait sat on `...20260825-0709.mvd` — 0 bytes,
+    recorded after the match — for its full 90 s while the match's own
+    `...20260825-0703.mvd` (3 102 072 bytes) lay finished beside it. Every field
+    that reads the demo went unavailable although the demo existed
+    (validation round, avvikelse 2).
+
+    This match's recording is the *first* one that started at or after the match
+    did: a recording cannot predate the clients that caused it. A file whose
+    name carries no stamp falls back to the old newest-by-mtime rule, so a demo
+    naming scheme this function does not understand degrades to the previous
+    behaviour rather than to nothing at all.
+    """
+    stamped = [
+        (stamp, path.name, path)
+        for path, stamp in ((path, demo_stamp_epoch(path)) for path in candidates)
+        if stamp is not None and stamp >= since_wallclock - slack_s
+    ]
+    if stamped:
+        return min(stamped)[2]
+    return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
+
 
 def wait_for_demo_flush(
     demo_dir: "Path | None",
@@ -397,7 +452,9 @@ def wait_for_demo_flush(
 
     The observable is the file itself rather than the journal: the bench does
     not read journald, and "size > 0 and no longer growing" is the same fact
-    the "recording completed" line reports.
+    the "recording completed" line reports. *Which* file is `select_match_demo`
+    — the match's own recording, never the post-match one KTX opens seconds
+    later.
 
     Returns a receipt, and never raises. A timeout is reported honestly and
     loudly and then flows into the ordinary unavailable path: a ladder that was
@@ -418,22 +475,22 @@ def wait_for_demo_flush(
     last_size: int | None = None
     steady_since: float | None = None
     while time.monotonic() - began < timeout_s:
-        newest = None
+        chosen = None
         try:
             candidates = [
                 path
                 for path in demo_dir.glob("*.mvd")
                 if path.stat().st_mtime >= since_wallclock - 5
             ]
-            newest = max(candidates, key=lambda p: p.stat().st_mtime, default=None)
+            chosen = select_match_demo(candidates, since_wallclock)
         except OSError:
             candidates = []
-        if newest is not None:
+        if chosen is not None:
             try:
-                size = newest.stat().st_size
+                size = chosen.stat().st_size
             except OSError:
                 size = 0
-            receipt["path"] = newest.name
+            receipt["path"] = chosen.name
             receipt["bytes"] = size
             if size > 0:
                 if size == last_size:

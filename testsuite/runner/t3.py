@@ -20,7 +20,14 @@ from typing import Any
 from . import combat_lock as combat_lock_mod
 from . import evidence as evidence_mod
 from .control import Control
-from .runlib import RigLifecycle, RigLock, RunRecorder, config_path
+from .runlib import (
+    RigLifecycle,
+    RigLock,
+    RunRecorder,
+    config_path,
+    select_match_demo,
+    wait_for_demo_flush,
+)
 from .t2 import _mean, _summarize_cells
 
 TEAM_BY_SIDE = {"branch": "brch", "reference": "ref"}
@@ -452,13 +459,19 @@ def _combat_lock(
     }
 
 
-def newest_demoinfo(demo_dir: Path | None, started_wallclock: float) -> Path | None:
-    """The KTX card file this match just produced, or None.
+def match_demoinfo(demo_dir: Path | None, started_wallclock: float) -> Path | None:
+    """The KTX card file this match produced, or None.
 
     Public because T4 needs the *path* as well as the contents: a measurement
     read out of this card is only checkable if the card it came from is
     archived beside the envelope and named there (Sol, 2026-08-24). One
     chooser, so the number and its provenance can never point at two files.
+
+    Was `newest_demoinfo` until 2026-08-25, and picking the newest card is the
+    same mistake `select_match_demo` was written for: KTX writes a second card
+    for the recording it opens after the match. The chooser is now shared with
+    the demo flush wait, so the card, the MVD and the wait can never disagree
+    about which match they are talking about.
     """
     if demo_dir is None:
         return None
@@ -468,11 +481,9 @@ def newest_demoinfo(demo_dir: Path | None, started_wallclock: float) -> Path | N
             for path in demo_dir.glob("*.txt")
             if path.stat().st_mtime >= started_wallclock - 5
         ]
+        return select_match_demo(candidates, started_wallclock)
     except OSError:
         return None
-    if not candidates:
-        return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
 def _read_demoinfo_document(
@@ -486,13 +497,13 @@ def _read_demoinfo_document(
     when the MVD is missing or empty (spec addendum to v6 §3). Both callers
     must see the same file, so the choosing happens once, here.
     """
-    newest = newest_demoinfo(demo_dir, started_wallclock)
-    if newest is None:
+    card = match_demoinfo(demo_dir, started_wallclock)
+    if card is None:
         return None
     import json
 
     try:
-        document = json.loads(newest.read_text(encoding="utf-8", errors="replace"))
+        document = json.loads(card.read_text(encoding="utf-8", errors="replace"))
     except (OSError, ValueError):
         return None
     return document if isinstance(document, dict) else None
@@ -606,14 +617,14 @@ def run(config: dict[str, Any]) -> Path:
                 # mvdsv holds the recording in memory and writes it when KTX
                 # stops recording; a fixed sleep let the teardown kill 19 of 53
                 # T3 demos mid-cache. Wait for the file, bounded.
+                demo_dir_value = t3.get("demoinfo_dir", "")
+                demo_dir = (
+                    config_path(config, demo_dir_value) if demo_dir_value else None
+                )
                 wait_for_demo_flush(demo_dir, started_wallclock)
                 oracle = "control-status"
                 mvd = ""
-                demo_dir_value = t3.get("demoinfo_dir", "")
-                demoinfo = _read_demoinfo(
-                    config_path(config, demo_dir_value) if demo_dir_value else None,
-                    started_wallclock,
-                )
+                demoinfo = _read_demoinfo(demo_dir, started_wallclock)
                 if demoinfo is not None:
                     frags_by_team, mvd = demoinfo
                     for side in sides:
@@ -624,7 +635,7 @@ def run(config: dict[str, Any]) -> Path:
                 lock = _combat_lock(config, mvd)
                 card = evidence_mod.match_scoreboard(
                     config,
-                    config_path(config, demo_dir_value) if demo_dir_value else None,
+                    demo_dir,
                     mvd,
                     map_name,
                     duration,

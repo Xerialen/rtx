@@ -48,7 +48,7 @@ from .t3 import (
     _movement_check,
     _read_demoinfo,
     _read_demoinfo_document,
-    newest_demoinfo,
+    match_demoinfo,
     _udp_serverinfo,
     _wait_serverinfo,
 )
@@ -381,7 +381,7 @@ def archive_card(
     The source file is chosen by the same function that produced the numbers,
     so the provenance can never point at a different card than the reading.
     """
-    source = newest_demoinfo(demo_dir, started_wallclock)
+    source = match_demoinfo(demo_dir, started_wallclock)
     if source is None:
         return None
     try:
