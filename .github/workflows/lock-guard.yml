@@ -2,15 +2,27 @@
 # Forbjudet har: paths:, paths-ignore:, continue-on-error, och if: som skippar
 # jobbet eller fallsteget (GitHub raknar skipped som pass pa required checks).
 #
-# Triggern ar `pull_request_target` med FLIT: den kor alltid BASGRENENS version
-# av den har filen, sa en PR kan inte avvapna sin egen vakt. Priset ar att
-# kontexten far en skrivtoken - darfor checkar jobbet ALDRIG ut och exekverar
-# ALDRIG PR-kod. Det laser andrade filvagar via API, som text, och inget annat.
-# Behorigheterna ar dessutom nedskruvade till read nedan.
+# Triggern `pull_request_target` ar vald med FLIT: den kor alltid BASGRENENS
+# version av den har filen, sa en PR kan inte avvapna sin egen vakt. Priset ar
+# att kontexten far en skrivtoken - darfor checkar jobbet ALDRIG ut och
+# exekverar ALDRIG PR-kod. Det laser andrade filvagar via API, som text, och
+# inget annat. Behorigheterna ar dessutom nedskruvade till read nedan.
+#
+# `push` pa main tillkom 25/8 och stanger ett belagt fonster: merge-commiten ar
+# ingen PR-handelse, sa `pull_request_target` ser den aldrig. Pa merge-commiten
+# 35135c66 (PR #68) fanns `ra-room-lock` och `ring2quad-lock` bland check-runs -
+# men inte `lock-guard`. Push-armen laser ocksa bara via API, ingen checkout.
 name: lock-guard
 
 on:
   pull_request_target:
+  # Bara main - med flit. En push-trigger utan grenfilter skulle ge ett ANDRA
+  # check-run med namnet `lock-guard` pa varje PR fran en gren i samma repo,
+  # och da avgor tajmingen vilket av dem det obligatoriska kravet laser.
+  # `branches:` ar ett trigger-filter pa handelsen, inte ett `paths:`-filter och
+  # inte ett skippande `if:`: nar jobbet val startat kan det bara ga eller falla.
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -24,30 +36,101 @@ jobs:
       run:
         shell: bash --noprofile --norc -euo pipefail {0}
     steps:
-      - name: vakt - ingen PR far rora .github/workflows eller CODEOWNERS
+      - name: vakt - varken PR eller push far rora .github/workflows eller CODEOWNERS
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          HANDELSE: ${{ github.event_name }}
+          FORE: ${{ github.event.before }}
+          EFTER: ${{ github.sha }}
         run: |
-          # Hamta andrade filvagar via API. Ingen checkout, ingen PR-kod korn.
-          # previous_filename tas med: annars kan en workflow smitas ut ur
-          # katalogen genom att dopas om.
+          # Ingen checkout nagonstans i det har steget. Alla avlasningar ar
+          # API-anrop som ger TEXT (filvagar och blob-sha:er).
           changed=$(mktemp)
-          gh api "repos/${REPO}/pulls/${PR}/files" --paginate \
-            --jq '.[] | .filename, (.previous_filename // empty)' > "$changed"
-          want=$(gh api "repos/${REPO}/pulls/${PR}" --jq '.changed_files')
+          want=""
+          status=""
+          yta_fore=$(mktemp)
+          yta_efter=$(mktemp)
 
-          echo "--- andrade filvagar ---"
-          sed 's/^/   /' "$changed"
-          echo "--- slut ---"
+          # Fingeravtryck av den skyddade ytan vid en given ref: varje fil i
+          # .github/workflows plus .github/CODEOWNERS, med blob-sha.
+          # CODEOWNERS lases ur listningen av .github (inte som egen fil), sa
+          # att en franvarande CODEOWNERS ger tom rad i stallet for 404 - da
+          # avbryter inte steget, men skillnaden mellan refs syns anda.
+          # Ett API-fel har ger icke-noll och avbryter steget (set -e): fail-closed.
+          yta() {
+            gh api "repos/${REPO}/contents/.github/workflows?ref=$1" \
+              --jq '.[] | "\(.path) \(.sha)"'
+            gh api "repos/${REPO}/contents/.github?ref=$1" \
+              --jq '.[] | select(.name == "CODEOWNERS") | "\(.path) \(.sha)"'
+          }
+
+          if [ "$HANDELSE" = "push" ]; then
+            # En nyskapad gren ger FORE = 40 nollor: da finns ingen foregaende
+            # tipp att jamfora mot och grinden faller hellre an gissar.
+            case "$FORE" in
+              0000000000000000000000000000000000000000)
+                echo "lock-guard: FALLD - before-sha ar nollor (nyskapad ref, ingen foregangare)"
+                exit 1
+                ;;
+              ''|*[!0-9a-f]*)
+                echo "lock-guard: FALLD - ogiltig before-sha '${FORE}'"
+                exit 1
+                ;;
+            esac
+
+            # Ett anrop, tva avlasningar. compare(FORE...EFTER) ar diffen mot
+            # forra main-tippen; for en merge-commit lagd ovanpa den tippen ar
+            # det commitens forsta foralder. Ingen --paginate: endpointen ger
+            # upp till 300 filer i ett svar, och taket tacks av yta-jamforelsen
+            # i karnans steg (d), inte av att lista fler vagar.
+            cmp_json=$(mktemp)
+            gh api "repos/${REPO}/compare/${FORE}...${EFTER}" > "$cmp_json"
+            status=$(jq -r '.status' "$cmp_json")
+            jq -r '.files[]? | .filename, (.previous_filename // empty)' "$cmp_json" > "$changed"
+
+            yta "$FORE"  | sort > "$yta_fore"
+            yta "$EFTER" | sort > "$yta_efter"
+
+            echo "--- push ${FORE} -> ${EFTER} (mot forra main-tippen = forsta foraldern) ---"
+            sed 's/^/   /' "$changed"
+            echo "--- skyddad yta FORE ---"
+            sed 's/^/   /' "$yta_fore"
+            echo "--- skyddad yta EFTER ---"
+            sed 's/^/   /' "$yta_efter"
+            echo "--- slut ---"
+          else
+            # Hamta andrade filvagar via API. Ingen checkout, ingen PR-kod korn.
+            # previous_filename tas med: annars kan en workflow smitas ut ur
+            # katalogen genom att dopas om.
+            gh api "repos/${REPO}/pulls/${PR}/files" --paginate \
+              --jq '.[] | .filename, (.previous_filename // empty)' > "$changed"
+            want=$(gh api "repos/${REPO}/pulls/${PR}" --jq '.changed_files')
+
+            echo "--- andrade filvagar ---"
+            sed 's/^/   /' "$changed"
+            echo "--- slut ---"
+          fi
 
           # >>> LOCK-GUARD-KARNA
-          # Beslutslogiken. Ror ALDRIG PR-kod - den ser bara filvagar som text.
+          # Beslutslogiken. Ror ALDRIG PR-kod eller pushad kod - den ser bara filvagar
+          # och blob-sha:er som redan hamtats som TEXT via API. Ingen checkout finns i
+          # filen. Tva armar mot samma skyddade yta:
+          #   guard()      - PR-armen (pull_request_target). Logiken oforandrad sedan 23/8.
+          #   guard_push() - push-armen (merge-commiten pa main). Se kommentaren dar.
+          # Varje oklart lage faller - grinden ar fail-closed i bada armarna.
+
+          # Den skyddade ytan star EN gang och lases av bada armarna. Star den pa tva
+          # stallen kan en framtida utvidgning hamna i bara den ena - precis den sortens
+          # glapp som push-armen finns for att tacka.
+          SKYDDADE_VAGAR='^\.github/workflows/|^\.github/CODEOWNERS$'
+
+          # PR-armen.
           #   $1 = fil med andrade filvagar, en per rad (inkl. previous_filename)
           #   $2 = antal andrade filer som PR-objektet sjalvt uppger (changed_files)
           # Faller (retur 1) vid: ogiltigt antal, noll filer, trunkerad lista, eller
-          # traff pa skyddad vag. Varje oklart lage faller - grinden ar fail-closed.
+          # traff pa skyddad vag.
           guard() {
             local list="$1"
             local want="$2"
@@ -69,7 +152,7 @@ jobs:
               echo "lock-guard: FALLD - farre vagar an PR uppger (trunkerad lista)"
               return 1
             fi
-            hits=$(grep -E '^\.github/workflows/|^\.github/CODEOWNERS$' "$list" | sort -u || true)
+            hits=$(grep -E "$SKYDDADE_VAGAR" "$list" | sort -u || true)
             if [ -n "$hits" ]; then
               echo "lock-guard: FALLD - PR ror skyddade vagar:"
               echo "$hits" | sed 's/^/  - /'
@@ -79,6 +162,78 @@ jobs:
             echo "lock-guard: OK - inga skyddade vagar rorda"
             return 0
           }
+
+          # Push-armen. Merge-commiten pa main ar ingen PR-handelse, sa PR-armens tva
+          # kallor (pulls/N/files och changed_files) finns inte har. Motsvarigheterna:
+          #   $1 = fil med andrade filvagar ur compare(BEFORE...AFTER), dvs. diffen mot
+          #        forra main-tippen. For en merge-commit som lagts ovanpa tippen ar det
+          #        exakt diffen mot commitens FORSTA FORALDER.
+          #   $2 = .status ur samma compare ("ahead" / "identical" / "behind" / "diverged")
+          #   $3 = fingeravtryck av den skyddade ytan vid BEFORE (filvag + blob-sha/rad)
+          #   $4 = samma fingeravtryck vid AFTER
+          # (a)-(c) ar vagdiffen, samma regel som PR-armen. (d) ar den oberoende andra
+          # kallan som ersatter changed_files.
+          guard_push() {
+            local list="$1"
+            local status="$2"
+            local fore="$3"
+            local efter="$4"
+            local n
+            local hits
+
+            # (a) Kompareringen maste vara en ren pafyllning av main. "ahead" = AFTER
+            # innehaller BEFORE, dvs. normalfallet: nya commits ovanpa forra tippen.
+            # "behind"/"diverged" betyder att historien skrevs om med force-push; da ar
+            # "vad pushen tillforde" inte val-definierat och grinden faller hellre.
+            case "$status" in
+              ahead|identical) ;;
+              *)
+                echo "lock-guard: FALLD - compare-status='${status}' (omskriven historia/force-push)"
+                return 1
+                ;;
+            esac
+
+            n=$(sort -u "$list" | grep -c . || true)
+            echo "lock-guard: push, compare-status=${status}, ${n} unika filvagar"
+
+            # (b) fail-om-tomt: pushen sager sig tillfora commits men API:t gav noll
+            # filvagar. Tomt svar far aldrig lasas som "ingenting andrades".
+            if [ "$status" = "ahead" ] && [ "$n" -lt 1 ]; then
+              echo "lock-guard: FALLD - status=ahead men noll filvagar ur compare (fail-om-tomt)"
+              return 1
+            fi
+
+            # (c) Samma vagregel som PR-armen, pa forsta-foralder-diffen.
+            hits=$(grep -E "$SKYDDADE_VAGAR" "$list" | sort -u || true)
+            if [ -n "$hits" ]; then
+              echo "lock-guard: FALLD - pushen ror skyddade vagar:"
+              echo "$hits" | sed 's/^/  - /'
+              echo "lock-guard: andring under .github/ kraver agarceremoni (ADR-001)."
+              return 1
+            fi
+
+            # (d) Oberoende andra kalla. compare-endpointen listar hogst 300 filer och
+            # sager INTE till nar den klipper - en trunkerad lista skulle se ren ut i (c).
+            # Darfor jamfors ocksa sjalva den skyddade ytan (filvag + blob-sha for varje
+            # fil i .github/workflows samt .github/CODEOWNERS) vid BEFORE och AFTER.
+            # Den avlasningen ar oberoende av hur manga andra filer pushen ror, och
+            # fangar aven en andring som (c) missar av vilket skal som helst.
+            # Tomt fingeravtryck pa bada sidor ar INTE ett godkannande: yta-hamtningen i
+            # workflowen laser .github/workflows utan `|| true`, sa ett API-fel avbryter
+            # steget (rott check) i stallet for att ge tva lika tomma filer.
+            if ! diff -u "$fore" "$efter"; then
+              echo "lock-guard: FALLD - skyddad yta skiljer sig mellan BEFORE och AFTER"
+              echo "lock-guard: andring under .github/ kraver agarceremoni (ADR-001)."
+              return 1
+            fi
+
+            echo "lock-guard: OK - pushen ror inga skyddade vagar, skyddad yta oforandrad"
+            return 0
+          }
           # <<< LOCK-GUARD-KARNA
 
-          guard "$changed" "$want"
+          if [ "$HANDELSE" = "push" ]; then
+            guard_push "$changed" "$status" "$yta_fore" "$yta_efter"
+          else
+            guard "$changed" "$want"
+          fi
