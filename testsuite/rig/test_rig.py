@@ -41,6 +41,8 @@ MINI = """# rubrik
 | 27996 | deploy | ctl | tbx-d1 | par |
 | 27990 | ra-kontroll | ctl | fasttrack-ra | RA |
 | 27580 | lab | spel | halv | halv trio |
+| 27700 | testsvit | spel | t3 | T3:s match_server |
+| 28150 | rigg | ctl | navdok-1-klient-a | parallellriggen navdok-1 |
 
 efter tabellen
 """
@@ -57,11 +59,18 @@ class TestPortlistan(unittest.TestCase):
     def test_riktiga_listan_gar_att_lasa(self):
         t = portar.las_tabell(PORTLISTA)
         # Ordervillkoren: de forbjudna, KTX-paret, trior, RA-kontrollen.
-        for p in (27550, 27991, 27530, 27700):
+        for p in (27550, 27991, 27530):
             self.assertEqual(t[p].klass, "forbjuden", "port %d" % p)
         for p in (28502, 28503):
             self.assertEqual(t[p].klass, "orord", "port %d" % p)
         self.assertEqual(t[27990].klass, "ra-kontroll")
+        # 27700 stod som `forbjuden` har tills agarbeslutet 2026-08-24 gjorde
+        # den till T3:s match_server. Testet kravde den gamla klassen i ett
+        # dygn utan att nagon sag det, for ingen CI kor den har sviten.
+        for p in (27700, 27710, 27980, 28100, 28101, 28110, 29701, 29711):
+            self.assertEqual(t[p].klass, "testsvit", "port %d" % p)
+        for p in (28150, 28151, 28160):
+            self.assertEqual(t[p].klass, "rigg", "port %d" % p)
         self.assertEqual(
             portar.trior(t),
             {
@@ -146,6 +155,71 @@ class TestAtkomst(unittest.TestCase):
         with self.assertRaises(portar.Portfel) as cm:
             portar.krav_tillaten(self.t, 28000, "qtv")
         self.assertIn("Oredovisad", str(cm.exception))
+
+    # --- klasserna med atkomsten `egen`: testsvit och rigg ---
+    #
+    # Forvalet ar vagran. Den som inte sager vem den ar far nej, och den som
+    # sager fel namn far ocksa nej. Bada riktningarna provas, for en grind
+    # som bara setts saga ja ar ingen grind.
+
+    def test_testsvit_kraver_att_anroparen_uppger_sin_grupp(self):
+        with self.assertRaises(portar.Portfel) as cm:
+            portar.krav_tillaten(self.t, 27700, "spel")
+        self.assertIn("tillhör", str(cm.exception))
+        self.assertIn("'t3'", str(cm.exception))
+
+    def test_testsvit_slapps_igenom_for_ratt_grupp(self):
+        rad = portar.krav_tillaten(self.t, 27700, "spel", som="t3")
+        self.assertEqual(rad.grupp, "t3")
+        self.assertEqual(rad.klass, "testsvit")
+
+    def test_neg_testsvit_nekas_for_fel_grupp(self):
+        with self.assertRaises(portar.Portfel):
+            portar.krav_tillaten(self.t, 27700, "spel", som="t4")
+
+    def test_rigg_kraver_att_anroparen_uppger_sin_grupp(self):
+        with self.assertRaises(portar.Portfel):
+            portar.krav_tillaten(self.t, 28150, "ctl")
+
+    def test_rigg_slapps_igenom_for_ratt_grupp(self):
+        rad = portar.krav_tillaten(self.t, 28150, "ctl", som="navdok-1-klient-a")
+        self.assertEqual(rad.klass, "rigg")
+
+    def test_neg_rigg_matchar_inte_pa_prefix(self):
+        """En rigg som heter `navdok` far INTE ta `navdok-1`:s portar.
+
+        Prefixmatchning ar hur fel rigg reses pa ratt portar. Matchningen ar
+        exakt, och det ar just den narapa-traffen som provas har.
+        """
+        for nastan in ("navdok", "navdok-1", "navdok-1-klient", "navdok-1-klient-b"):
+            with self.assertRaises(portar.Portfel, msg=nastan):
+                portar.krav_tillaten(self.t, 28150, "ctl", som=nastan)
+
+    def test_neg_tomt_som_ar_inte_ett_ja(self):
+        for tomt in ("", None):
+            with self.assertRaises(portar.Portfel, msg=repr(tomt)):
+                portar.krav_tillaten(self.t, 28150, "ctl", som=tomt)
+
+    def test_som_oppnar_inte_nagon_annan_klass(self):
+        """`som` ar ingen huvudnyckel: den galler bara atkomsten `egen`.
+
+        Utan det har testet hade ett `som`-varde kunnat bli en universell
+        forbigang av forbjuden/orord/deploy/ra-kontroll.
+        """
+        for port, grupp in ((27550, "main"), (28502, "ktx"), (27996, "tbx-d1"), (27990, "fasttrack-ra")):
+            with self.assertRaises(portar.Portfel, msg="port %d" % port):
+                portar.krav_tillaten(self.t, port, "spel", som=grupp)
+
+    def test_neg_oredovisad_port_vagras_aven_med_som(self):
+        """Regeln «port utanfor valvet => vagra» far inte forsvagas av `som`."""
+        with self.assertRaises(portar.Portfel) as cm:
+            portar.krav_tillaten(self.t, 28160, "ctl", som="navdok-1-kastbot")
+        self.assertIn("Oredovisad", str(cm.exception))
+
+    def test_atkomst_tacker_hela_ordforradet(self):
+        self.assertEqual(set(portar.ATKOMST), set(portar.KLASSER))
+        self.assertEqual(portar.ATKOMST["testsvit"], "egen")
+        self.assertEqual(portar.ATKOMST["rigg"], "egen")
 
 
 def bygg_kallträd(rot: Path, *, ktx_cfg: str | None = None, setmaster: bool = True) -> Path:

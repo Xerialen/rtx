@@ -69,6 +69,10 @@ hinner bli fel.
 | `testsvit` | upptagen av T0–T4-testsviten (ägarbeslut 2026-08-24) | **tillåt endast testsvitens runner**; alla andra skript nekar |
 | `rigg` | tilldelad en **namngiven** parallellrigg under `~/lab/riggar/<namn>/` (ägarbeslut 2026-08-25) | **tillåt endast den riggens egna skript**; alla andra nekar |
 
+De två sista har åtkomsten `egen` i `portar.py`: anroparen måste uppge radens
+`grupp` exakt (`--som <grupp>`) för att släppas igenom. Den som inte säger vem
+den är får nej — förvalet är vägran, inte tillåtelse.
+
 Att en `forbjuden` port är tyst betyder inte att den är ledig. `27550` är
 nere sedan 2026-08-15 och är fortfarande förbjuden: den som tar en tyst
 förbjuden port tar den port ägaren kommer att starta.
@@ -332,11 +336,32 @@ Vad som krävs, som specifikation och inte som utförd ändring:
    form som de befintliga.
 3. Riggsvitens tester körs i CI, annars ligger nästa glapp lika tyst.
 
-Tills detta är gjort gäller: den som behöver ett portnummer läser **den här
-filen** — den är sann för en människa. Skriptvägen är trasig och rapporterar
-det ärligt med rc=2, vilket är rätt beteende för en fail-closed grind. Ett
-skript som vill «komma runt» rc=2 genom att gissa en port bryter mot regeln
-om självallokering.
+**ÅTGÄRDAD 2026-08-25.** Punkt 1 och 2 är gjorda; punkt 3 (CI) kvarstår.
+
+`KLASSER` och `ATKOMST` känner nu båda klasserna, och `test_rig.py` har
+flyttat `27700` till `testsvit`. Åtkomsten heter **`egen`** och är strängare
+än `lab`, inte mildare: den som vill resa en `testsvit`- eller `rigg`-port
+måste uppge radens `grupp` (`krav_tillaten(..., som="t3")`,
+`portar.py --port 28150 --som navdok-1-klient-a`). Matchningen är **exakt** —
+ett prefixmatchande `som` hade låtit en rigg som heter `navdok` ta
+`navdok-1`:s portar. Utelämnat `som` är nej, inte ja.
+
+Valvet går alltså att läsa igen:
+
+```
+$ python3 testsuite/rig/portar.py --portlista docs/PORTAR.md --trior
+{"lab-a": {"ctl": 27960, "qtv": 29580, "spel": 27580},
+ "lab-b": {"ctl": 27970, "qtv": 29570, "spel": 27570}}
+rc=0
+```
+
+Regeln «port utanför valvet ⇒ vägra» är oförändrad och prövad även med `som`
+satt — `som` är ingen huvudnyckel och öppnar varken `forbjuden`, `orord`,
+`deploy`, `ra-kontroll` eller en oredovisad port.
+
+**Kvar: punkt 3.** Inget CI-arbetsflöde kör fortfarande riggsvitens tester, så
+nästa glapp av samma sort skulle ligga lika tyst. Att lägga till det är en
+ändring i `.github/` och därmed ägarceremoni — den görs inte här.
 
 ## Öppen punkt 4 — fem portar till, mätta men inte beslutade
 
