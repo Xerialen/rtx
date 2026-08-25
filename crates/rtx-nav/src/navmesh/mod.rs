@@ -227,8 +227,32 @@ pub struct Link {
     pub cost: f32,
 }
 
+/// The canonical spelling of a link kind in the graph inventory contract (`graphstamp-kontrakt.md`
+/// §8.2). Lowercase, and deliberately *not* `Debug`: `JumpGap` is written `jump` there, and a
+/// derived name would silently drift the moment a variant is renamed.
+pub fn kind_token(kind: LinkKind) -> &'static str {
+    match kind {
+        LinkKind::Walk => "walk",
+        LinkKind::Step => "step",
+        LinkKind::Drop => "drop",
+        LinkKind::JumpGap => "jump",
+        LinkKind::DoubleJump => "doublejump",
+        LinkKind::SpeedJump => "speedjump",
+        LinkKind::Plat => "plat",
+        LinkKind::Teleport => "teleport",
+        LinkKind::Hook => "hook",
+        LinkKind::RocketJump => "rocketjump",
+        LinkKind::Swim => "swim",
+    }
+}
+
 /// The built navigation graph: cells, directed links, per-cell adjacency (indices into
 /// `links`), and an XY spatial index for `nearest`/neighbor queries.
+///
+/// `Clone` exists for transactional post-build mutation: mutate a clone, publish it only if every
+/// step validated — a failed step then leaves the original graph untouched, derived tables included.
+/// The graph is a few MB of `Vec`s; cloning it once at map load is noise next to the build itself.
+#[derive(Clone)]
 pub struct NavGraph {
     pub cells: Vec<Cell>,
     pub links: Vec<Link>,
@@ -361,6 +385,15 @@ impl Default for SpeedJumpTraversal {
 /// game engine prices a disabled-but-openable NavMesh link rather than deleting it outright.
 pub const CLOSED_GATE_PENALTY: f32 = 100_000.0;
 
+/// Fraction of a chained speed jump's `v_req` below which the entry speed isn't "carrying" this
+/// jump at all — see [`NavGraph::chain_entry_exclusions`]. Well under 1.0 (unlike [`SJ_MARGIN`]'s
+/// already-tight safety buffer): the point isn't to police the exact margin the physics need —
+/// [`NavGraph::banded_step`] still does that — it's to catch the case the banded entry floor can't
+/// see at all, a bot that hasn't started building speed toward the ledge yet. A bot already well
+/// into a run-up (real speed above half of what the leap needs) is left to the ordinary banded
+/// feasibility check.
+pub const CHAIN_ENTRY_FRAC: f32 = 0.5;
+
 /// Extra travel-time charged to every [`LinkKind::RocketJump`] link when the querying bot is unfit
 /// to fly one (no rocket launcher, no rocket, too little health, or quad running — see
 /// the game's `bot::rj::rocket_jump_extra`). Same magnitude as [`CLOSED_GATE_PENALTY`]: the planner
@@ -429,6 +462,43 @@ pub struct HazardPrice {
     pub k: f32,
 }
 
+/// What a link's dynamic surcharge is *made of* — [`NavGraph::link_extra`] split term by term.
+///
+/// A\* only ever needs the sum, and that is all `link_extra` returns. Planner telemetry needs to say
+/// *why* a leg was priced as it was, which the sum cannot answer: a leg at 100000.4s is a shut gate
+/// plus jitter, or an unfit rocket jump plus a failed-link strike, and those call for opposite fixes.
+/// Rather than keep a second copy of the arithmetic beside the first — two truths that drift apart on
+/// the first term anyone adds — `link_extra` is *defined* as this breakdown's [`Self::total`]. One
+/// place computes the terms, one place sums them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LinkExtra {
+    /// A shut gate on this link: [`LinkCosts::open_gate_cost`] for a caller that flagged it openable,
+    /// else [`CLOSED_GATE_PENALTY`].
+    pub gate: f32,
+    /// This caller's per-link surcharge — failed legs, teleport re-use, team occupancy.
+    pub penalty: f32,
+    /// Per-bot route-variety jitter, a fraction of the link's own cost.
+    pub jitter: f32,
+    /// The [`RJ_UNFIT_PENALTY`] block on a rocket jump this bot can't fly.
+    pub rj: f32,
+    /// Swimming/wading surcharge baked into the graph.
+    pub water: f32,
+    /// Health spent crossing lava or slime, converted to seconds against this bot's strength.
+    pub hazard: f32,
+}
+
+impl LinkExtra {
+    /// The surcharge A\* actually pays.
+    ///
+    /// The summation order is load-bearing: it reproduces the sequential `extra += …` this replaced,
+    /// term for term, so every route is priced to the same bit as before the split. Float addition is
+    /// not associative — reordering these six would silently re-price the whole graph.
+    #[inline]
+    pub fn total(&self) -> f32 {
+        self.gate + self.penalty + self.jitter + self.rj + self.water + self.hazard
+    }
+}
+
 impl HazardPrice {
     /// Price hazards for a bot of effective `strength` at the stock timidity.
     pub fn new(strength: f32) -> Self {
@@ -489,6 +559,21 @@ fn ledge_beside(is_solid: &impl Fn(Vec3) -> bool, origin: Vec3) -> bool {
     })
 }
 
+/// Compact a `links`-parallel f32 column after some ids were dropped.
+/// Empty stays empty (`link_extra` treats a missing slot as 0).
+fn compact_per_link_f32(old: &[f32], old_to_new: &[Option<u32>]) -> Vec<f32> {
+    if old.is_empty() {
+        return Vec::new();
+    }
+    let mut new = Vec::with_capacity(old_to_new.iter().filter(|m| m.is_some()).count());
+    for (i, mapped) in old_to_new.iter().enumerate() {
+        if mapped.is_some() {
+            new.push(old.get(i).copied().unwrap_or(0.0));
+        }
+    }
+    new
+}
+
 impl NavGraph {
     /// Build the graph from a parsed BSP's player hull. Pure; safe to run at load time.
     pub fn build(bsp: &Bsp) -> NavGraph {
@@ -526,8 +611,11 @@ impl NavGraph {
     /// optional column empty (so it reads as dry, unhazardous and gate-free) and stock bhop physics.
     /// Exists so that adding a column doesn't mean editing eight field-by-field literals — the friction
     /// that kept the hazard pricing out of the tests' sight while it silently did nothing in play.
-    #[cfg(test)]
-    pub(super) fn test_graph(cells: Vec<Cell>, links: Vec<Link>) -> NavGraph {
+    ///
+    /// **Fixturväg för prov, inte en produktionskonstruktor.** Öppnad bakom `fixture`
+    /// (av som default) enligt facit-receptautostart-v2 addendum 1.
+    #[cfg(any(test, feature = "fixture"))]
+    pub fn test_graph(cells: Vec<Cell>, links: Vec<Link>) -> NavGraph {
         let mut adjacency = vec![Vec::new(); cells.len()];
         for (i, l) in links.iter().enumerate() {
             adjacency[l.from as usize].push(i as u32);
@@ -554,6 +642,132 @@ impl NavGraph {
             reach: None,
             lod: None,
         }
+    }
+
+    /// Rebuild the XY spatial index from cell origins. [`test_graph`] leaves `grid`
+    /// empty so [`nearest`](Self::nearest) is blind; a fixture loaded from inventory
+    /// needs this before world-coordinate plants.
+    pub fn reindex_grid(&mut self) {
+        self.grid.clear();
+        for (id, c) in self.cells.iter_mut().enumerate() {
+            let (gx, gy) = (floor_grid(c.origin.x), floor_grid(c.origin.y));
+            c.gx = gx;
+            c.gy = gy;
+            self.grid.entry((gx, gy)).or_default().push(id as u32);
+        }
+    }
+
+    /// Topology-only graph: cells + links, spatial index filled so [`cell_within`](Self::cell_within)
+    /// works. Side tables stay empty (dry, ungated). Used by fixture tests — not a substitute for
+    /// [`build`](Self::build).
+    pub fn from_topology(origins: &[Vec3], links: &[Link]) -> NavGraph {
+        let mut graph = NavGraph {
+            adjacency: Vec::new(),
+            cells: Vec::new(),
+            links: Vec::new(),
+            water: Vec::new(),
+            breathable: Vec::new(),
+            water_extra: Vec::new(),
+            hazard: Vec::new(),
+            hazard_hp: Vec::new(),
+            under_plat: Vec::new(),
+            ledge: Vec::new(),
+            grid: HashMap::new(),
+            gates: SideTable::default(),
+            tele_volumes: Vec::new(),
+            hooks: SideTable::default(),
+            speed_jumps: SideTable::default(),
+            rocket_jumps: SideTable::default(),
+            plats: SideTable::default(),
+            sj_k: bhop_k(10.0, MAX_SPEED),
+            reach: None,
+            lod: None,
+        };
+        for &origin in origins {
+            graph.add_cell(origin);
+        }
+        for &link in links {
+            graph.push_link(link);
+        }
+        graph
+    }
+
+    /// Like [`from_topology`], but fills the `links`-parallel tax columns.
+    /// `from_topology` leaves them empty (`link_extra` then reads 0) — fixture
+    /// tests that must catch a remap bug have to go through here with
+    /// **non-zero** distinct values. Lengths must match `links`.
+    pub fn from_topology_priced(origins: &[Vec3], links: &[Link], hazard_hp: &[f32], water_extra: &[f32]) -> NavGraph {
+        assert_eq!(hazard_hp.len(), links.len(), "hazard_hp must be parallel to links");
+        assert_eq!(water_extra.len(), links.len(), "water_extra must be parallel to links");
+        let mut graph = Self::from_topology(origins, links);
+        graph.hazard_hp = hazard_hp.to_vec();
+        graph.water_extra = water_extra.to_vec();
+        graph
+    }
+
+    /// Append a free-standing cell and index it. Fixture counterpart of [`plant_cell`](Self::plant_cell).
+    pub fn insert_cell(&mut self, origin: Vec3) -> CellId {
+        self.add_cell(origin)
+    }
+
+    /// Append a directed link and tag it in the adjacency. Fixture-apply counterpart of
+    /// [`plant_drop`](Self::plant_drop).
+    pub fn insert_link(&mut self, link: Link) {
+        self.push_link(link);
+    }
+
+    /// Remove directed links by index. Unknown or duplicate ids fail closed and leave
+    /// the graph untouched. Adjacency and side-table tags are remapped so remaining
+    /// ids stay consistent (a hole is not left in `links`).
+    pub fn remove_links_by_id(&mut self, ids: &[u32]) -> Result<Vec<Link>, String> {
+        let n = self.links.len() as u32;
+        let mut seen = std::collections::BTreeSet::new();
+        for &id in ids {
+            if id >= n {
+                return Err(format!("unknown link id {id}"));
+            }
+            if !seen.insert(id) {
+                return Err(format!("duplicate link id {id}"));
+            }
+        }
+        let mut removed = Vec::with_capacity(seen.len());
+        let mut kept: Vec<Link> = Vec::with_capacity(self.links.len() - seen.len());
+        let mut old_to_new: Vec<Option<u32>> = vec![None; self.links.len()];
+        for (i, &link) in self.links.iter().enumerate() {
+            if seen.contains(&(i as u32)) {
+                removed.push(link);
+            } else {
+                old_to_new[i] = Some(kept.len() as u32);
+                kept.push(link);
+            }
+        }
+        self.links.clear();
+        for adj in &mut self.adjacency {
+            adj.clear();
+        }
+        for link in kept {
+            self.push_link(link);
+        }
+        // Per-link columns (not SideTable): compact in the same old→new order.
+        // Inventory of NavGraph index-parallel state:
+        //   links, adjacency          — rebuilt above
+        //   hazard_hp, water_extra    — these two Vecs
+        //   gates/hooks/speed_jumps/rocket_jumps/plats — SideTable, remapped below
+        //   water/breathable/hazard/under_plat/ledge   — per-cell, leave alone
+        //   tele_volumes, sj_k, reach, lod, grid       — not per-link
+        self.hazard_hp = compact_per_link_f32(&self.hazard_hp, &old_to_new);
+        self.water_extra = compact_per_link_f32(&self.water_extra, &old_to_new);
+        self.gates.remap_after_remove(&old_to_new);
+        self.hooks.remap_after_remove(&old_to_new);
+        self.speed_jumps.remap_after_remove(&old_to_new);
+        self.rocket_jumps.remap_after_remove(&old_to_new);
+        self.plats.remap_after_remove(&old_to_new);
+        Ok(removed)
+    }
+
+    /// Append a link that is *not* in the adjacency (pruned / T=0). Only for inventory-hash tests.
+    pub fn insert_pruned_link(&mut self, link: Link) {
+        self.links.push(link);
     }
 
     /// Flag every cell beside a fatal drop (see [`ledge_beside`]) — a wall-hugging walkway over an open
@@ -1109,45 +1323,62 @@ impl NavGraph {
     /// [`find_path_banded`](Self::find_path_banded) and [`costs_from`](Self::costs_from) all route
     /// through here — which is why the liquid prices live here rather than baked into `link.cost`,
     /// where the banded planner never saw them.
+    ///
+    /// Defined as [`LinkExtra::total`] so the per-term breakdown the telemetry reads and the sum A\*
+    /// pays can never disagree — see [`LinkExtra`].
     #[inline]
     fn link_extra(&self, li: u32, costs: &LinkCosts) -> f32 {
-        let mut extra = match self.gate_of_link(li) {
-            Some(g) if costs.gate_closed.get(g).copied().unwrap_or(false) => {
-                // A closed gate this caller flagged openable (its button is reachable on our side) is
-                // an errand, not a wall — price it so, but only for the query that asked. Every other
-                // caller leaves `openable_gates` empty and pays the full route-around penalty.
-                if costs.openable_gates.get(g).copied().unwrap_or(false) {
-                    costs.open_gate_cost
-                } else {
-                    CLOSED_GATE_PENALTY
+        self.link_extra_breakdown(li, costs).total()
+    }
+
+    /// [`Self::link_extra`] split into its terms, for planner telemetry — see [`LinkExtra`].
+    ///
+    /// Off the hot path by construction: A\* calls `link_extra`, which inlines this and sums it, so a
+    /// build with telemetry compiled in pays nothing for it until a caller asks for the breakdown.
+    /// Marked `#[inline]` explicitly rather than trusting LTO to collapse the one-line caller —
+    /// A\*'s innermost relaxation should not depend on the optimiser's mood.
+    #[inline]
+    pub fn link_extra_breakdown(&self, li: u32, costs: &LinkCosts) -> LinkExtra {
+        let mut e = LinkExtra {
+            gate: match self.gate_of_link(li) {
+                Some(g) if costs.gate_closed.get(g).copied().unwrap_or(false) => {
+                    // A closed gate this caller flagged openable (its button is reachable on our side) is
+                    // an errand, not a wall — price it so, but only for the query that asked. Every other
+                    // caller leaves `openable_gates` empty and pays the full route-around penalty.
+                    if costs.openable_gates.get(g).copied().unwrap_or(false) {
+                        costs.open_gate_cost
+                    } else {
+                        CLOSED_GATE_PENALTY
+                    }
                 }
-            }
-            _ => 0.0,
+                _ => 0.0,
+            },
+            ..LinkExtra::default()
         };
         for &(l, sec) in costs.penalties {
             if l == li {
-                extra += sec;
+                e.penalty = sec;
                 break;
             }
         }
         if costs.jitter_seed != 0 {
             let h = hash32(costs.jitter_seed ^ li.wrapping_mul(0x9e37_79b1));
-            extra += (h as f32 / u32::MAX as f32) * JITTER_FRAC * self.links[li as usize].cost;
+            e.jitter = (h as f32 / u32::MAX as f32) * JITTER_FRAC * self.links[li as usize].cost;
         }
         if costs.rocket_jump_extra > 0.0 && self.links[li as usize].kind == LinkKind::RocketJump {
-            extra += costs.rocket_jump_extra;
+            e.rj = costs.rocket_jump_extra;
         }
-        extra += self.water_extra.get(li as usize).copied().unwrap_or(0.0);
+        e.water = self.water_extra.get(li as usize).copied().unwrap_or(0.0);
         // Health is only convertible to seconds against a particular bot's health, so an unpriced
-        // query (`hazard_strength: None`) skips it — and the vast majority of links cost no health at
-        // all, so check that first.
+        // query (`hazard: None`) skips it — and the vast majority of links cost no health at all, so
+        // check that first.
         if let Some(price) = costs.hazard {
             let hp = self.hazard_hp.get(li as usize).copied().unwrap_or(0.0);
             if hp > 0.0 {
-                extra += hazard_cost(hp, price);
+                e.hazard = hazard_cost(hp, price);
             }
         }
-        extra
+        e
     }
 
     /// The block a *speed-unaware* query (`find_path`, `costs_from`) must add to a chained speed
@@ -1155,11 +1386,62 @@ impl NavGraph {
     /// never take one. Large enough to sever it in practice, finite so it never poisons `g` beyond
     /// the existing [`CLOSED_GATE_PENALTY`] scale. The banded planner ([`Self::find_path_banded`])
     /// bypasses this and gates chained jumps on the entry band instead.
-    pub(super) fn chained_block(&self, li: u32) -> f32 {
+    pub fn chained_block(&self, li: u32) -> f32 {
         match self.speed_jump_of_link(li) {
             Some(t) if t.chained => CLOSED_GATE_PENALTY,
             _ => 0.0,
         }
+    }
+
+    /// Whether link `li` is a chained speed jump a bot with *actual* horizontal speed `speed`
+    /// cannot legally take — the shared predicate behind [`Self::chain_entry_exclusions`] (a fresh
+    /// route's first leg) and `rtx-game`'s leg-transition guard (a route's *later* leg becoming
+    /// current, e.g. an ordinary walk leg into the ledge cell followed by the chained jump as leg 1 —
+    /// invisible to the first-leg check, since at plan time the walk hadn't happened yet and the
+    /// chained link wasn't adjacent to the bot's *then*-current cell).
+    ///
+    /// A chained jump has no runway of its own — its `from` cell *is* the ledge — so it's only
+    /// traversable when the bot already carries close to `v_req` in from whatever put it here (see
+    /// [`SpeedJumpTraversal::chained`]). The banded planner's own feasibility check
+    /// ([`Self::banded_step`]) polices that correctly for a bot *mid-route*, carrying a band built up
+    /// over the legs it just flew. But every fresh search's start band floors at `BAND_FLOOR[0]` ==
+    /// [`MAX_SPEED`] regardless of the bot's *real* speed — there is no "truly stationary" band — so a
+    /// chained link whose `v_req` sits under `MAX_SPEED` (a real case: dm3 measured two, 296 and 304)
+    /// reads as already-satisfied at band 0 even when the bot backing the search is standing dead
+    /// still. Measured on those two links: 0% success flying either from a stand start, 80-100% with
+    /// any carried speed — the band model isn't wrong about carried speed, it's blind to *no* speed.
+    pub fn chain_entry_blocked(&self, li: u32, speed: f32) -> bool {
+        self.speed_jump_of_link(li)
+            .is_some_and(|t| t.chained && speed < CHAIN_ENTRY_FRAC * t.v_req)
+    }
+
+    /// Whether a route's newly-current leg `leg` may engage its committed run-up, given the bot's
+    /// real horizontal `speed` — [`Self::chain_entry_blocked`] for `Option<u32>`, `None` (no current
+    /// leg) reading as "ok". This is the second of the two chain-entry checks (see
+    /// [`Self::chain_entry_exclusions`] for the first): a route whose leg 0 is an ordinary walk into
+    /// a chained jump's ledge cell and whose leg 1 *is* the chained jump is invisible to the
+    /// first-leg check — at plan time the walk hadn't happened yet, so the chained link was never
+    /// adjacent to the bot's *then*-current cell — but becomes leg 1's own `chain_entry_blocked`
+    /// question the instant the route advances onto it. `rtx-game`'s steer loop calls this once, at
+    /// exactly that transition (not every frame of an already-engaged run, which would also catch a
+    /// leg mid-flight — the traffic this must leave alone).
+    pub fn chain_entry_leg_ok(&self, leg: Option<u32>, speed: f32) -> bool {
+        !leg.is_some_and(|l| self.chain_entry_blocked(l, speed))
+    }
+
+    /// Chained speed-jump links leaving `from` that a bot with *actual* horizontal speed `speed`
+    /// cannot legally take as the first leg of a fresh plan — see [`Self::chain_entry_blocked`] for
+    /// the predicate.
+    ///
+    /// This is the check the band abstraction can't make, run once against the bot's real speed
+    /// before a fresh search ever begins: a link this yields is one the caller should surcharge (or
+    /// exclude) for *that one search*, not sever from the graph — a bot who reaches `from` later
+    /// carrying real speed must still be able to fly it. See `rtx_bot_chain_entry_gate` in `rtx-game`.
+    pub fn chain_entry_exclusions(&self, from: CellId, speed: f32) -> impl Iterator<Item = u32> + '_ {
+        self.adjacency[from as usize]
+            .iter()
+            .copied()
+            .filter(move |&li| self.chain_entry_blocked(li, speed))
     }
 
     /// The banded transition for link `li` entered at speed band `entry`: its travel-time cost and
@@ -3825,6 +4107,125 @@ mod tests {
         );
     }
 
+    /// Reproduces the dm3 bug `chain_entry_exclusions` exists to close: a chained speed jump whose
+    /// `v_req` sits *under* `MAX_SPEED` (dm3 measured two, 296 and 304) is silently satisfied by the
+    /// banded planner's band-0 floor even when the bot backing the search carries no speed at all —
+    /// `find_path_banded` alone takes it from a true stand start. Folding `chain_entry_exclusions`'
+    /// result into `LinkCosts::penalties` (the mechanism `rtx-game`'s steer loop actually uses)
+    /// diverts the same standstill search onto a cheap alternative instead — and a bot already
+    /// carrying real speed toward the ledge is left untouched.
+    #[test]
+    fn chain_entry_exclusions_catch_the_sub_max_speed_band0_hole() {
+        // L (ledge, bot stands here) --chained SJ, v_req 304--> T (speed-jump target)
+        // L --walk 1500--> W --walk ~1513--> T (a long but always-available walk-around)
+        let g = banded_graph(
+            &[
+                Vec3::ZERO,                  // 0 L
+                Vec3::new(200.0, 0.0, 0.0),  // 1 T
+                Vec3::new(0.0, 1500.0, 0.0), // 2 W
+            ],
+            &[
+                (0, 1, LinkKind::SpeedJump, 1.0),
+                (0, 2, LinkKind::Walk, 6.0),
+                (2, 1, LinkKind::Walk, 6.0),
+            ],
+            &[(0, 304.0, 0.5, true, 0.0)],
+        );
+
+        // The bug: queried at true standstill (`start_speed` 0.0), the unguarded banded search still
+        // flies the chained link — band 0's floor (`BAND_FLOOR[0]` == `MAX_SPEED`) already clears this
+        // link's sub-`MAX_SPEED` v_req regardless of the bot's real speed.
+        let unguarded = g
+            .find_path_banded(0, 1, 0.0, &LinkCosts::default())
+            .expect("a route exists");
+        assert_eq!(
+            unguarded.links,
+            vec![0],
+            "band 0's floor should silently satisfy a sub-MAX_SPEED chained link"
+        );
+
+        // `chain_entry_exclusions` flags exactly that link at true standstill…
+        let excluded: Vec<u32> = g.chain_entry_exclusions(0, 0.0).collect();
+        assert_eq!(
+            excluded,
+            vec![0],
+            "the chained link should be flagged at true standstill"
+        );
+
+        // …and surcharging it (same finite-penalty mechanism the stuck-link watchdog already uses)
+        // diverts the identical standstill query onto the walk-around.
+        let penalties = vec![(0u32, CLOSED_GATE_PENALTY)];
+        let costs = LinkCosts {
+            penalties: &penalties,
+            ..LinkCosts::default()
+        };
+        let guarded = g
+            .find_path_banded(0, 1, 0.0, &costs)
+            .expect("the walk-around still exists");
+        assert_eq!(guarded.links, vec![1, 2], "the gate should divert onto the walk-around");
+
+        // A bot already carrying (near) v_req toward the ledge is genuine pass-through traffic and
+        // must not be excluded.
+        assert!(
+            g.chain_entry_exclusions(0, 304.0).next().is_none(),
+            "a bot already carrying v_req must not be excluded"
+        );
+    }
+
+    /// Reproduces the second, Fas-C-measured shape of the same bug: a two-leg route whose leg 0 is
+    /// an ordinary walk *into* the chained jump's ledge cell and whose leg 1 *is* the chained jump —
+    /// the plan-time `chain_entry_exclusions` check is blind to leg 1 here (it was never adjacent to
+    /// the bot's cell *at plan time*, only leg 0 was), so a route shaped exactly like this sails
+    /// through the first-leg gate untouched. Live: 52 of 58 ring stalls in a T2 run landed at
+    /// `route_pos == 1` for precisely this reason — a bot that merely walked onto the ledge (~38 ups,
+    /// well under half of either link's v_req) committing to the chained leg anyway. This is the
+    /// case `chain_entry_leg_ok` exists to catch, called once by `rtx-game`'s steer loop at the exact
+    /// frame `route_pos` advances onto leg 1 — not `chain_entry_exclusions`, which only ever sees leg 0.
+    #[test]
+    fn chain_entry_leg_ok_catches_the_route_pos_1_case_exclusions_misses() {
+        // A (walk start) --walk--> L (ledge) --chained SJ, v_req 304--> T
+        let g = banded_graph(
+            &[
+                Vec3::new(-300.0, 0.0, 0.0), // 0 A
+                Vec3::ZERO,                  // 1 L (ledge)
+                Vec3::new(200.0, 0.0, 0.0),  // 2 T
+            ],
+            &[(0, 1, LinkKind::Walk, 1.0), (1, 2, LinkKind::SpeedJump, 1.0)],
+            &[(1, 304.0, 0.5, true, 0.0)],
+        );
+        let (leg0_walk, leg1_chained_sj) = (0u32, 1u32);
+
+        // `chain_entry_exclusions` from the route's start cell A only ever names leg 0 (a plain
+        // walk, never chained) — it cannot see leg 1 at all, since leg 1 isn't adjacent to A.
+        assert!(
+            g.chain_entry_exclusions(0, 0.0).next().is_none(),
+            "the first-leg check has nothing to flag from the walk's start cell"
+        );
+
+        // The moment `route_pos` would advance onto leg 1 (the bot having just walked onto the
+        // ledge at ~38 ups — dm3's measured walk-in speed, well under half of v_req 304),
+        // `chain_entry_leg_ok` catches exactly what the first-leg check missed.
+        assert!(
+            !g.chain_entry_leg_ok(Some(leg1_chained_sj), 38.0),
+            "a route_pos=1 transition onto the chained leg from a walked-in standstill must be blocked"
+        );
+
+        // A bot arriving at the same transition already carrying real speed (landed from a
+        // preceding jump, or simply ran a longer, faster approach) is genuine traffic and must
+        // engage normally.
+        assert!(
+            g.chain_entry_leg_ok(Some(leg1_chained_sj), 304.0),
+            "a leg transition carrying v_req must not be blocked"
+        );
+
+        // The walk leg itself is never blocked, at any speed — this check is chained-speed-jump
+        // specific.
+        assert!(g.chain_entry_leg_ok(Some(leg0_walk), 0.0));
+
+        // No current leg (route exhausted / off-route) reads as "ok" — nothing to divert from.
+        assert!(g.chain_entry_leg_ok(None, 0.0));
+    }
+
     /// A certified curl speed jump is priced at its stored cost, so the planner takes it over a
     /// detour that beats the conservative per-`v_req` recompute a *straight* speed jump still gets.
     #[test]
@@ -4458,5 +4859,483 @@ mod tests {
         };
         let hurt = g.coarse_costs(0, &hazcosts, false).cost_to(12);
         assert!(hurt > wet, "hazard pricing should add cost: hurt {hurt} !> wet {wet}");
+    }
+
+    fn walk(from: u32, to: u32, cost: f32) -> Link {
+        Link {
+            from,
+            to,
+            kind: LinkKind::Walk,
+            cost,
+        }
+    }
+
+    #[test]
+    fn from_topology_leaves_tax_columns_empty() {
+        let g = NavGraph::from_topology(&[Vec3::ZERO, Vec3::new(32.0, 0.0, 0.0)], &[walk(0, 1, 1.0)]);
+        assert!(g.hazard_hp.is_empty());
+        assert!(g.water_extra.is_empty());
+        assert_eq!(g.link_hazard_hp(0), 0.0);
+        assert_eq!(g.link_water_extra(0), 0.0);
+    }
+
+    #[test]
+    fn remove_links_remaps_hazard_hp_and_water_extra() {
+        let costs = LinkCosts {
+            hazard: Some(HazardPrice::new(100.0)),
+            ..LinkCosts::default()
+        };
+        let origins3 = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(32.0, 0.0, 0.0),
+            Vec3::new(64.0, 0.0, 0.0),
+        ];
+        let links3 = [walk(0, 1, 1.0), walk(1, 2, 1.0), walk(0, 2, 2.0)];
+        let mut g = NavGraph::from_topology_priced(&origins3, &links3, &[10.0, 20.0, 30.0], &[1.0, 2.0, 3.0]);
+        assert!(
+            g.hazard_hp.iter().all(|&x| x > 0.0) && g.water_extra.iter().all(|&x| x > 0.0),
+            "fixture must carry non-zero taxes"
+        );
+        let snap1 = g.clone();
+
+        g.remove_links_by_id(&[1]).expect("remove 1 id");
+        assert_eq!(g.links.len(), 2);
+        assert_eq!((g.links[0].from, g.links[0].to), (0, 1));
+        assert_eq!((g.links[1].from, g.links[1].to), (0, 2));
+        assert_eq!(g.hazard_hp, vec![10.0, 30.0]);
+        assert_eq!(g.water_extra, vec![1.0, 3.0]);
+        assert!((g.link_extra(0, &costs) - snap1.link_extra(0, &costs)).abs() < 1e-5);
+        assert!(
+            (g.link_extra(1, &costs) - snap1.link_extra(2, &costs)).abs() < 1e-5,
+            "after 1-id remove, new[1] must be old[2]'s tax, not old[1]'s"
+        );
+
+        g = snap1.clone();
+        assert_eq!(g.hazard_hp, vec![10.0, 20.0, 30.0]);
+        assert_eq!(g.water_extra, vec![1.0, 2.0, 3.0]);
+
+        let mut dry = snap1;
+        dry.hazard_hp.clear();
+        dry.water_extra.clear();
+        dry.remove_links_by_id(&[1]).expect("empty columns");
+        assert!(dry.hazard_hp.is_empty() && dry.water_extra.is_empty());
+    }
+
+    #[test]
+    fn remove_two_links_shift2_taxes_follow_kept_links() {
+        let costs = LinkCosts {
+            hazard: Some(HazardPrice::new(100.0)),
+            ..LinkCosts::default()
+        };
+        let origins = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(32.0, 0.0, 0.0),
+            Vec3::new(64.0, 0.0, 0.0),
+            Vec3::new(96.0, 0.0, 0.0),
+        ];
+        let links = [walk(0, 1, 1.0), walk(1, 2, 1.0), walk(2, 3, 1.0), walk(0, 3, 2.0)];
+        let mut g = NavGraph::from_topology_priced(&origins, &links, &[11.0, 22.0, 33.0, 44.0], &[1.0, 2.0, 3.0, 4.0]);
+        assert!(g.hazard_hp.iter().all(|&x| x > 0.0) && g.water_extra.iter().all(|&x| x > 0.0));
+        let snap = g.clone();
+
+        g.remove_links_by_id(&[0, 1]).expect("remove two ids");
+        assert_eq!(g.links.len(), 2);
+        assert_eq!((g.links[0].from, g.links[0].to), (2, 3));
+        assert_eq!((g.links[1].from, g.links[1].to), (0, 3));
+        assert_eq!(
+            g.hazard_hp,
+            vec![33.0, 44.0],
+            "shift-2 compact: new[0]=old[2], new[1]=old[3]"
+        );
+        assert_eq!(g.water_extra, vec![3.0, 4.0]);
+        assert!(
+            (g.link_extra(0, &costs) - snap.link_extra(2, &costs)).abs() < 1e-5,
+            "new[0] link_extra must be old[2]'s tax, not old[0]"
+        );
+        assert!(
+            (g.link_extra(1, &costs) - snap.link_extra(3, &costs)).abs() < 1e-5,
+            "new[1] link_extra must be old[3]'s tax, not old[1]"
+        );
+
+        g = snap;
+        assert_eq!(g.links.len(), 4);
+        assert_eq!(g.hazard_hp, vec![11.0, 22.0, 33.0, 44.0]);
+        assert_eq!(g.water_extra, vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(g.link_hazard_hp(0), 11.0);
+        assert_eq!(g.link_hazard_hp(3), 44.0);
+    }
+
+    #[test]
+    fn remove_links_unknown_or_duplicate_fails_closed() {
+        let mut g = NavGraph::from_topology(&[Vec3::ZERO, Vec3::new(32.0, 0.0, 0.0)], &[walk(0, 1, 1.0)]);
+        let fore = g.links.len();
+        let e = match g.remove_links_by_id(&[9]) {
+            Err(e) => e,
+            Ok(_) => panic!("unknown id should fail closed"),
+        };
+        assert!(e.contains("unknown link id"), "{e}");
+        assert_eq!(g.links.len(), fore);
+        let e = match g.remove_links_by_id(&[0, 0]) {
+            Err(e) => e,
+            Ok(_) => panic!("duplicate id should fail closed"),
+        };
+        assert!(e.contains("duplicate link id"), "{e}");
+        assert_eq!(g.links.len(), fore);
+    }
+
+    /// A graph that charges all six of [`LinkExtra`]'s terms at once: lava on the cheap branch, a gate
+    /// on link 0, a water surcharge on link 2, and link 3 turned into a rocket jump.
+    fn diamond_priced_every_way() -> NavGraph {
+        let mut g = diamond_with_lava_on_branch_1();
+        let gate = g.gates.push(Gate {
+            obstruction: 0,
+            closed_origin: g.cells[1].origin,
+            closed_min: Vec3::ZERO,
+            closed_max: Vec3::ZERO,
+            activator: 0,
+            button_cell: 0,
+            aim: g.cells[0].origin,
+            shoot: false,
+        });
+        g.gates.tag(0, gate);
+        g.water_extra = vec![0.0, 0.0, 0.37, 0.0];
+        g.links[3].kind = LinkKind::RocketJump;
+        g
+    }
+
+    /// The pre-split `link_extra`, transcribed verbatim from before [`LinkExtra`] existed: one
+    /// accumulator, `+=` per term, in this order. The oracle the split is measured against.
+    fn link_extra_pre_split(g: &NavGraph, li: u32, costs: &LinkCosts) -> f32 {
+        let mut extra = match g.gate_of_link(li) {
+            Some(gi) if costs.gate_closed.get(gi).copied().unwrap_or(false) => {
+                if costs.openable_gates.get(gi).copied().unwrap_or(false) {
+                    costs.open_gate_cost
+                } else {
+                    CLOSED_GATE_PENALTY
+                }
+            }
+            _ => 0.0,
+        };
+        for &(l, sec) in costs.penalties {
+            if l == li {
+                extra += sec;
+                break;
+            }
+        }
+        if costs.jitter_seed != 0 {
+            let h = hash32(costs.jitter_seed ^ li.wrapping_mul(0x9e37_79b1));
+            extra += (h as f32 / u32::MAX as f32) * JITTER_FRAC * g.links[li as usize].cost;
+        }
+        if costs.rocket_jump_extra > 0.0 && g.links[li as usize].kind == LinkKind::RocketJump {
+            extra += costs.rocket_jump_extra;
+        }
+        extra += g.water_extra.get(li as usize).copied().unwrap_or(0.0);
+        if let Some(price) = costs.hazard {
+            let hp = g.hazard_hp.get(li as usize).copied().unwrap_or(0.0);
+            if hp > 0.0 {
+                extra += hazard_cost(hp, price);
+            }
+        }
+        extra
+    }
+
+    /// Splitting `link_extra` into [`LinkExtra`] re-prices nothing — to the bit.
+    ///
+    /// This is the guard the whole telemetry branch rests on: `link_extra` sits in A\*'s innermost
+    /// relaxation, so a single ulp of drift here silently reorders routes across every map, and no
+    /// movement test would name the cause. Float addition is not associative, so the property being
+    /// asserted is not "close enough" but *identical summation order* — hence `to_bits`, not an
+    /// epsilon. Swept over every link under the cost shapes the six terms actually appear in.
+    #[test]
+    fn link_extra_split_is_bit_identical() {
+        let g = diamond_priced_every_way();
+        let closed = [true];
+        let openable = [true];
+        let penalties = [(0u32, 2.5f32), (3u32, 0.75f32)];
+        let mut checked = 0usize;
+        // Every combination that turns a term on or off: gate shut/open/openable, penalties, jitter
+        // (seed 0 = off, and two live seeds), the rocket-jump block, and hazard priced/unpriced.
+        for gate_closed in [&[][..], &closed[..]] {
+            for openable_gates in [&[][..], &openable[..]] {
+                for pens in [&[][..], &penalties[..]] {
+                    for jitter_seed in [0u32, 1, 7] {
+                        for rocket_jump_extra in [0.0f32, RJ_UNFIT_PENALTY] {
+                            for hazard in [None, Some(HazardPrice::new(100.0)), Some(HazardPrice::new(25.0))] {
+                                let costs = LinkCosts {
+                                    gate_closed,
+                                    openable_gates,
+                                    open_gate_cost: 4.0,
+                                    penalties: pens,
+                                    jitter_seed,
+                                    rocket_jump_extra,
+                                    hazard,
+                                };
+                                for li in 0..g.links.len() as u32 {
+                                    let want = link_extra_pre_split(&g, li, &costs);
+                                    let got = g.link_extra_breakdown(li, &costs).total();
+                                    assert_eq!(
+                                        want.to_bits(),
+                                        got.to_bits(),
+                                        "link {li} re-priced: pre-split {want} vs breakdown {got} \
+                                         (gate_closed {:?}, openable {:?}, penalties {:?}, jitter {jitter_seed}, \
+                                         rj {rocket_jump_extra}, hazard {:?})",
+                                        gate_closed,
+                                        openable_gates,
+                                        pens,
+                                        hazard.map(|h| h.strength),
+                                    );
+                                    checked += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 2 * 2 * 2 * 3 * 2 * 3 * 4, "sweep covered every combination");
+    }
+
+    /// Every term the breakdown reports is separately non-zero on the fixture that charges all six —
+    /// otherwise the bit-identity sweep above could pass while quietly testing nothing but zeros.
+    #[test]
+    fn link_extra_breakdown_attributes_each_term() {
+        let g = diamond_priced_every_way();
+        let closed = [true];
+        let penalties = [(0u32, 2.5f32)];
+        let costs = LinkCosts {
+            gate_closed: &closed,
+            penalties: &penalties,
+            jitter_seed: 7,
+            rocket_jump_extra: RJ_UNFIT_PENALTY,
+            hazard: Some(HazardPrice::new(50.0)),
+            ..Default::default()
+        };
+        // Link 0: gated, penalised, jittered. Link 2: water. Link 3: the rocket-jump block.
+        let gated = g.link_extra_breakdown(0, &costs);
+        assert_eq!(gated.gate, CLOSED_GATE_PENALTY, "shut gate priced");
+        assert_eq!(gated.penalty, 2.5, "this caller's link penalty priced");
+        assert!(gated.jitter > 0.0, "jitter priced: {}", gated.jitter);
+        assert_eq!(g.link_extra_breakdown(2, &costs).water, 0.37, "water priced");
+        assert_eq!(g.link_extra_breakdown(3, &costs).rj, RJ_UNFIT_PENALTY, "rocket-jump block priced");
+        // The lava fixture sits on the 0→1 branch, so some link carries a hazard price.
+        let hazard_total: f32 = (0..g.links.len() as u32).map(|li| g.link_extra_breakdown(li, &costs).hazard).sum();
+        assert!(hazard_total > 0.0, "hazard priced somewhere: {hazard_total}");
+        // And the parts still add up to what A* pays.
+        for li in 0..g.links.len() as u32 {
+            let e = g.link_extra_breakdown(li, &costs);
+            assert_eq!(
+                g.priced_link_cost(li, &costs).to_bits(),
+                (g.links[li as usize].cost + e.total() + g.chained_block(li)).to_bits(),
+                "link {li}: breakdown does not reconstruct priced_link_cost",
+            );
+        }
+    }
+
+    /// A graph broad enough that the bit-identity sweep means something: many links, every kind,
+    /// and every price term live across a spread of magnitudes.
+    ///
+    /// Not dm3 — a unit test has no BSP to build from — but the property under test is arithmetic,
+    /// not topology, and what it needs is *variety in the operands*: costs spanning several orders of
+    /// magnitude, hazards from a scratch to lethal, water charges that do and do not round cleanly.
+    /// Four links of one kind could not catch a term that only misbehaves when two large addends meet
+    /// a small one.
+    fn wide_priced_graph() -> NavGraph {
+        const KINDS: [LinkKind; 11] = [
+            LinkKind::Walk, LinkKind::Step, LinkKind::Drop, LinkKind::JumpGap,
+            LinkKind::DoubleJump, LinkKind::SpeedJump, LinkKind::Plat, LinkKind::Teleport,
+            LinkKind::Hook, LinkKind::RocketJump, LinkKind::Swim,
+        ];
+        const N: usize = 240;
+        let cells: Vec<Cell> = (0..=N)
+            .map(|i| Cell {
+                origin: Vec3::new(i as f32 * 37.0, (i % 13) as f32 * 51.0, (i % 7) as f32 * 24.0),
+                gx: 0,
+                gy: 0,
+            })
+            .collect();
+        // Costs deliberately span 0.03 .. ~30s: the addition order only shows itself when the terms
+        // differ enough in magnitude for the low bits to fall off.
+        let links: Vec<Link> = (0..N)
+            .map(|i| Link {
+                from: i as CellId,
+                to: (i + 1) as CellId,
+                kind: KINDS[i % KINDS.len()],
+                cost: 0.03 + (i % 97) as f32 * 0.31,
+            })
+            .collect();
+        let mut g = NavGraph::test_graph(cells, links);
+        g.water_extra = (0..N)
+            .map(|i| if i % 5 == 0 { 0.0 } else { (i % 23) as f32 * 0.017 })
+            .collect();
+        g.hazard_hp = (0..N)
+            .map(|i| if i % 3 == 0 { 0.0 } else { (i % 71) as f32 * 1.9 })
+            .collect();
+        // Every eleventh link sits behind a gate, so the closed/openable branches are exercised
+        // across the sweep rather than on a single link.
+        for i in (0..N).step_by(11) {
+            let gate = g.gates.push(Gate {
+                obstruction: 0,
+                closed_origin: g.cells[i].origin,
+                closed_min: Vec3::ZERO,
+                closed_max: Vec3::ZERO,
+                activator: 0,
+                button_cell: 0,
+                aim: g.cells[0].origin,
+                shoot: false,
+            });
+            g.gates.tag(i, gate);
+        }
+        g
+    }
+
+    /// The bit-identity property holds across a wide graph, not just the four-link diamond.
+    ///
+    /// The narrow sweep proves the transcription matches on the shapes it covers; this one covers
+    /// every link kind, gated and ungated links, hazards and water at many magnitudes, and costs
+    /// spanning three orders. Still an oracle test against the pre-split arithmetic — the dm3 sweep
+    /// belongs to the rig grind, where a real graph exists.
+    #[test]
+    fn link_extra_split_is_bit_identical_on_a_wide_graph() {
+        let g = wide_priced_graph();
+        let closed: Vec<bool> = (0..g.gate_count()).map(|i| i % 2 == 0).collect();
+        let openable: Vec<bool> = (0..g.gate_count()).map(|i| i % 3 == 0).collect();
+        let penalties: Vec<(u32, f32)> =
+            (0..g.links.len() as u32).step_by(7).map(|li| (li, 0.25 + li as f32 * 0.013)).collect();
+        let mut checked = 0usize;
+        for jitter_seed in [0u32, 1, 0x9e37_79b1, u32::MAX] {
+            for rocket_jump_extra in [0.0f32, RJ_UNFIT_PENALTY] {
+                for hazard in [None, Some(HazardPrice::new(1.0)), Some(HazardPrice::new(250.0))] {
+                    for open_gate_cost in [0.0f32, 3.75] {
+                        let costs = LinkCosts {
+                            gate_closed: &closed,
+                            openable_gates: &openable,
+                            open_gate_cost,
+                            penalties: &penalties,
+                            jitter_seed,
+                            rocket_jump_extra,
+                            hazard,
+                        };
+                        for li in 0..g.links.len() as u32 {
+                            let want = link_extra_pre_split(&g, li, &costs);
+                            let got = g.link_extra_breakdown(li, &costs).total();
+                            assert_eq!(
+                                want.to_bits(),
+                                got.to_bits(),
+                                "link {li} re-priced: {want} vs {got} (seed {jitter_seed}, \
+                                 rj {rocket_jump_extra}, gate_cost {open_gate_cost})",
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 4 * 2 * 3 * 2 * 240, "the whole sweep ran");
+    }
+
+    /// The content hash sees what the shape counts cannot.
+    ///
+    /// Two carves of one map can hold the same number of cells and links and still offer different
+    /// ways through. The row pin is deliberately blind to that — it is a cheap per-row map tag — so
+    /// any claim *about* the topology has to be bound to something that is not. This is that thing,
+    /// and these are the differences it must not miss.
+    #[test]
+    fn content_hash_distinguishes_equal_shaped_graphs() {
+        let base = diamond();
+        let h = base.content_hash();
+        assert_eq!(h, diamond().content_hash(), "stable for one graph");
+
+        // A severed link is a different graph even though nothing else moved: same links, same
+        // counts, different answer to "is there a way there". This is the axis the counts cannot see.
+        let mut severed = diamond();
+        severed.adjacency[0].retain(|&li| li != 0);
+        assert_eq!(severed.links.len(), base.links.len(), "the array is untouched...");
+        assert_ne!(severed.content_hash(), h, "...but the graph is not the same to walk");
+
+        // Same counts, one link re-pointed: a different graph to walk.
+        let mut rerouted = diamond();
+        rerouted.links[1].to = 2;
+        assert_eq!(rerouted.links.len(), base.links.len(), "identical shape...");
+        assert_eq!(rerouted.cells.len(), base.cells.len());
+        assert_ne!(rerouted.content_hash(), h, "...but not an identical graph");
+
+        // Same counts, one link's kind changed: a Drop is not a Walk to a planner.
+        let mut recast = diamond();
+        recast.links[2].kind = LinkKind::Drop;
+        assert_ne!(recast.content_hash(), h, "link kind is part of the inventory");
+
+        // Direction matters: a reversed link is a different traversal.
+        let mut reversed = diamond();
+        let (f, t) = (reversed.links[0].from, reversed.links[0].to);
+        reversed.links[0].from = t;
+        reversed.links[0].to = f;
+        assert_ne!(reversed.content_hash(), h, "endpoints are directed");
+    }
+
+    /// Cost is priced per query, not carved into the graph, so it is deliberately outside the hash.
+    ///
+    /// The inventory answers "what can be traversed", not "what does it cost right now" — the latter
+    /// changes with gates, hazards and per-bot jitter on every tick, and folding it in would make the
+    /// identity useless for the one job it has.
+    #[test]
+    fn content_hash_ignores_per_query_pricing() {
+        let base = diamond();
+        let mut pricier = diamond();
+        pricier.links[0].cost += 5.0;
+        assert_eq!(pricier.content_hash(), base.content_hash(),
+                   "static cost is not part of what the graph *contains*");
+    }
+
+    /// SHA-256 and the hex encoding match the contract's own vector.
+    ///
+    /// The engine and the harness build these bytes independently — that is what a written contract
+    /// is for — so the digest path has to be pinned to a value neither side chose. Taken verbatim
+    /// from `WORK_LOGS/graphstamp-kontrakt.md` §8.4.
+    #[test]
+    fn content_hash_matches_the_contract_vector() {
+        use sha2::{Digest, Sha256};
+        let msg = "C\t10\t0\t0\t0\nC\t11\t32\t0\t0\nL\t10\t11\twalk\nL\t11\t10\twalk";
+        let hex: String = Sha256::digest(msg.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, "1dbb72548adce39a7f54a0b2e91261c9275fdc13f40037148e8c9c04f2816f9b");
+    }
+
+    /// The canonical inventory has the shape the contract describes: C then L then R, sorted, tabs
+    /// between fields, LF between records, and no trailing LF.
+    #[test]
+    fn canonical_inventory_has_the_contract_shape() {
+        let g = diamond();
+        let bytes = g.canonical_inventory();
+        let text = String::from_utf8(bytes).expect("utf-8");
+        assert!(!text.ends_with('\n'), "no trailing LF");
+        let lines: Vec<&str> = text.split('\n').collect();
+        // Four cells, four links, no rocket jumps.
+        assert_eq!(lines.len(), 8);
+        assert_eq!(lines[0], "C\t0\t0\t0\t0");
+        assert_eq!(lines[1], "C\t1\t100\t50\t0");
+        // Links sorted by (source, target, kind, T) — not by the order they were built in — and
+        // every one carries its traversability flag.
+        assert_eq!(lines[4], "L\t0\t1\twalk\t1");
+        assert_eq!(lines[5], "L\t0\t2\twalk\t1");
+        assert_eq!(lines[6], "L\t1\t3\twalk\t1");
+        assert_eq!(lines[7], "L\t2\t3\twalk\t1");
+        assert!(!text.contains("\nR\t"), "rocket jumps are L records, not a separate section");
+    }
+
+    /// A link pruned from the adjacency is still in the array, and is reported as such.
+    ///
+    /// This is the 48208-vs-48193 gap: two carve passes drop links from the adjacency while keeping
+    /// them in the array so ids stay stable. A dump built from the adjacency alone silently omits
+    /// them; one built from the array alone silently promotes them to walkable. Both are wrong for a
+    /// structural verdict, so the engine reports the difference rather than hiding it.
+    #[test]
+    fn pruned_links_are_reported_not_hidden() {
+        let mut g = diamond();
+        assert!(g.pruned_out_links(0).is_empty(), "nothing pruned to begin with");
+        // Drop link 0 (0->1) from cell 0's adjacency, as the teleport carve does.
+        g.adjacency[0].retain(|&li| li != 0);
+        assert_eq!(g.pruned_out_links(0), vec![0], "the array still holds it, the planner cannot take it");
+        assert_eq!(g.links.len(), 4, "and the id space is untouched");
+        // The other cells are unaffected.
+        assert!(g.pruned_out_links(1).is_empty());
     }
 }

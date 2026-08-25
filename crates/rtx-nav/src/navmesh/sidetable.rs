@@ -15,6 +15,7 @@
 
 /// A payload column keyed by link index. `idx[li] == -1` marks an untagged link; a link index past
 /// the end of `idx` also reads as untagged (the column need not extend to the full link count).
+#[derive(Clone)]
 pub(super) struct SideTable<T> {
     idx: Vec<i32>,
     items: Vec<T>,
@@ -56,6 +57,27 @@ impl<T> SideTable<T> {
             i if i >= 0 => Some(i as usize),
             _ => None,
         }
+    }
+
+    /// Compact tags after `NavGraph` removed some link indices. `old_to_new[old] = Some(new)`
+    /// for kept links; `None` for removed ones. Payloads stay; only the index column moves.
+    pub(super) fn remap_after_remove(&mut self, old_to_new: &[Option<u32>]) {
+        if self.idx.is_empty() {
+            return;
+        }
+        let mut new_idx = Vec::new();
+        for (old, mapped) in old_to_new.iter().enumerate() {
+            let Some(new_i) = *mapped else {
+                continue;
+            };
+            let tag = self.idx.get(old).copied().unwrap_or(-1);
+            let ni = new_i as usize;
+            if new_idx.len() <= ni {
+                new_idx.resize(ni + 1, -1);
+            }
+            new_idx[ni] = tag;
+        }
+        self.idx = new_idx;
     }
 
     /// Number of registered payloads.

@@ -1,0 +1,52 @@
+{
+ "recept": "vF5 ring2quad",
+ "karta": "dm3",
+ "syfte": "Oppnar ringkanten -> quad over gapet fran tre vinklar, och som sidoeffekt dm3:s enda teleportlank.",
+ "bas": {
+  "celler": 5981,
+  "lankar_inkl_prunade": 48217,
+  "niva2_sha256": "4c099331899d7aaecc8d23ccaa00ab6ca2ac192e135aecbb420853886c9643e5",
+  "anm": "Basen ar den graf som lokal main 4f0b910 bygger for dm3. Lank-ID nedan galler ENDAST den grafidentiteten."
+ },
+ "efter": {
+  "celler": 5981,
+  "lankar_live": 48211,
+  "niva2_sha256": "d155c22e"
+ },
+ "steg": [
+  {
+   "op": "PlanLink",
+   "namn": "lappinnad sydavfart",
+   "from": [288.0, 320.0, 56.0],
+   "takeoff": [454.7, 153.3, 56.0],
+   "tgt": [712.0, 144.0, 56.0],
+   "v_req": 419.33,
+   "gain": 6.0,
+   "fran_cell": 1450,
+   "mal_cell": 2083,
+   "motiv": "Motorn utloser sprangat nar avstandet till avfartslinjen langs ansatsaxeln understiger LIP_REACH = 28 u. Sydmissarna lag pa 27,1 och 27,65 — knappt innanfor, sa de lyfte for tidigt. Avfartslinjen ar flyttad 12 u framat langs samma axel (-45 grader) sa missarnas punkt hamnar utanfor troskeln medan traffens punkt fortfarande ligger innanfor. Punkten ligger inne i cell 1714:s fotavtryck — fast mark. Ovriga parametrar identiska med originalet 35738."
+  },
+  {
+   "op": "RemoveLinks",
+   "namn": "gropdykarna, de oflygbara korsningarna och originalavfarten",
+   "lankar": [
+    {"id": 34501, "kind": "speedjump", "from": 1701, "to": 2072, "fran_pos": [436, -208, 56], "mal_pos": [716, -208, 56], "motiv": "oflygbar korsning"},
+    {"id": 34503, "kind": "speedjump", "from": 1712, "to": 2083, "fran_pos": [438, 142, 56], "mal_pos": [712, 144, 56], "motiv": "oflygbar korsning"},
+    {"id": 35683, "kind": "speedjump", "from": 1691, "to": 1925, "fran_pos": [448, -384, 56], "mal_pos": [608, -160, -194], "motiv": "gropdykare: landar pa z = -194"},
+    {"id": 35761, "kind": "speedjump", "from": 1233, "to": 2177, "fran_pos": [160, -160, 56], "mal_pos": [768, -96, -200], "motiv": "gropdykare: landar pa z = -200"},
+    {"id": 35762, "kind": "speedjump", "from": 1246, "to": 2177, "fran_pos": [160, 64, 56], "mal_pos": [768, -96, -200], "motiv": "gropdykare: landar pa z = -200"},
+    {"id": 35592, "kind": "speedjump", "from": 1691, "to": 1617, "fran_pos": [448, -384, 56], "mal_pos": [382, 129, 56], "motiv": "drar rutten in i den daliga korridoren"},
+    {"id": 35738, "kind": "speedjump", "from": 1450, "to": 2083, "fran_pos": [288, 320, 56], "mal_pos": [712, 144, 56], "motiv": "originalavfarten — tas bort sa planeraren inte har bade den och den lappinnade tvillingen"}
+   ],
+   "sidoeffekt": "Motorns remove_links_by_id nollar adjacensen och push_link:ar varje behallen lank, sa ALLA prunade lankar aterupplivas — inklusive dm3:s enda teleportlank. Det ar den semantik som testet control::tests::komponat_remove_links_resurrects_pruned_links_like_the_recipes_do pinnar, och det ar avsiktligt utnyttjat har: utan det kan A* aldrig planera genom en teleportor."
+  }
+ ],
+ "certifierat_av": {
+  "hopp_1_over_gapet": "35 av 36 forsok over tre vinklar (syd, nord, ringitemet), varav tva rena 12/12-varv i foljd",
+  "hopp_2_ut_genom_teleporten": "12/12",
+  "hopp_3_ringitemet_till_quad": "12/12",
+  "tillbakahoppet_quad_till_ring": "12/12 utan ingrepp",
+  "helkedjan": "12/12 hela kedjor, 7,2-8,9 s per kedja",
+  "RA_regression": "RA-drillarna mot kanonen 91a6e34, se WORK_LOGS/2026-08-19-hopptraning-ring2quad.md §30-§31"
+ }
+}

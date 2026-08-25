@@ -5,7 +5,16 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+# Oppnar NavGraph::test_graph for fixturprov i beroende krator. Av som default:
+# den cdylib motorn laddar far oforandrad yta.
+fixture = []
+
 [dependencies]
 binrw.workspace = true
 glam.workspace = true
 rayon.workspace = true
+# SHA-256 for the graph content hash (level 2 identity). Cryptographic strength is the
+# point: level 2 gates a structural verdict, and a 64-bit non-cryptographic hash would let
+# two inventories collide into a false one.
+sha2 = "0.10"

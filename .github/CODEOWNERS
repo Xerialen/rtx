@@ -1,0 +1,27 @@
+# CODEOWNERS ar en REN FLAGGA - inte en mergegrind.
+#
+# Ingen regel i ruleset 21201527 refererar den har filen: `pull_request` star
+# pa `required_approving_review_count: 0` med `require_code_owner_review:
+# false`. Filen markerar alltsa diffar och begar agarogon - den blockerar
+# ingenting, och kan darfor heller inte deadlocka en 1-persons-fork.
+#
+# Det som faktiskt FALLER en PR ar de namngivna checkarna:
+#   ra-room-lock  - RA-rummets las (las 1-8, se ADR-001)
+#   lock-guard    - vakt mot workflow-manipulation (se ADR-001)
+# Vill du ha en hard grind: lagg till checken i rulesetet, inte har.
+
+# RA-room lock — ring2quad får inte revert utan ägarögon
+/crates/rtx-game/src/cvars.rs                    @Xerialen
+/crates/rtx-game/src/recept.rs                   @Xerialen
+/crates/rtx-game/tests/ra_room_lock.rs           @Xerialen
+/reference/ra-room/DEFAULT-KONTRAKT.md           @Xerialen
+/.github/workflows/ra-room-lock.yml              @Xerialen
+/.github/workflows/lock-guard.yml                @Xerialen
+/.github/CODEOWNERS                              @Xerialen
+
+# RING2QUAD lock — K11: BARA dessa tre. `control.rs`, `navmesh/mod.rs`,
+# `bhop.rs` och `physics.rs` ar ytor som SNG-MEGA, PENT och YA-BRIDGE maste
+# rora; de far inte in har.
+/.github/workflows/ring2quad-lock.yml            @Xerialen
+/crates/rtx-game/tests/ring2quad_lock.rs         @Xerialen
+/reference/recept/vf5_ring2quad_forkmain.json    @Xerialen

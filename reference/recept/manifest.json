@@ -1,0 +1,9 @@
+{
+ "schema": "rtx-recept-manifest/1",
+ "kartor": {
+  "dm3": [
+   {"fil": "ra_climb_planted.json", "ordning": 1},
+   {"fil": "vast_296_planted.json", "ordning": 2}
+  ]
+ }
+}

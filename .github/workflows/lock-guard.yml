@@ -1,0 +1,84 @@
+# Check-namnet `lock-guard` ar kontraktet (jobs.<id>.name, inte filnamnet).
+# Forbjudet har: paths:, paths-ignore:, continue-on-error, och if: som skippar
+# jobbet eller fallsteget (GitHub raknar skipped som pass pa required checks).
+#
+# Triggern ar `pull_request_target` med FLIT: den kor alltid BASGRENENS version
+# av den har filen, sa en PR kan inte avvapna sin egen vakt. Priset ar att
+# kontexten far en skrivtoken - darfor checkar jobbet ALDRIG ut och exekverar
+# ALDRIG PR-kod. Det laser andrade filvagar via API, som text, och inget annat.
+# Behorigheterna ar dessutom nedskruvade till read nedan.
+name: lock-guard
+
+on:
+  pull_request_target:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  lock-guard:
+    name: lock-guard
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash --noprofile --norc -euo pipefail {0}
+    steps:
+      - name: vakt - ingen PR far rora .github/workflows eller CODEOWNERS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Hamta andrade filvagar via API. Ingen checkout, ingen PR-kod korn.
+          # previous_filename tas med: annars kan en workflow smitas ut ur
+          # katalogen genom att dopas om.
+          changed=$(mktemp)
+          gh api "repos/${REPO}/pulls/${PR}/files" --paginate \
+            --jq '.[] | .filename, (.previous_filename // empty)' > "$changed"
+          want=$(gh api "repos/${REPO}/pulls/${PR}" --jq '.changed_files')
+
+          echo "--- andrade filvagar ---"
+          sed 's/^/   /' "$changed"
+          echo "--- slut ---"
+
+          # >>> LOCK-GUARD-KARNA
+          # Beslutslogiken. Ror ALDRIG PR-kod - den ser bara filvagar som text.
+          #   $1 = fil med andrade filvagar, en per rad (inkl. previous_filename)
+          #   $2 = antal andrade filer som PR-objektet sjalvt uppger (changed_files)
+          # Faller (retur 1) vid: ogiltigt antal, noll filer, trunkerad lista, eller
+          # traff pa skyddad vag. Varje oklart lage faller - grinden ar fail-closed.
+          guard() {
+            local list="$1"
+            local want="$2"
+            local n
+            local hits
+            case "$want" in
+              ''|*[!0-9]*)
+                echo "lock-guard: FALLD - ogiltigt changed_files='${want}'"
+                return 1
+                ;;
+            esac
+            if [ "$want" -lt 1 ]; then
+              echo "lock-guard: FALLD - PR uppger noll andrade filer (fail-om-tomt)"
+              return 1
+            fi
+            n=$(sort -u "$list" | grep -c . || true)
+            echo "lock-guard: ${n} unika filvagar hamtade, PR uppger changed_files=${want}"
+            if [ "$n" -lt "$want" ]; then
+              echo "lock-guard: FALLD - farre vagar an PR uppger (trunkerad lista)"
+              return 1
+            fi
+            hits=$(grep -E '^\.github/workflows/|^\.github/CODEOWNERS$' "$list" | sort -u || true)
+            if [ -n "$hits" ]; then
+              echo "lock-guard: FALLD - PR ror skyddade vagar:"
+              echo "$hits" | sed 's/^/  - /'
+              echo "lock-guard: andring under .github/ kraver agarceremoni (ADR-001)."
+              return 1
+            fi
+            echo "lock-guard: OK - inga skyddade vagar rorda"
+            return 0
+          }
+          # <<< LOCK-GUARD-KARNA
+
+          guard "$changed" "$want"

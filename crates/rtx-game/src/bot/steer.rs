@@ -21,7 +21,8 @@ use crate::game::cstring;
 use crate::math::{angle_vectors, angles_to, wrap180, yaw_of};
 use crate::nav_build::PlatStatus;
 use crate::navmesh::{
-    CellId, Corridor, LinkCosts, LinkKind, NavGraph, CURL_PSI_TOL, CURL_V_HOLD_TOL, RJ_UNFIT_PENALTY,
+    CellId, Corridor, LinkCosts, LinkKind, NavGraph, CLOSED_GATE_PENALTY, CURL_PSI_TOL, CURL_V_HOLD_TOL,
+    RJ_UNFIT_PENALTY,
 };
 use crate::nearfield;
 use rtx_nav::qphys::ORIGIN_TO_FEET;
@@ -323,6 +324,34 @@ fn jump_runup_ok(v_xy: Vec2, to_wp: Vec2, dist: f32, frac: f32, maxspeed: f32) -
     v_xy.dot(to_wp.normalize_or_zero()) >= frac * maxspeed
 }
 
+/// How long a committed chained speed-jump leg's first velocity reading gets to settle before the
+/// leg-hold chain-entry guard judges it (see [`chain_entry_hold_expired`]) — a landing carries real
+/// speed the instant physics applies it, but the very first frame or two can read low from settling
+/// noise. Well under [`STUCK_TIME`] (0.7s), the fastest existing watchdog that would otherwise fire
+/// first on a chained leg held in place.
+const CHAIN_ENTRY_GRACE: f32 = 0.3;
+
+/// Whether the leg-hold chain-entry guard should divert *this tick*: a leg is committed (`commit`),
+/// grounded (not mid-leap — diverting an airborne bot is meaningless, it's already committed to the
+/// jump's physics), past its settling grace, and still [`NavGraph::chain_entry_blocked`] at the
+/// bot's real speed (`blocked`, precomputed by the caller since it needs the graph).
+///
+/// The timing/state half of the check, split out from the graph lookup the same way
+/// [`crate::navmesh::NavGraph::chain_entry_leg_ok`] splits the speed predicate from
+/// `chain_entry_exclusions` — so the grace window and the ground/commit gating are directly
+/// testable without a live `NavGraph`. See the call site for why this exists *in addition to* the
+/// leg-transition guard: a chained jump committed at a borderline speed has no runway to build the
+/// rest on, so without this it just holds until an existing watchdog eventually notices.
+fn chain_entry_hold_expired(commit: Option<Commit>, now: f32, on_ground: bool, blocked: bool) -> bool {
+    on_ground && blocked && commit.is_some_and(|c| now - c.since > CHAIN_ENTRY_GRACE)
+}
+
+/// Whether the curl too-slow abort should fire. With the grounded gate disabled, this preserves the
+/// legacy speed-only predicate; with it enabled, airborne frames cannot abort the leg.
+fn sj_abort_should_fire(on_ground: bool, gate: bool, predicted: f32, v_req: f32) -> bool {
+    (!gate || on_ground) && predicted < v_req * 0.85
+}
+
 /// How many legs ahead the winding gate looks, and the total heading change (degrees) over them that
 /// counts as "too tight to hop". A straight corridor reads ~0; a spiral staircase's curved treads
 /// read tens of degrees per leg.
@@ -496,6 +525,22 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     } = o;
     let gate_closed = costs.gate_closed;
     bot.replanned = false; // per-frame; the repath block below stamps it if one runs
+    // Plan telemetry. One cvar read per bot per frame and nothing else unless it is on: every stamp
+    // below sits behind this flag, and `plan.fresh` is left false when it is off, which is how
+    // `control` knows there is no row to send. See [`crate::bot::state::PlanDiag`].
+    let plan_tel = host.cvar_bool(c"rtx_plan_telemetry");
+    if plan_tel {
+        // Landing clears the hop-scoped first-air bind. The *value* is bound at emit to the
+        // airborne PlanTick's own vel.z (not this think's entry vz) — see bind_first_air_to_row.
+        if on_ground {
+            bot.plan.first_air_vz = 0.0;
+            bot.plan.first_air_vz_measured = false;
+        }
+        // Latch incoming phase *before* begin_frame opens the window. A later think in the same
+        // window must not overwrite it (B2 FLAGGA 1).
+        bot.plan.latch_phase_prev(bot.bhop.phase);
+        bot.plan.begin_frame(now);
+    }
 
     // Plain-jump commitment is normally pre-armed before objective resolution. Remember the first
     // physical airborne frame here; route kind/position is intentionally irrelevant to release.
@@ -630,6 +675,33 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // own escape-hatch cvar. `speed` seeds the start band, so a mid-run re-path keeps a hop
         // chain alive. Falls back to the plain cell A* (bands all-zero) when off.
         let use_bands = host.cvar_bool(c"rtx_bot_bhop") && host.cvar_bool(c"rtx_bot_bandplan");
+        // Chain-entry gate (`rtx_bot_chain_entry_gate`, on by default): surcharge, for *this search
+        // only*, any chained speed jump leaving `bot_cell` the bot's real speed can't carry (see
+        // `NavGraph::chain_entry_exclusions` for why the banded planner's own feasibility check
+        // misses exactly this case). Shadows `costs` for the rest of this repath block — the corridor,
+        // banded/plain search and the priced-out fallback all see the exclusion; nothing outside this
+        // block (the gate-errand route, the watchdogs) does. A bot that later reaches the same cell
+        // carrying real speed gets the ordinary, unexcluded query.
+        let chain_gate_penalties: Vec<(u32, f32)>;
+        let costs = if host.cvar_bool(c"rtx_bot_chain_entry_gate") {
+            let excluded: Vec<u32> = graph.chain_entry_exclusions(bot_cell, speed).collect();
+            if excluded.is_empty() {
+                costs
+            } else {
+                chain_gate_penalties = costs
+                    .penalties
+                    .iter()
+                    .copied()
+                    .chain(excluded.into_iter().map(|li| (li, CLOSED_GATE_PENALTY)))
+                    .collect();
+                LinkCosts {
+                    penalties: &chain_gate_penalties,
+                    ..costs
+                }
+            }
+        } else {
+            costs
+        };
         // Where can we actually head? Unreachability is pure topology (every dynamic cost term is
         // finite — see `navmesh::reach`), so resolve the target *before* searching instead of
         // discovering a dead goal by watching a whole-graph search exhaust and then flooding to find
@@ -637,7 +709,13 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // disconnected pocket, redirects to the reachable cell nearest it — the bot heads as far
         // toward the target as the graph allows (often enough for line of sight) rather than homing
         // into a wall.
-        let target = if graph.reachable(bot_cell, goal) {
+        let goal_reachable = graph.reachable(bot_cell, goal);
+        if plan_tel {
+            // Pure topology, decided here anyway — and the only half of
+            // `structural_missing_link` the engine can answer. Route-scoped like `plan_fail`.
+            bot.plan.goal_reachable = goal_reachable;
+        }
+        let target = if goal_reachable {
             goal
         } else {
             graph.nearest_reachable_to(bot_cell, goal).unwrap_or(goal)
@@ -719,6 +797,10 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                 None => graph.find_path_banded(bot_cell, search_target, speed, &costs),
             })
             .flatten();
+        // The banded planner's own verdict on what it returned. Read before the match consumes it:
+        // this is the only point the total is ever known, and it is what a later "was the plan
+        // expensive, or just badly flown?" turns on.
+        let banded_cost = banded.as_ref().map_or(-1.0, |r| r.cost);
         let (mut route, mut bands) = match banded {
             Some(r) => (r.links, r.bands),
             // Banded came back empty ⇒ band-infeasible (a route that only exists through a speed-jump
@@ -734,7 +816,8 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         // corridor's interim, since the interim is the choice the bad window made and reusing it walks
         // straight back into the trap. The banded search needs the same guard as the plain one: it is
         // the arm that actually runs, and it has no idea the driver will refuse what it planned.
-        if priced_out(graph, &route, &costs) {
+        let was_priced_out = priced_out(graph, &route, &costs);
+        if was_priced_out {
             route = graph.find_path(bot_cell, target, &costs).unwrap_or_default();
             bands = Vec::new();
         }
@@ -788,6 +871,24 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         bot.route_bands = bands;
         bot.route_pos = 0;
         bot.goal_cell = Some(goal);
+        if plan_tel {
+            // Route-scoped: stamped here and carried through the frames until the next repath.
+            bot.plan.plan_cost = if bot.route.is_empty() { -1.0 } else { banded_cost };
+            // Why the search had nothing to fly — the difference between "the graph offers no way"
+            // and "the way was there and the bot failed it", which the route record alone cannot
+            // make. Most-specific first: a priced-out plan and an unreachable goal each *also* leave
+            // the route empty, and reporting emptiness would name the symptom over the cause.
+            bot.plan.goal_redirected = target != goal;
+            bot.plan.plan_fail = if was_priced_out {
+                "priced_out"
+            } else if target != goal {
+                "unreachable"
+            } else if bot.route.is_empty() {
+                "no_path"
+            } else {
+                ""
+            };
+        }
         // Remember the gates the corridor crosses beyond the interim window (nearest first), so the
         // gate-errand block can pre-arm for a far shut door the truncated route won't reveal (see
         // [`GateState`]). Empty when there's no corridor, which also clears any previous list.
@@ -934,6 +1035,32 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     } else {
         (target_origin, None, true, None)
     };
+    if plan_tel {
+        // The decision this whole event exists to record, stamped where it is made rather than
+        // recomputed in `frame_end`: `hook` and `rj` advance `route_pos` on landing, so a later read
+        // of `route[route_pos]` would sometimes name the next leg instead of the one just flown.
+        bot.plan.link = cur_leg;
+        bot.plan.kind = kind;
+        bot.plan.band = cur_leg.and(bot.route_bands.get(bot.route_pos).copied());
+        if let Some(leg) = cur_leg {
+            // Priced under *this* frame's costs, including the per-bot jitter seed — the price A\*
+            // actually saw, not a re-derivation that might disagree with it.
+            bot.plan.extra = graph.link_extra_breakdown(leg, &costs);
+            bot.plan.p_base = graph.links[leg as usize].cost;
+            bot.plan.p_chained = graph.chained_block(leg);
+            bot.plan.p_total = graph.priced_link_cost(leg, &costs);
+            if let Some(sj) = graph.speed_jump_of_link(leg) {
+                bot.plan.v_req = sj.v_req;
+                bot.plan.chained = sj.chained;
+                bot.plan.curl_gain = sj.curl_gain;
+                bot.plan.takeoff_xyz = sj.takeoff;
+                // An uncapped weave is `INFINITY`, which has no place in a log line.
+                bot.plan.weave_cap = if sj.weave_cap.is_finite() { sj.weave_cap } else { -1.0 };
+            }
+        }
+        let rem = remaining_cost(graph, origin, bot.route.get(bot.route_pos..).unwrap_or(&[]), &costs);
+        bot.plan.remaining_cost = rem;
+    }
 
     // Plat standoff. If an upcoming leg boards/rides a func_plat that isn't at its bottom, and we're
     // not already aboard it, walking to the board point would put us inside the lift's inner trigger
@@ -1308,8 +1435,64 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
         matches!(kind, Some(LinkKind::SpeedJump)) && host.cvar_bool(c"rtx_bot_bhop") && !hook_active && !rj_active;
     if sj_active {
         if bot.sj.map(|c| c.leg) != cur_leg {
-            bot.sj = cur_leg.map(|leg| Commit { leg, since: now });
+            // Leg-transition chain-entry guard (`rtx_bot_chain_entry_gate`): the plan-time exclusion
+            // above only covers a route's *first* leg from the bot's cell at the moment it was
+            // planned — a route whose leg 0 is an ordinary walk/step into the ledge cell and whose leg
+            // 1 is the chained jump sails straight through it, because at plan time the walk hadn't
+            // happened yet and the chained link wasn't adjacent to the bot's *then*-current cell. But
+            // `sj_active` above engages the very instant this leg becomes current — "committed bhop
+            // run-up + leap" — with no check at all that the bot actually arrived carrying speed, so a
+            // bot that merely walked into the ledge (dm3 measured ~38 ups, well under either link's
+            // v_req) commits anyway and only the 4s stall watchdog below ever notices. Catch it here,
+            // once, at the exact frame the leg becomes current (not on every frame of an already-
+            // engaged run — that would also catch a leg mid-flight, which is exactly the traffic this
+            // must leave alone): a bot landing from a preceding jump already carries real speed at
+            // this instant, so the check clears it naturally without any special-casing for "mid-chain".
+            let chain_entry_ok =
+                !host.cvar_bool(c"rtx_bot_chain_entry_gate") || graph.chain_entry_leg_ok(cur_leg, speed);
+            if chain_entry_ok {
+                bot.sj = cur_leg.map(|leg| Commit { leg, since: now });
+            } else {
+                // Same finite-penalty + immediate-replan mechanism the watchdogs below use — deliberately
+                // *not* `note_stall`: nothing was attempted here to fail. Diverting before the takeoff is
+                // the fix, not a stall to log.
+                penalize_leg(bot, cur_leg, kind, now);
+                bot.route.clear();
+                bot.repath_time = now;
+                sj_active = false;
+            }
         }
+    }
+    // Leg-hold chain-entry guard: the transition-instant check above only catches a commit that was
+    // *already* too slow. A chained jump committed at a borderline speed — enough to clear the loose
+    // transition threshold, not enough to actually fly — has, by definition (no runway of its own),
+    // nowhere to build the rest: `sj_hold` below just holds it on the ground circle-strafing in
+    // place, and without this check nothing notices until either this fires or the generic 4s
+    // `speedjump_stall` watchdog does. Measured live: a second dual-instrument capture on the
+    // transition-only guard still found 21 ring stalls, 20 of them under half of v_req and 13 at
+    // `route_pos == 1` — most of them `displacement` (the *generic* stuck watchdog, `STUCK_TIME` ==
+    // 0.7s, firing first because a bot holding in place barely displaces) rather than the sj-specific
+    // 4s one, which a chained hold essentially never survives to reach. So this has to run every
+    // tick, not just at commit, and has to beat 0.7s.
+    //
+    // [`CHAIN_ENTRY_GRACE`] gives a landing's first velocity reading a moment to settle before this
+    // judges it — the transition check has none, deliberately (an outright standstill needs no
+    // grace) — and `on_ground` excludes the actual airborne leap: once launched the bot is committed
+    // to the physics of the jump, and diverting mid-arc is meaningless. Fires at most once per
+    // commit (clearing `bot.sj` takes it out of `sj_active` for the rest of this leg), and reuses the
+    // same penalize+repath mechanism as every other watchdog here — no `note_stall`: this is still a
+    // diversion before a takeoff was ever attempted, not a failure to log.
+    if sj_active && host.cvar_bool(c"rtx_bot_chain_entry_gate") {
+        let blocked = bot.sj.is_some_and(|c| !graph.chain_entry_leg_ok(Some(c.leg), speed));
+        if chain_entry_hold_expired(bot.sj, now, on_ground, blocked) {
+            penalize_leg(bot, cur_leg, kind, now);
+            bot.sj = None;
+            bot.route.clear();
+            bot.repath_time = now;
+            sj_active = false;
+        }
+    }
+    if sj_active {
         // Watchdog: the route is frozen mid-leg, so if the run-up stalls (blocked, shoved, never
         // built speed) abandon it and re-path rather than wedging on the runway forever. Penalize the
         // leg so the deterministic A* actually diverts instead of handing back the same run-up.
@@ -1430,7 +1613,12 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             cv(c"sv_friction", 4.0),
             cv(c"sv_stopspeed", 100.0),
         );
-        if predicted < v_req * 0.85 {
+        if sj_abort_should_fire(
+            on_ground,
+            host.cvar_bool(c"rtx_bot_sj_abort_grounded"),
+            predicted,
+            v_req,
+        ) {
             note_stall(bot, &stall_frame, "prestrafe_deficit", "penalize+repath", cur_leg, kind);
             // A certified leg: strike it once so this repath prefers an alternative, but never let the
             // surcharge escalate — the build proved the jump flyable, so arriving slow is a transient
@@ -1732,6 +1920,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             }
             _ => f32::INFINITY,
         };
+        if plan_tel {
+            bot.plan.runway = bhop_runway;
+            bot.plan.runway_measured = true;
+            // The signed along-corridor progress in its own right, not just the value that survived
+            // the fallback into `bhop_runway` — the two differ precisely at the lip.
+            bot.plan.sj_progress = sj_progress.unwrap_or(0.0);
+            bot.plan.sj_progress_measured = sj_progress.is_some();
+            bot.plan.hold_jump = sj_hold;
+        }
         let cmd = bot.bhop.step(
             &bhop::Input {
                 v_xy,
@@ -1956,6 +2153,34 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // what made a bot brake mid-stride on a stair diagonal. Skipped whenever another driver owns the
     // feet (bhop/speed-jump/hook/rj/airborne), in water (pmove models none of it), or on a magnet
     // detour, which deliberately steps off the line the rollout would certify.
+    // Diagnosinstrumentet (steg 3): vilken förare äger ramen? Logga vid BYTE, inte per
+    // tick — 77 Hz gånger antal bots är brus, och det som bär information är övergången.
+    if host.cvar_bool(c"rtx_bot_walkdiag") {
+        let forare = if on_air {
+            "air"
+        } else if in_water {
+            "water"
+        } else if bhop_active || bot.bhop.phase != bhop::Phase::Off {
+            "bhop"
+        } else if sj_active {
+            "speedjump"
+        } else if hook_engaged {
+            "hook"
+        } else if rj_engaged {
+            "rj"
+        } else if magnet_bend {
+            "magnet"
+        } else {
+            "walk"
+        };
+        if bot.walkdiag_forare != forare {
+            host.conprint(&cstring(&format!(
+                "rtx bot{client}: forare {} -> {forare}\n",
+                bot.walkdiag_forare
+            )));
+            bot.walkdiag_forare = forare;
+        }
+    }
     let walk_corridor = host.cvar_bool(c"rtx_bot_walkplan")
         && !on_air
         && !in_water
@@ -1969,6 +2194,15 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
     // The line the walk certifier, its freshness check and the aim point all share, built once so
     // they cannot disagree about where the route is.
     let route_line: Option<Vec<Vec3>> = walk_line_pts(graph, bot, cur_leg);
+    // Kantvakterna (F1/F2), båda av som förval. Läppsonden körs bara när en gångplan
+    // är aktuell — en hull0-spårning per ram och bot, inte per tick i fläkten.
+    let guard = walksim::EdgeGuard {
+        narrow: host.cvar_bool(c"rtx_bot_edge_narrow"),
+        recert: host.cvar_bool(c"rtx_bot_edge_recert"),
+    };
+    let over_lip_now = walk_corridor
+        && (guard.narrow || guard.recert || host.cvar_bool(c"rtx_bot_walkdiag"))
+        && bsp.is_some_and(|b| walksim::over_lip(b, origin));
     if !walk_corridor {
         bot.walk = None; // another driver owns the frame, or this isn't ground to certify
     } else if on_ground {
@@ -1979,8 +2213,9 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             now - w.since <= WALK_RECERT
                 && cur_leg.is_some_and(|l| w.legs[..w.n as usize].contains(&l))
                 && route_line.as_ref().is_some_and(|pts| {
-                    walksim::off_line(pts, origin)
-                        .is_some_and(|off| off.lateral <= walksim::LATERAL_TOL && off.dz.abs() <= walksim::Z_TOL)
+                    walksim::off_line(pts, origin).is_some_and(|off| {
+                        walksim::tube_ok(off, over_lip_now, w.over_lip, guard)
+                    })
                 })
         });
         if !fresh {
@@ -2034,15 +2269,29 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
                             let n = tail.len().min(state::WALK_LEGS);
                             let mut legs = [0u32; state::WALK_LEGS];
                             legs[..n].copy_from_slice(&tail[..n]);
+                            if host.cvar_bool(c"rtx_bot_walkdiag") {
+                                host.conprint(&cstring(&format!(
+                                    "rtx bot{client}: walkplan la={} lat={} lip={} leg={:?}\n",
+                                    plan.lookahead, plan.lateral, over_lip_now, cur_leg
+                                )));
+                            }
                             bot.walk = Some(state::WalkGuide {
                                 plan,
                                 since: now,
                                 legs,
                                 n: n as u8,
+                                over_lip: over_lip_now,
                             });
                         }
                         // Boxed: nothing tracks from here, so the brakes own until the back-off lapses.
-                        None => bot.walk_retry = now + WALK_RETRY,
+                        None => {
+                            if host.cvar_bool(c"rtx_bot_walkdiag") {
+                                host.conprint(&cstring(&format!(
+                                    "rtx bot{client}: walkplan BOXED lip={over_lip_now} leg={cur_leg:?}\n"
+                                )));
+                            }
+                            bot.walk_retry = now + WALK_RETRY;
+                        }
                     }
                 }
             }
@@ -2572,6 +2821,13 @@ pub(super) fn steer(graph: &NavGraph, bot: &mut BotState, ctx: SteerCtx) -> Stee
             Some(LinkKind::JumpGap | LinkKind::DoubleJump | LinkKind::SpeedJump)
         );
     let overlays_ok = !hook_engaged && !rj_engaged && !bhop_active && !traversal_lock;
+    if plan_tel {
+        bot.plan.on_ground = on_ground;
+        bot.plan.origin = origin;
+        bot.plan.vel = v_xy.extend(vz);
+        bot.plan.speed = speed;
+        bot.plan.seq = bot.plan.seq.wrapping_add(1);
+    }
     SteerOut {
         cmd,
         bhop_cmd,
@@ -2633,5 +2889,42 @@ mod tests {
         assert!(!jump_runup_ok(Vec2::new(0.0, 300.0), fwd, 200.0, 0.5, 320.0));
         // Gate disabled → always allowed (today's behavior).
         assert!(jump_runup_ok(Vec2::ZERO, fwd, 200.0, 0.0, 320.0));
+    }
+
+    /// Reproduces the leg-hold gap the transition-only guard left open: a chained speed jump
+    /// committed at a borderline speed has no runway to build the rest on, so `sj_hold` just holds
+    /// it grounded — and a live dual-instrument capture on the transition-only guard alone still
+    /// found 21 ring stalls (20 under half of v_req, 13 at `route_pos == 1`), mostly `displacement`
+    /// (the generic 0.7s stuck watchdog winning the race against the 4s sj-specific one). This is
+    /// the every-tick check that closes it: fires only once its grace has passed, only while
+    /// grounded (never mid-leap), and only when the leg is still genuinely blocked.
+    #[test]
+    fn chain_entry_hold_expired_fires_only_grounded_past_grace_and_blocked() {
+        let commit = Some(Commit { leg: 7, since: 10.0 });
+        // Still inside the settling grace → not yet.
+        assert!(!chain_entry_hold_expired(commit, 10.1, true, true));
+        // Past grace, but the bot actually has the speed now (or this isn't a chained link at all)
+        // → nothing to divert.
+        assert!(!chain_entry_hold_expired(commit, 10.4, true, false));
+        // Past grace and blocked, but airborne — already committed to the leap's physics.
+        assert!(!chain_entry_hold_expired(commit, 10.4, false, true));
+        // Past grace, blocked, grounded → fires.
+        assert!(chain_entry_hold_expired(commit, 10.4, true, true));
+        // No commit at all (not on a speed-jump leg, or already diverted) → nothing to divert.
+        assert!(!chain_entry_hold_expired(None, 10.4, true, true));
+    }
+
+    #[test]
+    fn sj_abort_grounded_gate_controls_airborne_abort() {
+        let v_req = 400.0;
+        let low = 300.0;
+        let high = 350.0;
+
+        assert!(!sj_abort_should_fire(false, true, low, v_req));
+        assert!(sj_abort_should_fire(false, false, low, v_req));
+        assert!(sj_abort_should_fire(true, true, low, v_req));
+        assert!(sj_abort_should_fire(true, false, low, v_req));
+        assert!(!sj_abort_should_fire(true, true, high, v_req));
+        assert!(!sj_abort_should_fire(true, false, high, v_req));
     }
 }

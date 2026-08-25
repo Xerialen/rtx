@@ -1912,6 +1912,19 @@ mod tests {
             oracle: proto::OracleInfo::default(),
             bots: vec![],
             players: vec![],
+            graph_content_hash: String::new(),
+            recept: None,
+            // Unpriced fixture, stated rather than defaulted: this frame is hand-built for the
+            // pointer assertions below, no operator surcharge is in force, and empty vec + empty
+            // string is what `rtx-ctlproto` documents as "no pricing" (see the field docs on
+            // `StatusResp::recost` and the wire test `status_without_recost_fields_decodes_as_unpriced`).
+            //
+            // Not a template for a real status frame: in `rtx-game`'s `status_resp` these two must
+            // read the live table (`game.recost.…`), and `tests/recost_lock.rs` fails the build if a
+            // constant like this one ever appears there — a frame that says "unpriced" about a
+            // priced arm mis-stamps every band taken under it.
+            recost: vec![],
+            recost_hash: String::new(),
         };
         resp.match_.phase = "live".into();
         resp.match_.roster = vec![

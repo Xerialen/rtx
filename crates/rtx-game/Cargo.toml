@@ -31,3 +31,12 @@ glam.workspace = true
 # The bot brain's goal-selection floods run on a persistent worker pool (see `bot::par`). Already in
 # this dylib's tree via rtx-nav's navmesh build, so it adds no new link weight.
 rayon.workspace = true
+# Receptautostarten (`recept.rs`) laser sina recept ur JSON och binder dem vid
+# grafens niva-2. Bada speglar den lokala huvudgrenen: `sha2` star dar i samma
+# krate, och recepten ligger redan versionerade som JSON i reference/recept/.
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+# Fixturkonstruktorn slapps in ENBART i testbygget.
+rtx-nav = { workspace = true, features = ["fixture"] }

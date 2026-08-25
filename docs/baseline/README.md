@@ -9,6 +9,10 @@ cargo run --release -p rtx-ctlproto --example flyprobe -- line \
     --first 0 --count 60 --stride 9 --trials 3 --csv docs/baseline/dm3-4on4-suite.csv
 ```
 
+`/demos` is gitignored, so that recording does not travel with this tree. See
+[`DEMOS.md`](DEMOS.md) for its sha256, the exact `scp` that fetches it, and the one naming
+discrepancy between the path above and the file as it exists on disk.
+
 60 movements strided across the whole suite (which is ordered fastest-first, so a stride is
 necessary — the head of it is all 630-700 ups running), 3 trials each. Raw per-run rows are in
 `dm3-4on4-suite.csv`, the full transcript in `dm3-4on4-suite.log`.
