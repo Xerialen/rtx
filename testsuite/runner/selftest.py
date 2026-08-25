@@ -945,6 +945,425 @@ def _t4_units() -> list[str]:
     return failures
 
 
+def _name_resolution_units() -> list[str]:
+    """Every global name a runner function reads must exist in its module.
+
+    PR #67 half-ported two lines out of `t4.py` into `t3.py`: it called
+    `wait_for_demo_flush` without importing it and read a `demo_dir` that was
+    never defined. Python resolves neither until the line runs, and the line
+    runs only after a five-minute match on a live rig — so both shipped, and on
+    2026-08-25 two played T3 matches raised `NameError` between the last frag
+    and the envelope and lost their measurements.
+
+    The check is the lookup the interpreter itself performs: for every function
+    in the runner package, take the names `symtable` says are read as globals
+    and require the module to have them (or the builtins). It costs
+    milliseconds, needs no rig, and it is deliberately about names and not
+    about types — a half-port is a spelling mistake with a five-minute fuse.
+    """
+    import builtins
+    import importlib
+    import symtable
+
+    # Already found, already reported, never silently tolerated. The check went
+    # red on main the first time it ran, on a site older than the regression it
+    # was written for: `t2._analyzer_metrics` lost its
+    # `for key, measurement in measurements.items():` loop header in 7301ee7
+    # (2026-08-19). The body was left behind, re-indented under
+    # `if disagreements:` *after* the `raise`, so T2's per-metric demo links
+    # have been unreachable dead code since — and would raise `NameError` on
+    # `measurement` and `key` if they ever were reached. It is the same
+    # half-ported-edit family as the t3.py crash but a different tier's
+    # evidence, so it is reported to Fable (2026-08-25) rather than
+    # drive-by-fixed inside a regression PR. The pin is two-sided: a new
+    # unresolved name fails, and a pinned one that gets fixed or moves fails
+    # too, so this comment cannot outlive the defect it describes.
+    reported = {
+        ("t2", "t2._analyzer_metrics", "measurement"),
+        ("t2", "t2._analyzer_metrics", "key"),
+    }
+
+    failures: list[str] = []
+    unresolved: set[tuple[str, str, str]] = set()
+    package = Path(__file__).resolve().parent
+    for source_path in sorted(package.glob("*.py")):
+        module_name = source_path.stem
+        if module_name == "__init__":
+            continue
+        source = source_path.read_text(encoding="utf-8")
+        try:
+            module = importlib.import_module(f".{module_name}", __package__)
+        except ImportError as exc:  # pragma: no cover - a broken tree, not a lint
+            failures.append(f"names.{module_name}: cannot import: {exc}")
+            continue
+        top = symtable.symtable(source, str(source_path), "exec")
+
+        def visit(table: "symtable.SymbolTable", scope: str, module: Any = module) -> None:
+            for symbol in table.get_symbols():
+                name = symbol.get_name()
+                if not symbol.is_global() or not symbol.is_referenced():
+                    continue
+                if name.startswith("__") and name.endswith("__"):
+                    continue
+                if hasattr(module, name) or hasattr(builtins, name):
+                    continue
+                unresolved.add((module.__name__.rsplit(".", 1)[-1], scope, name))
+            for child in table.get_children():
+                visit(child, f"{scope}.{child.get_name()}")
+
+        visit(top, module_name)
+    for module_name, scope, name in sorted(unresolved - reported):
+        failures.append(
+            f"names.{module_name}: {scope} reads {name!r}, which is neither "
+            f"defined nor imported in {module_name}.py"
+        )
+    for module_name, scope, name in sorted(reported - unresolved):
+        failures.append(
+            f"names.{module_name}: the pinned finding {scope}/{name!r} is gone "
+            "— fix the code and the pin in the same change, never one alone"
+        )
+    return failures
+
+
+def _demo_selector_units() -> list[str]:
+    """The demo a match's evidence is read from is the match's own demo.
+
+    KTX opens a new recording the moment the match ends, so "newest .mvd in the
+    directory" names the wrong file exactly when the runner asks. Measured on
+    2026-08-25: the flush wait sat out its full 90 s on a 0-byte post-match
+    recording while the match's own 3 102 072-byte demo lay finished beside it,
+    and the envelope's scoreboard went unavailable although the demo existed.
+    """
+    import os
+    import tempfile as _tempfile
+    from datetime import datetime
+
+    from . import runlib as runlib_mod
+    from . import t3 as t3_mod
+
+    failures: list[str] = []
+
+    def check(name: str, got: Any, want: Any) -> None:
+        if got != want:
+            failures.append(f"{name}: got {got!r}, want {want!r}")
+
+    # The measured shape, to the byte and to the minute: the match began at
+    # 07:03:50 and recorded `...-0703`; KTX's post-match recording is `...-0709`
+    # and is the newer file on disk.
+    began = datetime(2026, 8, 25, 7, 3, 50).timestamp()
+    match_name = "4on4_brch_vs_ref[dm3]20260825-0703"
+    after_name = "4on4_brch_vs_ref[dm3]20260825-0709"
+
+    with _tempfile.TemporaryDirectory(prefix="rtx-demoval-") as temp:
+        demo_dir = Path(temp)
+        match_demo = demo_dir / f"{match_name}.mvd"
+        match_demo.write_bytes(b"\0" * 3102072)
+        after_demo = demo_dir / f"{after_name}.mvd"
+        after_demo.write_bytes(b"")
+        os.utime(match_demo, (began + 300, began + 300))
+        os.utime(after_demo, (began + 400, began + 400))
+
+        check(
+            "demoval.match_not_newest",
+            runlib_mod.select_match_demo(
+                [after_demo, match_demo], began
+            ).name,
+            match_demo.name,
+        )
+        # And through the wait itself: the whole point is a receipt that names
+        # the match's demo and its bytes instead of timing out on 0.
+        receipt = runlib_mod.wait_for_demo_flush(
+            demo_dir, began, timeout_s=3.0, stable_s=0.2, poll_s=0.1
+        )
+        check("demoval.flush_state", receipt["state"], "flushed")
+        check("demoval.flush_path", receipt["path"], match_demo.name)
+        check("demoval.flush_bytes", receipt["bytes"], 3102072)
+
+        # The card chooser is the same chooser: the number and the demo it is
+        # read out of can never point at two different matches.
+        for stem in (match_name, after_name):
+            (demo_dir / f"{stem}.txt").write_text("{}", encoding="utf-8")
+        os.utime(demo_dir / f"{match_name}.txt", (began + 300, began + 300))
+        os.utime(demo_dir / f"{after_name}.txt", (began + 400, began + 400))
+        check(
+            "demoval.card_is_the_match_card",
+            t3_mod.match_demoinfo(demo_dir, began).name,
+            f"{match_name}.txt",
+        )
+
+    # A directory holding nothing but the 0-byte post-match recording still
+    # times out honestly — an unavailable field, never a quiet zero.
+    with _tempfile.TemporaryDirectory(prefix="rtx-demoval-") as temp:
+        demo_dir = Path(temp)
+        (demo_dir / f"{after_name}.mvd").write_bytes(b"")
+        receipt = runlib_mod.wait_for_demo_flush(
+            demo_dir, began, timeout_s=0.6, stable_s=0.2, poll_s=0.1
+        )
+        check("demoval.zero_bytes_times_out", receipt["state"], "timeout")
+        check("demoval.zero_bytes_named", receipt["path"], f"{after_name}.mvd")
+        check("demoval.zero_bytes_reported", receipt["bytes"], 0)
+
+    # An older match's demo, still being flushed while this one starts, is not
+    # this match's demo however early its name sorts.
+    with _tempfile.TemporaryDirectory(prefix="rtx-demoval-") as temp:
+        demo_dir = Path(temp)
+        previous = demo_dir / "4on4_brch_vs_ref[dm3]20260825-0650.mvd"
+        previous.write_bytes(b"old")
+        this_match = demo_dir / f"{match_name}.mvd"
+        this_match.write_bytes(b"new")
+        check(
+            "demoval.previous_match_ignored",
+            runlib_mod.select_match_demo([previous, this_match], began).name,
+            this_match.name,
+        )
+        # ... and the minute-truncated stamp of our own match still counts: it
+        # may sit up to 59 s before the wallclock the runner recorded.
+        check(
+            "demoval.own_stamp_within_the_minute",
+            runlib_mod.select_match_demo([this_match], began).name,
+            this_match.name,
+        )
+
+    # A demo whose name carries no stamp at all falls back to the old
+    # newest-by-mtime rule rather than to nothing.
+    with _tempfile.TemporaryDirectory(prefix="rtx-demoval-") as temp:
+        demo_dir = Path(temp)
+        first = demo_dir / "4on4_frog[dm3]-first.mvd"
+        first.write_bytes(b"a")
+        second = demo_dir / "4on4_frog[dm3]-second.mvd"
+        second.write_bytes(b"b")
+        os.utime(first, (began, began))
+        os.utime(second, (began + 60, began + 60))
+        check(
+            "demoval.unstamped_falls_back_to_newest",
+            runlib_mod.select_match_demo([first, second], began).name,
+            second.name,
+        )
+    return failures
+
+
+def _t3_path_units() -> list[str]:
+    """T3's post-match path, driven end to end without a rig.
+
+    Everything between "the match ended" and "the envelope is written" used to
+    be reachable only through a live server, eight clients and five minutes of
+    play, which is how two NameErrors shipped in it. Here the four rig-facing
+    calls are fakes — the status socket, the client processes, the control
+    channel and the build identity — and every line the regression lived in is
+    the real one: the flush wait, the demo chooser, the KTX card read, the
+    scoreboard call, the payload assembly and the envelope write.
+
+    The assertion is deliberately the whole outcome and not the absence of a
+    traceback: a run that crashes here still writes an envelope, but a *failed*
+    one with no payload, which is exactly what the two lost matches produced.
+    """
+    import tempfile as _tempfile
+    from datetime import datetime, timedelta
+
+    from . import runlib as runlib_mod
+    from . import t3 as t3_mod
+
+    failures: list[str] = []
+
+    def check(name: str, got: Any, want: Any) -> None:
+        if got != want:
+            failures.append(f"{name}: got {got!r}, want {want!r}")
+
+    class _FakeProcess:
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    class _FakeControl:
+        def __init__(self) -> None:
+            self.events: list[Any] = []
+
+        def request(self, *args: Any, **kwargs: Any) -> Any:
+            return {"data": {"bots": []}}
+
+        def close(self) -> None:
+            pass
+
+    frags_by_side = {"branch": 54, "reference": 5}
+
+    class _OfflineSide(t3_mod._Side):
+        """The real side, with only its four rig-facing calls stubbed."""
+
+        def launch(self, *args: Any, **kwargs: Any) -> None:
+            self.process = _FakeProcess()
+            self.log = None
+            self._moved = 0.0
+
+        def connect(self, deadline: float) -> None:
+            self.control = _FakeControl()
+
+        def status_bots(self) -> list[dict[str, Any]]:
+            self._moved += 64.0
+            return [
+                {
+                    "ent": index,
+                    "alive": True,
+                    "origin": [self._moved, 0.0, 0.0],
+                    "frags": frags_by_side[self.side] // 4,
+                }
+                for index in range(1, 5)
+            ]
+
+        def shutdown(self) -> None:
+            self.control = None
+            self.process = None
+
+    # Standby for the preflight, running once for the start gate, Standby again
+    # so the match ends on the next lifecycle poll.
+    replies = {"count": 0}
+
+    def _fake_serverinfo(host: str, port: int, timeout: float = 3.0) -> dict[str, str]:
+        replies["count"] += 1
+        status = "5 min left" if replies["count"] == 2 else "Standby"
+        return {
+            "status": status,
+            "mode": "4on4",
+            "timelimit": "5",
+            "map": "dm3",
+            "hostname": "offline",
+        }
+
+    def _fake_identity(config: dict[str, Any], server_status: Any = None) -> dict[str, Any]:
+        return {
+            "branch": "offline",
+            "commit": "c" * 40,
+            "digest_md5": "0badcafe",
+            "dirty": False,
+        }
+
+    # The recording starts once the match does — after the runner did. Naming
+    # the fixtures off the current minute keeps the chooser's real rule under
+    # test instead of a date that fell out of its window years ago.
+    soon = datetime.now() + timedelta(seconds=30)
+    match_stem = f"4on4_brch_vs_ref[dm3]{soon.strftime('%Y%m%d-%H%M')}"
+    after_stem = (
+        "4on4_brch_vs_ref[dm3]"
+        f"{(soon + timedelta(minutes=6)).strftime('%Y%m%d-%H%M')}"
+    )
+
+    with _tempfile.TemporaryDirectory(prefix="rtx-t3-path-") as temp:
+        root = Path(temp)
+        demo_dir = root / "ktxdemos"
+        demo_dir.mkdir()
+        (root / "evidence").mkdir()
+        for side in ("branch", "reference"):
+            (root / f"{side}-client").write_bytes(side.encode("ascii"))
+        # The match's demo and its card, plus the post-match recording KTX opens
+        # seconds later — the pair that made the scoreboard unavailable.
+        (demo_dir / f"{match_stem}.mvd").write_bytes(b"\0" * 4096)
+        (demo_dir / f"{after_stem}.mvd").write_bytes(b"")
+        (demo_dir / f"{match_stem}.txt").write_text(
+            json.dumps(
+                {
+                    "demo": f"{match_stem}.mvd",
+                    "map": "dm3",
+                    "players": [
+                        {"name": f"brch{n}", "team": "brch", "stats": {"frags": f}}
+                        for n, f in enumerate((14, 14, 13, 13), start=1)
+                    ]
+                    + [
+                        {"name": f"ref{n}", "team": "ref", "stats": {"frags": f}}
+                        for n, f in enumerate((2, 1, 1, 1), start=1)
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        config_text = "\n".join(
+            [
+                'schema = "rtx-testflow-config/1"',
+                "[server]",
+                'host = "127.0.0.1"',
+                "control_port = 65401",
+                'protocol = "auto"',
+                "[paths]",
+                'evidence_dir = "evidence"',
+                'demos_dir = "evidence/demos"',
+                "[build]",
+                'repo_dir = "."',
+                'engine_binary = ""',
+                "[t2]",
+                "duration_s = 600",
+                "[t3]",
+                "duration_s = 300",
+                'reference_client = "reference-client"',
+                'branch_client = "branch-client"',
+                "seats_per_side = 4",
+                'match_server = "127.0.0.1:65402"',
+                'basedir = "."',
+                "control_port_base = 65403",
+                'reference_branch = "main"',
+                f'reference_commit = "{"a" * 40}"',
+                'demoinfo_dir = "ktxdemos"',
+                "[t4]",
+                "duration_s = 300",
+                "skills = [10, 12, 14, 16, 18, 20]",
+                'frogbot_server = "127.0.0.1:65404"',
+                "control_port = 65405",
+                'demoinfo_dir = "ktxdemos"',
+                "[restore]",
+                'rtx_bot_count = "0"',
+                "[tools]",
+                'qw_analyze = ""',
+                "",
+            ]
+        )
+        config_file = root / "config.toml"
+        config_file.write_text(config_text, encoding="utf-8")
+        config = runlib_mod.load_config(config_file)
+
+        saved = (
+            t3_mod._Side,
+            t3_mod._udp_serverinfo,
+            runlib_mod.build_identity,
+        )
+        t3_mod._Side = _OfflineSide
+        t3_mod._udp_serverinfo = _fake_serverinfo
+        runlib_mod.build_identity = _fake_identity
+        error: str | None = None
+        path: Path | None = None
+        try:
+            path = t3_mod.run(config)
+        except BaseException as exc:  # the regression itself, reported by name
+            error = f"{exc.__class__.__name__}: {exc}"
+        finally:
+            (t3_mod._Side, t3_mod._udp_serverinfo, runlib_mod.build_identity) = saved
+
+        check("t3path.no_exception", error, None)
+        if path is None:
+            return failures
+        document = json.loads(Path(path).read_text(encoding="utf-8"))
+        check("t3path.envelope_complete", document["status"], "complete")
+        check("t3path.envelope_has_no_error", document.get("error"), None)
+        payload = document.get("payload", {})
+        check("t3path.verdict", payload.get("verdict"), "PIPELINE-OK")
+        check("t3path.oracle", payload.get("result", {}).get("oracle"), "ktx-demoinfo")
+        # The frags come out of the card the chooser picked, so this number is
+        # also the proof that it picked the match's card and not the empty one.
+        check(
+            "t3path.frags",
+            {side["side"]: side["frags"] for side in payload.get("sides", [])},
+            frags_by_side,
+        )
+        check(
+            "t3path.mvd_is_the_match_demo",
+            payload.get("result", {}).get("mvd"),
+            f"{match_stem}.mvd",
+        )
+        # And the envelope validates as evidence, not merely as JSON.
+        try:
+            validate_result(document, str(path))
+        except ValidationError as exc:
+            failures.append(f"t3path.envelope_validates: {exc}")
+    return failures
+
+
 def run(fixtures: str | Path) -> tuple[int, int]:
     root = Path(fixtures)
     accepted = rejected = 0
@@ -1001,6 +1420,9 @@ def run(fixtures: str | Path) -> tuple[int, int]:
         failures.append(f"expected.json names missing fixtures: {sorted(stale)}")
     failures.extend(_t2_units())
     failures.extend(_t4_units())
+    failures.extend(_name_resolution_units())
+    failures.extend(_demo_selector_units())
+    failures.extend(_t3_path_units())
     if failures:
         raise AssertionError("\n".join(failures))
     return accepted, rejected
