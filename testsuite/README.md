@@ -417,9 +417,16 @@ the scoreboard.
 `python3 testflow.py t4` climbs skills 10, 12, 14, 16, 18, 20 against
 server-side frogbots on the `[t4].frogbot_server` KTX instance: one 4on4
 match per rung with the same branch build T3 uses, advancing on a win and
-stopping at the first loss or draw. The run is `COMPLETE` whenever the
-observed ladder obeys those rules — how far it climbs is a sporting result,
-not a pipeline verdict.
+stopping at the first loss or draw.
+
+The verdict is one of five (`VINST`, `OK`, `FAIL`, `OMÄTT`, `OAVGJORD`) and it
+is about behaviour, not about how far the ladder climbed: the run measures
+whether our bots shot at the enemy, chased items, did not shoot each other and
+did not stand still, and fells the ladder on the ones it could measure. A field
+it could not measure makes the run `OMÄTT` — never a silent pass. `schema/SCHEMA.md`
+has the payload and the calibrated thresholds; envelopes written before the
+five-value verdict are grandfathered by name and sha in
+`schema/legacy-t4-inventering.json`.
 
 Rig preparation is the T3 recipe plus frogbots: `k_fb_enabled 1` and the KTX
 `bots/` data directory present in the private gamedir. Frogbots cannot be

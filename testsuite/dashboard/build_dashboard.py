@@ -28,7 +28,12 @@ LEVELS = ("t0", "t1", "t2", "t3", "t4")
 
 # Written into the evidence directory by the runner, but not evidence:
 # skipped without complaint rather than rejected as unknown.
-COMPANION_SCHEMAS = frozenset({"rtx-sweep/1"})
+CONTROL_SCHEMA = "rtx-testflow-control/1"
+RETRACTION_SCHEMA = "retraction/1"
+COMPANION_SCHEMAS = frozenset({"rtx-sweep/1", CONTROL_SCHEMA, RETRACTION_SCHEMA})
+#: Sidokontrollpost: en oberoende grind som dömer ETT kuvert utan att röra det.
+#: Kuvert redigeras aldrig; når en grind en annan slutsats än kuvertets egen
+#: självdeklaration är det sidoposten som bär den, med sitt underlag namngivet.
 LADDER_SKILLS = (10, 12, 14, 16, 18, 20)
 MISSING = "EJ KÖRD"
 
@@ -226,6 +231,16 @@ def default_level(level: str) -> dict[str, Any]:
         # What the build behind this column could not be asked about. Null is
         # the common case and means everything the tier needed was there.
         "capabilities": None,
+        # Satt av en sidokontrollpost nar en oberoende grind domt kuvertet.
+        # Null = ingen grind har sagt emot kuvertets egen sjalvdeklaration.
+        "gateNote": None,
+        "gateSource": None,
+        # Rubrik over noten. En kontrollpost behover inte vara en fallen grind:
+        # den kan ocksa ratta ETIKETTEN pa tal som star kvar. Null = sidans
+        # gamla formulering ("Likhetsgrind foll"), sa T2:s post ser ut som forr.
+        "gateLabel": None,
+        # Retraherade kuvert i samma grupp: visas som forsok, aldrig som valda.
+        "retractions": [],
     }
     if level == "t0":
         common.update(modules=[], qualityFloors=[], total={"tests": None, "passed": None})
@@ -640,6 +655,7 @@ def t2_level(
     snapshot_number: int,
     branch: str,
     build: str,
+    control: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     item = base_level("t2", envelope)
     if item["status"] != "complete":
@@ -673,11 +689,32 @@ def t2_level(
     }
     snap_id = f"{snapshot_id}:t2"
     firings = number(raw_stats.get("stall_firings"))
+    # En sidokontrollpost kan ha dömt kuvertet utan att röra det. Kuvertets egen
+    # `verdict: MEASURED` är en självdeklaration; föll en oberoende likhetsgrind
+    # är tiern ett FÖRSÖK, och sidan får inte kalla den mätt. Talen står kvar —
+    # det är slutsatsen om dem som ändras.
+    gate_failed = bool(control) and text(control.get("result"), "").upper() != "PASS"
+    gate_note = None
+    if gate_failed:
+        detail = control.get("mismatches")
+        detail = ", ".join(str(x) for x in detail) if isinstance(detail, list) else ""
+        gate_note = " · ".join(
+            part
+            for part in (
+                text(control.get("gate"), "oberoende grind") + " föll",
+                text(control.get("reason"), ""),
+                detail,
+            )
+            if part
+        )
+    base_key = "stall ej mätbar" if firings is None else f"{firings} stall"
     item.update(
-        verdict="MÄTT",
+        verdict="FÖRSÖK" if gate_failed else "MÄTT",
         # The one-line summary is the first thing read, so it must not turn an
         # absent measurement into a best-in-class zero.
-        key="stall ej mätbar" if firings is None else f"{firings} stall",
+        key=f"{base_key} · likhetsgrind föll" if gate_failed else base_key,
+        gateNote=gate_note,
+        gateSource=text(control.get("source"), "") or None if control else None,
         stats=stats,
         regimeNote=regime_note,
         comparisonKey=f"t2:{regime_note or 'full'}",
@@ -829,15 +866,39 @@ def t3_level(
     return item, snapshots
 
 
+#: T4:s femvardesvokabular (SPEC T4-domen v6 §2), plus den pensionerade
+#: literalen. `COMPLETE` lever kvar ENBART for de inventerade kuvert som fanns
+#: fore bytet, och da med etiketten `legacy` — sidan far inte visa ett gammalt
+#: kuvert som om det domts pa de nya grindarna.
+T4_VERDICTS = ("VINST", "OK", "FAIL", "OMÄTT", "OAVGJORD")
+T4_LEGACY_VERDICT = "COMPLETE"
+#: Visningsklass per verdict. OMÄTT och OAVGJORD ar egna, ICKE-grona klasser:
+#: ett omatt kuvert far aldrig hamna i en gron kolumn, och ett oavgjort ar inte
+#: ett godkant resultat. Kartan speglar `verdictClass` i template.html.
+T4_VERDICT_CLASS = {
+    "VINST": "pass",
+    "OK": "pass",
+    T4_LEGACY_VERDICT: "pass",
+    "FAIL": "fail",
+    "OMÄTT": "unmeasured",
+    "OAVGJORD": "draw",
+}
+
+
 def t4_level(envelope: dict[str, Any]) -> dict[str, Any]:
     item = base_level("t4", envelope)
     if item["status"] != "complete":
         return item
     payload = envelope["payload"]
+    raw_verdict = payload.get("verdict")
+    legacy = payload.get("t4_schema") is None
+    known = raw_verdict in T4_VERDICTS or (
+        legacy and raw_verdict == T4_LEGACY_VERDICT
+    )
     if (
         not isinstance(payload.get("ladder"), list)
         or number(payload.get("reached")) is None
-        or payload.get("verdict") != "COMPLETE"
+        or not known
     ):
         return incomplete_level("t4", envelope, "T4-payload följer inte kontraktet")
     ladder = payload.get("ladder") if isinstance(payload.get("ladder"), list) else []
@@ -856,18 +917,125 @@ def t4_level(envelope: dict[str, Any]) -> dict[str, Any]:
         }
     rungs = [played.get(skill, unplayed_rung(skill)) for skill in LADDER_SKILLS]
     reached = number(payload.get("reached"))
-    verdict = payload.get("verdict") if payload.get("verdict") == "COMPLETE" else "OFULLSTÄNDIG"
+    verdict = raw_verdict
+    dom = payload.get("dom") if isinstance(payload.get("dom"), dict) else {}
+    missing = [text(name, "") for name in dom.get("missing") or [] if text(name, "")]
+    failed = [text(name, "") for name in dom.get("failed_gates") or [] if text(name, "")]
+    labels = [text(name, "") for name in dom.get("labels") or [] if text(name, "")]
+    # Enradaren ar det forsta nagon laser, och for de tva icke-grona varderna
+    # ar hogsta vunna skill inte det viktigaste den kan saga.
+    if verdict == "OMÄTT":
+        key = "omätt: " + (", ".join(missing) or "saknade fält ej namngivna")
+    elif verdict == "FAIL":
+        key = "fälld: " + (", ".join(failed) or "grind ej namngiven")
+    elif verdict == "OAVGJORD":
+        key = f"oavgjort på skill {reached if reached is not None else '–'} — draw-semantik: ägarbeslut saknas"
+    else:
+        key = f"nådde skill {reached if reached is not None else '–'}"
     item.update(
         verdict=verdict,
-        key=f"nådde skill {reached if reached is not None else '–'}",
+        verdictClass=T4_VERDICT_CLASS.get(verdict, "not-run"),
+        legacy=legacy,
+        key=key + (" · legacy-kuvert, dömt före femvärdesdomen" if legacy else ""),
         reached=reached,
         rungs=rungs,
+        dom={
+            "missing": missing,
+            "failedGates": failed,
+            "labels": labels,
+            "reason": text(dom.get("reason"), "") or None,
+            "crossAlarm": text(payload.get("cross_alarm"), "") or None,
+            "drawSemantics": text(payload.get("draw_semantik"), "") or None,
+        }
+        if not legacy
+        else None,
+        measurements=payload.get("measurements")
+        if isinstance(payload.get("measurements"), dict)
+        else None,
     )
     return item
 
 
+def load_controls(evidence_dir: Path) -> dict[str, dict[str, Any]]:
+    """Sidokontrollposter, nycklade pa kuvertets filnamn.
+
+    En kontrollpost ar en oberoende grind som dott ETT kuvert. Den ligger bredvid
+    kuvertet i evidenskatalogen och heter `<kuvertstam>-control.json`.
+    """
+    controls: dict[str, dict[str, Any]] = {}
+    for path in sorted(evidence_dir.glob("*-control.json")):
+        try:
+            doc = load_json(path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            warn(f"{path}: kontrollpost avvisad: {exc}")
+            continue
+        if doc.get("schema") != CONTROL_SCHEMA:
+            warn(f"{path}: kontrollpost med okant schema {doc.get('schema')!r}")
+            continue
+        target = text(doc.get("envelope"), "")
+        if target:
+            controls[target] = doc
+    return controls
+
+
+def apply_control(item: dict[str, Any], control: dict[str, Any] | None) -> dict[str, Any]:
+    """Lagg en sidokontrollpost pa en tier som inte sjalv hanterar en.
+
+    En kontrollpost gor en av tva saker, och skillnaden ar inte kosmetisk:
+
+    * **faller en grind** — kuvertets sjalvdeklarerade verdict haller inte, och
+      tiern ar ett forsok (T2:s likhetsgrind, som t2_level hanterar sjalv);
+    * **rattar en etikett** — talen ar riktigt matta, men de betyder inte det
+      sidan pastar att de betyder. Da star verdict kvar och bara texten andras.
+
+    Kuvertet rors aldrig i nagotdera fallet. Fyra falt kan sattas, alla
+    frivilliga: ``label`` (rubrik), ``reason`` (noten), ``key_override``
+    (enradaren, det forsta nagon laser) och ``verdict_override``.
+    """
+    if not control:
+        return item
+    note = " · ".join(
+        part
+        for part in (text(control.get("gate"), ""), text(control.get("reason"), ""))
+        if part
+    )
+    item["gateNote"] = note or None
+    item["gateLabel"] = text(control.get("label"), "") or None
+    item["gateSource"] = text(control.get("source"), "") or None
+    override = text(control.get("verdict_override"), "")
+    if override:
+        item["verdict"] = override
+    key_override = text(control.get("key_override"), "")
+    if key_override:
+        item["key"] = key_override
+    return item
+
+
+def load_retractions(evidence_dir: Path) -> list[dict[str, Any]]:
+    """Retraktionsposter ur `retracted/`.
+
+    `discover()` laser bara evidence/*.json, sa ett retraherat kuvert forsvinner
+    annars spurlost fran sidan — och en retraktion som ingen ser ar ingen
+    retraktion. Posterna lases men blir ALDRIG valda kuvert.
+    """
+    out: list[dict[str, Any]] = []
+    for path in sorted((evidence_dir / "retracted").glob("*-retraction.json")):
+        try:
+            doc = load_json(path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            warn(f"{path}: retraktionspost avvisad: {exc}")
+            continue
+        if doc.get("schema") != RETRACTION_SCHEMA:
+            warn(f"{path}: retraktionspost med okant schema {doc.get('schema')!r}")
+            continue
+        out.append(doc)
+    return out
+
+
 def group_evidence(
     evidence: Iterable[LoadedEvidence],
+    controls: dict[str, dict[str, Any]] | None = None,
+    retractions: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
     grouped: dict[tuple[str, str], list[LoadedEvidence]] = {}
     for loaded in evidence:
@@ -927,14 +1095,32 @@ def group_evidence(
                     iso_sort_key(item.document.get("started_utc")),
                 )
             )
-            chosen = choices[-1].document
+            # Statusmedvetet val: senaste KOMPLETTA kuvert vinner. Ett senare
+            # misslyckat forsok far inte skugga ett tidigare komplett — det var
+            # precis vad som hande T4 i natten 18->19/8, dar forsok 2 (failed)
+            # slog forsok 1 (complete) bara for att det startade senare. Finns
+            # inget komplett faller valet tillbaka pa det senaste over huvud
+            # taget, sa en tier som bara har misslyckanden fortfarande visas som
+            # misslyckad i stallet for att forsvinna.
+            complete_choices = [
+                item
+                for item in choices
+                if text(item.document.get("status"), "").lower() == "complete"
+            ]
+            chosen = (complete_choices or choices)[-1].document
+            control = (controls or {}).get(f"{chosen.get('run_id')}.json")
             if level == "t0":
-                levels[level] = t0_level(chosen)
+                levels[level] = apply_control(t0_level(chosen), control)
             elif level == "t1":
-                levels[level] = t1_level(chosen)
+                levels[level] = apply_control(t1_level(chosen), control)
             elif level == "t2":
                 levels[level], new_snapshots = t2_level(
-                    chosen, group_id, snapshot_number, branch, group_build
+                    chosen,
+                    group_id,
+                    snapshot_number,
+                    branch,
+                    group_build,
+                    control,
                 )
                 snapshots.extend(new_snapshots)
                 snapshot_number += len(new_snapshots)
@@ -942,10 +1128,11 @@ def group_evidence(
                 levels[level], new_snapshots = t3_level(
                     chosen, group_id, snapshot_number, branch, group_build
                 )
+                apply_control(levels[level], control)
                 snapshots.extend(new_snapshots)
                 snapshot_number += len(new_snapshots)
             elif level == "t4":
-                levels[level] = t4_level(chosen)
+                levels[level] = apply_control(t4_level(chosen), control)
 
         attempts = [
             {
@@ -956,6 +1143,40 @@ def group_evidence(
             }
             for loaded in items
         ]
+        # Retraherade kuvert hor till gruppen aven om de inte langre ligger i
+        # discovery-vagen. De listas som forsok med status "retraherad" — aldrig
+        # som en nolla, aldrig som valt kuvert. En retraktion som ingen ser ar
+        # ingen retraktion.
+        # Ett run_id slutar pa byggets korta commit (t.ex. ...-b89bbd46), sa
+        # suffixet ar gruppnyckeln. Enkel regel, och den galler aven nar
+        # ersattaren saknas.
+        group_retractions = []
+        for record in retractions or []:
+            run_id = text(record.get("run_id"), "")
+            if not run_id or not run_id.endswith(f"-{group_build}"):
+                continue
+            tier = run_id.split("-", 1)[0].lower()
+            replacement = text(record.get("replacement_run_id"), "")
+            entry = {
+                "runId": run_id,
+                "tier": tier.upper(),
+                "utc": record.get("utc"),
+                "reason": text(record.get("reason"), ""),
+                "operator": record.get("operator"),
+                "replacementRunId": replacement or None,
+                "tierStatus": record.get("tier_status"),
+            }
+            group_retractions.append(entry)
+            attempts.append(
+                {
+                    "runId": run_id,
+                    "tier": tier.upper(),
+                    "status": "retraherad",
+                    "startedUtc": record.get("utc"),
+                }
+            )
+            if tier in levels:
+                levels[tier]["retractions"] = levels[tier].get("retractions", []) + [entry]
         runs.append(
             {
                 "id": group_id,
@@ -1016,7 +1237,9 @@ def render_dashboard(
     assets_dir: Path = HERE / "assets" / "maps",
 ) -> tuple[list[dict[str, Any]], list[str]]:
     evidence, warnings = discover(evidence_dir)
-    runs, snapshots, primary_map = group_evidence(evidence)
+    controls = load_controls(evidence_dir)
+    retractions = load_retractions(evidence_dir)
+    runs, snapshots, primary_map = group_evidence(evidence, controls, retractions)
     if not runs:
         raise RuntimeError(f"no supported rtx-testflow/1 evidence in {evidence_dir}")
     graph, entities, linkgeo = load_map_assets(primary_map, assets_dir)
@@ -1055,8 +1278,12 @@ def selftest() -> None:
         assert "golden-complete" in html
         assert '"verdict":"MÄTT"' in html
         assert '"verdict":"PIPELINE-OK"' in html
-        assert '"verdict":"COMPLETE"' in html
         assert '"kind":"aggregate"' in html
+        # T4:s femvärdesdom, alla fem på sidan samtidigt (SPEC v6 §2), plus den
+        # pensionerade literalen som bara de inventerade kuverten bär.
+        for verdict in T4_VERDICTS:
+            assert f'"verdict":"{verdict}"' in html, verdict
+        assert '"verdict":"COMPLETE"' in html
         assert '"key":"nådde skill 12"' in html
         assert '"synthetic":true' in html
         assert '"verdict":"FAILED"' in html
@@ -1069,6 +1296,56 @@ def selftest() -> None:
         assert "http://" not in html
         assert "https://" not in html
         assert len(runs) >= 5
+        # --- T4:s femvärdesdom (SPEC v6 §2, §5) ---------------------------
+        # Vilka verdikt som får se gröna ut avgörs på två ställen — här och i
+        # template.html:s VERDICT_CLASS — och de måste vara samma karta. En
+        # framtida redigering som gör OMÄTT grönt fastnar på raderna nedan.
+        assert T4_VERDICT_CLASS["OMÄTT"] != "pass"
+        assert T4_VERDICT_CLASS["OAVGJORD"] != "pass"
+        for verdict, klass in T4_VERDICT_CLASS.items():
+            assert f'"{verdict}": "{klass}"' in html, verdict
+
+        # NK 18: ett omätt kuvert är varken grönt eller OK, och domraden säger
+        # vilka fält som saknades i stället för att tiga.
+        unmeasured = next(run for run in runs if run["branch"] == "unmeasured-t4")
+        level = unmeasured["levels"]["t4"]
+        assert level["verdict"] == "OMÄTT"
+        assert level["verdictClass"] == "unmeasured"
+        assert level["legacy"] is False
+        assert level["dom"]["missing"] == [
+            "t4:shots_fired", "t4:teamkills", "t4:still_s", "t4:item_chase"
+        ]
+        assert level["key"].startswith("omätt: t4:shots_fired")
+        assert level["measurements"]["shots_fired"] is None
+        assert level["dom"]["labels"] == []
+        for run in runs:
+            t4 = run["levels"]["t4"]
+            if t4.get("verdict") in {"OMÄTT", "OAVGJORD"}:
+                assert t4["verdictClass"] != "pass", run["branch"]
+
+        # NK 3/6: en fälld mätt grind är FAIL, och FAIL bär korslarmet.
+        silent = next(run for run in runs if run["branch"] == "silent-t4")["levels"]["t4"]
+        assert silent["verdict"] == "FAIL" and silent["verdictClass"] == "fail"
+        assert silent["dom"]["failedGates"] == ["a:shots_fired"]
+        assert silent["dom"]["crossAlarm"] == "no matching T1/T3 run found"
+
+        # NK 4: draw med allt mätt och grönt är OAVGJORD, och sidan säger rakt
+        # ut att draw-semantiken är en öppen ägarfråga.
+        drew = next(run for run in runs if run["branch"] == "draw-t4")["levels"]["t4"]
+        assert drew["verdict"] == "OAVGJORD" and drew["verdictClass"] == "draw"
+        assert drew["dom"]["drawSemantics"] == "ägarbeslut saknas"
+        assert "ägarbeslut saknas" in drew["key"]
+        assert drew["dom"]["labels"] == ["item-pickups-proxy"]
+
+        # NK 10: ett verkligt kuvert från inventeringen visas, men märkt — det
+        # dömdes aldrig på de fyra grindarna.
+        legacy = next(
+            run for run in runs if run["levels"]["t4"].get("legacy") is True
+        )["levels"]["t4"]
+        assert legacy["verdict"] == "COMPLETE"
+        assert legacy["dom"] is None
+        assert "legacy-kuvert" in legacy["key"]
+
         # A drill the build could not be asked: no verdict, no attempts, and a
         # denominator that counts only the drills that were run. Counting it
         # among them would report the build as failing a drill nobody gave it.

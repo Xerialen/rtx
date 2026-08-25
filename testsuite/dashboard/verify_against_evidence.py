@@ -10,6 +10,14 @@ Zones are deliberately out of scope: the map view draws them from snapshot
 files, not from the embedded JSON, so the page carries no zone numbers to
 compare. Everything the page states as a number is covered.
 
+The index names the runner's LAST attempt per tier, which is not always the
+envelope the page selected: when that attempt failed, the builder shows an
+earlier complete envelope from the same group. That is not a mismatch to crash
+on. The failed run is then proven to be listed as an attempt with its own
+status, and the envelope the page DID select is checked field by field against
+its own file. Both facts get proven, and no index file is ever rewritten to make
+the check pass.
+
 Run: python3 dashboard/verify_against_evidence.py <index-file>
 where index-file lines are "t0 evidence/t0-....json" for one chain.
 """
@@ -44,21 +52,96 @@ def main(index_path: str) -> None:
     runs = json.loads(re.search(r"const RUNS = (\[.*?\]);\n", text, re.S).group(1))
 
     envelopes = {}
+    paths: dict[str, Path] = {}
     for line in Path(index_path).read_text().splitlines():
         tier, rel = line.split()
-        envelopes[tier] = json.loads((BASE / rel).read_text())
+        paths[tier] = BASE / rel
+        envelopes[tier] = json.loads(paths[tier].read_text())
 
     # The dashboard level whose runId matches each envelope, wherever the
     # builder grouped it.
-    def level_for(tier: str, run_id: str) -> dict:
+    def level_for(tier: str, run_id: str) -> dict | None:
         for group in runs:
             level = (group.get("levels") or {}).get(tier)
             if level and level.get("runId") == run_id:
                 return level
-        raise AssertionError(f"{tier}: {run_id} not on the dashboard")
+        return None
 
+    def attempt_for(run_id: str) -> dict | None:
+        """The run as the page lists it among a group's attempts."""
+        for group in runs:
+            for attempt in group.get("attempts") or []:
+                if attempt.get("runId") == run_id:
+                    return attempt
+        return None
+
+    def displayed_level(tier: str, run_id: str) -> dict | None:
+        """The level shown for `tier` in the group `run_id` belongs to.
+
+        Scoped to that group on purpose. Taking the first group with a level
+        would compare the index against whatever run happens to be newest —
+        which is how this check quietly started verifying a different night's
+        envelope once a second run landed.
+        """
+        for group in runs:
+            attempts = group.get("attempts") or []
+            if not any(a.get("runId") == run_id for a in attempts):
+                continue
+            level = (group.get("levels") or {}).get(tier)
+            if level and level.get("runId"):
+                return level
+        return None
+
+    # (tier, envelope, level) to check field by field. Normally one per index
+    # line. When the index names a run the page did not select, the pair is
+    # rebuilt so that BOTH facts get proven — see below.
+    work: list[tuple[str, dict, dict]] = []
     for tier, envelope in sorted(envelopes.items()):
         level = level_for(tier, envelope["run_id"])
+        if level is not None:
+            work.append((tier, envelope, level))
+            continue
+        # The index names the runner's LAST attempt per tier. When that attempt
+        # failed, the builder deliberately shows an earlier complete envelope
+        # from the same group instead — status-aware selection. The contract
+        # says failed and aborted runs are checked as state and error and are
+        # never interpreted as measurements, so a failed run that is absent as a
+        # LEVEL is correct. Two things must still hold, and skipping either
+        # would turn a passing run into a thinner one:
+        #   1. the page did not drop the failed run silently — it appears as an
+        #      attempt, carrying its own status;
+        #   2. whatever the page DID select for that tier is itself checked
+        #      field by field against its own envelope on disk.
+        if envelope["status"] == "complete":
+            failures.append(
+                f"{tier}.runId: complete envelope {envelope['run_id']} "
+                "is not shown on the dashboard"
+            )
+            continue
+        attempt = attempt_for(envelope["run_id"])
+        if attempt is None:
+            failures.append(
+                f"{tier}.attempt: {envelope['run_id']} is neither a level nor a "
+                "listed attempt — the page lost the run"
+            )
+            continue
+        check(f"{tier}.attempt.status", attempt.get("status"), envelope["status"])
+        shown = displayed_level(tier, envelope["run_id"])
+        if shown is None:
+            print(
+                f"not: {tier} {envelope['run_id']} ({envelope['status']}) visas som "
+                "försök; ingen nivå vald för tiern"
+            )
+            continue
+        shown_path = BASE / "evidence" / f"{shown['runId']}.json"
+        print(
+            f"not: {tier} {envelope['run_id']} ({envelope['status']}) visas som "
+            f"försök — statusmedvetet kuvertval; vald nivå {shown['runId']} "
+            "kontrolleras i stället"
+        )
+        work.append((tier, json.loads(shown_path.read_text()), shown))
+
+    for tier, envelope, level in work:
         check(f"{tier}.status", level.get("status"), envelope["status"])
         if envelope["status"] != "complete":
             check(f"{tier}.error", level.get("error"), envelope.get("error"))
@@ -108,13 +191,35 @@ def main(index_path: str) -> None:
                 "polls", "bots",
             ):
                 check(f"t2.{key}", level["stats"][key], payload["stats"][key])
-            # The page renders verdicts in Swedish; the translation is the
-            # only transform accepted, and only this exact pair.
-            check(
-                "t2.verdict",
-                "MEASURED" if level["verdict"] == "MÄTT" else level["verdict"],
-                payload["verdict"],
+            # En sidokontrollpost kan ha domt kuvertet utan att rora det. Da ar
+            # sidans avvikande verdikt DET RATTA, och verifieraren maste lasa
+            # samma evidens som byggaren — annars flaggar den varje gang en
+            # oberoende grind sagt emot en sjalvdeklaration, vilket ar precis
+            # nar sidan har mest ratt.
+            envelope_path = paths[tier]
+            control_path = envelope_path.with_name(
+                envelope_path.name.replace(".json", "-control.json")
             )
+            override = None
+            if control_path.is_file():
+                control = json.loads(control_path.read_text(encoding="utf-8"))
+                if str(control.get("result", "")).upper() != "PASS":
+                    override = str(control.get("verdict_override") or "FORSOK")
+            if override is not None:
+                check(
+                    "t2.verdict(kontrollpost)",
+                    "FORSOK" if level["verdict"] == "FÖRSÖK" else level["verdict"],
+                    override,
+                )
+                check("t2.gateNote finns", bool(level.get("gateNote")), True)
+            else:
+                # The page renders verdicts in Swedish; the translation is the
+                # only transform accepted, and only this exact pair.
+                check(
+                    "t2.verdict",
+                    "MEASURED" if level["verdict"] == "MÄTT" else level["verdict"],
+                    payload["verdict"],
+                )
             check("t2.sources", level["metricSources"], payload.get("sources", {}))
             for html_key, env_key in (("cells", "cells"), ("rjLinks", "rj_links")):
                 check(f"t2.nav.{env_key}", level["nav"][html_key], envelope["nav"][env_key])
@@ -126,11 +231,17 @@ def main(index_path: str) -> None:
             # The panel's score comes from the scoreboard oracle's team totals;
             # winner+diff above are the claim the verdict rests on, and the
             # internal consistency is its own check.
+            #
+            # Signed, not absolute. `diff` carries the sign: it is negative when
+            # the reference side wins, and `abs()` threw that away — so the check
+            # could never hold on a reference win, and, worse, it would have
+            # passed a panel that had the sign backwards. Every T3 before 19/8
+            # was a branch win, so the case was never exercised until one came in.
             score = level.get("score") or {}
             if score:
                 check(
                     "t3.score-consistency",
-                    abs(score.get("branch", 0) - score.get("main", 0)),
+                    score.get("branch", 0) - score.get("main", 0),
                     payload["result"]["diff"],
                 )
         elif tier == "t4":

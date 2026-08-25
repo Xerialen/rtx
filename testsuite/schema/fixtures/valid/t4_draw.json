@@ -24,12 +24,14 @@
     "frags_against": 50,
     "win": false,
     "draw": true,
-    "mvd": "demos/draw.mvd",
+    "mvd": "demos/10.mvd",
     "scoreboard": {
      "teams": [
       {
        "name": "brch",
-       "frags": 42
+       "frags": 34,
+       "kills": 45,
+       "suicides": 3
       },
       {
        "name": "ref",
@@ -71,11 +73,57 @@
      "demo": "m.mvd",
      "source": "qw-analyze/demoinfo",
      "link": "/demo-player/?demoUrl=%2Fdemos%2Fm.mvd&map=dm3&duration=300&from=0.0"
+    },
+    "measured": {
+     "shots_fired": 402,
+     "teamkills": 8,
+     "kills": 45,
+     "still_s_per_bot": 18.4,
+     "still_gap_max_s": 1.8,
+     "item_takes": 27,
+     "items_poll_gap_max_s": 1.2,
+     "items_tracked": 42
+    },
+    "sources": {
+     "shots_fired": "mvd/ammo",
+     "teamkills": "qw-analyze/card"
     }
    }
   ],
+  "skill_verified_by": "client console skill echo (KTX addbot)",
+  "t4_schema": 3,
   "reached": 0,
-  "skill_verified_by": "server-log addbot sequence",
-  "verdict": "COMPLETE"
+  "verdict": "OAVGJORD",
+  "measurements": {
+   "shots_fired": 402,
+   "teamkills": 8,
+   "kills_total": 45,
+   "still_s_per_bot_max": 18.4,
+   "item_pickups": 27
+  },
+  "sampling": {
+   "still_interval_s": 1.0,
+   "still_gap_max_s": 1.8,
+   "items_poll_s": 1.0,
+   "items_poll_gap_max_s": 1.2
+  },
+  "thresholds": {
+   "teamkill_share_max": 0.2,
+   "still_s_per_bot_max": 75.0,
+   "item_pickups_min": 1,
+   "still_sample_interval_s": 1.0,
+   "still_sample_gap_max_s": 3.0,
+   "items_poll_s": 1.0,
+   "items_poll_gap_max_s": 3.0
+  },
+  "dom": {
+   "failed_gates": [],
+   "missing": [],
+   "reason": "stegen slutade oavgjort; alla fyra fält mätta och gröna",
+   "labels": [
+    "item-pickups-proxy"
+   ]
+  },
+  "draw_semantik": "ägarbeslut saknas"
  }
 }

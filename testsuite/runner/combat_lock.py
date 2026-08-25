@@ -62,6 +62,38 @@ def _fire_times(player: dict[str, Any]) -> list[int]:
     return fires
 
 
+def team_shots(document: Any, team: str) -> int | None:
+    """Observed shots for one team, from the same ammo signal as the lock.
+
+    There is no shot counter anywhere in the bench: the only observable fire
+    signal is an ammo count going down, which is what `_fire_times` already
+    derives for the combat lock (`SPEC T4-domen v6 §3`). Reusing it means the
+    T4 gate counts exactly what the lock counts, respawn filter included.
+
+    `None` — never `0` — when the document has no player of that team carrying
+    an ammo stream: a team nobody could observe did not shoot zero times, it
+    was not measured. The axe is invisible to this signal, which is a floor on
+    the count, not a hole in it: a ladder whose team only ever axed reads as
+    zero shots and fells gate (a). That is the honest reading of "did not
+    shoot at the enemy" for a bot that never picked up a weapon's ammo.
+    """
+    if not isinstance(document, dict):
+        return None
+    players = document.get("streams", {}).get("players", [])
+    if not isinstance(players, list):
+        return None
+    total = 0
+    observed = False
+    for raw in players:
+        if not isinstance(raw, dict) or str(raw.get("team", "")) != team:
+            continue
+        if not any(isinstance(raw.get(key), list) for key in AMMO_STREAMS):
+            continue
+        observed = True
+        total += len(_fire_times(raw))
+    return total if observed else None
+
+
 def _positions(player: dict[str, Any]) -> dict[str, list[float]] | None:
     pos = player.get("pos")
     if not isinstance(pos, dict):

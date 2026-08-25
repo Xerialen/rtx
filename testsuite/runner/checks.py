@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
+import json
+from pathlib import Path
 import re
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
+from . import t4_dom
 from .scenario import ScenarioError, validate_scenario
 
 
@@ -60,6 +64,12 @@ def _bool(value: Any, path: str) -> bool:
 def _int(value: Any, path: str, minimum: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         _fail(path, f"expected integer >= {minimum}")
+    return value
+
+
+def _num(value: Any, path: str, minimum: float = 0.0) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < minimum:
+        _fail(path, f"expected number >= {minimum}")
     return value
 
 
@@ -677,6 +687,25 @@ def _t2(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
             "polls",
             "bots",
         },
+        # The equality gate's fields. Known to the schema and type-checked when
+        # present, so they can never be silently discarded — but optional, so
+        # that every T2 envelope recorded before the gate existed still
+        # validates. RUNBOOK §10 asks the whole corpus to pass this, and a
+        # schema change that retroactively invalidates history is a worse fault
+        # than the one it fixes. Presence is enforced where it actually
+        # matters: `powerup_watch.py` refuses to compare an envelope that does
+        # not declare `items_poll_s`, because a gate that cannot read its own
+        # resolution is guessing.
+        {
+            "quad_lay_n",
+            "quad_lay_censored",
+            "pent_lay_n",
+            "pent_lay_censored",
+            "items_poll_s",
+            "watch_poll_s",
+            "items_polls",
+            "items_poll_gap_max_s",
+        },
     )
     # A build with no stall instrumentation cannot report a stall count, and a
     # zero there would read as the best column on the page. Null is the only
@@ -718,6 +747,31 @@ def _t2(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
             )
     for field in ("quad_takes", "pent_takes", "polls"):
         _int(stats[field], f"{path}.stats.{field}")
+    for field in (
+        "quad_lay_n",
+        "quad_lay_censored",
+        "pent_lay_n",
+        "pent_lay_censored",
+        "items_polls",
+    ):
+        if field in stats:
+            _int(stats[field], f"{path}.stats.{field}")
+    for field in ("items_poll_s", "items_poll_gap_max_s"):
+        if field in stats:
+            _num(stats[field], f"{path}.stats.{field}")
+    # Null when T2 ran without the independent observer.
+    if "watch_poll_s" in stats:
+        _num_or_null(stats["watch_poll_s"], f"{path}.stats.watch_poll_s")
+    # A censored interval is still a take, so the parts must account for it
+    # exactly — checked only when the envelope carries both parts.
+    for name in ("quad", "pent"):
+        parts = (f"{name}_lay_n", f"{name}_lay_censored")
+        if all(field in stats for field in parts):
+            if stats[parts[0]] + stats[parts[1]] != stats[f"{name}_takes"]:
+                _fail(
+                    f"{path}.stats.{name}_takes",
+                    f"expected {name}_lay_n + {name}_lay_censored",
+                )
     if stats["stall_firings"] is not None:
         _int(stats["stall_firings"], f"{path}.stats.stall_firings")
     _int(stats["bots"], f"{path}.stats.bots", 1)
@@ -861,33 +915,298 @@ def _t3(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
         _fail(f"{path}.verdict", "single-match T3 must be 'PIPELINE-OK'")
 
 
-def _t4(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
-    data = _fields(
-        payload,
-        path,
-        {
-            "duration_s_per_match",
-            "ladder",
-            "reached",
-            "skill_verified_by",
-            "verdict",
-        },
-    )
+#: The inventory of every T4 envelope that existed when the five-value verdict
+#: was introduced, and the sha256 of that inventory. The file is pinned here
+#: rather than merely read: an inventory anybody can extend is not a closed
+#: list, and `COMPLETE` is only still accepted because the list is closed.
+_LEGACY_T4_INVENTORY = (
+    Path(__file__).resolve().parent.parent / "schema" / "legacy-t4-inventering.json"
+)
+_LEGACY_T4_INVENTORY_SHA256 = (
+    "4146c26f2c87f0c7c1ea683d212216f582711e75d19e6d6a17dc6a44a3ca1f04"
+)
+_legacy_t4_cache: dict[str, str] | None = None
+
+
+def legacy_t4_inventory() -> dict[str, str]:
+    """`{filename: sha256}` for the 27 grandfathered T4 envelopes.
+
+    Every failure mode here is fatal, not a shrug: an unreadable or altered
+    inventory means nothing can be shown to be grandfathered, and the only
+    safe answer to "is this envelope one of the 27?" is then no.
+    """
+    global _legacy_t4_cache
+    if _legacy_t4_cache is not None:
+        return _legacy_t4_cache
+    try:
+        raw = _LEGACY_T4_INVENTORY.read_bytes()
+    except OSError as exc:
+        _fail(str(_LEGACY_T4_INVENTORY), f"legacy T4 inventory is unreadable: {exc}")
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != _LEGACY_T4_INVENTORY_SHA256:
+        _fail(
+            str(_LEGACY_T4_INVENTORY),
+            f"legacy T4 inventory sha256 is {digest}, pinned"
+            f" {_LEGACY_T4_INVENTORY_SHA256}",
+        )
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        _fail(str(_LEGACY_T4_INVENTORY), f"legacy T4 inventory is not JSON: {exc}")
+    entries = document.get("envelopes")
+    if not isinstance(entries, dict) or not entries:
+        _fail(str(_LEGACY_T4_INVENTORY), "legacy T4 inventory lists no envelopes")
+    inventory = {
+        name: entry["sha256"]
+        for name, entry in entries.items()
+        if isinstance(entry, dict) and isinstance(entry.get("sha256"), str)
+    }
+    if len(inventory) != len(entries):
+        _fail(str(_LEGACY_T4_INVENTORY), "legacy T4 inventory entry without a sha256")
+    _legacy_t4_cache = inventory
+    return inventory
+
+
+def _source_file(path: str) -> str:
+    """The document's own path, recovered from the payload path.
+
+    `validate_result` builds every payload path as `<source>.payload`, and the
+    legacy gate is about a *file* — its name and its bytes — not about the
+    object in memory. A document handed in without a real path (`<result>`)
+    simply cannot be shown to be one of the 27, which is the fail-closed
+    answer.
+    """
+    return path[: -len(".payload")] if path.endswith(".payload") else path
+
+
+def _t4_legacy_grandfathered(path: str) -> None:
+    source = _source_file(path)
+    name = Path(source).name
+    inventory = legacy_t4_inventory()
+    expected = inventory.get(name)
+    if expected is None:
+        _fail(
+            f"{path}.verdict",
+            "'COMPLETE' is the retired T4 vocabulary and is accepted only for"
+            f" the inventoried envelopes; {name!r} is not one of them",
+        )
+    try:
+        digest = hashlib.sha256(Path(source).read_bytes()).hexdigest()
+    except OSError as exc:
+        _fail(
+            f"{path}.verdict",
+            f"'COMPLETE' needs the inventoried file to check against: {exc}",
+        )
+    if digest != expected:
+        _fail(
+            f"{path}.verdict",
+            f"{name} is inventoried as {expected} but hashes to {digest}",
+        )
+
+
+def _t4_ktx_card(
+    item: dict[str, Any],
+    item_path: str,
+    measured: dict[str, Any],
+    sources: dict[str, Any],
+    schema: int,
+) -> None:
+    """A KTX-sourced number has to come with the card, and the card has to say it.
+
+    Sol's blocker, 2026-08-24: a measurement named `ktx/demoinfo` was auditable
+    only in the sense that it was well-formed. The card does not travel inside
+    the envelope the way the qw-analyze card does, so nothing could be
+    recounted — and "measured" has to mean checkable, not merely declared.
+
+    From contract 3 the rung names the archived card by path and sha256. This
+    resolves it beside the envelope, hashes the bytes, and recounts shots and
+    teamkills out of them. Every failure is a refusal, never a shrug: a card
+    that cannot be found, cannot be hashed to the pinned digest, cannot be
+    parsed, or does not produce the number the rung reports, all fell the
+    envelope. The number and its provenance stand or fall together.
+    """
+    ktx_fields = [
+        field
+        for field in ("shots_fired", "teamkills")
+        if sources.get(field) == t4_dom.SOURCE_KTX_CARD
+    ]
+    if "card" not in item:
+        if ktx_fields and schema >= t4_dom.T4_SCHEMA_CARD_REQUIRED:
+            _fail(
+                f"{item_path}.card",
+                f"{', '.join(ktx_fields)} came from {t4_dom.SOURCE_KTX_CARD!r},"
+                " so the card has to travel with the envelope: name it by path"
+                " and sha256",
+            )
+        return
+    card = _fields(item["card"], f"{item_path}.card", {"path", "sha256"})
+    digest = _str(card["sha256"], f"{item_path}.card.sha256")
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        _fail(f"{item_path}.card.sha256", "expected 64 lowercase hex characters")
+    relative = t4_dom.safe_relative_card_path(card["path"])
+    if relative is None:
+        _fail(
+            f"{item_path}.card.path",
+            "expected a plain relative path under the envelope's own directory"
+            " (no absolute path, no '..', no backslash)",
+        )
+    if not ktx_fields:
+        _fail(
+            f"{item_path}.card",
+            "carries a KTX card that no measurement names as its source",
+        )
+    # `<envelope>.payload.ladder[n]` -> the envelope's own path -> its directory.
+    source_file = _source_file(item_path.split(".payload", 1)[0])
+    resolved = t4_dom.contained_card_path(Path(source_file).parent, relative)
+    if resolved is None:
+        _fail(
+            f"{item_path}.card.path",
+            f"{relative} resolves outside the envelope's own directory, so the"
+            " evidence bundle does not contain the card it names",
+        )
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        _fail(
+            f"{item_path}.card.path",
+            f"the archived card is not there to recount: {exc}",
+        )
+    recount = t4_dom.recount_card(raw, t4_dom.BRANCH_TEAM)
+    if recount["sha256"] != digest:
+        _fail(
+            f"{item_path}.card.sha256",
+            f"{relative} hashes to {recount['sha256']}, not the pinned {digest}",
+        )
+    if not recount["readable"]:
+        _fail(f"{item_path}.card.path", f"{relative} is not a readable KTX card")
+    for field, value in (
+        ("shots_fired", recount["shots"]),
+        ("teamkills", recount["teamkills"]),
+    ):
+        if sources.get(field) != t4_dom.SOURCE_KTX_CARD:
+            continue
+        if measured.get(field) != value:
+            _fail(
+                f"{item_path}.measured.{field}",
+                f"expected {value} from {relative} for team"
+                f" {t4_dom.BRANCH_TEAM!r}, not {measured.get(field)!r}",
+            )
+    if sources.get("teamkills") == t4_dom.SOURCE_KTX_CARD and (
+        measured.get("kills") != recount["kills"]
+    ):
+        _fail(
+            f"{item_path}.measured.kills",
+            f"expected {recount['kills']} from {relative} for team"
+            f" {t4_dom.BRANCH_TEAM!r}, not {measured.get('kills')!r}",
+        )
+
+
+def _t4_ladder(data: dict[str, Any], path: str, schema: int = 0) -> int:
+    """The rungs, and the highest *won* skill they add up to.
+
+    Shared by both vocabularies: the ladder's own rules (the fixed skills, the
+    stop at the first non-win, win/draw/loss agreeing with the frags) did not
+    change when the verdict did.
+    """
     _int(data["duration_s_per_match"], f"{path}.duration_s_per_match", 1)
     expected_skills = [10, 12, 14, 16, 18, 20]
     ladder = _list(data["ladder"], f"{path}.ladder")
     if not ladder:
         _fail(f"{path}.ladder", "complete ladder must contain a match")
-    reached = 0
     stopped = False
     for index, value in enumerate(ladder):
         item_path = f"{path}.ladder[{index}]"
-        item = _fields(
-            value,
-            item_path,
-            {"skill", "frags_for", "frags_against", "win", "mvd"},
-            {"draw", "scoreboard"},
-        )
+        # From contract 3 a rung has to say where its numbers came from.
+        # Optionality was the hole: a closed vocabulary only helps when the
+        # field is actually there (Sol, 2026-08-24).
+        binds_sources = schema >= t4_dom.T4_SCHEMA_CARD_REQUIRED
+        required_rung = {"skill", "frags_for", "frags_against", "win", "mvd"}
+        optional_rung = {"draw", "scoreboard", "measured", "card"}
+        if binds_sources:
+            required_rung = required_rung | {"sources"}
+        else:
+            optional_rung = optional_rung | {"sources"}
+        item = _fields(value, item_path, required_rung, optional_rung)
+        if "measured" in item:
+            measured = _fields(
+                item["measured"],
+                f"{item_path}.measured",
+                set(t4_dom.RUNG_MEASURED_FIELDS),
+                set(t4_dom.RUNG_MEASURED_OPTIONAL),
+            )
+            for field in t4_dom.RUNG_MEASURED_FIELDS + t4_dom.RUNG_MEASURED_OPTIONAL:
+                if measured.get(field) is not None:
+                    _num(measured[field], f"{item_path}.measured.{field}", 0)
+            # Where each of the two demo-derived numbers came from. Optional,
+            # because a rung that measured neither has nothing to name — but a
+            # source and its measurement have to agree about whether the field
+            # exists, or the naming is decoration.
+            sources = {"shots_fired": None, "teamkills": None}
+            if "sources" in item:
+                sources = _fields(
+                    item["sources"],
+                    f"{item_path}.sources",
+                    {"shots_fired", "teamkills"},
+                )
+                for field in ("shots_fired", "teamkills"):
+                    name = sources[field]
+                    if name is None:
+                        continue
+                    if _str(name, f"{item_path}.sources.{field}") not in (
+                        t4_dom.MEASUREMENT_SOURCES
+                    ):
+                        _fail(
+                            f"{item_path}.sources.{field}",
+                            f"expected one of {', '.join(t4_dom.MEASUREMENT_SOURCES)}",
+                        )
+                    if measured[field] is None:
+                        _fail(
+                            f"{item_path}.sources.{field}",
+                            "names a source for a field that was not measured",
+                        )
+                if measured["teamkills"] is not None and sources["teamkills"] is None:
+                    _fail(
+                        f"{item_path}.sources.teamkills",
+                        "a measured field has to say where it came from",
+                    )
+                if measured["shots_fired"] is not None and sources["shots_fired"] is None:
+                    _fail(
+                        f"{item_path}.sources.shots_fired",
+                        "a measured field has to say where it came from",
+                    )
+            # The teamkill pair is the one measurement whose source can travel
+            # in the envelope beside it, so when it does, it is recounted rather
+            # than believed. Five real qw-analyze cards in the corpus derive a
+            # teamkill count larger than the team's own kills; a rung that
+            # reports a number off such a card is reporting something the card
+            # cannot say. The KTX demoinfo card is the other source and does not
+            # travel in the envelope — it is named, not recounted.
+            recount = t4_dom.teamkills_from_card(
+                item.get("scoreboard"), t4_dom.BRANCH_TEAM
+            )
+            pair = (measured["teamkills"], measured["kills"])
+            if recount != (None, None):
+                if pair != recount:
+                    _fail(
+                        f"{item_path}.measured.teamkills",
+                        f"expected {recount} from this rung's own match card"
+                        f" (kills - frags - suicides for team"
+                        f" {t4_dom.BRANCH_TEAM!r}, unavailable unless"
+                        f" 0 <= derived <= kills and no component is negative)",
+                    )
+                if sources["teamkills"] not in (None, t4_dom.SOURCE_QW_CARD):
+                    _fail(
+                        f"{item_path}.sources.teamkills",
+                        "this rung carries a match card that derives the pair,"
+                        f" so the source is {t4_dom.SOURCE_QW_CARD!r}",
+                    )
+            elif sources["teamkills"] == t4_dom.SOURCE_QW_CARD:
+                _fail(
+                    f"{item_path}.sources.teamkills",
+                    "names the match card as the source, but this rung's card"
+                    " derives nothing",
+                )
+            _t4_ktx_card(item, item_path, measured, sources, schema)
         if index >= len(expected_skills) or item["skill"] != expected_skills[index]:
             _fail(f"{item_path}.skill", "ladder must use 10,12,14,16,18,20")
         if stopped:
@@ -906,17 +1225,281 @@ def _t4(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
             _fail(item_path, "win must match the frag scores")
         if not win and not draw and item["frags_for"] >= item["frags_against"]:
             _fail(item_path, "loss must have fewer frags_for")
-        if win:
-            reached = item["skill"]
-        else:
+        if not win:
             stopped = True
         _str(item["mvd"], f"{item_path}.mvd")
         _scoreboard(item.get("scoreboard"), f"{item_path}.scoreboard")
+    # Recomputed from the rungs rather than read: `reached` is the highest WON
+    # skill, and an envelope that wrote the last *played* one instead would
+    # otherwise promote a draw or a loss into an achievement.
+    reached = t4_dom.reached_from_ladder(ladder)
     if _int(data["reached"], f"{path}.reached") != reached:
-        _fail(f"{path}.reached", f"expected {reached}")
+        _fail(
+            f"{path}.reached",
+            f"expected {reached} — the highest won skill, 0 if none was won",
+        )
     _str(data["skill_verified_by"], f"{path}.skill_verified_by")
+    return reached
+
+
+def _t4_measurements(value: Any, path: str) -> dict[str, Any]:
+    block = _fields(
+        value,
+        path,
+        {
+            "shots_fired",
+            "teamkills",
+            "kills_total",
+            "still_s_per_bot_max",
+            "item_pickups",
+        },
+    )
+    for field, minimum in (
+        ("shots_fired", 0),
+        ("teamkills", 0),
+        ("kills_total", 0),
+        ("still_s_per_bot_max", 0),
+        ("item_pickups", 0),
+    ):
+        entry = block[field]
+        if entry is None:
+            continue
+        _num(entry, f"{path}.{field}", minimum)
+    if block["teamkills"] is None and block["kills_total"] is not None:
+        _fail(
+            f"{path}.kills_total",
+            "half a ratio is not a measurement: teamkills is unavailable",
+        )
+    return block
+
+
+def _t4_sampling(value: Any, path: str, measurements: dict[str, Any]) -> None:
+    """The live channels' own receipts, and the gap discipline over them (§3).
+
+    A gap wider than the ceiling is not smoothed over: the field it feeds goes
+    unavailable. Checking it here means an envelope cannot report a measurement
+    the sampling it declares could not have produced.
+    """
+    limits = t4_dom.thresholds()
+    block = _fields(
+        value,
+        path,
+        {
+            "still_interval_s",
+            "still_gap_max_s",
+            "items_poll_s",
+            "items_poll_gap_max_s",
+        },
+    )
+    for field, expected in (
+        ("still_interval_s", limits["still_sample_interval_s"]),
+        ("items_poll_s", limits["items_poll_s"]),
+    ):
+        if block[field] != expected:
+            _fail(f"{path}.{field}", f"expected {expected}")
+    for gap_field, ceiling, measurement, capability in (
+        (
+            "still_gap_max_s",
+            limits["still_sample_gap_max_s"],
+            "still_s_per_bot_max",
+            t4_dom.CAP_STILL,
+        ),
+        (
+            "items_poll_gap_max_s",
+            limits["items_poll_gap_max_s"],
+            "item_pickups",
+            t4_dom.CAP_ITEMS,
+        ),
+    ):
+        gap = block[gap_field]
+        measured = measurements.get(measurement) is not None
+        if gap is None:
+            if measured:
+                _fail(
+                    f"{path}.{gap_field}",
+                    f"{measurement} was measured, so its sampling gap is known",
+                )
+            continue
+        _num(gap, f"{path}.{gap_field}", 0)
+        if gap > ceiling and measured:
+            _fail(
+                f"{path}.{gap_field}",
+                f"gap {gap} s exceeds the {ceiling} s ceiling, so"
+                f" {capability} is unavailable, not measured",
+            )
+
+
+def _t4_v2(data: dict[str, Any], path: str, capabilities: dict[str, Any] | None) -> None:
+    schema = data["t4_schema"]
+    if schema not in t4_dom.SUPPORTED_T4_SCHEMAS:
+        _fail(
+            f"{path}.t4_schema",
+            "expected one of "
+            + ", ".join(str(value) for value in t4_dom.SUPPORTED_T4_SCHEMAS),
+        )
+    reached = _t4_ladder(data, path, schema=data["t4_schema"])
+    limits = _dict(data["thresholds"], f"{path}.thresholds")
+    canonical = t4_dom.thresholds()
+    if limits != canonical:
+        _fail(
+            f"{path}.thresholds",
+            "a run cannot restate its own gate: expected the calibrated"
+            f" constants {canonical}",
+        )
+    measurements = _t4_measurements(data["measurements"], f"{path}.measurements")
+    _t4_sampling(data["sampling"], f"{path}.sampling", measurements)
+    # When every rung shows its own contribution, the ladder's four numbers
+    # are checkable rather than declared: they must be the fold of the rungs.
+    # A rung that measured nothing makes the ladder's field unavailable, and a
+    # sum over the rungs that happened to answer is a number about a different
+    # ladder.
+    if all(isinstance(rung, dict) and "measured" in rung for rung in data["ladder"]):
+        folded = t4_dom.measure_ladder(data["ladder"])
+        if measurements != folded:
+            _fail(
+                f"{path}.measurements",
+                f"expected {folded} from the rungs' own measured blocks",
+            )
+        receipt = t4_dom.sampling_receipt(data["ladder"])
+        if data["sampling"] != receipt:
+            _fail(
+                f"{path}.sampling",
+                f"expected {receipt} from the rungs' own measured blocks",
+            )
+    verdict = _str(data["verdict"], f"{path}.verdict")
+    if verdict not in t4_dom.VERDICTS:
+        _fail(
+            f"{path}.verdict",
+            f"expected one of {', '.join(t4_dom.VERDICTS)}",
+        )
+    dom = _fields(
+        data["dom"], f"{path}.dom", {"failed_gates", "missing", "reason", "labels"}
+    )
+    for field in ("failed_gates", "missing", "labels"):
+        for index, entry in enumerate(_list(dom[field], f"{path}.dom.{field}")):
+            _str(entry, f"{path}.dom.{field}[{index}]")
+    if not _str(dom["reason"], f"{path}.dom.reason").strip():
+        _fail(f"{path}.dom.reason", "a verdict has to say what produced it")
+    # The verdict is recomputed, not read. An envelope whose own numbers say
+    # something else is the whole reason this validator exists.
+    outcome = t4_dom.ladder_outcome(data["ladder"])
+    recomputed = t4_dom.adjudicate(measurements, outcome, limits)
+    if list(dom["failed_gates"]) != recomputed["failed_gates"]:
+        _fail(
+            f"{path}.dom.failed_gates",
+            f"expected {recomputed['failed_gates']} from the measurements",
+        )
+    if list(dom["missing"]) != recomputed["missing"]:
+        _fail(
+            f"{path}.dom.missing",
+            f"expected {recomputed['missing']} from the measurements",
+        )
+    if verdict != recomputed["verdict"]:
+        _fail(
+            f"{path}.verdict",
+            f"expected {recomputed['verdict']}: {recomputed['reason']}",
+        )
+    # Bokfört som oåtkomligt, inte som en levande grind (QA:s mutation Q-M8,
+    # 2026-08-24): VINST kan bara komma ur `adjudicate` när `won_top` är sant,
+    # och `won_top` kräver att sista benet är en vinst på skill 20 — varpå
+    # `reached_from_ladder` måste ge 20, eftersom ordningsgrinden ovan redan
+    # har avvisat varje stege med en högre eller okänd nivå. Dubbelvakten kan
+    # alltså inte falla så länge ordningsgrinden lever, och det är just därför
+    # den står kvar: tar någon bort ordningsgrinden är det här den andra
+    # spärren. Att den överlevde en mutation är väntat och bokfört, inte ett
+    # hål — men den räknas inte som bevisad av något test.
+    if verdict == "VINST" and not (reached == 20 and outcome["won_top"]):
+        _fail(f"{path}.verdict", "VINST requires reached 20 and a win on level 20")
+    # Whatever could not be measured has to be declared where every other tier
+    # declares it, or the absence is silent again.
+    declared = set()
+    if capabilities is not None:
+        declared = set(capabilities["unavailable"]) & set(t4_dom.T4_CAPABILITIES)
+    if declared != set(recomputed["missing"]):
+        _fail(
+            f"{path}.dom.missing",
+            "capabilities.unavailable must name exactly the unmeasured T4"
+            f" fields: {sorted(recomputed['missing'])}, not {sorted(declared)}",
+        )
+    if (measurements["item_pickups"] is not None) != (
+        t4_dom.LABEL_ITEM_PROXY in dom["labels"]
+    ):
+        _fail(
+            f"{path}.dom.labels",
+            f"a judged (d) outcome carries the {t4_dom.LABEL_ITEM_PROXY!r}"
+            " label, and an unjudged one does not",
+        )
+    alarm = data.get("cross_alarm")
+    if verdict == "FAIL":
+        if not _str(alarm, f"{path}.cross_alarm").strip():
+            _fail(
+                f"{path}.cross_alarm",
+                "a FAIL names the nearest preceding T1/T3 run of the same"
+                f" commit, or the literal {t4_dom.NO_CROSS_ALARM!r}",
+            )
+    elif alarm is not None:
+        _fail(f"{path}.cross_alarm", "only a FAIL raises the cross alarm")
+    semantics = data.get("draw_semantik")
+    if verdict == "OAVGJORD":
+        if semantics != t4_dom.DRAW_SEMANTICS:
+            _fail(
+                f"{path}.draw_semantik",
+                f"an OAVGJORD envelope carries {t4_dom.DRAW_SEMANTICS!r}: the"
+                " draw semantics is an open owner question, not a decision"
+                " this run made",
+            )
+    elif semantics is not None:
+        _fail(f"{path}.draw_semantik", "only OAVGJORD carries the draw question")
+
+
+def _t4(payload: Any, path: str, capabilities: dict[str, Any] | None) -> None:
+    """T4 in two vocabularies: the five-value verdict, and the retired one.
+
+    `t4_schema: 2` is the live contract. An envelope without it is from before
+    the change, and is accepted only if it is one of the inventoried 27 — see
+    `schema/legacy-t4-inventering.json`. Everything else that still says
+    `COMPLETE` is refused whatever its date, because a vocabulary nobody writes
+    any more cannot be produced by a run that happened after it was retired.
+    """
+    if isinstance(payload, dict) and "t4_schema" in payload:
+        data = _fields(
+            payload,
+            path,
+            {
+                "t4_schema",
+                "duration_s_per_match",
+                "ladder",
+                "reached",
+                "skill_verified_by",
+                "verdict",
+                "measurements",
+                "sampling",
+                "thresholds",
+                "dom",
+            },
+            {"cross_alarm", "draw_semantik"},
+        )
+        _t4_v2(data, path, capabilities)
+        return
+    data = _fields(
+        payload,
+        path,
+        {
+            "duration_s_per_match",
+            "ladder",
+            "reached",
+            "skill_verified_by",
+            "verdict",
+        },
+    )
+    _t4_ladder(data, path)
     if data["verdict"] != "COMPLETE":
-        _fail(f"{path}.verdict", "expected 'COMPLETE'")
+        _fail(
+            f"{path}.verdict",
+            "expected 'COMPLETE' — an envelope without t4_schema is legacy,"
+            f" and the live vocabulary needs t4_schema {t4_dom.T4_SCHEMA}",
+        )
+    _t4_legacy_grandfathered(path)
 
 
 _PAYLOAD_CHECKS: dict[str, Callable[[Any, str, "dict[str, Any] | None"], None]] = {
