@@ -22,6 +22,15 @@ from pathlib import Path
 
 RIG = Path(__file__).resolve().parent
 
+#: Ankare som anvands av flera mutationer. De star som konstanter for att en
+#: felskriven kopia av en lang rad annars blir en tyst `HOPPAR` i stallet for
+#: en mutation — och en mutation som inte kordes ser ut precis som en som
+#: inte fangades.
+ALLA_KLASSER = '{"forbjuden", "orord", "deploy", "lab", "ra-kontroll", "testsvit", "rigg"}'
+UTAN_TESTSVIT = '{"forbjuden", "orord", "deploy", "lab", "ra-kontroll", "rigg"}'
+UTAN_RIGG = '{"forbjuden", "orord", "deploy", "lab", "ra-kontroll", "testsvit"}'
+SOM_JAMFORELSEN = 'if som is not None and som == rad.grupp:'
+
 MUTATIONER = [
     ("portar.py", 'if klass not in KLASSER:', 'if False:', "test_neg_okand_klass"),
     ("portar.py", 'if roll not in ROLLER:', 'if False:', "test_neg_okand_roll"),
@@ -58,6 +67,41 @@ MUTATIONER = [
     ("gamedir.py", 'if not kall_fil.is_file():', 'if False:', "test_neg_pinnad_bygga_saknas_i_tradet"),
     ("gamedir.py", 'if "/" in namn:', 'if False:', "test_neg_pinnen_far_inte_vara_en_sokvag"),
     ("gamedir.py", 'if len(rader) != 1:', 'if False:', "test_neg_pinnen_har_tva_rader"),
+
+    # --- atkomsten `egen` (testsvit/rigg) och `som`-jamforelsen ---
+    #
+    # De tolv nedan kordes for hand i en scratchpad vid PR #71 och fanns
+    # darfor ingenstans i repot: inte repeterbara av nagon annan, och de
+    # kordes inte om vid nasta andring. Nu ar de en grind som andra kan
+    # trycka pa. M11/M12 ar de tva som OVERLEVDE hela sviten (78/78 gron)
+    # tills sina vaktare skrevs — de star har for att ingen ska behova
+    # upptacka samma lucka en tredje gang.
+    #
+    # ALLA_KLASSER ar ankaret for `KLASSER`-frozensetet i portar.py.
+    ("portar.py", ALLA_KLASSER, UTAN_TESTSVIT, "test_rig"),
+    ("portar.py", ALLA_KLASSER, UTAN_RIGG, "test_rig"),
+    ("portar.py", '"rigg": "egen",', '"rigg": "tillat",', "test_rigg_kraver_att_anroparen_uppger_sin_grupp"),
+    ("portar.py", '"testsvit": "egen",', '"testsvit": "tillat",', "test_testsvit_kraver_att_anroparen_uppger_sin_grupp"),
+    ("portar.py", SOM_JAMFORELSEN, 'if som is not None and rad.grupp.startswith(som):', "test_neg_rigg_matchar_inte_pa_prefix"),
+    ("portar.py", '    if rad.atkomst == "tillat":\n        return rad',
+     '    if som is not None and som == rad.grupp:\n        return rad\n'
+     '    if rad.atkomst == "tillat":\n        return rad',
+     "test_som_oppnar_inte_nagon_annan_klass"),
+    ("portar.py", '    rad = tabell.get(port)\n    if rad is None:',
+     '    rad = tabell.get(port)\n    if rad is None and som is None:',
+     "test_neg_oredovisad_port_vagras_aven_med_som"),
+    ("portar.py", SOM_JAMFORELSEN, 'if som is None or som == rad.grupp:', "test_neg_tomt_som_ar_inte_ett_ja"),
+    # M9/M10: bada mappningarna samtidigt — kommer forbi assertionen, sa det
+    # ar facittestet mot det riktiga valvet som maste ta dem.
+    ("portar.py", (ALLA_KLASSER, '    "testsvit": "egen",\n'), (UTAN_TESTSVIT, ''),
+     "test_riktiga_listan_gar_att_lasa"),
+    ("portar.py", (ALLA_KLASSER, '    "rigg": "egen",\n'), (UTAN_RIGG, ''),
+     "test_riktiga_listan_gar_att_lasa"),
+    # M11/M12: overlevarna. En "hjalpsam" normalisering av `som`.
+    ("portar.py", SOM_JAMFORELSEN, 'if som is not None and som.lower() == rad.grupp.lower():',
+     "test_neg_skiftlage_i_som_ar_inte_ratt_grupp"),
+    ("portar.py", SOM_JAMFORELSEN, 'if som is not None and som.strip() == rad.grupp:',
+     "test_neg_blanksteg_kring_som_ar_inte_ratt_grupp"),
 ]
 
 
@@ -87,27 +131,37 @@ def main():
     for fil, gammal, ny, vaktare in MUTATIONER:
         p = RIG / fil
         orig = p.read_text(encoding="utf-8")
-        n = orig.count(gammal)
-        if n != 1:
-            print("HOPPAR %s %r: %d ankartraffar" % (fil, gammal, n))
+        # En mutation kan behova rora TVA stallen samtidigt. Den som stader
+        # bort en klass ur BADE `KLASSER` och `ATKOMST` kommer forbi modulens
+        # `assert set(ATKOMST) == set(KLASSER)` — och da maste facittestet ta
+        # den. Med ett enda ankare gick den mutationen inte att uttrycka, sa
+        # `gammal`/`ny` far ocksa vara lika langa tuplar.
+        par = list(zip(gammal, ny)) if isinstance(gammal, tuple) else [(gammal, ny)]
+        etikett = par[0][0].strip()[:45]
+        traffar = [orig.count(g) for g, _ in par]
+        if traffar != [1] * len(par):
+            print("HOPPAR %s %r: ankartraffar %s" % (fil, etikett, traffar))
             dåliga += 1
             continue
-        p.write_text(orig.replace(gammal, ny), encoding="utf-8")
+        muterad = orig
+        for g, n in par:
+            muterad = muterad.replace(g, n)
+        p.write_text(muterad, encoding="utf-8")
         try:
             _, f = kor_tester()
         finally:
             p.write_text(orig, encoding="utf-8")
 
         if not f:
-            print("OFANGAD  %-12s %-45s  INGEN test foll" % (fil, gammal[:45]))
+            print("OFANGAD  %-12s %-45s  INGEN test foll" % (fil, etikett))
             dåliga += 1
         elif vaktare in f:
             extra = sorted(f - {vaktare})
             print("FALLD    %-12s %-45s  av %s%s"
-                  % (fil, gammal[:45], vaktare, (" (+%d till)" % len(extra)) if extra else ""))
+                  % (fil, etikett, vaktare, (" (+%d till)" % len(extra)) if extra else ""))
         else:
             print("FEL VAKT %-12s %-45s  vantade %s, foll %s"
-                  % (fil, gammal[:45], vaktare, sorted(f)))
+                  % (fil, etikett, vaktare, sorted(f)))
             dåliga += 1
 
     print("\n%d mutationer, %d utan ratt vaktare" % (len(MUTATIONER), dåliga))

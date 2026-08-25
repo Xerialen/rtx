@@ -10,7 +10,9 @@ Ingen rigg, ingen server, ingen port reses.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import os
 import subprocess
 import sys
@@ -194,6 +196,63 @@ class TestAtkomst(unittest.TestCase):
         for nastan in ("navdok", "navdok-1", "navdok-1-klient", "navdok-1-klient-b"):
             with self.assertRaises(portar.Portfel, msg=nastan):
                 portar.krav_tillaten(self.t, 28150, "ctl", som=nastan)
+
+    def test_neg_skiftlage_i_som_ar_inte_ratt_grupp(self):
+        """`T3` ar inte `t3`. Jamforelsen ar skiftlageskanslig.
+
+        Provet finns for att en "hjalpsam" normalisering
+        (`som.lower() == rad.grupp.lower()`) annars glider igenom hela sviten
+        gron — den overlevde 78/78 tills det har testet skrevs. Valvets
+        gruppnamn ar gemena, och den som skriver dem med versaler har inte
+        last raden. Att tvinga fram den lasningen ar hela poangen med `som`.
+        """
+        for fel in ("T3", "t3".upper(), "T3 ".strip()):
+            with self.assertRaises(portar.Portfel, msg=repr(fel)):
+                portar.krav_tillaten(self.t, 27700, "spel", som=fel)
+        for fel in ("NAVDOK-1-KLIENT-A", "Navdok-1-Klient-A", "navdok-1-klient-A"):
+            with self.assertRaises(portar.Portfel, msg=repr(fel)):
+                portar.krav_tillaten(self.t, 28150, "ctl", som=fel)
+
+    def test_neg_blanksteg_kring_som_ar_inte_ratt_grupp(self):
+        """Kringliggande blanksteg stryks INTE bort innan jamforelsen.
+
+        Andra overlevaren ur samma lucka: `som.strip() == rad.grupp` var
+        osynlig for sviten. Ett `som` med blanksteg kommer fran en trasig
+        anropare — en ovarderad skalvariabel, en avkapad rad — och den ska
+        fallas, inte stadas at ratt.
+        """
+        for fel in (" t3", "t3 ", " t3 ", "t3\t", "\tt3", "t3\n", "\nt3", "t3\r"):
+            with self.assertRaises(portar.Portfel, msg=repr(fel)):
+                portar.krav_tillaten(self.t, 27700, "spel", som=fel)
+        for fel in (" navdok-1-klient-a", "navdok-1-klient-a ", "navdok-1-klient-a\t"):
+            with self.assertRaises(portar.Portfel, msg=repr(fel)):
+                portar.krav_tillaten(self.t, 28150, "ctl", som=fel)
+
+    def test_cli_neg_naramiss_i_som_ger_rc2(self):
+        """Samma regel pa den vag riggskripten faktiskt gar: `portar.py --som`.
+
+        Funktionsnivan provas ovan. Det har provet binder rc-kontraktet mot
+        det RIKTIGA valvet, eftersom det ar `rc` anroparna grenar pa och
+        rc=2 som betyder «vagrad». Sista stycket ar en positiv kontroll:
+        utan den hade raderna ovan lika garna kunnat prova ett CLI som
+        alltid sager nej.
+        """
+        def kor(som):
+            ut = io.StringIO()
+            with contextlib.redirect_stdout(ut), contextlib.redirect_stderr(ut):
+                rc = portar.main(
+                    ["--portlista", str(PORTLISTA), "--port", "27700", "--som", som]
+                )
+            return rc, ut.getvalue()
+
+        for fel in ("T3", " t3", "t3 ", "t3\t"):
+            rc, ut = kor(fel)
+            self.assertEqual(rc, 2, "som=%r gav rc=%d: %s" % (fel, rc, ut))
+            self.assertIn("NEKAD", ut)
+
+        rc, ut = kor("t3")
+        self.assertEqual(rc, 0, ut)
+        self.assertIn("TILLÅTEN", ut)
 
     def test_neg_tomt_som_ar_inte_ett_ja(self):
         for tomt in ("", None):
