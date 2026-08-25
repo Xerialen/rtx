@@ -23,7 +23,9 @@ assertion som faller — inte en mening någon ska komma ihåg att läsa.
 
 ## Två saker skripten aldrig gör
 
-**Hårdkodar portnummer.** Alla portar kommer ur `docs/PORTAR.md`.
+**Hårdkodar portnummer.** Alla portar kommer ur `docs/PORTAR.md`, och en port
+som saknas där ⇒ vägran, aldrig ett eget val (ägarbeslut 2026-08-25;
+riggtyperna och låskonventionerna står i [`docs/RIGGAR.md`](../../docs/RIGGAR.md)).
 `test_rig.py` letar efter siffror i intervallet i skriptens egen kod och
 faller om någon smugit in en. En kopierad portlista är samma fälla som ett
 kopierat kontrollvärde.
