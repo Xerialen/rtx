@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 import math
+import os
 from pathlib import Path
 import time
 from typing import Any
@@ -37,6 +38,32 @@ def _mean(values: list[float]) -> float | None:
     return round(sum(values) / len(values), 1) if values else None
 
 
+#: Item poll period, and the fallback it drops to when the control channel
+#: cannot sustain it. Declared in the envelope as `items_poll_s` so the
+#: equality gate reads the resolution rather than assuming one.
+ITEMS_POLL_S = 0.1
+ITEMS_POLL_RETREAT_S = 0.25
+#: No threshold is judged before the loop has settled.
+ITEMS_POLL_WARMUP_S = 5.0
+
+
+def _lay_summary(state: dict[str, Any], name: str) -> dict[str, Any]:
+    """One powerup's take count, uncensored mean, and the basis for both.
+
+    `*_takes` counts every take, censored or not — a take happened. The mean
+    is over the uncensored intervals only, and `*_lay_n` says how many those
+    were, because a mean of one observation is not a mean and the gate must be
+    able to see that (`facit-t2-likhetsgrind-v1.md` §4.4).
+    """
+    takes = state["takes"]
+    return {
+        f"{name}_takes": len(takes) + state["censored"],
+        f"{name}_lay_avg": _mean(takes),
+        f"{name}_lay_n": len(takes),
+        f"{name}_lay_censored": state["censored"],
+    }
+
+
 # The Items reply identifies powerups by Quake classname.
 POWERUP_CLASSNAMES = {"quad": "super_damage", "pent": "invulnerability"}
 
@@ -68,12 +95,27 @@ def _observe_powerups(
         )
         if item is None or not isinstance(item.get("available"), bool):
             continue
+        # A lay interval whose start is our *first observation* rather than an
+        # observed unavailable->available edge is left-censored: the item was
+        # already lying there and we cannot know for how long. It counts as a
+        # take (it was taken) but it is not a measurement of how long it lay,
+        # so it is dropped from the average and counted separately. See
+        # `facit-t2-likhetsgrind-v1.md` §4.2 — the independent observer's mean
+        # is recomputed on the same rule at comparison time.
+        first_look = not state["seen"]
+        state["seen"] = True
         if item["available"]:
             if state["available_since"] is None:
                 state["available_since"] = now
+                state["censored_open"] = first_look
         elif state["available_since"] is not None:
-            state["takes"].append(round(now - state["available_since"], 1))
+            interval = round(now - state["available_since"], 1)
+            if state["censored_open"]:
+                state["censored"] += 1
+            else:
+                state["takes"].append(interval)
             state["available_since"] = None
+            state["censored_open"] = False
 
 
 def _summarize_cells(stalls: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -151,13 +193,27 @@ def _collect(
     measured_bots = 0
     stalls: list[dict[str, Any]] = []
     powerups = {
-        "quad": {"takes": [], "available_since": None},
-        "pent": {"takes": [], "available_since": None},
+        name: {
+            "takes": [],
+            "available_since": None,
+            "seen": False,
+            "censored_open": False,
+            "censored": 0,
+        }
+        for name in ("quad", "pent")
     }
     began = time.monotonic()
     last_second = began
     last_telemetry_assert = began
-    last_items_poll = 0.0
+    # The item poll period is the resolution of every lay time: an interval
+    # shorter than it cannot be measured at all (18/8 had a 0.250 s one). It
+    # runs at the loop's own period, and falls back if the channel cannot keep
+    # up — on a threshold fixed in advance, not on a judgement made after the
+    # number is seen (`facit-t2-likhetsgrind-v1.md` §6).
+    items_poll_s = ITEMS_POLL_S
+    last_items_poll: float | None = None
+    items_polls = 0
+    items_gap_max = 0.0
     polls = 0
     while time.monotonic() - began < duration_s:
         loop_began = time.monotonic()
@@ -216,14 +272,29 @@ def _collect(
                         fastest_second = (average, entity, last_second)
             second_accumulator = {}
             last_second = loop_began
-        if loop_began - last_items_poll >= 0.5:
+        if last_items_poll is None or loop_began - last_items_poll >= items_poll_s:
+            if last_items_poll is not None:
+                items_gap_max = max(items_gap_max, loop_began - last_items_poll)
             last_items_poll = loop_began
+            items_polls += 1
             try:
                 _observe_powerups(
                     control.request("items", timeout=8.0)["data"], loop_began, powerups
                 )
             except ControlError:
                 pass
+            elapsed = loop_began - began
+            if items_poll_s == ITEMS_POLL_S and elapsed >= ITEMS_POLL_WARMUP_S:
+                behind = items_polls < 0.95 * (elapsed / items_poll_s)
+                gapped = items_gap_max > 3 * items_poll_s
+                if behind or gapped:
+                    items_poll_s = ITEMS_POLL_RETREAT_S
+                    print(
+                        "T2: item poll retreated to "
+                        f"{ITEMS_POLL_RETREAT_S} s (polls={items_polls}, "
+                        f"gap_max={items_gap_max:.3f} s)",
+                        flush=True,
+                    )
         if telemetry and loop_began - last_telemetry_assert >= 10.0:
             control.request("set rtx_telemetry 1", timeout=4.0)
             last_telemetry_assert = loop_began
@@ -238,11 +309,18 @@ def _collect(
     bots = measured_bots
     if bots == 0:
         raise RuntimeError("T2 observed no bots")
+    watch_poll_raw = os.environ.get("RTX_WATCH_POLL_S")
+    try:
+        watch_poll_s = float(watch_poll_raw) if watch_poll_raw else None
+    except ValueError:
+        watch_poll_s = None
     stats = {
-        "quad_takes": len(powerups["quad"]["takes"]),
-        "quad_lay_avg": _mean(powerups["quad"]["takes"]),
-        "pent_takes": len(powerups["pent"]["takes"]),
-        "pent_lay_avg": _mean(powerups["pent"]["takes"]),
+        **_lay_summary(powerups["quad"], "quad"),
+        **_lay_summary(powerups["pent"], "pent"),
+        "items_poll_s": items_poll_s,
+        "watch_poll_s": watch_poll_s,
+        "items_polls": items_polls,
+        "items_poll_gap_max_s": round(items_gap_max, 3),
         "speed_1s": _mean(per_second),
         "speed_100ms": _mean(speed_samples),
         "still_s_per_bot": round(still_s / bots, 1),
@@ -281,6 +359,41 @@ def _collect(
     return {"stats": stats, "cells": cells, "own_moments": own_moments}
 
 
+def _merge_analyzer(
+    stats: dict[str, Any],
+    sources: dict[str, str],
+    measurements: dict[str, Any],
+) -> list[str]:
+    """Let the analyzer own what it can answer — and only that.
+
+    Three outcomes, and the middle one is the whole point. RUNBOOK §7: a
+    `0`/`null` from the analyzer where live control saw transitions is a
+    DISAGREEMENT, not an empty answer, and the envelope is rejected rather
+    than quietly settled in either direction. Six T2 envelopes were retracted
+    for exactly that — the analyzer wrote `takes = 0` over live takes and the
+    run still looked complete.
+
+    Returns the disagreements; the caller rejects on a non-empty list.
+    """
+    disagreements: list[str] = []
+    for key, measurement in measurements.items():
+        if key not in stats:
+            continue
+        live, value = stats[key], measurement.value
+        if key.endswith("_takes") and value == 0 and isinstance(live, int) and live > 0:
+            disagreements.append(f"{key}: analyzer=0, live={live}")
+            continue
+        # No answer is not an answer. Keep the live measurement and say so —
+        # a silent keep is nearly as bad as a silent overwrite.
+        if value is None and live is not None:
+            sources[key] = "runner/live (analysatorn svarade inte)"
+            print(f"analyzer had no answer for {key}: live measurement stands", flush=True)
+            continue
+        stats[key] = value
+        sources[key] = measurement.source
+    return disagreements
+
+
 def _analyzer_metrics(
     config: dict[str, Any],
     recording: evidence_mod.Recording,
@@ -306,10 +419,12 @@ def _analyzer_metrics(
         return sources, moments
     for name, reason in skipped.items():
         print(f"analyzer skipped {name}: {reason}", flush=True)
-    for key, measurement in measurements.items():
-        if key in stats:
-            stats[key] = measurement.value
-            sources[key] = measurement.source
+    disagreements = _merge_analyzer(stats, sources, measurements)
+    if disagreements:
+        raise RuntimeError(
+            "analyzer disagrees with live control observations, envelope rejected"
+            " (RUNBOOK §7): " + "; ".join(disagreements)
+        )
         for moment in measurement.moments:
             link = recording.link(
                 moment.t_s, evidence_mod.userid_for_name(roster, moment.who or "")

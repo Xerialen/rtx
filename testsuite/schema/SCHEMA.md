@@ -330,25 +330,127 @@ stops before T1 when T0 import is missing or FAIL.
 
 ```json
 {
+  "t4_schema": 2,
   "duration_s_per_match": 300,
   "ladder": [
     {"skill": 10, "frags_for": 61, "frags_against": 45, "win": true, "mvd": "...",
-     "scoreboard": { }},
-    {"skill": 12, "frags_for": 54, "frags_against": 49, "win": true, "mvd": "..."},
-    {"skill": 14, "frags_for": 42, "frags_against": 50, "win": false, "mvd": "..."}
+     "scoreboard": { },
+     "measured": {"shots_fired": 402, "teamkills": 8, "kills": 45,
+                  "still_s_per_bot": 18.4, "still_gap_max_s": 1.8,
+                  "item_takes": 27, "items_poll_gap_max_s": 1.2,
+                  "items_tracked": 42}},
+    {"skill": 12, "frags_for": 54, "frags_against": 49, "win": true, "mvd": "...",
+     "measured": { }},
+    {"skill": 14, "frags_for": 42, "frags_against": 50, "win": false, "mvd": "...",
+     "measured": { }}
   ],
   "reached": 12,
-  "skill_verified_by": "server-log addbot sequence",
-  "verdict": "COMPLETE"
+  "skill_verified_by": "client console skill echo (KTX addbot)",
+  "verdict": "OK",
+  "measurements": {"shots_fired": 1206, "teamkills": 24, "kills_total": 135,
+                   "still_s_per_bot_max": 18.4, "item_pickups": 81},
+  "sampling": {"still_interval_s": 1.0, "still_gap_max_s": 1.8,
+               "items_poll_s": 1.0, "items_poll_gap_max_s": 1.2},
+  "thresholds": {"teamkill_share_max": 0.2, "still_s_per_bot_max": 75.0,
+                 "item_pickups_min": 1, "still_sample_interval_s": 1.0,
+                 "still_sample_gap_max_s": 3.0, "items_poll_s": 1.0,
+                 "items_poll_gap_max_s": 3.0},
+  "dom": {"failed_gates": [], "missing": [], "labels": ["item-pickups-proxy"],
+          "reason": "spelad stege; alla fyra fält mätta och gröna"}
 }
 ```
-- Ladder stops at the first loss; `reached` = highest beaten skill, 0 on immediate
-  loss. Rungs are 10,12,14,16,18,20.
-- The ladder LOGIC is proven by fixtures (immediate loss, full climb, abort, draw);
-  a live run is `COMPLETE` whenever the observed ladder obeys the rules, regardless
-  of sporting outcome.
+- Ladder stops at the first loss or draw; `reached` = **highest won** skill, 0 when
+  nothing was won. A draw after a won rung N reaches N. Rungs are 10,12,14,16,18,20.
+  The validator recomputes `reached` from the rungs and fells a mismatch.
+- `verdict` is one of five: `VINST` (won level 20), `OK` (played and lost, all four
+  fields measured and green), `FAIL` (a **measured** gate fell — beats every other
+  value, draw included), `OMÄTT` (nothing fell but a field is unavailable; never
+  green, never OK), `OAVGJORD` (draw with all four measured and green; carries
+  `"draw_semantik": "ägarbeslut saknas"`). A `FAIL` carries `cross_alarm`: the
+  nearest preceding T1/T3 `run_id` of the same commit, or the literal
+  `"no matching T1/T3 run found"` — a documented heuristic, never a proven link.
+- The four gates, judged only on measured fields: (a) `shots_fired == 0`,
+  (b) `teamkills / max(1, kills_total) > 0.20`, (c) `still_s_per_bot_max > 75.0`,
+  (d) `item_pickups == 0` over the whole ladder. The thresholds are calibrated
+  against the existing corpus, copied into the envelope, and pinned: a run that
+  restates its own gate is refused.
+- **`t4_schema` is the measurement contract, and the bump is the compatibility
+  mechanism.** `2` is the five-value verdict with optional `sources`; `3` makes
+  `sources` mandatory and binds every KTX-sourced number to its card. Envelopes
+  written under 2 keep being judged by 2's rules — nothing is kept lenient for
+  new runs in order to spare old ones.
+- **From contract 3, a KTX-sourced number carries its card.** The rung's `card`
+  block is `{"path": "demos/<file>", "sha256": "<64 hex>"}`, the path is
+  relative to the envelope's own directory and may not leave it — checked twice,
+  once textually (no absolute path, no `..`, no backslash) and once after
+  resolution, so a directory that is a symlink cannot carry the path out of the
+  bundle without a `..` ever appearing in it. **Known and not closed: TOCTOU.**
+  The path is resolved and then read, so a symlink retargeted in between would
+  not be caught. The exposure is bounded to provenance and never to the number:
+  the pinned digest and the recount still have to agree with what the envelope
+  claims, so the worst case is a correct number with a misdescribed origin. The validator resolves it, hashes the bytes
+  against the pin, and **recounts `shots_fired`/`teamkills`/`kills` out of those
+  bytes**; a card that cannot be found, does not hash, does not parse, or does
+  not produce the reported number fells the envelope. A rung that carries a card
+  no measurement sourced is refused too. The runner archives the card into
+  `evidence/demos/` itself, and drops any KTX reading it could not archive
+  rather than reporting a number with no provenance.
+- **Two sources, in order (addendum to v6 §3, 2026-08-24).** `shots_fired` and
+  `teamkills` come first from the MVD (the ammo signal and the qw-analyze card)
+  and, when the MVD is missing or empty, from **KTX's own demoinfo card** — the
+  same file the frag oracle already reads. Each rung names what it used in
+  `sources` (`mvd/ammo`, `qw-analyze/card`, `ktx/demoinfo`); a measured field
+  without a source, a source without a measurement, or a source outside that
+  vocabulary is refused. A rung carrying a qw-analyze card that derives the
+  pair must use it, so the validator can always recount that path.
+  On the KTX card the counters are read outright: `weapons.<w>.acc.attacks`
+  for shots and `stats.tk` for teamkills — **not** `kills - frags - suicides`.
+  The reason is narrow: the identity `frags = kills - tk - suicides` holds on
+  15 of the 16 player rows across the evening's two cards, and the one row
+  that breaks it (`bot.brch3`, `-8` against a derived `-7`) is the whole
+  difference between a derived 11 and a counted 10 at team level. When a row
+  breaks the identity the derivation cannot carry the number and the direct
+  counter can — and here the derivation's 11 teamkills on 1 kill is refused by
+  the guard above, leaving no number at all. `tk > kills` is an ordinary
+  reading on that source, not a malformed one: `kills` counts enemy kills and
+  `tk` counts team kills. Both readings fell gate (b) far over threshold, so
+  the choice does not change a verdict. A zero shot count is believed
+  only after the card has been shown to carry accuracy at all: KTX omits `acc`
+  for a weapon never fired, so a card with no accuracy anywhere is unavailable.
+- `teamkills` from the qw-analyze card is `kills - frags - suicides` for team
+  `brch`, and is **unavailable** — never a number — when any component is
+  missing, non-numeric or negative, or when the derived count exceeds the
+  team's own kills. Five real cards in the corpus derive more teamkills than
+  kills (`frags` goes negative), which would put gate (b) above 1.0 on an
+  ordinary match. When a rung carries its card, the validator recounts the pair
+  off it and refuses a rung that reports something else.
+- Every unmeasured field is named in `dom.missing` **and** in
+  `capabilities.unavailable` (`t4:shots_fired`, `t4:teamkills`, `t4:still_s`,
+  `t4:item_chase`). It is never a numeric zero. `item_pickups` is a proxy — the
+  world item channel says an item was taken, not by whom — so a judged (d) outcome
+  always carries the `item-pickups-proxy` label.
+- `measured.items_tracked` is how many distinct items the world channel could
+  identify at all. No gate reads it: it is the receipt that says whether gate
+  (d) is measuring the wide channel it was calibrated on or has quietly
+  narrowed to the two powerups (46 of 51 ten-minute T2 runs saw zero quad+pent
+  takes, so a narrow channel would make `item_pickups == 0` the normal reading).
+- `measured.demo_flush_s` is how long the tier waited for the server to write
+  this match's demo, or null when it never appeared. `sv_demoUseCache 1` keeps
+  the recording in memory until KTX stops recording, and a fixed sleep before
+  teardown left 14 of 17 T4 demos at 0 bytes — with every demo-derived field
+  silently unavailable behind it. The tier now waits for the file, bounded,
+  and says so.
+- `measured` per rung is the ladder's audit trail: when every rung carries it, the
+  validator refolds it and refuses `measurements`/`sampling` that disagree.
 - Draw rule: a draw does not advance the ladder and stops it (recorded as
-  `"win": false, "draw": true`).
+  `"win": false, "draw": true`). What a draw *should* mean for the ladder is an
+  open owner question, flagged as `OAVGJORD` until it is answered.
+- **Legacy:** envelopes written before the five-value verdict carry no
+  `t4_schema` and `"verdict": "COMPLETE"`. They are accepted only if their
+  filename and sha256 are in `schema/legacy-t4-inventering.json` (27 envelopes,
+  fail-closed, the inventory itself sha-pinned in `checks.py`). Any other
+  `COMPLETE` is refused whatever its date, and the dashboard marks the
+  grandfathered ones `legacy` — none of them was judged on the four gates.
 - Every played rung carries the same `scoreboard` card as T3: the match as the
   KTX scoreboard saw it, with a POV link per player. Null when no analyzer or no
   demoinfo block was available for that match.

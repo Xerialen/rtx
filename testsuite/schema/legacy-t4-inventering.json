@@ -1,0 +1,142 @@
+{
+ "schema": "rtx-legacy-t4/1",
+ "note": "Fail-closed inventering av de T4-kuvert som fanns när femvärdesdomen infördes (SPEC T4-domen v6 §2). Ett kuvert med verdict COMPLETE accepteras av validatorn ENDAST om dess filnamn står här och dess sha256 stämmer. Allt annat COMPLETE fälls, oavsett datum. Listan växer aldrig: nya körningar skriver t4_schema 2.",
+ "counted": 27,
+ "envelopes": {
+  "t4-20260728T011552Z-3aa9c431.json": {
+   "sha256": "d73b6662fee900d06f232afa9e7980b62c52c1ea794ab0711f19094ad19f255c",
+   "status": "failed",
+   "verdict": null
+  },
+  "t4-20260728T011744Z-3aa9c431.json": {
+   "sha256": "4cfbb27af1fc0feb9e6ab514e766f6040d1a97dacf6fa5b1ab3616643bd3d432",
+   "status": "failed",
+   "verdict": null
+  },
+  "t4-20260728T012206Z-3aa9c431.json": {
+   "sha256": "84a5c6fe2866cc66a4de29e6d47f926f982e2699993c4ae08c086a9e5f94625d",
+   "status": "failed",
+   "verdict": null
+  },
+  "t4-20260728T013342Z-3aa9c431.json": {
+   "sha256": "b26bf7f29f3feb727f0e91024da9a2f09a63fb8f1da2819ea2d77597ddcdaa12",
+   "status": "failed",
+   "verdict": null
+  },
+  "t4-20260728T013523Z-3aa9c431.json": {
+   "sha256": "aed45862c30ea7b9b3360f81a67f4511a43f37179c4bcd220d4c06ae049ccec8",
+   "status": "failed",
+   "verdict": null
+  },
+  "t4-20260728T013709Z-3aa9c431.json": {
+   "sha256": "cb0c10ac8a796fee4db5f8531ac6dbbaebb68a0e33894dcf3c4870d90b970820",
+   "status": "failed",
+   "verdict": null
+  },
+  "t4-20260728T014142Z-3aa9c431.json": {
+   "sha256": "7fd5fd9e6eeaf7a61b1b41a1355401216898e1aefe228774d4e296a3bb10efdd",
+   "status": "failed",
+   "verdict": null
+  },
+  "t4-20260728T014516Z-3aa9c431.json": {
+   "sha256": "663bd3093160f7d05634a8a71854d23b42a1a6108cd62cb7af3af39371d341f6",
+   "status": "failed",
+   "verdict": null
+  },
+  "t4-20260728T014853Z-3aa9c431.json": {
+   "sha256": "3fe82f7744c29f442da92c9a21c50f1fb853aec408f61e5fe31c962170db11e6",
+   "status": "failed",
+   "verdict": null
+  },
+  "t4-20260728T020501Z-3aa9c431.json": {
+   "sha256": "8ed065fd2ced976cab3405d805ef10e02c4c86818a4c856653ceacd51378d636",
+   "status": "failed",
+   "verdict": null
+  },
+  "t4-20260728T021507Z-3aa9c431.json": {
+   "sha256": "01afcfb9b6ccbfe2cdc4183a2568ff4709b9f64ef821d73a624e96102881e104",
+   "status": "failed",
+   "verdict": null
+  },
+  "t4-20260728T022210Z-3aa9c431.json": {
+   "sha256": "e11199b69b6b07c4c690e194cf5498dcb764ce303de4dcb670d89deda1b2b02d",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  },
+  "t4-20260728T063519Z-9a979dff.json": {
+   "sha256": "e4faf919e973577426ce346724ce5ddaaa21780fb9aca1c27e1460a8f75dc6c5",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  },
+  "t4-20260728T071150Z-67e8262c.json": {
+   "sha256": "07d7dc58363137a6cac7e6f6bd7fe087b37d6723bff720ec1c20f1ec66b95804",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  },
+  "t4-20260728T175511Z-764bc135.json": {
+   "sha256": "fefefab50f015fbd474ab41ee31848872d990125c990097e8f63293cb2c4905f",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  },
+  "t4-20260728T195406Z-2320e83f.json": {
+   "sha256": "b5090bbb6c9b75532263cc42133b24f5fb083e30aa2d8a4eedff00707ed5b797",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  },
+  "t4-20260728T233633Z-817849ae.json": {
+   "sha256": "e912ac9a418191e0773e334cadc064437ff66e4a61a750a3bbac7eb8bdb006a9",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  },
+  "t4-20260730T084633Z-817849ae.json": {
+   "sha256": "b193b0ddca6c354084420a6cc75f0b99ccab116c60b74c5446302ba47d94f687",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  },
+  "t4-20260730T110440Z-38a945a9.json": {
+   "sha256": "77cd790f095be91ab86f14f17be2989f01055442875bbdee6f4d4abfc86fdfea",
+   "status": "failed",
+   "verdict": null
+  },
+  "t4-20260730T114314Z-38a945a9.json": {
+   "sha256": "de9d24a272331ea42cd1fb3f3865fb3a9ef2924298d04a1da21e9793ba1f62b0",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  },
+  "t4-20260730T125705Z-38a945a9.json": {
+   "sha256": "27361b8472bdce23a827bba0ef24c663bb76735135ca8c61080f481afaf618bd",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  },
+  "t4-20260730T213914Z-3ed2115a.json": {
+   "sha256": "2394f7681d6a6c65a72239f6958fc56bb7c4ebf71c2eb11a03d6cf50d3567228",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  },
+  "t4-20260731T080342Z-17660fb4.json": {
+   "sha256": "34b641a0f19fb4a63cf9ceb1adb1e3b5d48afc7861ca5f6b489d8380769242f1",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  },
+  "t4-20260818T223510Z-b89bbd46.json": {
+   "sha256": "b4660787bb4bce9314538913c786702309ed2d80c37de30b18eaf244851be5c1",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  },
+  "t4-20260818T224712Z-b89bbd46.json": {
+   "sha256": "2eb74994ea1fdb0babde992aa610f7d532fd02fb822f62e5bbcb963dd78ae6c1",
+   "status": "failed",
+   "verdict": null
+  },
+  "t4-20260819T143957Z-b0d7c3ac.json": {
+   "sha256": "418fac4ad258046a718eccc0b4c19a6542f51b14921f1d308825ef9f908b0bf3",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  },
+  "t4-20260819T185735Z-4f0b9106.json": {
+   "sha256": "25e0040804280bc0d336118e46928d30d27a1948c6cf6b283a29bd0556405be9",
+   "status": "complete",
+   "verdict": "COMPLETE"
+  }
+ }
+}

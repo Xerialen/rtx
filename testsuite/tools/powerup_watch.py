@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -36,6 +37,50 @@ POWERUPS = {
     "quad": "item_artifact_super_damage",
     "pent": "item_artifact_invulnerability",
 }
+
+
+#: Rounding step of the envelope's `round(..., 1)`, the third term of the gate.
+ROUNDING_STEP_S = 0.05
+
+
+def lead_is_censored(track: dict[str, Any]) -> bool:
+    """Whether this track's first lay interval began at our first look.
+
+    Read out of the post rather than assumed: `Track.initially_available()`
+    seeds exactly this transition today, but a gate that hard-codes "the first
+    one" would quietly become wrong if that constructor ever changed.
+    """
+    transitions = track.get("transitions") or []
+    return bool(transitions) and transitions[0].get("at_s") == 0.0 and (
+        transitions[0].get("available") is True
+    )
+
+
+def uncensored_intervals(track: dict[str, Any]) -> list[float]:
+    """The lay intervals this instrument actually measured end to end.
+
+    An interval we joined in the middle of is not a measurement of it. The
+    runner drops the same one, on the same condition — censoring is a property
+    of the measurement, not of an instrument, and dropping it on one side only
+    makes the two means incomparable (`facit-t2-likhetsgrind-v1.md` §4.2).
+    """
+    intervals = list(track.get("lay_intervals_s") or [])
+    if intervals and lead_is_censored(track):
+        intervals = intervals[1:]
+    return intervals
+
+
+def recomputed_reference(track: dict[str, Any]) -> tuple[float | None, int]:
+    """The observer's mean on the runner's basis, and how many it rests on.
+
+    The observer's own post is never rewritten — `lay_intervals_s`, `lay_avg_s`
+    and `transitions` stay raw. A gate that edits its own evidence is not a
+    gate; this recomputes at comparison time out of data already recorded.
+    """
+    intervals = uncensored_intervals(track)
+    if not intervals:
+        return None, 0
+    return round(sum(intervals) / len(intervals), 1), len(intervals)
 
 
 def utc_now() -> str:
@@ -172,6 +217,36 @@ def selftest() -> None:
     assert censored["take_count"] == 0
     assert censored["lay_avg_s"] is None
     assert censored["open_lay_s_at_end"] == 7.0
+
+    # The equality gate's own arithmetic. A track that began available has a
+    # left-censored lead interval; both instruments drop it, so the reference
+    # the envelope is compared against is not the raw mean.
+    assert lead_is_censored(result) is True
+    assert uncensored_intervals(result) == [1.25]
+    assert recomputed_reference(result) == (1.2, 1)
+
+    # 18/8's own numbers, the case that motivated all of this: dropping the
+    # lead on one side only would have compared 0.25 against 4.5.
+    night_pent = {
+        "lay_intervals_s": [8.674, 0.25],
+        "transitions": [{"at_s": 0.0, "available": True}],
+    }
+    assert recomputed_reference(night_pent) == (0.2, 1)
+    night_quad = {
+        "lay_intervals_s": [13.329, 5.266, 8.205],
+        "transitions": [{"at_s": 0.0, "available": True}],
+    }
+    assert recomputed_reference(night_quad) == (6.7, 2)
+
+    # A track whose first interval began at an observed edge is not censored,
+    # so nothing is dropped — the rule is a condition, not a position.
+    seen_edge = {
+        "lay_intervals_s": [4.0, 6.0],
+        "transitions": [{"at_s": 1.0, "available": False}, {"at_s": 2.0, "available": True}],
+    }
+    assert lead_is_censored(seen_edge) is False
+    assert recomputed_reference(seen_edge) == (5.0, 2)
+
     print("powerup-watch selftest: PASS")
 
 
@@ -250,7 +325,11 @@ def main(argv: list[str] | None = None) -> int:
                 + ", ".join(unavailable)
             )
 
-        child = subprocess.Popen(args.command)
+        # The envelope declares both instruments' poll periods so the gate can
+        # read its own resolution instead of assuming one. The child cannot
+        # know ours, so we hand it over.
+        child_env = dict(os.environ, RTX_WATCH_POLL_S=str(args.interval))
+        child = subprocess.Popen(args.command, env=child_env)
         while child.poll() is None:
             try:
                 current = item_availability(control)
@@ -285,6 +364,7 @@ def main(argv: list[str] | None = None) -> int:
             "checked": False,
             "evidence": None,
             "mismatches": [],
+            "notes": [],
         }
         if failure is None and child_rc == 0:
             if len(new_evidence) != 1:
@@ -302,24 +382,65 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     else:
                         stats = envelope["payload"]["stats"]
-                        expected = {
-                            "quad_takes": powerup_results["quad"]["take_count"],
-                            "quad_lay_avg": (
-                                None
-                                if powerup_results["quad"]["lay_avg_s"] is None
-                                else round(powerup_results["quad"]["lay_avg_s"], 1)
-                            ),
-                            "pent_takes": powerup_results["pent"]["take_count"],
-                            "pent_lay_avg": (
-                                None
-                                if powerup_results["pent"]["lay_avg_s"] is None
-                                else round(powerup_results["pent"]["lay_avg_s"], 1)
-                            ),
-                        }
-                        for key, truth in expected.items():
-                            if stats.get(key) != truth:
+                        t_runner = stats.get("items_poll_s")
+                        tolerance = (
+                            None
+                            if not isinstance(t_runner, (int, float))
+                            else t_runner + args.interval + ROUNDING_STEP_S
+                        )
+                        comparison["tolerance_s"] = tolerance
+                        comparison["items_poll_s"] = t_runner
+                        comparison["watch_poll_s"] = args.interval
+                        comparison["reference"] = {}
+                        if tolerance is None:
+                            comparison["mismatches"].append(
+                                "envelope has no items_poll_s: the gate cannot read"
+                                " its own resolution"
+                            )
+                        for kind in ("quad", "pent"):
+                            track = powerup_results[kind]
+                            ref_avg, ref_n = recomputed_reference(track)
+                            comparison["reference"][kind] = {
+                                "lay_avg_s": ref_avg,
+                                "lay_n": ref_n,
+                                "lay_censored": len(track.get("lay_intervals_s") or [])
+                                - ref_n,
+                            }
+                            # Takes are observed edges, not estimates: they match
+                            # exactly or the two instruments saw different worlds.
+                            takes_key = f"{kind}_takes"
+                            if stats.get(takes_key) != track["take_count"]:
                                 comparison["mismatches"].append(
-                                    f"{key}: envelope={stats.get(key)!r}, watch={truth!r}"
+                                    f"{takes_key}: envelope={stats.get(takes_key)!r},"
+                                    f" watch={track['take_count']!r}"
+                                )
+                            env_n = stats.get(f"{kind}_lay_n")
+                            env_avg = stats.get(f"{kind}_lay_avg")
+                            if not isinstance(env_n, int):
+                                comparison["mismatches"].append(
+                                    f"{kind}_lay_n missing from envelope"
+                                )
+                                continue
+                            # A mean of one observation is not a mean. Say so
+                            # rather than comparing something neither side has.
+                            if env_n < 2 or ref_n < 2:
+                                comparison["notes"].append(
+                                    f"{kind}_lay_avg not compared: n<2"
+                                    f" (envelope {env_n}, reference {ref_n})"
+                                )
+                                continue
+                            if tolerance is None:
+                                continue
+                            if not isinstance(env_avg, (int, float)) or ref_avg is None:
+                                comparison["mismatches"].append(
+                                    f"{kind}_lay_avg: envelope={env_avg!r},"
+                                    f" reference={ref_avg!r}"
+                                )
+                            elif abs(env_avg - ref_avg) > tolerance + 1e-9:
+                                comparison["mismatches"].append(
+                                    f"{kind}_lay_avg: envelope={env_avg!r},"
+                                    f" reference={ref_avg!r},"
+                                    f" tolerance={round(tolerance, 3)}"
                                 )
                         comparison["checked"] = True
                 except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
