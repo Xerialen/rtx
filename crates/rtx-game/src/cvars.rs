@@ -117,7 +117,7 @@ pub(crate) const RTX_CVAR_DEFAULTS: &[(&str, CvarSeed)] = {
         // frö läser true. `cvar_default` skriver bara osatta cvarer; en cfg som
         // sätter 0 överlever. Avvikelse mot F1-portens «default av».
         // RA-room lock — ring2quad får inte revert
-        ("rtx_bot_edge_narrow", Bool(true)),
+        ("rtx_bot_edge_narrow", Bool(false)),
         // F2: låt gångcertifikatet lapsa när underlaget byter karaktär (punktgolv <->
         // häng-off) i stället för bara på klockan. Av som förval.
         ("rtx_bot_edge_recert", Bool(false)),
