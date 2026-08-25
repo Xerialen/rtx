@@ -207,13 +207,21 @@ def failed_gates(measured: Any, limits: Any = None) -> list[str]:
     The ratio is recomputed from the whole counters rather than read off the
     envelope's rounded `team_share`, so the seam is on the real number.
 
-    The comparison is a float division against the literal — `(team + own) /
-    total > ceiling` — because that is the ratio the spec names, read straight
-    off the whole counters. It is *not* a guard against a cross multiplication
-    that would land elsewhere: at the seam the two forms agree. `0.20 * 1000`
-    is exactly `200.0`, and across every total in 1..200000 that can express
-    exactly 20 % there is no case where `t > 0.20 * N` differs from
-    `t / N > 0.20`.
+    The comparison is a float division against the envelope's ceiling —
+    `(team + own) / total > ceiling`, where `ceiling` is read from
+    `limits["team_damage_share_max"]` and not from the module literal —
+    because that is the ratio the spec names, read straight off the whole
+    counters. It is *not* a guard against a cross multiplication that would
+    land elsewhere: at the seam the two forms agree. `0.20 * 1000` is exactly
+    `200.0`, and across every total in 1..200000 that can express exactly 20 %
+    there is no case where `t > 0.20 * N` differs from `t / N > 0.20`.
+
+    That agreement is bounded by the ceilings this envelope actually carries —
+    0.20 in the module, 0.2 and 0.5 in the schema fixtures, 0.05 in
+    `selftest.py` — and must not be generalised to ceilings in general: at
+    0.29 (`t=29`, `N=100`, because `0.29 * 100` is `28.999999999999996`) and
+    at 0.7 (`t=63`, `N=90`) the two forms genuinely disagree, so the choice of
+    form is free only here (QA deviation A-6, 2026-08-25).
 
     An earlier revision of this docstring claimed `0.20 * 1000` rounds to
     `200.00000000000003` and that the cross multiplication would therefore be
