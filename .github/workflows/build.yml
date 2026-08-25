@@ -86,3 +86,5 @@ jobs:
           name: rtx-client-${{ matrix.target }}
           path: target/release/${{ matrix.client }}
           if-no-files-found: error
+
+# negativkontroll 2026-08-25T14:51:04Z - raderas
