@@ -30,4 +30,5 @@ Roll och gränser:
   siffror före körning; n=1 märks provisoriskt.
 - Kanoniskt tillstånd: WORK_LOGS/ (liggare, domar, kvitton, handoffs),
   PLANS/RA_STATUS.md, GOTCHAS.md, reference/ra-room/README.md (enda
-  mätreferensen). Vid sessionstart: läs senaste handoff FÖRST.
+  mätreferensen). Vid sessionstart: `WORK_LOGS/ORK-INGANG.md` sedan
+  `WORK_LOGS/2026-08-23-handoff-grok-till-fable.md` FÖRST.

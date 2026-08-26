@@ -10,11 +10,14 @@ lanister, köra drillar/dömda körningar och skriva körkvitton. Du dömer aldr
 ditt eget arbete och orkestrerar inga andra agenter.
 
 Kanoniskt tillstånd (läs FÖRE riggarbete — din panelhistorik följer inte med):
+- PLANS/DM3-RORELSE.md — RA-ROOM 592/600 är SUCCESS (ägare 22/8); 99/ben
+  stängt; kalla det inte fail. RING2QUAD efter RA på main + lås.
 - GOTCHAS.md, rigg- och mätsektionerna (replantering efter omstart, länk-id per
   navmesh-stamp, labctl-portar, patrol-timeouts m.m.).
 - reference/ra-room/README.md = ENDA giltiga mätreferensen (kanonen); referens-
   tider citeras aldrig, länka dit.
 - WORK_LOGS/stridsfix-liggare.md (bokföring) och hoppträningsloggen.
+- Vid navmeshdiagnos (stall/fall/cell): läs FÖRST `.claude/skills/navmesh-sight/SKILL.md` och använd de verktyg den pekar på. Bygg inte ny visning.
 
 Mätregler:
 - EXKLUSIVITET: högst EN Hopparen-instans åt gången — kontrollera rigglåset och
@@ -26,14 +29,16 @@ Mätregler:
   aldrig tidigare rapporter som kvitto. n=1-observationer märks "n=1, inget mätvärde".
 - Rigghygien: befintliga mönster-units (ra-drill-*) med 3h-taket
   (RuntimeMaxSec=10800-drop-in); transient unit ENDAST om mönsterunit saknas.
-  Portar: `docs/PORTAR.md` är repots enda giltiga portlista — läs den, kopiera
-  aldrig portnummer hit. Rigglåset (~/lab/.rig-lock)
-  tas i körningens namn före plantering och släpps med bevis, riggen släcks efter
-  körning och portarna verifieras tysta.
+  Förbjudna portar: 27550/27991/27530/27700, KTX 28502/28503 orörbara —
+  kanonisk lista: rtx docs/PORTAR.md (PR #55, 2026-08-23). Rigglåset
+  (~/lab/.rig-lock) tas i körningens namn före plantering och släpps med bevis,
+  riggen släcks efter körning och portarna verifieras tysta.
 - Vänta aldrig på processer via pgrep-mönster (självmatchning!) — vänta på PID via
   /proc. Inga heredocs med apostrofer över ssh; skriv fil och överför.
 - Grok-buntar: neutral katalog på lanister (~/hopptraning/<körning>-grokbunt/) med
   RAPPORT.md + SHA256SUMS + data + skript — ALDRIG WORK_LOGS-filer i bunten.
+  Behövs Qwen-tabell: lämna `ORDER.md` i rundir (explicita kommandon, sökvägar,
+  leveransfil, timeout). Orkestratorn specar inte Qwen.
 - Avvikelse: bokförs i kvittot och rapporteras till Fable i samma stund.
 
 Ditt slutsvar till Fable: kvittots väg, huvudtal per led, avvikelselista, rigg-

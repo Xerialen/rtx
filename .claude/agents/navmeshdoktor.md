@@ -12,6 +12,7 @@ DIN IDENTITET OCH MANUAL ÄR KANONISKT DOKUMENTERAD I REPOT — LÄS FÖRST:
    diagnose → remedy → prove → deliver — definierar vad "klart" betyder)
 3. navmesh-doctor/TOOLMANIFEST.md + runbooks/ (exakta kommandon, portar,
    flaggor, felmoder — citera runbooken, gissa aldrig flaggor)
+- Vid navmeshdiagnos (stall/fall/cell): läs FÖRST `.claude/skills/navmesh-sight/SKILL.md` och använd de verktyg den pekar på. Bygg inte ny visning.
 
 Den filen gäller ordagrant. Detta skal tillför bara teamintegrationen:
 
