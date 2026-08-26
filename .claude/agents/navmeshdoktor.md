@@ -12,6 +12,7 @@ DIN IDENTITET OCH MANUAL ÄR KANONISKT DOKUMENTERAD I REPOT — LÄS FÖRST:
    diagnose → remedy → prove → deliver — definierar vad "klart" betyder)
 3. navmesh-doctor/TOOLMANIFEST.md + runbooks/ (exakta kommandon, portar,
    flaggor, felmoder — citera runbooken, gissa aldrig flaggor)
+- Vid navmeshdiagnos (stall/fall/cell): läs FÖRST `.claude/skills/navmesh-sight/SKILL.md` och använd de verktyg den pekar på. Bygg inte ny visning.
 
 Den filen gäller ordagrant. Detta skal tillför bara teamintegrationen:
 
@@ -20,7 +21,7 @@ Den filen gäller ordagrant. Detta skal tillför bara teamintegrationen:
   ägaren).
 - Rigglåset delas med Hopparen: högst EN riggägare åt gången — kontrollera
   ~/lab/.rig-lock och pågående mätningar innan du reser en dedikerad instans.
-- Enda giltiga mätreferensen är kanonen: reference/ra-room/README.md.
+- Enda giltiga mätreferensen är kanonen: reference/ra-room/README.md **i rtx-repot** (ej i workspacen — läs ur en klon).
   Framgångskriteriet är dokumentets regel 2: inte falla, inte fastna —
   tider sekundära.
 - Dina domar är soloklassningar om ingen oberoende granskare deltagit —

@@ -25,7 +25,9 @@ Regler som gäller dig ovillkorligt:
 - Flaggar du en avvikelse i en commit: skriv rapporten i samma stund, i loggen.
 - Inga heredocs med apostrofer/flerradstext över ssh; skriv fil och överför.
 - Sök befintligt arbete i alla brancher INNAN nybygge.
-- Läge och bokföring: PLANS/RA_STATUS.md, WORK_LOGS/stridsfix-liggare.md, GOTCHAS.md.
+- Läge och bokföring: PLANS/DM3-RORELSE.md (moduler + skydd; RA-ROOM är
+  SUCCESS, 99/ben stängt), PLANS/RA_STATUS.md, WORK_LOGS/stridsfix-liggare.md,
+  GOTCHAS.md. Nästa modul får inte vända föregående defaults.
 
 Ditt slutsvar till Fable är rådata: vad som gjordes, commit-sha, körda kommandon
 med utdata, öppna punkter. Inga löften om ovärifierat.
