@@ -1,9 +1,28 @@
 # HANDOFF — Fable (`wN:p1`) → Grok (`wN:pG`), 2026-08-26
 
+> **ARKIVKOPIA.** Det här är en versionerad kopia. Arbetskopian och
+> **alla sökvägar nedan** lever på pinnacle i
+> `/home/xerial/dev/buzz-4on4/` — de flesta (`WORK_LOGS/`, `PLANS/`,
+> `GUIDES/`, `GOTCHAS.md`, `.claude/skills/`) finns INTE i det här
+> repot, se `docs/AGENT-PREREQS.md`. Läs originalet på pinnacle.
+
 Du tar över som **orkestrator och ordergivare** för buzz-4on4.
 Den här filen förutsätter att du aldrig arbetat här. Läs den HELA
-före första order. Din rollfil är `.claude/agents/grok-orkestratorn.md`
-(finns även i rtx-repot). Chatt med ägaren överstyr allt nedan.
+före första order. Chatt med ägaren överstyr allt nedan.
+
+> **Företräde.** Den här filen går **före rollfilen**
+> `.claude/agents/grok-orkestratorn.md` där de säger olika. Rollfilen
+> skrevs 2026-08-23 och är inte omskriven: dess punkter om "nattåget",
+> `.release-train/state.json`, Qwen-volym och domkedjans ordning är
+> **ersatta av §1–§2 här**. De fyra bindande rapportklausulerna i
+> rollfilens slut (V9, citatförbudet, OFÖRÄNDRAT/OSÄKERT-etiketten,
+> CPU-förbehållet) **gäller fortfarande** — de är inte historik.
+
+> **Granskad före leverans.** En oberoende agent prövade den här filen
+> ur en nykomlings perspektiv och fann fjorton brister
+> (`WORK_LOGS/2026-08-26-granskning-handoff-grok.md`). Samtliga är
+> rättade i texten nedan. Läs granskningen om du vill se vad som var
+> fel — den är också en bra bild av vilken sorts fel som är dyra här.
 
 ---
 
@@ -13,9 +32,13 @@ före första order. Din rollfil är `.claude/agents/grok-orkestratorn.md`
 navmesh-styrda bottar som ska spela 4on4 på kartan dm3. Arbetet består
 av: (a) få bottarna att röra sig rätt (navmesh/motorstyrning),
 (b) mäta det bevisbart, (c) skydda uppnådda resultat mot regression.
-Två resultat är i hamn och får aldrig tappas: **RA-rummet** (bottarna
-tar sig upp i Red Armor-rummet, ≥99 % per ben) och **ring2quad**
-(12/12 hela kedjor). Båda är låsta av CI-grindar i GitHub-repot.
+Två resultat är i hamn och får aldrig tappas: **RA-rummet**
+(**592/600 = 98,7 % hopsatt** — ägaren dömde det SUCCESS 22/8 och
+99-per-ben-målet är **stängt**; två ben ligger under 99: `in_ring`
+95/100, `in_vast` 97/100. **Säg aldrig "≥99 %"** — `PLANS/DM3-
+RORELSE.md` förbjuder det uttryckligen, och citera aldrig en grafhash
+som procentsats) och **ring2quad** (12/12 hela kedjor).
+Båda är låsta av CI-grindar i GitHub-repot.
 Det aktiva arbetet handlar om **SNG-megan**: bottarna ska ta sig till
 megahealthen vid SNG från tre riktningar, ≥95 % per riktning.
 Ägaren rapporteras på **svenska, ägarnivå** (mål/beslut/kostnad) —
@@ -58,14 +81,19 @@ Producent ≠ omräknare ≠ leverantör (kallas R8).
 
 **Säten i herdr-workspacen `wN` (bara den):**
 
-| Panel | Roll | Läge 2026-08-26 |
+| Panel | Roll | Läge 2026-08-26 11:20Z |
 |---|---|---|
-| `wN:pG` | **du** (orkestrator) | — |
+| `wN:pG` | **du** (orkestrator) | **FINNS INTE ÄNNU — skapas av ägaren vid övertagandet.** `herdr agent list` gav bara p1/p4/p9/pB/pH. |
 | `wN:p1` | Fable (föregående orkestrator) | lämnar över |
 | `wN:p4` | Sol (`terra-4on4`) — kontrasignatur | fungerar |
-| `wN:p9` | grok-validatorsätet (oberoende omräkning) | **0 % veckokvot** |
+| `wN:p9` | grok-validatorsätet (`grok2-4on4`) | **0 % veckokvot** |
 | `wN:pB` | Qwen-forensikern | fryst tills ägar-OK |
 | `wN:pH` | DeepSeek | bara vid återvändsgränd |
+
+**Ditt eget säte har också en veckokvot.** Kör `herdr agent read` på
+DIG SJÄLV först — det enda Grok-säte som fanns 26/8 (`wN:p9`) stod på
+0 %. Om ditt säte är kvotlöst: säg det till ägaren omgående, innan du
+kvitterar övertagandet.
 
 **Harness-subagenter** (du spawnar dem, de är inte paneler):
 `kodaren`, `qa-domaren`, `hopparen`, `navmeshdoktor`, `demobyggaren`,
@@ -80,13 +108,28 @@ köras med `model: opus` — standardmodellen (Fable 5) slog i
 kreditgränsen mitt i en mätning och sätet dog. Opus fungerar.
 Billig grovräkning kan gå på `sonnet`.
 
+**Eftersom `wN:p9` är kvotlöst körs R8-omräkningen som
+harness-subagent** (`general-purpose`, `model: sonnet`) mot samma
+protokoll som `AGENTS.grok-validator.md` föreskriver: räkna om ur
+`attempt_*.jsonl` i bunten — aldrig ur `RAPPORT.md` och aldrig ur
+orkestratorns prosa; skriv `OMRAKNING.md` **i bunten**, utanför
+`SHA256SUMS`. Färdig förlaga att kopiera ordern ur:
+`WORK_LOGS/2026-08-26-omrakning-s1-drill-v2.md`.
+
 ---
 
 ## 3. Var sanningen finns (läs i denna ordning)
 
 1. **`WORK_LOGS/ORK-INGANG.md`** — kanonisk återingång, alltid först.
-   Den bär gällande läge; daterade handoffs länkas därifrån.
+   **Läs den som en append-only lägeslogg: bannern överst gäller, och
+   allt under raden "GÄLLANDE LÄGE" är historik som delvis motsägs av
+   den här filen.** Sätestabellen och "Mål"-listan längst ned är från
+   augusti och säger fortfarande att Grok inte är orkestrator — det är
+   inaktuellt.
 2. **Den här filen.**
+2b. **`PLANS/DM3-RORELSE.md`** — modulkartan och källan till RA-talen
+   och citatförbudet i §0. Läs den innan du nämner RA-rummet för
+   ägaren.
 3. `WORK_LOGS/2026-08-25-beslutsblad-164kanten.md` — det aktiva
    beslutsärendet, med alla rättelser inlagda kronologiskt.
 4. `CLAUDE.md` (projektregler) + `AGENTS.grok-validator.md`
@@ -95,8 +138,11 @@ Billig grovräkning kan gå på `sonnet`.
 6. `GUIDES/`: `VERKTYGSGRINDAR.md` (publiceringsgrindar),
    `HANDOVER.md` (tjänster/portar på lanister), `RIG_DRIFT.md`
    (låskonvention), `ETIKETTREGLER.md` (**bindande** märkning av tal).
-7. `PLANS/` — aktiva planer; `WORK_LOGS/stridsfix-liggare.md` —
-   append-only bokföring, varje leverans får en rad.
+7. `PLANS/2026-08-25-plan-164-atgardsomgang.md` — **den aktiva planen**
+   (spåren S1–S5 och vem som äger vilket). `WORK_LOGS/stridsfix-
+   liggare.md` — append-only bokföring, varje leverans får en rad.
+   `docs/TOOLMANIFEST.md` i rtx-repot — verktyg, roller och de
+   mätinstrument som bara finns på riggen.
 8. Minnesfilerna (laddas automatiskt i sessionen): ägarregler och
    dagslägen.
 
@@ -157,6 +203,15 @@ motorns hopptak ligger på +44 där +64 krävs. Alternativet är dött.
 **S3 — PlanTick-serie för F3.** Kördes, men mätte **fel population**
 (målcellen hade noll telemetrirader). F3-orsaken är **UNKNOWN**.
 
+**S4 — kanonisk obduktion. UTFÖRD.** En oberoende verktygskedja
+reproducerade fallminskningen 93→74 och gav remedie-taxonomin:
+F1 → `okand_ingen_fix`, **F2 → `styre_sjband` (LICENSIERAD)**,
+F3 → `okand_ingen_fix`. Det är den taxonomin som gör B till enda
+licensierade vägen i §4.6.
+
+**S5 — bred regression. EJ KÖRD.** Körs först när S1/S2 gett en
+kandidat; det är beviskravet i §6 punkt 1.
+
 **Kantvaktsspåret (`lip` / `ledge_ahead`) — STÄNGT.** `lip` är ingen
 kantvakt (sitter i en OR, kan bara öppna hoppgrinden). `ledge_ahead`
 är strukturellt död i zonen (kräver hoppfas Off — sant i 0 av 2367
@@ -167,13 +222,16 @@ bromsarna (mutationsprov: 0,21 % som övre gräns).
 ### 4.6 Ägarens öppna vägval (ligger hos honom NU)
 | # | Väg | Kostnad | Risk | Evidens |
 |---|---|---|---|---|
-| **B** | F2 `styre_sjband` (gropkanten, 67 fall) | medel | zonbar | **enda licensierade åtgärdsklassen** |
-| **A′** | Utred gångplaneraren i krönzonen (~89 band) | hög riggtid | ingen (mätning) | enda vägen till F1:s orsak |
-| **C** | Nollalternativ | ingen | ingen | — |
-| **D** | Bevisdrill 170/arm på S1-vinsten | hög | ingen | avråds |
+| **SNG-B** | F2 `styre_sjband` (gropkanten, 67 fall) | medel | zonbar | **enda licensierade åtgärdsklassen** |
+| **SNG-A′** | Utred walksim (gångplaneraren) i krönzonen, ~89 band | hög riggtid | ingen (mätning) | enda vägen till F1:s orsak |
+| **SNG-C** | Nollalternativ | ingen | ingen | — |
+| **SNG-D** | Bevisdrill 170/arm på S1-vinsten | hög | ingen | avråds |
 
-Fables rekommendation var **B nu**; F1 står mellan A′ och C.
-**Bygg ingenting förrän ägaren valt.**
+Fables rekommendation var **SNG-B nu**; F1 står mellan SNG-A′ och
+SNG-C. **Bygg ingenting förrän ägaren valt.**
+Prefixet finns för att det existerar ett **andra** öppet vägval med
+samma bokstäver (RA-nollan, §4.7) — fråga alltid ägaren vilket ärende
+han svarar på när han säger bara "B".
 
 ### 4.7 Övriga öppna ägarbeslut (äldre, obesvarade)
 - **F2-a** (zonerat ansatskrav) ja/nej — enda kvarvarande aktiva
@@ -187,7 +245,40 @@ Fables rekommendation var **B nu**; F1 står mellan A′ och C.
 - **2000-raderstaket i `predikat_v2_hoppa.py`** — att höja det ändrar
   ett main-pinnat mätpredikat och kräver etikettbeslut.
 - **Mätinstrumenten i lådorna på lanister är inte versionshanterade** —
-  samma risk som `docs/AGENT-PREREQS.md` varnar för.
+  samma risk som `docs/AGENT-PREREQS.md` varnar för; de är listade i
+  `docs/TOOLMANIFEST.md` §3.
+- **RA-nollan** (eget ärende, egen bokstavslista): bottarna tog RA
+  noll gånger i spegelmatchen trots det drillade RA-rummet. Motorn
+  planerar dit men klättringen faller. Underlag:
+  `WORK_LOGS/2026-08-25-ra-diskussion.md`. Ägaren ville diskutera
+  1v1/2v2/4v4-skillnaden före experiment.
+- **Sol-omsignering + oberoende granskning av ben3d-artefakten**
+  (bokförd som väntande i artefaktens Resultat-flik).
+- **Manifestutökning för bänkens verktyg** vid nästa merge
+  (ägaren sa ja 25/8, ej verkställt).
+
+### 4.8 Ordlista (termer i §4 som inte går att slå upp någon annanstans)
+
+- **F1 / F2 / F3** — de tre felklasserna i §4.4 (krönhopp, väggträff,
+  underfartshopp). Numren är våra, inte motorns.
+- **S1–S5** — spåren i `PLANS/2026-08-25-plan-164-atgardsomgang.md`.
+- **rutt0** — den planerade rutt botten hade när försöket började;
+  bär "drop-länkar" = planerade nedhopp. Avgör om ett fall är
+  självvalt (§4.2).
+- **band** — ett mätt försök (`attempt_NNNN.jsonl`); "rent band" =
+  framme utan fall.
+- **grokbunt / bunt** — förseglat bevispaket på riggen (§5).
+- **licensierad** — att en åtgärdsklass har passerat obduktionens
+  evidenskrav (`validera_klassning`). `styre_sjband` är den enda
+  licensierade i det här spåret; `okand_ingen_fix` betyder
+  "ingen åtgärd är evidensmässigt motiverad än".
+- **walksim / walk_corridor** — motorns gångplanerare, som tar över
+  när hoppläget stängs av och som visade sig stänga av båda
+  kantbromsarna. Det är den SNG-A′ ska utreda.
+- **trio A / trio B** — förbokade portgrupper för parallella riggar
+  (`docs/PORTAR.md`, `~/lab/riggar/REGISTER.md`).
+- **rox-vägen / megakrypinnet** — ägarens ord för den skyddade
+  vägen i §4.1. Använd hans ord, hitta inte på egna.
 
 ---
 
@@ -234,9 +325,15 @@ startpaneler i sidan i stället. Vill ägaren se ett specifikt
 
 1. **Smala åtgärder.** Undvik ändringar med hög risk att påverka
    bottens förmåga i stort. Zonat framför global policy, flagga
-   default av, bred regression (RA + ring2quad + strid + T3) som
-   beviskrav, global risknivå redovisad per alternativ, alltid ett
-   nollalternativ.
+   default av, global risknivå redovisad per alternativ, alltid ett
+   nollalternativ. **Beviskravet ("bred regression") är exakt:
+   RA-rummet + ring2quad + K1–K3 + T3, och samtliga ska visa
+   OFÖRÄNDRAT.** K1–K3 = spegelmatchsviten (bottarna spelar mot sig
+   själva; lagskadan mäts och taket är 20 % av lagets totalskada).
+   T3 = stridsregressionen. **Beställ dem av Hopparen — kör dem
+   aldrig själv;** vad de kör står i `GUIDES/HANDOVER.md` och i
+   Hopparens rollfil. (Att kommandona inte finns samlade på ett
+   ställe är i sig en känd brist — bokförd.)
 2. **Verifiera före påstående.** Aldrig "klart"/"PASS"/en
    förbättringssiffra utan att du själv kört om kontrollen och kan
    visa kommandot och rå utdata. n=1 märks provisoriskt.
@@ -278,6 +375,11 @@ startpaneler i sidan i stället. Vill ägaren se ett specifikt
 
 ## 8. Hårda nej
 
+- **PR #50 och #62 i rtx-repot är negativa dummies** — de ska stå
+  OPEN och BLOCKED för alltid. Stäng dem inte, merga dem inte,
+  "städa" dem inte. De är beviset att `ra-room-lock` och
+  `ring2quad-lock` faktiskt fäller något. Utan dem tappar de två
+  skyddade resultaten sin negativkontroll och ingen grind larmar.
 - Ingen live-koppling till RA-kontrollporten `:27990` eller main-test.
 - `rtx_bot_count 0` i cfg: aldrig.
 - Rör aldrig frysgrenen `grokork` @ `9d015db` som arbetsgren.
@@ -293,11 +395,19 @@ startpaneler i sidan i stället. Vill ägaren se ett specifikt
 ## 9. Första fem stegen när du tar över
 
 1. Läs `WORK_LOGS/ORK-INGANG.md` och den här filen.
-2. Verifiera läget själv: `gh api repos/Xerialen/rtx/commits/main --jq .sha`
-   (ska vara `fb5933e0…` eller senare), riggen fri
-   (`ssh lanister 'ls ~/lab/.rig-lock'` ska ge "no such file"),
-   inga aktiva units.
-3. Kontrollera kvoter på de säten du tänker använda (§2).
+2. Verifiera läget själv:
+   - `gh api repos/Xerialen/rtx/commits/main --jq .sha` (ska vara
+     `fb5933e0…` eller senare),
+   - riggen fri: `ssh lanister 'ls ~/lab/.rig-lock'` ska ge
+     "No such file",
+   - inga **mätunits** igång:
+     `ssh lanister 'systemctl --user list-units "ra-drill*" "lab*" "s164*" --all --no-legend'`
+     ska vara tomt. **Permanenta tjänster (`clipshot`,
+     `fasttrack-viewer`, `localhub-web`, `qw-nav-viewer`) ska stå
+     kvar — släck dem aldrig; de ÄR hemmahubben och navviewern som
+     ägaren tittar i.**
+3. Kontrollera kvoter — **först på dig själv**, sedan på de säten du
+   tänker använda (§2).
 4. Kvittera till ägaren att du tagit över, på svenska, ägarnivå —
    och lägg fram hans öppna vägval (§4.6) utan att välja åt honom.
 5. Starta ingenting nytt i SNG-spåret förrän han valt. Backloggen i
@@ -305,5 +415,11 @@ startpaneler i sidan i stället. Vill ägaren se ett specifikt
 
 ---
 
-*Skriven av Fable (`wN:p1`) 2026-08-26. Granskad av oberoende
-subagent enligt ägarorder — se `2026-08-26-granskning-handoff-grok.md`.*
+*Skriven av Fable (`wN:p1`) 2026-08-26 och rättad samma dag efter
+oberoende granskning på ägarorder: `WORK_LOGS/2026-08-26-granskning-
+handoff-grok.md` (verdict KAN TA ÖVER MED ÅTGÄRDER, 14 fynd — samtliga
+åtgärdade ovan).*
+
+**Blockerare som ägaren måste lösa innan bytet är skarpt:** panelen
+`wN:pG` existerar inte ännu, och det enda befintliga Grok-sätet
+(`wN:p9`) har 0 % veckokvot.

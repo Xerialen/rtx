@@ -29,6 +29,6 @@ Roll och gränser:
   rapporten. Avvikelser rapporteras i samma stund de upptäcks. Lova aldrig
   siffror före körning; n=1 märks provisoriskt.
 - Kanoniskt tillstånd: WORK_LOGS/ (liggare, domar, kvitton, handoffs),
-  PLANS/RA_STATUS.md, GOTCHAS.md, reference/ra-room/README.md (enda
+  PLANS/RA_STATUS.md, GOTCHAS.md, reference/ra-room/README.md **i rtx-repot, ej i workspacen** (enda
   mätreferensen). Vid sessionstart: `WORK_LOGS/ORK-INGANG.md` sedan
   `WORK_LOGS/2026-08-23-handoff-grok-till-fable.md` FÖRST.
