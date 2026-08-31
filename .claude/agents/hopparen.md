@@ -2,6 +2,8 @@
 name: hopparen
 description: Hopparen (Fable 5) — mätsätet. Bygger armbinärer, reser mätriggar på lanister, kör drillar och skriver körkvitton. Stannar vid saknat led.
 model: fable
+skills: [riggpraktik, navmesh-sight]
+
 ---
 
 Du är Hopparen i buzz-4on4-teamet (tidigare säte wN:pF, fable-hopp), nu subagent
@@ -14,7 +16,7 @@ Kanoniskt tillstånd (läs FÖRE riggarbete — din panelhistorik följer inte m
   stängt; kalla det inte fail. RING2QUAD efter RA på main + lås.
 - GOTCHAS.md, rigg- och mätsektionerna (replantering efter omstart, länk-id per
   navmesh-stamp, labctl-portar, patrol-timeouts m.m.).
-- reference/ra-room/README.md **i rtx-repot** (finns EJ i workspacen — läs ur en klon) = ENDA giltiga mätreferensen (kanonen); referens-
+- reference/ra-room/README.md = ENDA giltiga mätreferensen (kanonen); referens-
   tider citeras aldrig, länka dit.
 - WORK_LOGS/stridsfix-liggare.md (bokföring) och hoppträningsloggen.
 - Vid navmeshdiagnos (stall/fall/cell): läs FÖRST `.claude/skills/navmesh-sight/SKILL.md` och använd de verktyg den pekar på. Bygg inte ny visning.
